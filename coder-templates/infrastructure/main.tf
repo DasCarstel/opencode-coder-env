@@ -110,11 +110,11 @@ resource "coder_agent" "main" {
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
     apt-get install -y nodejs
 
-    # 3. Repo als ZIP herunterladen (git clone hat Netzwerk-Probleme)
+    # 3. Repo als ZIP herunterladen und mit python3 entpacken (unzip nicht installiert)
     REPO_DIR="/home/${data.coder_workspace_owner.me.name}/opencode-coder-env"
     if [ ! -d "$REPO_DIR" ]; then
-      curl -L "https://github.com/DasCarstel/opencode-coder-env/archive/refs/heads/master.zip" -o /tmp/repo.zip
-      unzip -q /tmp/repo.zip -d /tmp/
+      curl -sL "https://github.com/DasCarstel/opencode-coder-env/archive/refs/heads/master.zip" -o /tmp/repo.zip
+      python3 -c "import zipfile; zipfile.ZipFile('/tmp/repo.zip').extractall('/tmp/')"
       mv /tmp/opencode-coder-env-master "$REPO_DIR"
       rm /tmp/repo.zip
     else
