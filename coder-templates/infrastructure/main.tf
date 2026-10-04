@@ -76,9 +76,7 @@ resource "docker_container" "workspace" {
   memory     = 2048
   shm_size   = 512
 
-  networks_advanced {
-    name = "coder-infra"
-  }
+  network_mode = "host"
 }
 
 # ── Coder Agent ─────────────────────────────────────────────────────────────
