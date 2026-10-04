@@ -1,23 +1,27 @@
 # Coder Template: homelab (OpenCode-Infrastruktur)
 #
-# Dieses Template provisioniert einen Workspace für OpenCode-Entwicklung.
-# Infrastruktur-spezifische Teile (Docker/Proxmox) müssen an die eigene Umgebung angepasst werden.
+# Dieses Template provisioniert einen Docker-Container als Workspace für OpenCode-Entwicklung.
+# Nutzt das offizielle Coder docker-container Modul.
 
 terraform {
   required_providers {
     coder = {
-      source = "coder/coder"
+      source  = "coder/coder"
+      version = "~> 1.0"
     }
-    # TODO: Infra-Provider hinzufügen (z.B. docker, proxmox, kubernetes)
-    # docker = { source = "kreuzwerker/docker" }
+    docker = {
+      source  = "kreuzwerker/docker"
+      version = "~> 3.0"
+    }
   }
 }
 
-# Workspace- und Owner-Daten von Coder
+# ─── Workspace-Daten ────────────────────────────────────────────────────────
+
 data "coder_workspace" "me" {}
 data "coder_workspace_owner" "me" {}
 
-# ─── Template-Parameter ──────────────────────────────────────────────────────
+# ─── Template-Parameter ─────────────────────────────────────────────────────
 
 variable "git_repo_url" {
   type        = string
@@ -31,45 +35,69 @@ variable "git_branch" {
   default     = "master"
 }
 
-# ─── Compute-Resource ────────────────────────────────────────────────────────
-# TODO: An die eigene Infrastruktur anpassen.
-#
-# Beispiel Docker:
-#   resource "docker_container" "workspace" {
-#     count = data.coder_workspace.me.start_count
-#     image = "ubuntu:22.04"
-#     name  = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}"
-#     env   = ["CODER_AGENT_TOKEN=${coder_agent.main.token}"]
-#     command = ["sh", "-c", coder_agent.main.init_script]
-#   }
-#
-# Beispiel Proxmox:
-#   resource "proxmox_vm_qemu" "workspace" { ... }
-#
-# Beispiel Kubernetes:
-#   resource "kubernetes_pod" "workspace" { ... }
+data "coder_provisioner" "me" {}
+
+# ─── Docker Image ───────────────────────────────────────────────────────────
+
+data "docker_registry_image" "ubuntu" {
+  name = "ubuntu:22.04"
+}
+
+resource "docker_image" "workspace" {
+  name = data.docker_registry_image.ubuntu.name
+}
+
+# ─── Docker Container (offizielles Coder-Modul) ────────────────────────────
+
+module "docker-container" {
+  source  = "registry.coder.com/modules/docker-container/coder"
+  version = "1.0.17"
+
+  agent_id      = coder_agent.main.id
+  container_name = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}"
+  cpu           = 2000
+  disk          = 20
+  image         = docker_image.workspace.image_id
+  memory        = 2048
+
+  docker_host = data.coder_provisioner.me.arch
+  env = {
+    # HA_LLA_TOKEN wird als Coder Secret gesetzt und automatisch injiziert
+  }
+
+  run_command = "sh -c ${coder_agent.main.init_script}"
+}
 
 # ─── Coder Agent ─────────────────────────────────────────────────────────────
 
 resource "coder_agent" "main" {
   os   = "linux"
-  arch = "amd64"
+  arch = data.coder_provisioner.me.arch
 
-  # Der init_script wird vom Coder-Provisioner in das Workspace-Image injiziert
   dir = "/home/${data.coder_workspace_owner.me.name}"
-
-  env = {
-    # HA_LLA_TOKEN wird als Coder Secret gesetzt und automatisch injiziert
-    # (kein hardcoded Wert im Template!)
-  }
 
   startup_script = <<-EOT
     #!/bin/bash
     set -euo pipefail
 
-    echo "=== homelab Workspace: Repository wird synchronisiert ==="
+    echo "=== homelab Workspace: Initialisierung ==="
 
-    # Repo klonen oder aktualisieren
+    # 1. Grundlegende Tools installieren
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update && apt-get install -y \
+      curl \
+      git \
+      ca-certificates \
+      gnupg \
+      python3 \
+      python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+    # 2. Node.js v22 installieren (für ssh-mcp)
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    apt-get install -y nodejs
+
+    # 3. Repo klonen oder aktualisieren
     REPO_DIR="/home/${data.coder_workspace_owner.me.name}/opencode-coder-env"
     if [ -d "$REPO_DIR/.git" ]; then
       cd "$REPO_DIR"
@@ -79,14 +107,15 @@ resource "coder_agent" "main" {
       git clone --branch ${var.git_branch} --single-branch "${var.git_repo_url}" "$REPO_DIR"
     fi
 
-    # Verzeichnisse anlegen
+    # 4. Verzeichnisse anlegen
     mkdir -p ~/.config/opencode
     mkdir -p ~/.cache/opencode/opencode-model-router
+    mkdir -p ~/.config/ssh-mcp
 
-    # tiers.json für Model-Router verlinken
+    # 5. tiers.json für Model-Router verlinken
     ln -sf "$REPO_DIR/tiers.json" ~/.cache/opencode/opencode-model-router/tiers.json
 
-    # Skills verlinken (jeder Skill einzeln, damit keine unerwünschten Skills kommen)
+    # 6. Skills verlinken
     for skill_dir in "$REPO_DIR/skills/homelab"/*/; do
       [ -d "$skill_dir" ] || continue
       skill_name=$(basename "$skill_dir")
@@ -94,8 +123,33 @@ resource "coder_agent" "main" {
       ln -sf "$skill_dir/SKILL.md" ~/.config/opencode/skills/"$skill_name"/SKILL.md
     done
 
-    # Alias für Update des Config-Repos
-    echo 'alias update-opencode-config="cd ~/opencode-coder-env && git pull --ff-only"' >> ~/.bashrc 2>/dev/null || true
+    # 7. OpenCode installieren
+    curl -L https://opencode.ai/install.sh | sh
+
+    # 8. ssh-mcp installieren
+    npm install -g ssh-mcp@2.17.0
+
+    # 9. ssh-mcp Konfiguration erstellen
+    cat > ~/.config/ssh-mcp/config.toml << 'SSHCONFIG'
+    [defaults]
+    defaultProfile = "docker"
+    approvalMode = "ask-destructive"
+
+    [[profiles]]
+    name = "docker"
+    host = "10.0.10.10"
+    port = 22
+    user = "root"
+    auth = "key"
+    keyRef = "~/.ssh/id_ed25519_agent"
+    role = "admin"
+    approvalPolicy = "auto"
+    SSHCONFIG
+    chmod 700 ~/.config/ssh-mcp
+    chmod 600 ~/.config/ssh-mcp/config.toml
+
+    # 10. Alias für Update des Config-Repos
+    echo 'alias update-opencode-config="cd ~/opencode-coder-env && git pull --ff-only"' >> ~/.bashrc
 
     echo "=== homelab Workspace bereit ==="
     echo "  HA-Projekt:     cd ~/opencode-coder-env/workspaces/homelab/homeassistant && opencode"
@@ -103,7 +157,7 @@ resource "coder_agent" "main" {
   EOT
 }
 
-# ─── Coder App (optionaler Shortcut in der UI) ───────────────────────────────
+# ─── Coder Apps (Shortcuts in der UI) ────────────────────────────────────────
 
 resource "coder_app" "opencode-ha" {
   agent_id     = coder_agent.main.id
@@ -113,6 +167,14 @@ resource "coder_app" "opencode-ha" {
   icon         = "/icon/openai.svg"
   subdomain    = false
   share        = "owner"
-  # Startet im homeassistant-Verzeichnis, damit die dortige opencode.json greift
-  # (Coder unterstützt cwd nicht direkt – Workspace muss ins richtige Verzeichnis wechseln)
+}
+
+resource "coder_app" "opencode-ssh" {
+  agent_id     = coder_agent.main.id
+  slug         = "opencode-ssh"
+  display_name = "OpenCode: Server Management"
+  command      = "opencode"
+  icon         = "/icon/terminal.svg"
+  subdomain    = false
+  share        = "owner"
 }
