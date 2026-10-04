@@ -76,7 +76,9 @@ resource "docker_container" "workspace" {
   memory     = 2048
   shm_size   = 512
 
-  network_mode = "host"
+  networks_advanced {
+    name = "coder-infra"
+  }
 }
 
 # ── Coder Agent ─────────────────────────────────────────────────────────────
@@ -108,14 +110,17 @@ resource "coder_agent" "main" {
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
     apt-get install -y nodejs
 
-    # 3. Repo klonen oder aktualisieren
+    # 3. Repo als ZIP herunterladen (git clone hat Netzwerk-Probleme)
     REPO_DIR="/home/${data.coder_workspace_owner.me.name}/opencode-coder-env"
-    if [ -d "$REPO_DIR/.git" ]; then
-      cd "$REPO_DIR"
-      git fetch origin ${var.git_branch}
-      git reset --hard origin/${var.git_branch}
+    if [ ! -d "$REPO_DIR" ]; then
+      curl -L "https://github.com/DasCarstel/opencode-coder-env/archive/refs/heads/master.zip" -o /tmp/repo.zip
+      unzip -q /tmp/repo.zip -d /tmp/
+      mv /tmp/opencode-coder-env-master "$REPO_DIR"
+      rm /tmp/repo.zip
     else
-      git clone --branch ${var.git_branch} --single-branch "${var.git_repo_url}" "$REPO_DIR"
+      cd "$REPO_DIR"
+      git fetch origin master 2>/dev/null || true
+      git reset --hard origin/master 2>/dev/null || true
     fi
 
     # 4. Verzeichnisse anlegen
