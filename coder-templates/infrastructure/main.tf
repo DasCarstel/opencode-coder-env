@@ -54,7 +54,12 @@ data "coder_parameter" "openbao_approle_secret_id" {
 # ─── Docker Workspace Container ────────────────────────────────────────────
 
 resource "docker_image" "workspace" {
-  name = "buildpack-deps:22.04-curl"
+  name = "workspace:latest"
+  
+  build {
+    context    = "${path.module}/../../"
+    dockerfile = "coder-templates/infrastructure/Dockerfile"
+  }
 }
 
 resource "docker_container" "workspace" {
@@ -110,13 +115,10 @@ resource "coder_agent" "main" {
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
     apt-get install -y nodejs
 
-    # 3. Repo als ZIP herunterladen und mit python3 entpacken (unzip nicht installiert)
+    # 3. Repo aus Docker-Image kopieren (bereits eingebaut)
     REPO_DIR="/home/${data.coder_workspace_owner.me.name}/opencode-coder-env"
     if [ ! -d "$REPO_DIR" ]; then
-      curl -sL "https://github.com/DasCarstel/opencode-coder-env/archive/refs/heads/master.zip" -o /tmp/repo.zip
-      python3 -c "import zipfile; zipfile.ZipFile('/tmp/repo.zip').extractall('/tmp/')"
-      mv /tmp/opencode-coder-env-master "$REPO_DIR"
-      rm /tmp/repo.zip
+      cp -r /repo "$REPO_DIR"
     else
       cd "$REPO_DIR"
       git fetch origin master 2>/dev/null || true
