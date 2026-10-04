@@ -159,7 +159,6 @@ resource "coder_app" "opencode-ha" {
   display_name = "OpenCode: Home Assistant"
   command      = "opencode"
   icon         = "/icon/openai.svg"
-  subdomain    = false
   share        = "owner"
 }
 
@@ -169,6 +168,5 @@ resource "coder_app" "opencode-ssh" {
   display_name = "OpenCode: Server Management"
   command      = "opencode"
   icon         = "/icon/terminal.svg"
-  subdomain    = false
   share        = "owner"
 }
