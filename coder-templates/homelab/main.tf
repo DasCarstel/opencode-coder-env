@@ -49,11 +49,6 @@ data "coder_parameter" "openbao_approle_secret_id" {
   type         = "string"
   order        = 1
   mutable      = true
-
-  validation {
-    regex = "^.+$"
-    error = "OpenBao AppRole Secret-ID muss gesetzt sein."
-  }
 }
 
 # ─── Docker Workspace Container ────────────────────────────────────────────
