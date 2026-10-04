@@ -47,13 +47,12 @@ data "coder_parameter" "openbao_approle_secret_id" {
   display_name = "OpenBao AppRole Secret-ID"
   description  = "Secret-ID für die AppRole 'mcp-server' in OpenBao."
   type         = "string"
-  default      = ""
   order        = 1
   mutable      = true
 
   validation {
-    regex       = "^.+$"
-    error       = "OpenBao AppRole Secret-ID muss gesetzt sein."
+    regex = "^.+$"
+    error = "OpenBao AppRole Secret-ID muss gesetzt sein."
   }
 }
 
