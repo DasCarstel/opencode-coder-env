@@ -1,6 +1,7 @@
 # Coder Template: homelab (OpenCode-Infrastruktur)
 #
-# Dieses Template provisioniert einen Docker-Container als Workspace für OpenCode-Entwicklung.
+# Provisions einen Docker-Container als Workspace für OpenCode-Entwicklung.
+# Secrets werden zur Laufzeit aus OpenBao via AppRole-Auth bezogen.
 
 terraform {
   required_providers {
@@ -19,6 +20,7 @@ terraform {
 
 data "coder_workspace" "me" {}
 data "coder_workspace_owner" "me" {}
+data "coder_provisioner" "me" {}
 
 # ─── Template-Parameter ─────────────────────────────────────────────────────
 
@@ -32,6 +34,27 @@ variable "git_branch" {
   type        = string
   description = "Branch, der geklont werden soll"
   default     = "master"
+}
+
+variable "openbao_addr" {
+  type        = string
+  description = "OpenBao Adresse (wird vom Workspace aus erreicht)"
+  default     = "http://10.0.10.10:8200"
+}
+
+data "coder_parameter" "openbao_approle_secret_id" {
+  name        = "openbao_approle_secret_id"
+  display_name = "OpenBao AppRole Secret-ID"
+  description = "Secret-ID für die AppRole 'mcp-server' in OpenBao. Wird aus Coder Secrets injiziert."
+  type        = "string"
+  sensitive   = true
+  default     = ""
+  order       = 1
+
+  validation {
+    regex         = "^.+$"
+    regex_error   = "OpenBao AppRole Secret-ID muss gesetzt sein."
+  }
 }
 
 # ─── Docker Workspace Container ────────────────────────────────────────────
@@ -48,7 +71,9 @@ resource "docker_container" "workspace" {
   restart = "unless-stopped"
 
   env = [
-    "CODER_AGENT_TOKEN=${coder_agent.main.token}"
+    "CODER_AGENT_TOKEN=${coder_agent.main.token}",
+    "OPENBAO_APPROLE_SECRET_ID=${data.coder_parameter.openbao_approle_secret_id.value}",
+    "OPENBAO_ADDR=${var.openbao_addr}",
   ]
 
   command = ["sh", "-c", coder_agent.main.init_script]
@@ -62,11 +87,11 @@ resource "docker_container" "workspace" {
   }
 }
 
-# ─── Coder Agent ─────────────────────────────────────────────────────────────
+# ── Coder Agent ─────────────────────────────────────────────────────────────
 
 resource "coder_agent" "main" {
   os   = "linux"
-  arch = "amd64"
+  arch = data.coder_provisioner.me.arch
 
   dir = "/home/${data.coder_workspace_owner.me.name}"
 
@@ -142,12 +167,36 @@ resource "coder_agent" "main" {
     chmod 700 ~/.config/ssh-mcp
     chmod 600 ~/.config/ssh-mcp/config.toml
 
-    # 10. Alias für Update des Config-Repos
+    # 10. startup.sh ausführbar machen und Secrets aus OpenBao holen
+    chmod +x "$REPO_DIR/coder-templates/homelab/startup.sh"
+    bash "$REPO_DIR/coder-templates/homelab/startup.sh"
+
+    # 11. Wrapper-Scripts für OpenCode-Projekte erstellen
+    HA_DIR="$REPO_DIR/workspaces/homelab/homeassistant"
+    SSH_DIR="$REPO_DIR/workspaces/homelab/server-management"
+
+    cat > /usr/local/bin/opencode-ha << WRAPPER
+    #!/bin/bash
+    [ -f /etc/opencode.env ] && source /etc/opencode.env
+    cd "${HA_DIR}" && exec opencode "\$@"
+    WRAPPER
+    chmod +x /usr/local/bin/opencode-ha
+
+    cat > /usr/local/bin/opencode-ssh << WRAPPER
+    #!/bin/bash
+    [ -f /etc/opencode.env ] && source /etc/opencode.env
+    cd "${SSH_DIR}" && exec opencode "\$@"
+    WRAPPER
+    chmod +x /usr/local/bin/opencode-ssh
+
+    # 12. Alias für Update des Config-Repos
     echo 'alias update-opencode-config="cd ~/opencode-coder-env && git pull --ff-only"' >> ~/.bashrc
 
+    echo ""
     echo "=== homelab Workspace bereit ==="
-    echo "  HA-Projekt:     cd ~/opencode-coder-env/workspaces/homelab/homeassistant && opencode"
-    echo "  SSH-Projekt:    cd ~/opencode-coder-env/workspaces/homelab/server-management && opencode"
+    echo "  HA-Projekt:     opencode-ha"
+    echo "  SSH-Projekt:    opencode-ssh"
+    echo "  Config-Update:  update-opencode-config"
   EOT
 }
 
@@ -157,7 +206,7 @@ resource "coder_app" "opencode-ha" {
   agent_id     = coder_agent.main.id
   slug         = "opencode-ha"
   display_name = "OpenCode: Home Assistant"
-  command      = "opencode"
+  command      = "opencode-ha"
   icon         = "/icon/openai.svg"
   share        = "owner"
 }
@@ -166,7 +215,7 @@ resource "coder_app" "opencode-ssh" {
   agent_id     = coder_agent.main.id
   slug         = "opencode-ssh"
   display_name = "OpenCode: Server Management"
-  command      = "opencode"
+  command      = "opencode-ssh"
   icon         = "/icon/terminal.svg"
   share        = "owner"
 }

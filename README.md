@@ -14,10 +14,11 @@ opencode-coder-env/
 │       │   └── AGENTS.md
 │       └── server-management/           # SSH-MCP Projekt
 │           ├── opencode.json
-│           └── AGENTS.md
+│           ── AGENTS.md
 ├── coder-templates/
 │   └── homelab/                         # Coder-Template
-│       └── main.tf
+│       ├── main.tf
+│       └── startup.sh
 └── skills/
     └── homelab/                         # Infrastruktur-Skills
         ├── authentik/
@@ -30,34 +31,51 @@ opencode-coder-env/
 
 - **Keine Secrets in Git**: Keine Tokens, private SSH-Keys, Unseal-Shares oder `.env`-Dateien
 - **Kein eigener MCP-Code**: Nur deklarative Konfiguration, keine `node_modules` oder Build-Schritte
-- **Per-Projekt MCP-Trennung**: Jeder Herdr-Workspace hat nur seine benötigten MCPs
-- **Minijob ausgeschlossen**: Dieser Branch enthält nur Infrastruktur-Konfiguration
+- **Per-Projekt MCP-Trennung**: Jeder Herdr-Workspace hat nur die benötigten MCPs
+- **OpenBao als Secret-Quelle**: Alle API-Keys werden zur Laufzeit aus OpenBao bezogen
 
-## Secrets-Verwaltung
+## Secrets-Architektur
 
-Secrets werden **nicht** im Repo gespeichert. Stattdessen:
+```
+Coder Secret (OPENBAO_APPROLE_SECRET_ID)
+  ↓ (wird in den Workspace injiziert)
+startup.sh → AppRole-Auth bei OpenBao
+  ↓ (kurzlebiger Token, 1h TTL)
+OpenBao KV:
+  - secret/data/mcp/homeassistant → HA_LLA_TOKEN
+  - secret/data/mcp/authentik     → AUTHENTIK_API_KEY
+  - secret/data/mcp/grafana       → GRAFANA_API_KEY
+  - secret/data/mcp/opencloud     → OPENCLOUD_API_KEY
+  ↓ (geschrieben nach /etc/opencode.env)
+OpenCode MCPs nutzen die Umgebungsvariablen
+```
 
-| Secret | Ort |
-|--------|-----|
-| HA API-Key | Coder Secret `HA_LLA_TOKEN` (wird als Umgebungsvariable in den Workspace injiziert) |
-| OpenBao Root-Token | `/opt/docker-compose/openbao/bootstrap.env` auf Docker Host (nicht im Git) |
-
-OpenBao wird **manuell über die Authentik-OIDC-UI** administriert (`https://openbao.mueller-nas.de`). Keine automatisierten Rotationen über CLI.
+**Keine Secrets in:**
+-  Git Repository
+- ❌ Lokale Dateien (außer bootstrap.env auf Docker Host)
+-  Shell-History
+- ❌ Logs
 
 ## Setup in Coder Workspace
 
 ### 1. Coder Secret setzen
 In der Coder-UI → Templates → `homelab` → Settings → Secrets:
-- `HA_LLA_TOKEN` = Home Assistant Long-Lived Access Token
+- `openbao_approle_secret_id` = AppRole Secret-ID aus OpenBao
 
 ### 2. Template veröffentlichen
 ```bash
-# Von einem Rechner mit Coder CLI:
-coder templates push homelab --directory coder-templates/homelab --yes
+coder login --url https://coder.mueller-nas.de --token <dein-token>
+coder templates push homelab --directory coder-templates/homelab --yes --org=coder
 ```
 
 ### 3. Workspace starten
-Der Workspace cloned automatisch dieses Repo beim Start.
+Der Workspace cloned automatisch dieses Repo und holt die Secrets aus OpenBao.
+
+### 4. OpenCode starten
+```bash
+opencode-ha    # Home Assistant Projekt
+opencode-ssh   # Server Management Projekt
+```
 
 ## Bestandsaufnahme (04.10.2026)
 
@@ -68,10 +86,3 @@ Der Workspace cloned automatisch dieses Repo beim Start.
 - ssh-mcp v2.17.0 installiert und konfiguriert (`~/.config/ssh-mcp/config.toml`)
 - OpenBao Policy erweitert (SSH-Signierung hinzugefügt)
 - Coder-Infrastruktur: Docker-Container auf 10.0.10.17
-
-## Offene Punkte
-
-- [ ] Coder CLI auf dem Coder-Host installieren
-- [ ] Workspace-Provisionierung klären (Docker? Proxmox?)
-- [ ] HA-Token als Coder Secret eintragen
-- [ ] Template veröffentlichen und testen
