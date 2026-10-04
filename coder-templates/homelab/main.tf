@@ -8,6 +8,10 @@ terraform {
       source  = "coder/coder"
       version = ">= 1.0"
     }
+    docker = {
+      source  = "kreuzwerker/docker"
+      version = "~> 3.0"
+    }
   }
 }
 
@@ -30,17 +34,32 @@ variable "git_branch" {
   default     = "master"
 }
 
-# ── Docker Workspace Container (offizielles Coder-Modul) ────────────────────
+# ─── Docker Workspace Container ────────────────────────────────────────────
 
-module "docker-container" {
-  source          = "registry.coder.com/docker-container/coder"
-  agent_id        = coder_agent.main.id
-  container_name  = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}"
-  cpu             = 2
-  memory          = 2048
-  disk            = 20
-  image           = "ubuntu:22.04"
-  run_command     = "sh -c '${coder_agent.main.init_script}'"
+resource "docker_image" "workspace" {
+  name = "ubuntu:22.04"
+}
+
+resource "docker_container" "workspace" {
+  count = data.coder_workspace.me.start_count
+
+  image   = docker_image.workspace.image_id
+  name    = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}"
+  restart = "unless-stopped"
+
+  env = [
+    "CODER_AGENT_TOKEN=${coder_agent.main.token}"
+  ]
+
+  command = ["sh", "-c", coder_agent.main.init_script]
+
+  cpu_shares = 2048
+  memory     = 2048
+  shm_size   = 512
+
+  networks_advanced {
+    name = "coder"
+  }
 }
 
 # ─── Coder Agent ─────────────────────────────────────────────────────────────
