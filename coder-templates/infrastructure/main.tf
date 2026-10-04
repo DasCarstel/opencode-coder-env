@@ -39,7 +39,7 @@ variable "git_branch" {
 variable "openbao_addr" {
   type        = string
   description = "OpenBao Adresse (wird vom Workspace aus erreicht)"
-  default     = "http://10.0.10.10:8200"
+  default     = "https://openbao.mueller-nas.de"
 }
 
 data "coder_parameter" "openbao_approle_secret_id" {
