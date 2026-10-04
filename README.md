@@ -53,14 +53,15 @@ opencode
 
 - OpenBao: unsealed, SSH CA konfiguriert, AppRole `mcp-server` vorhanden
 - SSH-Rolle `host-access` existiert
-- Home Assistant `mcp_server` Integration muss aktiviert werden
-- ssh-mcp v2.17.0 auf npm verfügbar
+- ✅ HA `mcp_server` Integration aktiviert und getestet (v1.26.0)
+- ✅ HA Token aus OpenBao (`secret/data/mcp/homeassistant` api_key)
+- ✅ ssh-mcp v2.17.0 installiert und konfiguriert
+- ✅ OpenBao Policy erweitert (SSH-Signierung hinzugefügt)
 
 ## TODO
 
-- [ ] HA `mcp_server` Integration aktivieren
-- [ ] OpenBao Policy für SSH-Signierung erweitern
-- [ ] AppRole Secret-ID rotieren
-- [ ] ssh-mcp Canary-Test durchführen
-- [ ] Coder-Template erstellen
-- [ ] Repo auf GitHub pushen
+- [ ] HA Umgebungsvariable `HA_LLA_TOKEN` setzen (Coder Secret oder lokal)
+- [ ] AppRole Secret-ID in Coder Secrets eintragen (`OPENBAO_APPROLE_SECRET_ID`)
+- [ ] ssh-mcp Canary-Test über OpenCode durchführen
+- [ ] Coder-Template testen
+- [ ] Repo auf GitHub pushen (Repo muss erstellt werden)
