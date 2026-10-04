@@ -43,17 +43,17 @@ variable "openbao_addr" {
 }
 
 data "coder_parameter" "openbao_approle_secret_id" {
-  name        = "openbao_approle_secret_id"
+  name         = "openbao_approle_secret_id"
   display_name = "OpenBao AppRole Secret-ID"
-  description = "Secret-ID für die AppRole 'mcp-server' in OpenBao. Wird aus Coder Secrets injiziert."
-  type        = "string"
-  sensitive   = true
-  default     = ""
-  order       = 1
+  description  = "Secret-ID für die AppRole 'mcp-server' in OpenBao."
+  type         = "string"
+  default      = ""
+  order        = 1
+  mutable      = true
 
   validation {
-    regex         = "^.+$"
-    regex_error   = "OpenBao AppRole Secret-ID muss gesetzt sein."
+    regex       = "^.+$"
+    error       = "OpenBao AppRole Secret-ID muss gesetzt sein."
   }
 }
 
@@ -172,21 +172,18 @@ resource "coder_agent" "main" {
     bash "$REPO_DIR/coder-templates/homelab/startup.sh"
 
     # 11. Wrapper-Scripts für OpenCode-Projekte erstellen
-    HA_DIR="$REPO_DIR/workspaces/homelab/homeassistant"
-    SSH_DIR="$REPO_DIR/workspaces/homelab/server-management"
-
-    cat > /usr/local/bin/opencode-ha << WRAPPER
-    #!/bin/bash
-    [ -f /etc/opencode.env ] && source /etc/opencode.env
-    cd "${HA_DIR}" && exec opencode "\$@"
-    WRAPPER
+    cat > /usr/local/bin/opencode-ha << 'WRAPPER'
+#!/bin/bash
+[ -f /etc/opencode.env ] && source /etc/opencode.env
+cd "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env/workspaces/homelab/homeassistant" && exec opencode "$@"
+WRAPPER
     chmod +x /usr/local/bin/opencode-ha
 
-    cat > /usr/local/bin/opencode-ssh << WRAPPER
-    #!/bin/bash
-    [ -f /etc/opencode.env ] && source /etc/opencode.env
-    cd "${SSH_DIR}" && exec opencode "\$@"
-    WRAPPER
+    cat > /usr/local/bin/opencode-ssh << 'WRAPPER'
+#!/bin/bash
+[ -f /etc/opencode.env ] && source /etc/opencode.env
+cd "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env/workspaces/homelab/server-management" && exec opencode "$@"
+WRAPPER
     chmod +x /usr/local/bin/opencode-ssh
 
     # 12. Alias für Update des Config-Repos
