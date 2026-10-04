@@ -54,12 +54,7 @@ data "coder_parameter" "openbao_approle_secret_id" {
 # ─── Docker Workspace Container ────────────────────────────────────────────
 
 resource "docker_image" "workspace" {
-  name = "workspace:latest"
-  
-  build {
-    context    = "${path.module}"
-    dockerfile = "Dockerfile"
-  }
+  name = "buildpack-deps:22.04-curl"
 }
 
 resource "docker_container" "workspace" {
