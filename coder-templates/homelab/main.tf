@@ -32,22 +32,15 @@ mkdir -p ~/.cache/opencode/opencode-model-router
 # 3. tiers.json symlinken
 ln -sf ~/opencode-coder-env/tiers.json ~/.cache/opencode/opencode-model-router/tiers.json
 
-# 4. Skills symlinken (optional, wenn global gewünscht)
-# for skill in ~/opencode-coder-env/skills/homelab/*/; do
-#   skill_name=$(basename $skill)
-#   ln -sf ~/opencode-coder-env/skills/homelab/$skill_name/SKILL.md ~/.config/opencode/skills/$skill_name/SKILL.md
-# done
+# 4. Startup-Script ausführbar machen
+chmod +x ~/opencode-coder-env/coder-templates/homelab/startup.sh
 
-# 5. Herdr Integration installieren
-if command -v herdr &>/dev/null; then
-  herdr integration install opencode 2>/dev/null || echo "WARN: Herdr Integration fehlgeschlagen"
-fi
-
-# 6. Alias für Updates
-echo 'alias update-config="cd ~/opencode-coder-env && git pull"' >> ~/.bashrc
+# 5. Alias für manuellen Start mit OpenBao-Auth
+echo 'alias open-ha="~/opencode-coder-env/coder-templates/homelab/startup.sh"' >> ~/.bashrc
 
 echo "=== homelab Workspace gestartet ==="
-echo "OpenCode aus ~/opencode-coder-env/workspaces/homelab/homeassistant oder server-management starten"
+echo "OpenCode mit HA-Integration: open-ha"
+echo "Oder manuell: ~/opencode-coder-env/coder-templates/homelab/startup.sh"
 EOF
 }
 
