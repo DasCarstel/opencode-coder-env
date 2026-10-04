@@ -54,7 +54,12 @@ data "coder_parameter" "openbao_approle_secret_id" {
 # ─── Docker Workspace Container ────────────────────────────────────────────
 
 resource "docker_image" "workspace" {
-  name = "ubuntu:22.04"
+  name = "workspace:latest"
+  
+  build {
+    context    = "${path.module}"
+    dockerfile = "Dockerfile"
+  }
 }
 
 resource "docker_container" "workspace" {
