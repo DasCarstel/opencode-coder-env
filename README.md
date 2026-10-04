@@ -8,7 +8,7 @@ Konfigurations-Repository für OpenCode in Coder Workspaces.
 opencode-coder-env/
 ├── tiers.json                           # Model-Router Konfiguration
 ├── workspaces/
-│   └── homelab/
+│   └── infrastructure/
 │       ├── homeassistant/               # Home Assistant MCP-Projekt
 │       │   ├── opencode.json
 │       │   └── AGENTS.md
@@ -16,11 +16,11 @@ opencode-coder-env/
 │           ├── opencode.json
 │           ── AGENTS.md
 ├── coder-templates/
-│   └── homelab/                         # Coder-Template
+│   └── infrastructure/                         # Coder-Template
 │       ├── main.tf
 │       └── startup.sh
 └── skills/
-    └── homelab/                         # Infrastruktur-Skills
+    └── infrastructure/                         # Infrastruktur-Skills
         ├── authentik/
         ├── docker-host/
         ├── home-assistant/
@@ -59,13 +59,13 @@ OpenCode MCPs nutzen die Umgebungsvariablen
 ## Setup in Coder Workspace
 
 ### 1. Coder Secret setzen
-In der Coder-UI → Templates → `homelab` → Settings → Secrets:
+In der Coder-UI → Templates → `infrastructure` → Settings → Secrets:
 - `openbao_approle_secret_id` = AppRole Secret-ID aus OpenBao
 
 ### 2. Template veröffentlichen
 ```bash
 coder login --url https://coder.mueller-nas.de --token <dein-token>
-coder templates push homelab --directory coder-templates/homelab --yes --org=coder
+coder templates push infrastructure --directory coder-templates/infrastructure --yes --org=coder
 ```
 
 ### 3. Workspace starten

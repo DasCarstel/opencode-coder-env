@@ -1,4 +1,4 @@
-# Coder Template: homelab (OpenCode-Infrastruktur)
+# Coder Template: infrastructure (OpenCode-Infrastruktur)
 #
 # Provisions einen Docker-Container als Workspace für OpenCode-Entwicklung.
 # Secrets werden zur Laufzeit aus OpenBao via AppRole-Auth bezogen.
@@ -93,7 +93,7 @@ resource "coder_agent" "main" {
     #!/bin/bash
     set -euo pipefail
 
-    echo "=== homelab Workspace: Initialisierung ==="
+    echo "=== infrastructure Workspace: Initialisierung ==="
 
     # 1. Grundlegende Tools installieren
     export DEBIAN_FRONTEND=noninteractive
@@ -129,7 +129,7 @@ resource "coder_agent" "main" {
     ln -sf "$REPO_DIR/tiers.json" ~/.cache/opencode/opencode-model-router/tiers.json
 
     # 6. Skills verlinken
-    for skill_dir in "$REPO_DIR/skills/homelab"/*/; do
+    for skill_dir in "$REPO_DIR/skills/infrastructure"/*/; do
       [ -d "$skill_dir" ] || continue
       skill_name=$(basename "$skill_dir")
       mkdir -p ~/.config/opencode/skills/"$skill_name"
@@ -162,21 +162,21 @@ resource "coder_agent" "main" {
     chmod 600 ~/.config/ssh-mcp/config.toml
 
     # 10. startup.sh ausführbar machen und Secrets aus OpenBao holen
-    chmod +x "$REPO_DIR/coder-templates/homelab/startup.sh"
-    bash "$REPO_DIR/coder-templates/homelab/startup.sh"
+    chmod +x "$REPO_DIR/coder-templates/infrastructure/startup.sh"
+    bash "$REPO_DIR/coder-templates/infrastructure/startup.sh"
 
     # 11. Wrapper-Scripts für OpenCode-Projekte erstellen
     cat > /usr/local/bin/opencode-ha << 'WRAPPER'
 #!/bin/bash
 [ -f /etc/opencode.env ] && source /etc/opencode.env
-cd "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env/workspaces/homelab/homeassistant" && exec opencode "$@"
+cd "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env/workspaces/infrastructure/homeassistant" && exec opencode "$@"
 WRAPPER
     chmod +x /usr/local/bin/opencode-ha
 
     cat > /usr/local/bin/opencode-ssh << 'WRAPPER'
 #!/bin/bash
 [ -f /etc/opencode.env ] && source /etc/opencode.env
-cd "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env/workspaces/homelab/server-management" && exec opencode "$@"
+cd "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env/workspaces/infrastructure/server-management" && exec opencode "$@"
 WRAPPER
     chmod +x /usr/local/bin/opencode-ssh
 
@@ -184,7 +184,7 @@ WRAPPER
     echo 'alias update-opencode-config="cd ~/opencode-coder-env && git pull --ff-only"' >> ~/.bashrc
 
     echo ""
-    echo "=== homelab Workspace bereit ==="
+    echo "=== infrastructure Workspace bereit ==="
     echo "  HA-Projekt:     opencode-ha"
     echo "  SSH-Projekt:    opencode-ssh"
     echo "  Config-Update:  update-opencode-config"

@@ -27,7 +27,7 @@ chmod 600 /etc/opencode.env
 
 if [ -z "${OPENBAO_APPROLE_SECRET_ID:-}" ]; then
   echo "ERROR: OPENBAO_APPROLE_SECRET_ID ist nicht gesetzt."
-  echo "  Bitte in Coder → Templates → homelab → Secrets eintragen."
+  echo "  Bitte in Coder → Templates → infrastructure → Secrets eintragen."
   exit 1
 fi
 
