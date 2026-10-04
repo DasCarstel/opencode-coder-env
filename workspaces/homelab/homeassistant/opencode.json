@@ -4,7 +4,10 @@
     "homeassistant": {
       "type": "remote",
       "url": "https://intern-homeassistant.mueller-nas.de/api/mcp",
-      "oauth": true,
+      "headers": {
+        "Authorization": "Bearer {env:HA_LLA_TOKEN}",
+        "Accept": "application/json"
+      },
       "enabled": true,
       "timeout": 30000
     }
