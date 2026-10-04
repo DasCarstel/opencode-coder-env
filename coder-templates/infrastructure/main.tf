@@ -142,8 +142,8 @@ resource "coder_agent" "main" {
       ln -sf "$skill_dir/SKILL.md" ~/.config/opencode/skills/"$skill_name"/SKILL.md
     done
 
-    # 7. OpenCode installieren
-    curl -L https://opencode.ai/install.sh | bash
+    # 7. OpenCode installieren (via npm, da Node.js bereits installiert)
+    npm install -g opencode-ai@latest
 
     # 8. ssh-mcp installieren
     npm install -g ssh-mcp@2.17.0
