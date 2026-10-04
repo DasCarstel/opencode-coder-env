@@ -77,7 +77,7 @@ resource "docker_container" "workspace" {
   shm_size   = 512
 
   networks_advanced {
-    name = "coder"
+    name = "coder-infra"
   }
 }
 
