@@ -34,15 +34,20 @@ opencode-coder-env/
 
 ## Setup in Coder Workspace
 
-### 1. Coder Secrets eintragen
-In der Coder-Template-Konfiguration folgende Secrets setzen:
-- `OPENBAO_APPROLE_SECRET_ID`: Neue Secret-ID (lokal in `/tmp/new-approle-secret-id.txt` auf WSL)
+### 1. AppRole Secret-ID rotieren (manuell über OpenBao UI)
 
-⚠️ **WICHTIG:** Die Secret-ID muss nach dem Eintragen in Coder gelöscht werden!
-```bash
-# Nach dem Eintragen in Coder:
-rm /tmp/new-approle-secret-id.txt
-```
+**Problem:** Die Secret-ID-Rotation über CLI schlägt mit 403 fehl (vermutlich Berechtigungsproblem mit dem Token in `bootstrap.env`).
+
+**Lösung:** Secret-ID manuell über die OpenBao UI rotieren:
+
+1. Öffne `https://openbao.mueller-nas.de` im Browser
+2. Logge dich ein mit dem Root-Token aus `/opt/docker-compose/openbao/bootstrap.env`
+3. Gehe zu **Access** → **approle** → **mcp-server**
+4. Klicke auf **Create secret ID** (oder lösche die alte und erstelle eine neue)
+5. Kopiere die neue Secret-ID
+6. Trage sie in Coder Secrets ein als `OPENBAO_APPROLE_SECRET_ID`
+
+⚠️ **WICHTIG:** Die alte Secret-ID (`03a91ad8-23d7-a0e9-6138-aaeb8fdab91c`) wurde im Chat offengelegt und sollte widerrufen werden!
 
 ### 2. Workspace starten
 Das Startup-Script läuft automatisch und:
@@ -95,10 +100,18 @@ OpenCode → HA MCP-Server
 - ✅ ssh-mcp v2.17.0 installiert und konfiguriert
 - ✅ OpenBao Policy erweitert (SSH-Signierung hinzugefügt)
 
-## TODO
+## Offene Probleme
 
-- [ ] HA Umgebungsvariable `HA_LLA_TOKEN` setzen (Coder Secret oder lokal)
-- [ ] AppRole Secret-ID in Coder Secrets eintragen (`OPENBAO_APPROLE_SECRET_ID`)
-- [ ] ssh-mcp Canary-Test über OpenCode durchführen
-- [ ] Coder-Template testen
-- [ ] Repo auf GitHub pushen (Repo muss erstellt werden)
+### AppRole Secret-ID Rotation
+Die Secret-ID-Rotation über CLI schlägt mit 403 permission denied fehl, obwohl der Root-Token verwendet wird. Mögliche Ursachen:
+- Token in `bootstrap.env` ist nicht der echte Root-Token (nur Token mit "root" Policy)
+- Root Policy wurde modifiziert und beschränkt AppRole-Operationen
+- OpenBao-Konfiguration verhindert Secret-ID-Operationen
+
+**Workaround:** Secret-ID manuell über OpenBao UI rotieren (siehe Setup-Anleitung oben).
+
+### HA MCP-Server 401
+Der HA MCP-Server gab initial 401 zurück. Lösung:
+- `Accept: application/json` Header hinzufügen
+- Token aus OpenBao (`secret/data/mcp/homeassistant` → `api_key`) verwenden
+- Erfolgreich getestet mit HA v1.26.0
