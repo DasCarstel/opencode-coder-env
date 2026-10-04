@@ -7,7 +7,7 @@ Konfigurations-Repository für OpenCode in Coder Workspaces.
 ```
 opencode-coder-env/
 ├── tiers.json                           # Model-Router Konfiguration
-── workspaces/
+├── workspaces/
 │   └── homelab/
 │       ├── homeassistant/               # Home Assistant MCP-Projekt
 │       │   ├── opencode.json
@@ -16,7 +16,8 @@ opencode-coder-env/
 │           ├── opencode.json
 │           └── AGENTS.md
 ├── coder-templates/
-│   └── homelab/                         # Coder-Template (TODO)
+│   └── homelab/                         # Coder-Template
+│       └── main.tf
 └── skills/
     └── homelab/                         # Infrastruktur-Skills
         ├── authentik/
@@ -32,86 +33,45 @@ opencode-coder-env/
 - **Per-Projekt MCP-Trennung**: Jeder Herdr-Workspace hat nur seine benötigten MCPs
 - **Minijob ausgeschlossen**: Dieser Branch enthält nur Infrastruktur-Konfiguration
 
+## Secrets-Verwaltung
+
+Secrets werden **nicht** im Repo gespeichert. Stattdessen:
+
+| Secret | Ort |
+|--------|-----|
+| HA API-Key | Coder Secret `HA_LLA_TOKEN` (wird als Umgebungsvariable in den Workspace injiziert) |
+| OpenBao Root-Token | `/opt/docker-compose/openbao/bootstrap.env` auf Docker Host (nicht im Git) |
+
+OpenBao wird **manuell über die Authentik-OIDC-UI** administriert (`https://openbao.mueller-nas.de`). Keine automatisierten Rotationen über CLI.
+
 ## Setup in Coder Workspace
 
-### 1. AppRole Secret-ID rotieren (manuell über OpenBao UI)
+### 1. Coder Secret setzen
+In der Coder-UI → Templates → `homelab` → Settings → Secrets:
+- `HA_LLA_TOKEN` = Home Assistant Long-Lived Access Token
 
-**Problem:** Die Secret-ID-Rotation über CLI schlägt mit 403 fehl (vermutlich Berechtigungsproblem mit dem Token in `bootstrap.env`).
-
-**Lösung:** Secret-ID manuell über die OpenBao UI rotieren:
-
-1. Öffne `https://openbao.mueller-nas.de` im Browser
-2. Logge dich ein mit dem Root-Token aus `/opt/docker-compose/openbao/bootstrap.env`
-3. Gehe zu **Access** → **approle** → **mcp-server**
-4. Klicke auf **Create secret ID** (oder lösche die alte und erstelle eine neue)
-5. Kopiere die neue Secret-ID
-6. Trage sie in Coder Secrets ein als `OPENBAO_APPROLE_SECRET_ID`
-
-⚠️ **WICHTIG:** Die alte Secret-ID (`03a91ad8-23d7-a0e9-6138-aaeb8fdab91c`) wurde im Chat offengelegt und sollte widerrufen werden!
-
-### 2. Workspace starten
-Das Startup-Script läuft automatisch und:
-1. Authentisiert sich bei OpenBao mit AppRole
-2. Holt einen kurzlebigen Token
-3. Liest den HA API Key aus OpenBao
-4. Setzt `HA_LLA_TOKEN` als Umgebungsvariable (nur im RAM)
-5. Startet OpenCode mit der HA-Integration
-
-### 3. Manueller Start
+### 2. Template veröffentlichen
 ```bash
-# Alias verwenden
-open-ha
-
-# Oder direkt
-~/opencode-coder-env/coder-templates/homelab/startup.sh
+# Von einem Rechner mit Coder CLI:
+coder templates push homelab --directory coder-templates/homelab --yes
 ```
 
-## Sicherheitsarchitektur
-
-```
-Coder Workspace
-  ↓ (OPENBAO_APPROLE_SECRET_ID aus Coder Secrets)
-OpenBao AppRole-Auth
-  ↓ (kurzlebiger Token, 1h TTL)
-OpenBao KV: secret/data/mcp/homeassistant
-  ↓ (api_key gelesen)
-HA_LLA_TOKEN Umgebungsvariable (nur im RAM)
-  ↓
-OpenCode → HA MCP-Server
-```
-
-**Keine Secrets in:**
--  Git Repository
-- ❌ Lokale Dateien (außer bootstrap.env auf Docker Host)
-- ❌ Shell-History
-- ❌ Logs
-
-**Nur in:**
-- ✅ Coder Secrets (OPENBAO_APPROLE_SECRET_ID)
-- ✅ RAM während der Session
-- ✅ Docker Host: bootstrap.env (Root-Token)
+### 3. Workspace starten
+Der Workspace cloned automatisch dieses Repo beim Start.
 
 ## Bestandsaufnahme (04.10.2026)
 
 - OpenBao: unsealed, SSH CA konfiguriert, AppRole `mcp-server` vorhanden
 - SSH-Rolle `host-access` existiert
-- ✅ HA `mcp_server` Integration aktiviert und getestet (v1.26.0)
-- ✅ HA Token aus OpenBao (`secret/data/mcp/homeassistant` api_key)
-- ✅ ssh-mcp v2.17.0 installiert und konfiguriert
-- ✅ OpenBao Policy erweitert (SSH-Signierung hinzugefügt)
+- HA `mcp_server` Integration aktiviert und getestet (v1.26.0)
+- HA Token aus OpenBao (`secret/data/mcp/homeassistant` api_key)
+- ssh-mcp v2.17.0 installiert und konfiguriert (`~/.config/ssh-mcp/config.toml`)
+- OpenBao Policy erweitert (SSH-Signierung hinzugefügt)
+- Coder-Infrastruktur: Docker-Container auf 10.0.10.17
 
-## Offene Probleme
+## Offene Punkte
 
-### AppRole Secret-ID Rotation
-Die Secret-ID-Rotation über CLI schlägt mit 403 permission denied fehl, obwohl der Root-Token verwendet wird. Mögliche Ursachen:
-- Token in `bootstrap.env` ist nicht der echte Root-Token (nur Token mit "root" Policy)
-- Root Policy wurde modifiziert und beschränkt AppRole-Operationen
-- OpenBao-Konfiguration verhindert Secret-ID-Operationen
-
-**Workaround:** Secret-ID manuell über OpenBao UI rotieren (siehe Setup-Anleitung oben).
-
-### HA MCP-Server 401
-Der HA MCP-Server gab initial 401 zurück. Lösung:
-- `Accept: application/json` Header hinzufügen
-- Token aus OpenBao (`secret/data/mcp/homeassistant` → `api_key`) verwenden
-- Erfolgreich getestet mit HA v1.26.0
+- [ ] Coder CLI auf dem Coder-Host installieren
+- [ ] Workspace-Provisionierung klären (Docker? Proxmox?)
+- [ ] HA-Token als Coder Secret eintragen
+- [ ] Template veröffentlichen und testen

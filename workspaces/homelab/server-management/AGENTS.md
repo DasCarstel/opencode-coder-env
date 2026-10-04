@@ -1,39 +1,29 @@
-# Server Management - OpenCode Projekt
+# Server Management – OpenCode-Projekt
 
 ## Kontext
-Dieses Projekt verwaltet SSH-Zugriff auf Infrastruktur-Hosts über den Community SSH-MCP mit OpenBao-signierten SSH-Zertifikaten.
+Verwaltung von Infrastruktur-Hosts (Docker Host, Proxmox, TrueNAS) über den Community SSH-MCP.
 
 ## MCP-Server
 - **ssh-mcp**: `tufantunc/ssh-mcp@2.17.0` (lokal, stdio)
-  - Konfiguration: `~/.config/ssh-mcp/config.toml`
-  - OpenBao SSH CA: `host-access` Rolle
-  - Kurzlebige Zertifikate (nicht permanente Keys)
+  - Konfiguration: `~/.config/ssh-mcp/config.toml` (nicht im Repo)
+  - Installiert auf dem Docker Host via `npm install -g ssh-mcp@2.17.0`
 
 ## Richtlinien
-- **NEVER** raw SSH via bash (`ssh Docker '...'`, etc.)
-- Nur ssh-mcp Tools verwenden
-- Nur feste, überprüfte Host-Profile
+- **NIEMALS raw SSH via bash** (`ssh Docker '...'`, `bash("ssh ...")`)
+- Ausschließlich ssh-mcp Tools verwenden
+- Nur feste, überprüfte Host-Profile in `~/.config/ssh-mcp/config.toml`
 - Gepinnte SSH-Host-Key-Fingerprints
-- Zertifikats-Principal: Nicht-Root-User (oder root mit sudoers)
 - Keine Secrets, Tokens oder private Keys im Repo
 
-## Host-Profile (TODO)
+## Host-Profile (Beispiel, muss angepasst werden)
 - Docker Host (10.0.10.10)
 - Proxmox (10.0.10.20)
 - TrueNAS (10.0.10.30)
-- Weitere nach Bedarf
 
-## TODO
-- [ ] ssh-mcp konfigurieren (`~/.config/ssh-mcp/config.toml`)
-- [ ] OpenBao Policy `mcp-server` erweitern um SSH-Signierung:
-  ```hcl
-  path "ssh/sign/host-access" {
-    capabilities = ["update"]
-  }
-  ```
-- [ ] AppRole `mcp-server` Secret-ID rotieren (alte Secret-ID wurde im Chat offengelegt)
-- [ ] Canary-Test: kurzer Befehl, SFTP-Test, Zertifikatserneuerung, Host-Key-Pins
-- [ ] Nicht-Root-SSH-User oder sudoers-Modell festlegen
+## OpenBao SSH-CA (optional, nicht zwingend)
+Eine CA ist in OpenBao konfiguriert (`host-access` Rolle). Die Nutzung
+kurzlebiger Zertifikate ist möglich, aber nicht zwingend – ein fester
+SSH-Key funktioniert ebenfalls.
 
 ## Referenzen
 - [OpenBao SSH User-Zertifikate](https://openbao.org/docs/secrets/ssh/signed-ssh-certificates)

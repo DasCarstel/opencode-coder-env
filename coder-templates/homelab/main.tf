@@ -1,57 +1,118 @@
-# Coder Template: homelab
-# OpenCode + Herdr Infrastruktur-Workspace
+# Coder Template: homelab (OpenCode-Infrastruktur)
+#
+# Dieses Template provisioniert einen Workspace für OpenCode-Entwicklung.
+# Infrastruktur-spezifische Teile (Docker/Proxmox) müssen an die eigene Umgebung angepasst werden.
 
-variable "git_url" {
-  default = "https://github.com/DasCarstel/opencode-coder-env.git"
+terraform {
+  required_providers {
+    coder = {
+      source = "coder/coder"
+    }
+    # TODO: Infra-Provider hinzufügen (z.B. docker, proxmox, kubernetes)
+    # docker = { source = "kreuzwerker/docker" }
+  }
 }
 
-resource "coder_workspace" "me" {
-  name = "homelab"
+# Workspace- und Owner-Daten von Coder
+data "coder_workspace" "me" {}
+data "coder_workspace_owner" "me" {}
+
+# ─── Template-Parameter ──────────────────────────────────────────────────────
+
+variable "git_repo_url" {
+  type        = string
+  description = "URL zum opencode-coder-env Repository"
+  default     = "https://github.com/DasCarstel/opencode-coder-env.git"
 }
+
+variable "git_branch" {
+  type        = string
+  description = "Branch, der geklont werden soll"
+  default     = "master"
+}
+
+# ─── Compute-Resource ────────────────────────────────────────────────────────
+# TODO: An die eigene Infrastruktur anpassen.
+#
+# Beispiel Docker:
+#   resource "docker_container" "workspace" {
+#     count = data.coder_workspace.me.start_count
+#     image = "ubuntu:22.04"
+#     name  = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}"
+#     env   = ["CODER_AGENT_TOKEN=${coder_agent.main.token}"]
+#     command = ["sh", "-c", coder_agent.main.init_script]
+#   }
+#
+# Beispiel Proxmox:
+#   resource "proxmox_vm_qemu" "workspace" { ... }
+#
+# Beispiel Kubernetes:
+#   resource "kubernetes_pod" "workspace" { ... }
+
+# ─── Coder Agent ─────────────────────────────────────────────────────────────
 
 resource "coder_agent" "main" {
   os   = "linux"
   arch = "amd64"
-  
-  startup_script = <<EOF
-#!/bin/bash
-set -euo pipefail
 
-# 1. Repo klonen/syncen
-if [ -d ~/opencode-coder-env ]; then
-  cd ~/opencode-coder-env
-  git pull --ff-only || echo "WARN: git pull fehlgeschlagen, manuell prüfen"
-else
-  git clone ${var.git_url} ~/opencode-coder-env
-fi
+  # Der init_script wird vom Coder-Provisioner in das Workspace-Image injiziert
+  dir = "/home/${data.coder_workspace_owner.me.name}"
 
-# 2. Verzeichnisse erstellen
-mkdir -p ~/.config/opencode
-mkdir -p ~/.cache/opencode/opencode-model-router
+  env = {
+    # HA_LLA_TOKEN wird als Coder Secret gesetzt und automatisch injiziert
+    # (kein hardcoded Wert im Template!)
+  }
 
-# 3. tiers.json symlinken
-ln -sf ~/opencode-coder-env/tiers.json ~/.cache/opencode/opencode-model-router/tiers.json
+  startup_script = <<-EOT
+    #!/bin/bash
+    set -euo pipefail
 
-# 4. Startup-Script ausführbar machen
-chmod +x ~/opencode-coder-env/coder-templates/homelab/startup.sh
+    echo "=== homelab Workspace: Repository wird synchronisiert ==="
 
-# 5. Alias für manuellen Start mit OpenBao-Auth
-echo 'alias open-ha="~/opencode-coder-env/coder-templates/homelab/startup.sh"' >> ~/.bashrc
+    # Repo klonen oder aktualisieren
+    REPO_DIR="/home/${data.coder_workspace_owner.me.name}/opencode-coder-env"
+    if [ -d "$REPO_DIR/.git" ]; then
+      cd "$REPO_DIR"
+      git fetch origin ${var.git_branch}
+      git reset --hard origin/${var.git_branch}
+    else
+      git clone --branch ${var.git_branch} --single-branch "${var.git_repo_url}" "$REPO_DIR"
+    fi
 
-echo "=== homelab Workspace gestartet ==="
-echo "OpenCode mit HA-Integration: open-ha"
-echo "Oder manuell: ~/opencode-coder-env/coder-templates/homelab/startup.sh"
-EOF
+    # Verzeichnisse anlegen
+    mkdir -p ~/.config/opencode
+    mkdir -p ~/.cache/opencode/opencode-model-router
+
+    # tiers.json für Model-Router verlinken
+    ln -sf "$REPO_DIR/tiers.json" ~/.cache/opencode/opencode-model-router/tiers.json
+
+    # Skills verlinken (jeder Skill einzeln, damit keine unerwünschten Skills kommen)
+    for skill_dir in "$REPO_DIR/skills/homelab"/*/; do
+      [ -d "$skill_dir" ] || continue
+      skill_name=$(basename "$skill_dir")
+      mkdir -p ~/.config/opencode/skills/"$skill_name"
+      ln -sf "$skill_dir/SKILL.md" ~/.config/opencode/skills/"$skill_name"/SKILL.md
+    done
+
+    # Alias für Update des Config-Repos
+    echo 'alias update-opencode-config="cd ~/opencode-coder-env && git pull --ff-only"' >> ~/.bashrc 2>/dev/null || true
+
+    echo "=== homelab Workspace bereit ==="
+    echo "  HA-Projekt:     cd ~/opencode-coder-env/workspaces/homelab/homeassistant && opencode"
+    echo "  SSH-Projekt:    cd ~/opencode-coder-env/workspaces/homelab/server-management && opencode"
+  EOT
 }
 
-resource "coder_app" "opencode" {
+# ─── Coder App (optionaler Shortcut in der UI) ───────────────────────────────
+
+resource "coder_app" "opencode-ha" {
   agent_id     = coder_agent.main.id
-  slug         = "opencode"
-  display_name = "OpenCode"
+  slug         = "opencode-ha"
+  display_name = "OpenCode: Home Assistant"
   command      = "opencode"
   icon         = "/icon/openai.svg"
   subdomain    = false
   share        = "owner"
+  # Startet im homeassistant-Verzeichnis, damit die dortige opencode.json greift
+  # (Coder unterstützt cwd nicht direkt – Workspace muss ins richtige Verzeichnis wechseln)
 }
-
-EOF

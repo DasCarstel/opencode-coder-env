@@ -1,17 +1,27 @@
-# Home Assistant - OpenCode Projekt
+# Home Assistant – OpenCode-Projekt
 
 ## Kontext
-Dieses Projekt verwaltet die Home Assistant Integration über den nativen MCP-Server.
+Verwaltung von Home Assistant über den nativen MCP-Server (`/api/mcp`, Streamable HTTP).
+
+## Authentisierung
+OpenCode lädt den HA-API-Key aus der Umgebungsvariable `HA_LLA_TOKEN`.
+Diese wird im Coder-Template als **Coder Secret** gesetzt und automatisch in den Workspace injiziert.
+
+**Kein Token im Repo, keine lokale Datei.**
 
 ## MCP-Server
-- **homeassistant**: Native HA MCP-Server unter `/api/mcp` (Streamable HTTP, OAuth)
+- **homeassistant**: Remote MCP-Server
+  - URL: `https://intern-homeassistant.mueller-nas.de/api/mcp`
+  - Auth: Bearer-Header via `{env:HA_LLA_TOKEN}`
+  - Requires header: `Accept: application/json`
 
 ## Richtlinien
 - Keine SSH-Befehle auf dem HA-Host
-- Nur HA-spezifische Operationen über den MCP-Server
-- Token wird aus OpenBao bezogen (nicht hardcoded)
+- Keine direkten API-Calls gegen HA außerhalb des MCP
+- Token niemals in Logs, Git oder Shell-Ausgaben ausgeben
 
-## TODO
-- [ ] HA `mcp_server` Integration in HA aktivieren (Settings → Integrations → "Model Context Protocol Server")
-- [ ] OpenBao-Token-Auflösung für HA-MCP konfigurieren (Secret-Gate prüfen)
-- [ ] OAuth-Flow testen oder dedizierten HA-Benutzer mit begrenzten Rechten erstellen
+## Hinweise
+- HA-Version bei Bestandsaufnahme: 1.26.0
+- Integration: "Model Context Protocol Server" (`mcp_server`)
+- Der MCP-Endpunkt liefert Tools, Prompts und Resources (Assist-API)
+- Assist-Exposition der Entitäten wird in HA unter "Sprachassistenten" konfiguriert
