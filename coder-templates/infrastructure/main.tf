@@ -117,6 +117,7 @@ resource "coder_agent" "main" {
 
     # 3. Repo aus Docker-Image kopieren (bereits eingebaut)
     REPO_DIR="/home/${data.coder_workspace_owner.me.name}/opencode-coder-env"
+    mkdir -p "/home/${data.coder_workspace_owner.me.name}"
     if [ ! -d "$REPO_DIR" ]; then
       cp -r /repo "$REPO_DIR"
     else
