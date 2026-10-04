@@ -34,20 +34,57 @@ opencode-coder-env/
 
 ## Setup in Coder Workspace
 
+### 1. Coder Secrets eintragen
+In der Coder-Template-Konfiguration folgende Secrets setzen:
+- `OPENBAO_APPROLE_SECRET_ID`: Neue Secret-ID (lokal in `/tmp/new-approle-secret-id.txt` auf WSL)
+
+⚠️ **WICHTIG:** Die Secret-ID muss nach dem Eintragen in Coder gelöscht werden!
 ```bash
-# Repo klonen
-git clone <repo-url> ~/opencode-coder-env
-
-# Symlinks setzen (Beispiel)
-ln -sf ~/opencode-coder-env/tiers.json ~/.cache/opencode/opencode-model-router/tiers.json
-
-# Herdr Integration installieren
-herdr integration install opencode
-
-# OpenCode aus Projekt-Verzeichnis starten
-cd ~/opencode-coder-env/workspaces/homelab/homeassistant
-opencode
+# Nach dem Eintragen in Coder:
+rm /tmp/new-approle-secret-id.txt
 ```
+
+### 2. Workspace starten
+Das Startup-Script läuft automatisch und:
+1. Authentisiert sich bei OpenBao mit AppRole
+2. Holt einen kurzlebigen Token
+3. Liest den HA API Key aus OpenBao
+4. Setzt `HA_LLA_TOKEN` als Umgebungsvariable (nur im RAM)
+5. Startet OpenCode mit der HA-Integration
+
+### 3. Manueller Start
+```bash
+# Alias verwenden
+open-ha
+
+# Oder direkt
+~/opencode-coder-env/coder-templates/homelab/startup.sh
+```
+
+## Sicherheitsarchitektur
+
+```
+Coder Workspace
+  ↓ (OPENBAO_APPROLE_SECRET_ID aus Coder Secrets)
+OpenBao AppRole-Auth
+  ↓ (kurzlebiger Token, 1h TTL)
+OpenBao KV: secret/data/mcp/homeassistant
+  ↓ (api_key gelesen)
+HA_LLA_TOKEN Umgebungsvariable (nur im RAM)
+  ↓
+OpenCode → HA MCP-Server
+```
+
+**Keine Secrets in:**
+-  Git Repository
+- ❌ Lokale Dateien (außer bootstrap.env auf Docker Host)
+- ❌ Shell-History
+- ❌ Logs
+
+**Nur in:**
+- ✅ Coder Secrets (OPENBAO_APPROLE_SECRET_ID)
+- ✅ RAM während der Session
+- ✅ Docker Host: bootstrap.env (Root-Token)
 
 ## Bestandsaufnahme (04.10.2026)
 
