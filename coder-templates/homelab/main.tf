@@ -33,7 +33,7 @@ variable "git_branch" {
 # ── Docker Workspace Container (offizielles Coder-Modul) ────────────────────
 
 module "docker-container" {
-  source          = "registry.coder.com/modules/docker-container/coder"
+  source          = "registry.coder.com/docker-container/coder"
   agent_id        = coder_agent.main.id
   container_name  = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}"
   cpu             = 2
