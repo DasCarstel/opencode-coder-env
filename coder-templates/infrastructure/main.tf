@@ -36,6 +36,12 @@ variable "git_branch" {
   default     = "master"
 }
 
+variable "openbao_role_id" {
+  type        = string
+  description = "OpenBao AppRole Role-ID (UUID, nicht der Rollenname)"
+  default     = "a18d13b0-9ccd-304b-da63-db3545546b1d"
+}
+
 variable "openbao_addr" {
   type        = string
   description = "OpenBao Adresse (wird vom Workspace aus erreicht)"
@@ -73,6 +79,7 @@ resource "docker_container" "workspace" {
     "CODER_AGENT_TOKEN=${coder_agent.main.token}",
     "OPENBAO_APPROLE_SECRET_ID=${data.coder_parameter.openbao_approle_secret_id.value}",
     "OPENBAO_ADDR=${var.openbao_addr}",
+    "OPENBAO_ROLE_ID=${var.openbao_role_id}",
   ]
 
   command = ["sh", "-c", coder_agent.main.init_script]
