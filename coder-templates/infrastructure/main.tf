@@ -150,35 +150,44 @@ resource "coder_agent" "main" {
     done
 
     # 7. OpenCode installieren (via npm, da Node.js bereits installiert)
-    npm install -g opencode-ai@latest
+    echo "=== Schritt 7: OpenCode installieren ==="
+    npm install -g opencode-ai@latest 2>&1 | tail -5
+    echo "✓ OpenCode installiert"
 
     # 8. ssh-mcp installieren
-    npm install -g ssh-mcp@2.17.0
+    echo "=== Schritt 8: ssh-mcp installieren ==="
+    npm install -g ssh-mcp@2.17.0 2>&1 | tail -5
+    echo "✓ ssh-mcp installiert"
 
     # 9. ssh-mcp Konfiguration erstellen
+    echo "=== Schritt 9: ssh-mcp Konfiguration ==="
     cat > ~/.config/ssh-mcp/config.toml << 'SSHCONFIG'
-    [defaults]
-    defaultProfile = "docker"
-    approvalMode = "ask-destructive"
+[defaults]
+defaultProfile = "docker"
+approvalMode = "ask-destructive"
 
-    [[profiles]]
-    name = "docker"
-    host = "10.0.10.10"
-    port = 22
-    user = "root"
-    auth = "key"
-    keyRef = "~/.ssh/id_ed25519_agent"
-    role = "admin"
-    approvalPolicy = "auto"
-    SSHCONFIG
+[[profiles]]
+name = "docker"
+host = "10.0.10.10"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "~/.ssh/id_ed25519_agent"
+role = "admin"
+approvalPolicy = "auto"
+SSHCONFIG
     chmod 700 ~/.config/ssh-mcp
     chmod 600 ~/.config/ssh-mcp/config.toml
+    echo "✓ ssh-mcp konfiguriert"
 
     # 10. startup.sh ausführbar machen und Secrets aus OpenBao holen
+    echo "=== Schritt 10: Secrets aus OpenBao laden ==="
     chmod +x "$REPO_DIR/coder-templates/infrastructure/startup.sh"
-    bash "$REPO_DIR/coder-templates/infrastructure/startup.sh"
+    bash "$REPO_DIR/coder-templates/infrastructure/startup.sh" 2>&1
+    echo "✓ Secrets geladen"
 
     # 11. Wrapper-Scripts für OpenCode-Projekte erstellen
+    echo "=== Schritt 11: Wrapper-Scripts erstellen ==="
     cat > /usr/local/bin/opencode-ha << 'WRAPPER'
 #!/bin/bash
 [ -f /etc/opencode.env ] && source /etc/opencode.env
@@ -192,6 +201,7 @@ WRAPPER
 cd "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env/workspaces/infrastructure/server-management" && exec opencode "$@"
 WRAPPER
     chmod +x /usr/local/bin/opencode-ssh
+    echo "✓ Wrapper-Scripts erstellt"
 
     # 12. Alias für Update des Config-Repos
     echo 'alias update-opencode-config="cd ~/opencode-coder-env && git pull --ff-only"' >> ~/.bashrc
