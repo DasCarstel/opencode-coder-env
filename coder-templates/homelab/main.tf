@@ -1,7 +1,6 @@
 # Coder Template: homelab (OpenCode-Infrastruktur)
 #
 # Dieses Template provisioniert einen Docker-Container als Workspace für OpenCode-Entwicklung.
-# Nutzt das offizielle Coder docker-container Modul.
 
 terraform {
   required_providers {
@@ -35,44 +34,40 @@ variable "git_branch" {
   default     = "master"
 }
 
-data "coder_provisioner" "me" {}
+# ── Docker Workspace Container ─────────────────────────────────────────────
 
-# ─── Docker Image ───────────────────────────────────────────────────────────
-
-data "docker_registry_image" "ubuntu" {
+resource "docker_image" "workspace" {
   name = "ubuntu:22.04"
 }
 
-resource "docker_image" "workspace" {
-  name = data.docker_registry_image.ubuntu.name
-}
-
-# ─── Docker Container (offizielles Coder-Modul) ────────────────────────────
-
-module "docker-container" {
-  source  = "registry.coder.com/modules/docker-container/coder"
-  version = "1.0.17"
-
-  agent_id      = coder_agent.main.id
-  container_name = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}"
-  cpu           = 2000
-  disk          = 20
-  image         = docker_image.workspace.image_id
-  memory        = 2048
-
-  docker_host = data.coder_provisioner.me.arch
-  env = {
-    # HA_LLA_TOKEN wird als Coder Secret gesetzt und automatisch injiziert
+resource "docker_container" "workspace" {
+  count = data.coder_workspace.me.start_count
+  
+  image = docker_image.workspace.image_id
+  name  = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}"
+  restart = "unless-stopped"
+  
+  env = [
+    "CODER_AGENT_TOKEN=${coder_agent.main.token}"
+  ]
+  
+  command = ["sh", "-c", coder_agent.main.init_script]
+  
+  # Container-Spezifikationen
+  cpu_shares   = 2048
+  memory       = 2048
+  shm_size     = 512
+  
+  networks_advanced {
+    name = "coder"
   }
-
-  run_command = "sh -c ${coder_agent.main.init_script}"
 }
 
 # ─── Coder Agent ─────────────────────────────────────────────────────────────
 
 resource "coder_agent" "main" {
   os   = "linux"
-  arch = data.coder_provisioner.me.arch
+  arch = "amd64"
 
   dir = "/home/${data.coder_workspace_owner.me.name}"
 
