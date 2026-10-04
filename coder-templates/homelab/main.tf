@@ -34,7 +34,6 @@ variable "git_branch" {
 
 module "docker-container" {
   source          = "registry.coder.com/modules/docker-container/coder"
-  version         = "1.0.0"
   agent_id        = coder_agent.main.id
   container_name  = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}"
   cpu             = 2
