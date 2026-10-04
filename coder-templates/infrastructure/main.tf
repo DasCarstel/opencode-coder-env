@@ -143,7 +143,7 @@ resource "coder_agent" "main" {
     done
 
     # 7. OpenCode installieren
-    curl -L https://opencode.ai/install.sh | sh
+    curl -L https://opencode.ai/install.sh | bash
 
     # 8. ssh-mcp installieren
     npm install -g ssh-mcp@2.17.0
