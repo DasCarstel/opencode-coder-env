@@ -107,11 +107,36 @@ Die API-Keys liegen in OpenBao unter `secret/data/mcp/opencode-go`
 Im Workspace umschalten:
 
 ```bash
-oc-go list           # verfügbare Keys + aktiver Key
-oc-go use default1   # auf default1 wechseln (Service wird neu gestartet)
+oc-go list              # verfügbare Keys + aktiver Key
+oc-go use default1      # auf default1 wechseln (Session, Service-Restart)
+oc-go default default1  # Standard-Key dauerhaft setzen (OpenBao + .bashrc)
 ```
 
-Der aktive Key wird aus OpenBao gelesen, nicht in Git gespeichert.
+Der Helper `oc-go` wird von `startup.sh` nach `/usr/local/bin/oc-go` installiert.
+Der Standard-Key wird in OpenBao gespeichert und überlebt Container-Neuerstellungen.
+
+### Host-Bootstrap (einmalig)
+
+Das Skript `scripts/bootstrap-hosts.sh` richtet die OpenBao-Rolle `host-access`
+ein und verteilt den CA-Key auf Docker, Proxmox und TrueNAS:
+
+```bash
+export OPENBAO_ROOT_TOKEN=<root-token>
+bash scripts/bootstrap-hosts.sh
+```
+
+### Persistentes Volume
+
+Das Docker-Volume `coder-<user>-infrastructure-data` persistiert den Workspace
+unter `~/opencode-coder-env`. Dateien überleben Container-Neuerstellungen.
+
+### MCP-Trennung
+
+- **Home Assistant Workspace**: HA-MCP (27 Tools) + SSH-MCP (14 Tools)
+- **Server Management Workspace**: nur SSH-MCP (14 Tools)
+
+Die Trennung erfolgt über `.config/opencode/opencode.json` im jeweiligen
+Workspace-Verzeichnis.
 
 ## Bestandsaufnahme (04.10.2026)
 

@@ -134,22 +134,31 @@ SSHCFG
 chmod 600 /root/.ssh/config
 echo "  ✓ SSH-Config erstellt"
 
-# ── Herdr aus dem Image installieren ────────────────────────────────────────
+# ── Herdr installieren (Download mit Fallback) ─────────────────────────────
 echo ""
 echo "=== Herdr ==="
 mkdir -p /root/.local/bin
-if [ -f /opt/opencode-bin/herdr ]; then
+HERDR_VERSION="0.9.3"
+HERDR_URL="https://herdr.dev/api/releases/v${HERDR_VERSION}/linux-amd64"
+
+if [ -x "$HERDR_BIN" ]; then
+  echo "  ✓ Herdr vorhanden ($($HERDR_BIN --version 2>/dev/null))"
+elif [ -f /opt/opencode-bin/herdr ]; then
   cp /opt/opencode-bin/herdr "$HERDR_BIN"
   chmod +x "$HERDR_BIN"
-  echo "  ✓ Herdr installiert ($($HERDR_BIN --version 2>/dev/null))"
+  echo "  ✓ Herdr aus /opt/opencode-bin installiert ($($HERDR_BIN --version 2>/dev/null))"
 elif [ -f /usr/local/bin/herdr ]; then
   cp /usr/local/bin/herdr "$HERDR_BIN"
   chmod +x "$HERDR_BIN"
-  echo "  ✓ Herdr installiert ($($HERDR_BIN --version 2>/dev/null))"
-elif [ -f "$HERDR_BIN" ]; then
-  echo "  ✓ Herdr vorhanden"
+  echo "  ✓ Herdr aus /usr/local/bin installiert ($($HERDR_BIN --version 2>/dev/null))"
 else
-  echo "  ⚠ Herdr-Binary nicht gefunden"
+  echo "  → Herdr wird heruntergeladen..."
+  if curl -fsSL --max-time 60 "$HERDR_URL" -o "$HERDR_BIN" 2>/dev/null; then
+    chmod +x "$HERDR_BIN"
+    echo "  ✓ Herdr installiert ($($HERDR_BIN --version 2>/dev/null))"
+  else
+    echo "  ⚠ Herdr-Download fehlgeschlagen – Herdr nicht verfügbar"
+  fi
 fi
 
 # ── ssh-mcp Konfiguration ───────────────────────────────────────────────────
@@ -204,10 +213,12 @@ if ! opencode --version 2>/dev/null | grep -q "v2"; then
 fi
 echo "  ✓ OpenCode: $(opencode --version 2>&1)"
 
-# ── Globale MCP-Konfiguration (mit echtem Token) ────────────────────────────
+# ── MCP-Konfiguration (pro Workspace) ───────────────────────────────────────
 echo ""
 echo "=== MCP-Konfiguration ==="
 mkdir -p /root/.config/opencode
+
+# Home Assistant Workspace: beide MCPs (HA + SSH)
 python3 - "$HA_LLA_TOKEN" << 'PYEOF'
 import json, sys
 token = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -229,7 +240,24 @@ config = {
 }
 with open("/root/.config/opencode/opencode.json", "w") as f:
     json.dump(config, f, indent=2)
-print("  ✓ Globale Config geschrieben")
+print("  ✓ Globale Config geschrieben (HA + SSH)")
+PYEOF
+
+# Server Management Workspace: nur SSH-MCP
+mkdir -p /home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/server-management/.config/opencode
+python3 << 'PYEOF'
+import json
+config = {
+    "$schema": "https://opencode.ai/config.json",
+    "mcp": {
+        "servers": {
+            "ssh-mcp": {"type": "local", "command": ["ssh-mcp"]},
+        }
+    },
+}
+with open("/home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/server-management/.config/opencode/opencode.json", "w") as f:
+    json.dump(config, f, indent=2)
+print("  ✓ Server Management Config (nur SSH)")
 PYEOF
 
 # ── OpenCode Go (mehrere Keys aus OpenBao) ──────────────────────────────────
@@ -250,7 +278,10 @@ fi
 # Helper zum Umschalten zwischen den OpenCode-Go-Keys
 cat > /usr/local/bin/oc-go << 'OCGO'
 #!/bin/bash
-# OpenCode Go Key wechseln:  oc-go list  |  oc-go use <default1|default2|default3>
+# OpenCode Go Key verwalten:
+#   oc-go list              → verfügbare Keys + aktiver Key
+#   oc-go use <name>        → Key wechseln (Session, Service-Restart)
+#   oc-go default <name>    → Standard-Key dauerhaft setzen (OpenBao + .bashrc)
 source /etc/opencode.env 2>/dev/null
 case "${1:-list}" in
   list)
@@ -271,7 +302,29 @@ case "${1:-list}" in
     opencode service set env OPENCODE_API_KEY "$KEY" >/dev/null 2>&1 || true
     echo "✓ Aktiv: $NAME (OpenCode-Service neu gestartet)"
     ;;
-  *) echo "Nutzung: oc-go [list | use <name>]";;
+  default)
+    NAME="${2:-}"
+    [ -z "$NAME" ] && { echo "Nutzung: oc-go default <default1|default2|default3>"; exit 1; }
+    VAR="OC_GO_${NAME^^}"; KEY="${!VAR:-}"
+    [ -z "$KEY" ] && { echo "Unbekannter Key: $NAME"; exit 1; }
+    # In OpenBao schreiben (damit startup.sh den neuen Standard liest)
+    if [ -n "${BAO_TOKEN:-}" ]; then
+      curl -sS --max-time 10 -X POST \
+        -H "X-Vault-Token: ${BAO_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "{\"data\":{\"active\":\"${NAME}\"}}" \
+        "https://openbao.mueller-nas.de/v1/secret/data/mcp/opencode-go" >/dev/null 2>&1 \
+        && echo "✓ Standard-Key in OpenBao gesetzt: $NAME" \
+        || echo "⚠ OpenBao-Update fehlgeschlagen (Token abgelaufen?)"
+    else
+      echo "⚠ Kein OpenBao-Token verfügbar – nur .bashrc aktualisiert"
+    fi
+    # .bashrc aktualisieren
+    sed -i '/^export OC_GO_ACTIVE=/d' /root/.bashrc 2>/dev/null || true
+    printf 'export OC_GO_ACTIVE="%s"\n' "$NAME" >> /root/.bashrc
+    echo "✓ Standard-Key: $NAME"
+    ;;
+  *) echo "Nutzung: oc-go [list | use <name> | default <name>]";;
 esac
 OCGO
 chmod +x /usr/local/bin/oc-go

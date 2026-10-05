@@ -71,6 +71,10 @@ resource "docker_image" "workspace" {
   }
 }
 
+resource "docker_volume" "workspace_data" {
+  name = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}-data"
+}
+
 resource "docker_container" "workspace" {
   count = data.coder_workspace.me.start_count
 
@@ -95,11 +99,17 @@ resource "docker_container" "workspace" {
     name = "coder-infra"
   }
 
-  # Herdr-Binary vom Docker-Host einbinden (GitHub ist im Container blockiert)
+  # Herdr-Binary vom Host einbinden (Fallback, wird bei Bedarf geladen)
   volumes {
     host_path      = "/opt/opencode-bin"
     container_path = "/opt/opencode-bin"
     read_only      = true
+  }
+
+  # Persistentes Volume für Workspace-Daten (überlebt Container-Neuerstellung)
+  volumes {
+    volume_name    = docker_volume.workspace_data.name
+    container_path = "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env"
   }
 }
 
@@ -109,7 +119,7 @@ resource "coder_agent" "main" {
   os   = "linux"
   arch = data.coder_provisioner.me.arch
 
-  dir = "/home/${data.coder_workspace_owner.me.name}"
+  working_directory = "/home/${data.coder_workspace_owner.me.name}"
 
   startup_script = <<-EOT
     #!/bin/bash
