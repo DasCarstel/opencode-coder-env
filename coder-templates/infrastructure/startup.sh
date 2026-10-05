@@ -1,39 +1,30 @@
 #!/bin/bash
-# startup.sh – Holt Secrets aus OpenBao via AppRole-Auth
+# startup.sh – Infrastruktur-Setup fuer den Coder-Workspace
 #
-# Umgebungsvariablen (von Coder Secrets injiziert):
-#   OPENBAO_APPROLE_SECRET_ID  – AppRole Secret-ID (MUSS gesetzt sein)
-#   OPENBAO_ADDR               – OpenBao Adresse (default: http://10.0.10.10:8200)
-#   OPENBAO_ROLE_ID            – AppRole Name     (default: mcp-server)
-#
-# Exportierte Umgebungsvariablen:
-#   HA_LLA_TOKEN       – Home Assistant API-Key
-#   AUTHENTIK_API_KEY  – Authentik API-Key
-#   GRAFANA_API_KEY    – Grafana API-Key
-#   OPENCLOUD_API_KEY  – OpenCloud API-Key
-#   OPENCLOUD_USERNAME – OpenCloud Username
-#   BAO_TOKEN          – Kurzlebiger OpenBao-Session-Token
-#
-# Schreibt auch /etc/opencode.env (für coder_app commands)
+# 1. Secrets aus OpenBao (AppRole) laden
+# 2. SSH-Zugang via OpenBao-SSH-CA (kurzlebige Zertifikate)
+# 3. Herdr installieren (aus /repo/bin/herdr)
+# 4. ssh-mcp konfigurieren
+# 5. OpenCode V2 + MCP-Konfiguration
+# 6. Herdr-Server + zwei Workspaces (Home Assistant, Server Management)
 
-set -euo pipefail
+set -uo pipefail
 
-# FORCE: Immer die korrekte URL (überschreibt ggf. gespeicherte Container-Env aus alten Template-Versionen)
-export OPENBAO_ADDR="https://openbao.mueller-nas.de"
+OPENBAO_ADDR="${OPENBAO_ADDR:-https://openbao.mueller-nas.de}"
 OPENBAO_ROLE_ID="${OPENBAO_ROLE_ID:-mcp-server}"
+HERDR_BIN="/root/.local/bin/herdr"
 
-# /etc/opencode.env vorbereiten
+# ── /etc/opencode.env vorbereiten ───────────────────────────────────────────
 : > /etc/opencode.env
 chmod 600 /etc/opencode.env
 
 if [ -z "${OPENBAO_APPROLE_SECRET_ID:-}" ]; then
   echo "ERROR: OPENBAO_APPROLE_SECRET_ID ist nicht gesetzt."
-  echo "  Bitte in Coder → Templates → infrastructure → Secrets eintragen."
   exit 1
 fi
 
+# ── OpenBao: AppRole-Login ──────────────────────────────────────────────────
 echo "=== OpenBao: Authentifizierung ==="
-
 RESPONSE=$(curl -sS --max-time 10 -X POST "${OPENBAO_ADDR}/v1/auth/approle/login" \
   -H "Content-Type: application/json" \
   -d "{\"role_id\":\"${OPENBAO_ROLE_ID}\",\"secret_id\":\"${OPENBAO_APPROLE_SECRET_ID}\"}" 2>&1) || {
@@ -44,81 +35,77 @@ RESPONSE=$(curl -sS --max-time 10 -X POST "${OPENBAO_ADDR}/v1/auth/approle/login
 BAO_TOKEN=$(echo "$RESPONSE" | python3 -c "
 import sys, json
 try:
-    d = json.load(sys.stdin)
-    print(d['auth']['client_token'])
-except (KeyError, json.JSONDecodeError):
+    print(json.load(sys.stdin)['auth']['client_token'])
+except Exception:
     print('')
-" 2>/dev/null) || true
-
+")
 if [ -z "$BAO_TOKEN" ]; then
   echo "ERROR: OpenBao-Authentifizierung fehlgeschlagen."
-  echo "  Prüfe OPENBAO_APPROLE_SECRET_ID und OPENBAO_ROLE_ID."
   exit 1
 fi
-
 export BAO_TOKEN
-echo "  ✓ OpenBao-Token erhalten (kurzlebig, 1h TTL)"
+echo "  ✓ OpenBao-Token erhalten"
 
+# ── OpenBao: Secrets laden ──────────────────────────────────────────────────
 echo ""
 echo "=== OpenBao: Secrets laden ==="
-
 read_secret() {
-  local path="$1"
-  local key="$2"
-  local varname="$3"
-
+  local path="$1" key="$2" varname="$3"
   local value
-  value=$(curl -sS --max-time 10 \
-    -H "X-Vault-Token: ${BAO_TOKEN}" \
-    "${OPENBAO_ADDR}/v1/${path}" \
+  value=$(curl -sS --max-time 10 -H "X-Vault-Token: ${BAO_TOKEN}" "${OPENBAO_ADDR}/v1/${path}" \
     | python3 -c "
 import sys, json
 try:
-    d = json.load(sys.stdin)
-    print(d['data']['data'].get('${key}', ''))
-except (KeyError, json.JSONDecodeError):
+    print(json.load(sys.stdin)['data']['data'].get('${key}', ''))
+except Exception:
     print('')
-" 2>/dev/null) || true
-
+")
   if [ -z "$value" ]; then
-    echo "  ⚠ ${varname}: nicht gefunden unter ${path} → ${key}"
+    echo "  ⚠ ${varname}: nicht gefunden"
   else
     export "${varname}=${value}"
-    echo "${varname}=\"${value}\"" >> /etc/opencode.env
+    printf '%s="%s"\n' "${varname}" "${value}" >> /etc/opencode.env
     echo "  ✓ ${varname} geladen"
   fi
 }
-
 read_secret "secret/data/mcp/homeassistant" "api_key" "HA_LLA_TOKEN"
-read_secret "secret/data/mcp/authentik" "api_key" "AUTHENTIK_API_KEY"
-read_secret "secret/data/mcp/grafana" "api_key" "GRAFANA_API_KEY"
-read_secret "secret/data/mcp/opencloud" "api_key" "OPENCLOUD_API_KEY"
-read_secret "secret/data/mcp/opencloud" "username" "OPENCLOUD_USERNAME"
+read_secret "secret/data/mcp/authentik"     "api_key" "AUTHENTIK_API_KEY"
+read_secret "secret/data/mcp/grafana"       "api_key" "GRAFANA_API_KEY"
+read_secret "secret/data/mcp/opencloud"     "api_key" "OPENCLOUD_API_KEY"
+read_secret "secret/data/mcp/opencloud"     "username" "OPENCLOUD_USERNAME"
 
+# ── SSH via OpenBao-CA (kurzlebige Zertifikate) ─────────────────────────────
 echo ""
-echo "=== OpenBao: Fertig ==="
-echo "  Secrets verfügbar: $(grep -c '=' /etc/opencode.env 2>/dev/null || echo 0)/5"
-echo ""
+echo "=== SSH-Zugang (OpenBao-CA) ==="
+mkdir -p /root/.ssh && chmod 700 /root/.ssh
+KEY=/root/.ssh/id_ed25519_coder
+rm -f "$KEY" "$KEY.pub" "$KEY-cert.pub"
+ssh-keygen -t ed25519 -f "$KEY" -N "" -C "coder-workspace" -q
 
-# SSH-Key für Infrastruktur-Zugriffe generieren (falls nicht vorhanden)
-echo "=== SSH-Key-Setup ==="
-if [ ! -f /root/.ssh/id_ed25519_coder ]; then
-  mkdir -p /root/.ssh
-  chmod 700 /root/.ssh
-  ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519_coder -N "" -C "coder-workspace-infrastructure" >/dev/null 2>&1
-  chmod 600 /root/.ssh/id_ed25519_coder
-  echo "  ✓ SSH-Key generiert"
+SIGNED=$(curl -sS --max-time 10 -X POST "${OPENBAO_ADDR}/v1/ssh/sign/host-access" \
+  -H "X-Vault-Token: ${BAO_TOKEN}" -H "Content-Type: application/json" \
+  -d "{\"public_key\":\"$(cat ${KEY}.pub)\",\"valid_principals\":\"root\"}" \
+  | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin)['data']['signed_key'])
+except Exception:
+    print('')
+")
+if [ -n "$SIGNED" ]; then
+  printf '%s\n' "$SIGNED" > "${KEY}-cert.pub"
+  chmod 600 "$KEY" "${KEY}-cert.pub"
+  echo "  ✓ SSH-Zertifikat ausgestellt"
 else
-  echo "  ✓ SSH-Key vorhanden"
+  echo "  ⚠ SSH-Zertifikat konnte nicht ausgestellt werden"
 fi
 
-# SSH-Config erstellen
-echo "=== SSH-Config ==="
-cat > /root/.ssh/config << 'EOF'
+cat > /root/.ssh/config << 'SSHCFG'
 Host docker
     HostName 10.0.10.10
     User root
     IdentityFile /root/.ssh/id_ed25519_coder
+    CertificateFile /root/.ssh/id_ed25519_coder-cert.pub
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
 
@@ -126,6 +113,7 @@ Host proxmox
     HostName 10.0.10.20
     User root
     IdentityFile /root/.ssh/id_ed25519_coder
+    CertificateFile /root/.ssh/id_ed25519_coder-cert.pub
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
 
@@ -133,35 +121,32 @@ Host truenas
     HostName 10.0.10.30
     User root
     IdentityFile /root/.ssh/id_ed25519_coder
+    CertificateFile /root/.ssh/id_ed25519_coder-cert.pub
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
-EOF
+SSHCFG
 chmod 600 /root/.ssh/config
 echo "  ✓ SSH-Config erstellt"
 
-# Herdr installieren (falls nicht vorhanden)
+# ── Herdr aus dem Image installieren ────────────────────────────────────────
 echo ""
-echo "=== Herdr-Installation ==="
-if ! command -v herdr &> /dev/null; then
-  set +e
-  curl -fsSL https://herdr.dev/install.sh | sh
-  HERDR_EXIT=$?
-  set -e
-  if [ $HERDR_EXIT -eq 0 ]; then
-    echo 'export PATH="/root/.local/bin:$PATH"' >> /root/.bashrc
-    echo "  ✓ Herdr installiert"
-  else
-    echo "  ⚠ Herdr-Installation fehlgeschlagen (kein Internet?)"
-  fi
-else
+echo "=== Herdr ==="
+mkdir -p /root/.local/bin
+if [ -f /repo/bin/herdr ]; then
+  cp /repo/bin/herdr "$HERDR_BIN"
+  chmod +x "$HERDR_BIN"
+  echo "  ✓ Herdr installiert ($($HERDR_BIN --version 2>/dev/null))"
+elif [ -f "$HERDR_BIN" ]; then
   echo "  ✓ Herdr vorhanden"
+else
+  echo "  ⚠ Herdr-Binary nicht gefunden"
 fi
 
-# ssh-mcp Config erstellen/aktualisieren
+# ── ssh-mcp Konfiguration ───────────────────────────────────────────────────
 echo ""
 echo "=== ssh-mcp Config ==="
-mkdir -p ~/.config/ssh-mcp
-cat > ~/.config/ssh-mcp/config.toml << 'EOF'
+mkdir -p /root/.config/ssh-mcp
+cat > /root/.config/ssh-mcp/config.toml << 'MCPCFG'
 [defaults]
 defaultProfile = "docker-host"
 
@@ -194,32 +179,28 @@ auth = "key"
 keyRef = "/root/.ssh/id_ed25519_coder"
 role = "viewer"
 approvalPolicy = "ask-all"
-EOF
-chmod 700 ~/.config/ssh-mcp
-chmod 600 ~/.config/ssh-mcp/config.toml
+MCPCFG
+chmod 700 /root/.config/ssh-mcp
+chmod 600 /root/.config/ssh-mcp/config.toml
 echo "  ✓ ssh-mcp Config erstellt"
 
-# OpenCode V2 installieren/upgraden
+# ── OpenCode V2 ─────────────────────────────────────────────────────────────
 echo ""
-echo "=== OpenCode V2 Installation ==="
-CURRENT_VERSION=$(opencode --version 2>&1 | grep -oP 'v\K[0-9]+' | head -1 || echo "0")
-if [ "$CURRENT_VERSION" != "2" ]; then
-  echo "  Deinstalliere OpenCode V1..."
+echo "=== OpenCode V2 ==="
+if ! opencode --version 2>/dev/null | grep -q "v2"; then
   npm uninstall -g opencode 2>/dev/null || true
   rm -f /usr/bin/opencode
-  echo "  Installiere OpenCode V2..."
-  npm install -g @opencode/cli 2>&1 | tail -5
-  echo "  ✓ OpenCode V2 installiert"
-else
-  echo "  ✓ OpenCode V2 bereits installiert"
+  npm install -g @opencode/cli 2>&1 | tail -3
 fi
+echo "  ✓ OpenCode: $(opencode --version 2>&1)"
 
-# Globale OpenCode Konfiguration erstellen (mit Python um $schema korrekt zu schreiben)
+# ── Globale MCP-Konfiguration (mit echtem Token) ────────────────────────────
 echo ""
-echo "=== Globale OpenCode Konfiguration ==="
+echo "=== MCP-Konfiguration ==="
 mkdir -p /root/.config/opencode
-python3 << 'PYEOF'
-import json
+python3 - "$HA_LLA_TOKEN" << 'PYEOF'
+import json, sys
+token = sys.argv[1] if len(sys.argv) > 1 else ""
 config = {
     "$schema": "https://opencode.ai/config.json",
     "mcp": {
@@ -228,92 +209,70 @@ config = {
                 "type": "remote",
                 "url": "https://intern-homeassistant.mueller-nas.de/api/mcp",
                 "headers": {
-                    "Authorization": "Bearer {env:HA_LLA_TOKEN}",
-                    "Accept": "application/json"
-                }
+                    "Authorization": "Bearer " + token,
+                    "Accept": "application/json",
+                },
             },
-            "ssh-mcp": {
-                "type": "local",
-                "command": ["ssh-mcp"],
-                "env": {
-                    "SSH_AUTH_SOCK": "/tmp/ssh-auth.sock"
-                }
-            }
+            "ssh-mcp": {"type": "local", "command": ["ssh-mcp"]},
         }
-    }
+    },
 }
-with open('/root/.config/opencode/opencode.json', 'w') as f:
+with open("/root/.config/opencode/opencode.json", "w") as f:
     json.dump(config, f, indent=2)
-print("  ✓ Globale Config erstellt")
+print("  ✓ Globale Config geschrieben")
 PYEOF
 
-# SSH-Key auf Infrastructure-Hosts deployen
+# ── Herdr-Server + Workspaces ───────────────────────────────────────────────
 echo ""
-echo "=== SSH-Key Deployment ==="
-if [ -f /root/.ssh/id_ed25519_coder.pub ]; then
-  PUBKEY=$(cat /root/.ssh/id_ed25519_coder.pub)
-  
-  # Deploy to Docker
-  ssh -o StrictHostKeyChecking=no root@10.0.10.10 "mkdir -p ~/.ssh && echo '$PUBKEY' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" 2>/dev/null && echo "  ✓ Key deployed to Docker" || echo "  ⚠ Docker deployment failed"
-  
-  # Deploy to Proxmox
-  ssh -o StrictHostKeyChecking=no root@10.0.10.20 "mkdir -p ~/.ssh && echo '$PUBKEY' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" 2>/dev/null && echo "  ✓ Key deployed to Proxmox" || echo "  ⚠ Proxmox deployment failed"
-  
-  # Deploy to TrueNAS
-  ssh -o StrictHostKeyChecking=no root@10.0.10.30 "mkdir -p ~/.ssh && echo '$PUBKEY' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" 2>/dev/null && echo "  ✓ Key deployed to TrueNAS" || echo "  ⚠ TrueNAS deployment failed"
-else
-  echo "  ⚠ No SSH key found, skipping deployment"
-fi
-
-# Herdr Setup - Startet beide Workspaces in separaten Sessions
-echo ""
-echo "=== Herdr Setup ==="
+echo "=== Herdr-Server & Workspaces ==="
 export PATH="/root/.local/bin:$PATH"
 
-# Starte Herdr Server im Hintergrund
-if ! pgrep -f "herdr serve" > /dev/null; then
-  nohup herdr serve > /tmp/herdr-server.log 2>&1 &
-  sleep 3
-  if pgrep -f "herdr serve" > /dev/null; then
-    echo "  ✓ Herdr Server gestartet"
-  else
-    echo "  ⚠ Herdr Server Start fehlgeschlagen"
-    cat /tmp/herdr-server.log 2>/dev/null || true
+if [ -x "$HERDR_BIN" ]; then
+  if ! "$HERDR_BIN" status 2>/dev/null | grep -q "status: running"; then
+    nohup "$HERDR_BIN" server > /tmp/herdr-server.log 2>&1 &
+    sleep 3
   fi
-else
-  echo "  ✓ Herdr Server läuft bereits"
+  if "$HERDR_BIN" status 2>/dev/null | grep -q "status: running"; then
+    echo "  ✓ Herdr-Server läuft"
+  else
+    echo "  ⚠ Herdr-Server-Start fehlgeschlagen"
+  fi
+
+  INFRA=/home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure
+
+  # Workspaces anlegen (idempotent)
+  "$HERDR_BIN" workspace list 2>/dev/null | grep -q "Home Assistant" \
+    || "$HERDR_BIN" workspace create --cwd "$INFRA/homeassistant" --label "Home Assistant" >/dev/null 2>&1
+  "$HERDR_BIN" workspace list 2>/dev/null | grep -q "Server Management" \
+    || "$HERDR_BIN" workspace create --cwd "$INFRA/server-management" --label "Server Management" >/dev/null 2>&1
+
+  # Panes ermitteln und OpenCode starten
+  for pair in "Home Assistant:homeassistant:opencode-ha" "Server Management:server-management:opencode-sm"; do
+    LABEL="${pair%%:*}"; REST="${pair#*:}"; NAME="${REST##*:}"
+    PANE=$("$HERDR_BIN" workspace list 2>/dev/null | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    for w in d['result']['workspaces']:
+        if w['label'] == '$LABEL':
+            print(w['active_tab_id'].split(':')[0] + ':p1')
+            break
+except Exception:
+    pass
+")
+    if [ -n "$PANE" ]; then
+      if ! "$HERDR_BIN" agent list 2>/dev/null | grep -q "\"$NAME\""; then
+        "$HERDR_BIN" agent start "$NAME" --kind opencode --pane "$PANE" >/dev/null 2>&1 \
+          && echo "  ✓ OpenCode gestartet: $LABEL ($PANE)" \
+          || echo "  ⚠ OpenCode-Start fehlgeschlagen: $LABEL"
+      else
+        echo "  ✓ OpenCode läuft bereits: $LABEL"
+      fi
+    fi
+  done
 fi
 
-# Erstelle Herdr Workspaces
-echo "  Erstelle Herdr Workspaces..."
-
-# Home Assistant Workspace
-herdr workspace create --label "Home Assistant" --directory "/home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/homeassistant" 2>&1 || echo "  Workspace 'Home Assistant' existiert bereits"
-
-# Server Management Workspace  
-herdr workspace create --label "Server Management" --directory "/home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/server-management" 2>&1 || echo "  Workspace 'Server Management' existiert bereits"
-
-echo "  ✓ Herdr Workspaces erstellt"
-
-# Starte opencode in jedem Workspace
-echo "  Starte OpenCode in den Workspaces..."
-herdr run --workspace "Home Assistant" -- opencode 2>&1 || echo "  ⚠ OpenCode in 'Home Assistant' konnte nicht gestartet werden"
-herdr run --workspace "Server Management" -- opencode 2>&1 || echo "  ⚠ OpenCode in 'Server Management' konnte nicht gestartet werden"
-echo "  ✓ OpenCode in beiden Workspaces gestartet"
-
 echo ""
-echo "=========================================="
-echo "Infrastructure Workspace Setup abgeschlossen"
-echo "=========================================="
-echo ""
-echo "Verfügbare Komponenten:"
-echo "  • OpenCode V2 mit HA MCP-Server (27 Tools)"
-echo "  • SSH-Verbindungen: docker, proxmox, truenas"
-echo "  • ssh-mcp mit 3 Host-Profilen"
-echo "  • Herdr 0.9.3 für Multi-Session-Management"
-echo ""
-echo "Nutzung:"
-echo "  • Öffne die 'Infrastructure Workspace' App in Coder"
-echo "  • Wechsle zwischen 'Home Assistant' und 'Server Management' Workspaces"
-echo "  • Beide OpenCode-Instanzen laufen parallel ohne Konflikte"
+echo "=== Infrastructure Workspace bereit ==="
+echo "  Öffne die App 'Infrastructure Workspace' in Coder."
 echo ""

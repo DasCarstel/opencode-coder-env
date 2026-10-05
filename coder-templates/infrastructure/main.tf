@@ -110,41 +110,25 @@ resource "coder_agent" "main" {
 
     echo "=== infrastructure Workspace: Initialisierung ==="
 
-    # 1. Grundlegende Tools installieren
+    # 1. Grundlegende Tools
     export DEBIAN_FRONTEND=noninteractive
     apt-get update && apt-get install -y \
-      curl \
-      git \
-      ca-certificates \
-      gnupg \
-      python3 \
-      python3-pip \
+      curl git ca-certificates gnupg python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-    # 2. Node.js v22 installieren (für ssh-mcp)
+    # 2. Node.js v22
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
     apt-get install -y nodejs
 
-    # 3. Repo aus Docker-Image kopieren (bereits eingebaut)
+    # 3. Repo aus dem Docker-Image kopieren
     REPO_DIR="/home/${data.coder_workspace_owner.me.name}/opencode-coder-env"
     mkdir -p "/home/${data.coder_workspace_owner.me.name}"
-    if [ ! -d "$REPO_DIR" ]; then
-      cp -r /repo "$REPO_DIR"
-    else
-      cd "$REPO_DIR"
-      git fetch origin master 2>/dev/null || true
-      git reset --hard origin/master 2>/dev/null || true
-    fi
+    rm -rf "$REPO_DIR"
+    cp -r /repo "$REPO_DIR"
 
-    # 4. Verzeichnisse anlegen
-    mkdir -p ~/.config/opencode
-    mkdir -p ~/.cache/opencode/opencode-model-router
-    mkdir -p ~/.config/ssh-mcp
-
-    # 5. tiers.json für Model-Router verlinken
-    ln -sf "$REPO_DIR/tiers.json" ~/.cache/opencode/opencode-model-router/tiers.json
-
-    # 6. Skills verlinken
+    # 4. Verzeichnisse + Skills verlinken
+    mkdir -p ~/.config/opencode ~/.config/ssh-mcp ~/.cache/opencode/opencode-model-router
+    [ -f "$REPO_DIR/tiers.json" ] && ln -sf "$REPO_DIR/tiers.json" ~/.cache/opencode/opencode-model-router/tiers.json || true
     for skill_dir in "$REPO_DIR/skills/infrastructure"/*/; do
       [ -d "$skill_dir" ] || continue
       skill_name=$(basename "$skill_dir")
@@ -152,74 +136,18 @@ resource "coder_agent" "main" {
       ln -sf "$skill_dir/SKILL.md" ~/.config/opencode/skills/"$skill_name"/SKILL.md
     done
 
-    # 7. OpenCode installieren (via npm, da Node.js bereits installiert)
-    echo "=== Schritt 7: OpenCode installieren ==="
-    npm install -g opencode-ai@latest 2>&1 | tail -5
-    echo "✓ OpenCode installiert"
+    # 5. ssh-mcp installieren
+    npm install -g ssh-mcp@2.17.0 2>&1 | tail -2 || true
 
-    # 8. ssh-mcp installieren
-    echo "=== Schritt 8: ssh-mcp installieren ==="
-    npm install -g ssh-mcp@2.17.0 2>&1 | tail -5
-    echo "✓ ssh-mcp installiert"
-
-    # 9. ssh-mcp Konfiguration erstellen
-    echo "=== Schritt 9: ssh-mcp Konfiguration ==="
-    cat > ~/.config/ssh-mcp/config.toml << 'SSHCONFIG'
-[defaults]
-defaultProfile = "docker"
-approvalMode = "ask-destructive"
-
-[[profiles]]
-name = "docker"
-host = "10.0.10.10"
-port = 22
-user = "root"
-auth = "key"
-keyRef = "~/.ssh/id_ed25519_agent"
-role = "admin"
-approvalPolicy = "auto"
-SSHCONFIG
-    chmod 700 ~/.config/ssh-mcp
-    chmod 600 ~/.config/ssh-mcp/config.toml
-    echo "✓ ssh-mcp konfiguriert"
-
-    # 10. startup.sh ausführbar machen und Secrets aus OpenBao holen
-    echo "=== Schritt 10: Secrets aus OpenBao laden ==="
-    chmod +x "$REPO_DIR/coder-templates/infrastructure/startup.sh"
-    bash "$REPO_DIR/coder-templates/infrastructure/startup.sh" 2>&1
-    echo "✓ Secrets geladen"
-
-    # 11. Herdr Server starten und Workspaces erstellen
-    echo "=== Schritt 11: Herdr Setup ==="
-    export PATH="/root/.local/bin:$PATH"
-    
-    # Start Herdr server in background
-    if ! pgrep -f "herdr serve" > /dev/null; then
-      nohup herdr serve > /tmp/herdr.log 2>&1 &
-      sleep 3
-      if pgrep -f "herdr serve" > /dev/null; then
-        echo "  ✓ Herdr Server gestartet"
-      else
-        echo "  ⚠ Herdr Server Start fehlgeschlagen"
-      fi
-    else
-      echo "  ✓ Herdr Server läuft bereits"
-    fi
-    
-    # Create Herdr workspaces
-    echo "  Erstelle Herdr Workspaces..."
-    herdr workspace create --label "Home Assistant" --directory "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env/workspaces/infrastructure/homeassistant" 2>&1 || echo "  Workspace existiert bereits"
-    herdr workspace create --label "Server Management" --directory "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env/workspaces/infrastructure/server-management" 2>&1 || echo "  Workspace existiert bereits"
-    echo "  ✓ Herdr Workspaces erstellt"
-
-    # 12. Alias für Update des Config-Repos
+    # 6. Alias
     echo 'alias update-opencode-config="cd ~/opencode-coder-env && git pull --ff-only"' >> ~/.bashrc
+
+    # 7. Komplettes Setup (Secrets, SSH-CA, Herdr, OpenCode, MCP)
+    chmod +x "$REPO_DIR/coder-templates/infrastructure/startup.sh"
+    bash "$REPO_DIR/coder-templates/infrastructure/startup.sh" 2>&1 || echo "⚠ setup mit Fehlern beendet"
 
     echo ""
     echo "=== infrastructure Workspace bereit ==="
-    echo "  Herdr UI:       Öffne die 'Infrastructure Workspace' App"
-    echo "  Workspaces:     Home Assistant, Server Management"
-    echo "  Config-Update:  update-opencode-config"
   EOT
 }
 
@@ -229,7 +157,7 @@ resource "coder_app" "herdr" {
   agent_id     = coder_agent.main.id
   slug         = "herdr"
   display_name = "Infrastructure Workspace"
-  command      = "herdr"
+  command      = "/root/.local/bin/herdr"
   icon         = "/icon/terminal.svg"
   share        = "owner"
 }
