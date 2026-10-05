@@ -18,7 +18,8 @@
 
 set -euo pipefail
 
-OPENBAO_ADDR="${OPENBAO_ADDR:-https://openbao.mueller-nas.de}"
+# FORCE: Immer die korrekte URL (überschreibt ggf. gespeicherte Container-Env aus alten Template-Versionen)
+export OPENBAO_ADDR="https://openbao.mueller-nas.de"
 OPENBAO_ROLE_ID="${OPENBAO_ROLE_ID:-mcp-server}"
 
 # /etc/opencode.env vorbereiten
