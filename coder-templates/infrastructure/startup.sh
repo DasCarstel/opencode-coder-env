@@ -207,6 +207,57 @@ else
   echo "  ✓ OpenCode V2 bereits installiert"
 fi
 
+# Globale OpenCode Konfiguration erstellen (mit Python um $schema korrekt zu schreiben)
+echo ""
+echo "=== Globale OpenCode Konfiguration ==="
+mkdir -p /root/.config/opencode
+python3 << 'PYEOF'
+import json
+config = {
+    "$schema": "https://opencode.ai/config.json",
+    "mcp": {
+        "servers": {
+            "homeassistant": {
+                "type": "remote",
+                "url": "https://intern-homeassistant.mueller-nas.de/api/mcp",
+                "headers": {
+                    "Authorization": "Bearer {env:HA_LLA_TOKEN}",
+                    "Accept": "application/json"
+                }
+            },
+            "ssh-mcp": {
+                "type": "local",
+                "command": ["ssh-mcp"],
+                "env": {
+                    "SSH_AUTH_SOCK": "/tmp/ssh-auth.sock"
+                }
+            }
+        }
+    }
+}
+with open('/root/.config/opencode/opencode.json', 'w') as f:
+    json.dump(config, f, indent=2)
+print("  ✓ Globale Config erstellt")
+PYEOF
+
+# SSH-Key auf Infrastructure-Hosts deployen
+echo ""
+echo "=== SSH-Key Deployment ==="
+if [ -f /root/.ssh/id_ed25519.pub ]; then
+  PUBKEY=$(cat /root/.ssh/id_ed25519.pub)
+  
+  # Deploy to Docker
+  ssh -o StrictHostKeyChecking=no root@10.0.10.10 "mkdir -p ~/.ssh && echo '$PUBKEY' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" 2>/dev/null && echo "  ✓ Key deployed to Docker" || echo "  ⚠ Docker deployment failed"
+  
+  # Deploy to Proxmox
+  ssh -o StrictHostKeyChecking=no root@10.0.10.20 "mkdir -p ~/.ssh && echo '$PUBKEY' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" 2>/dev/null && echo "  ✓ Key deployed to Proxmox" || echo "  ⚠ Proxmox deployment failed"
+  
+  # Deploy to TrueNAS
+  ssh -o StrictHostKeyChecking=no root@10.0.10.30 "mkdir -p ~/.ssh && echo '$PUBKEY' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" 2>/dev/null && echo "  ✓ Key deployed to TrueNAS" || echo "  ⚠ TrueNAS deployment failed"
+else
+  echo "  ⚠ No SSH key found, skipping deployment"
+fi
+
 # OpenCode Service starten
 echo ""
 echo "=== OpenCode Service Start ==="
