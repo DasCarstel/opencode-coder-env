@@ -189,50 +189,47 @@ SSHCONFIG
     bash "$REPO_DIR/coder-templates/infrastructure/startup.sh" 2>&1
     echo "✓ Secrets geladen"
 
-    # 11. Wrapper-Scripts für OpenCode-Projekte erstellen
-    echo "=== Schritt 11: Wrapper-Scripts erstellen ==="
-    cat > /usr/local/bin/opencode-ha << 'WRAPPER'
-#!/bin/bash
-[ -f /etc/opencode.env ] && source /etc/opencode.env
-cd "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env/workspaces/infrastructure/homeassistant" && exec opencode "$@"
-WRAPPER
-    chmod +x /usr/local/bin/opencode-ha
-
-    cat > /usr/local/bin/opencode-ssh << 'WRAPPER'
-#!/bin/bash
-[ -f /etc/opencode.env ] && source /etc/opencode.env
-cd "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env/workspaces/infrastructure/server-management" && exec opencode "$@"
-WRAPPER
-    chmod +x /usr/local/bin/opencode-ssh
-    echo "✓ Wrapper-Scripts erstellt"
+    # 11. Herdr Server starten und Workspaces erstellen
+    echo "=== Schritt 11: Herdr Setup ==="
+    export PATH="/root/.local/bin:$PATH"
+    
+    # Start Herdr server in background
+    if ! pgrep -f "herdr serve" > /dev/null; then
+      nohup herdr serve > /tmp/herdr.log 2>&1 &
+      sleep 3
+      if pgrep -f "herdr serve" > /dev/null; then
+        echo "  ✓ Herdr Server gestartet"
+      else
+        echo "  ⚠ Herdr Server Start fehlgeschlagen"
+      fi
+    else
+      echo "  ✓ Herdr Server läuft bereits"
+    fi
+    
+    # Create Herdr workspaces
+    echo "  Erstelle Herdr Workspaces..."
+    herdr workspace create --label "Home Assistant" --directory "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env/workspaces/infrastructure/homeassistant" 2>&1 || echo "  Workspace existiert bereits"
+    herdr workspace create --label "Server Management" --directory "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env/workspaces/infrastructure/server-management" 2>&1 || echo "  Workspace existiert bereits"
+    echo "  ✓ Herdr Workspaces erstellt"
 
     # 12. Alias für Update des Config-Repos
     echo 'alias update-opencode-config="cd ~/opencode-coder-env && git pull --ff-only"' >> ~/.bashrc
 
     echo ""
     echo "=== infrastructure Workspace bereit ==="
-    echo "  HA-Projekt:     opencode-ha"
-    echo "  SSH-Projekt:    opencode-ssh"
+    echo "  Herdr UI:       Öffne die 'Infrastructure Workspace' App"
+    echo "  Workspaces:     Home Assistant, Server Management"
     echo "  Config-Update:  update-opencode-config"
   EOT
 }
 
 # ─── Coder Apps (Shortcuts in der UI) ────────────────────────────────────────
 
-resource "coder_app" "opencode-ha" {
+resource "coder_app" "herdr" {
   agent_id     = coder_agent.main.id
-  slug         = "opencode-ha"
-  display_name = "OpenCode: Home Assistant"
-  command      = "opencode-ha"
-  icon         = "/icon/openai.svg"
-  share        = "owner"
-}
-
-resource "coder_app" "opencode-ssh" {
-  agent_id     = coder_agent.main.id
-  slug         = "opencode-ssh"
-  display_name = "OpenCode: Server Management"
-  command      = "opencode-ssh"
+  slug         = "herdr"
+  display_name = "Infrastructure Workspace"
+  command      = "herdr"
   icon         = "/icon/terminal.svg"
   share        = "owner"
 }
