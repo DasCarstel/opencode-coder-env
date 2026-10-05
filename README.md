@@ -125,10 +125,17 @@ export OPENBAO_ROOT_TOKEN=<root-token>
 bash scripts/bootstrap-hosts.sh
 ```
 
-### Persistentes Volume
+### Persistente Volumes
 
-Das Docker-Volume `coder-<user>-infrastructure-data` persistiert den Workspace
-unter `~/opencode-coder-env`. Dateien überleben Container-Neuerstellungen.
+Zwei Docker-Volumes persistieren Daten über Container-Neuerstellungen hinweg:
+
+| Volume | Mount-Pfad | Inhalt |
+|--------|-----------|--------|
+| `coder-<user>-infrastructure-data` | `~/opencode-coder-env` | Workspace-Dateien, Repo |
+| `coder-<user>-infrastructure-opencode` | `~/.local/share/opencode` | OpenCode-Sessions/Chats, Configs |
+
+**Wichtig:** OpenCode-Sessions (Chats) liegen in `~/.local/share/opencode/opencode.db`.
+Ohne das zweite Volume gingen sie bei Container-Neuerstellung verloren.
 
 ### MCP-Trennung
 
