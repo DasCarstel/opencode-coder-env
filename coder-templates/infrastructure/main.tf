@@ -97,8 +97,8 @@ resource "docker_container" "workspace" {
 
   # Herdr-Binary vom Docker-Host einbinden (GitHub ist im Container blockiert)
   volumes {
-    host_path      = "/opt/opencode-bin/herdr"
-    container_path = "/usr/local/bin/herdr"
+    host_path      = "/opt/opencode-bin"
+    container_path = "/opt/opencode-bin"
     read_only      = true
   }
 }

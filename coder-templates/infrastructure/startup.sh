@@ -133,12 +133,12 @@ echo "  ✓ SSH-Config erstellt"
 echo ""
 echo "=== Herdr ==="
 mkdir -p /root/.local/bin
-if [ -f /usr/local/bin/herdr ]; then
-  cp /usr/local/bin/herdr "$HERDR_BIN"
+if [ -f /opt/opencode-bin/herdr ]; then
+  cp /opt/opencode-bin/herdr "$HERDR_BIN"
   chmod +x "$HERDR_BIN"
   echo "  ✓ Herdr installiert ($($HERDR_BIN --version 2>/dev/null))"
-elif [ -f /repo/bin/herdr ]; then
-  cp /repo/bin/herdr "$HERDR_BIN"
+elif [ -f /usr/local/bin/herdr ]; then
+  cp /usr/local/bin/herdr "$HERDR_BIN"
   chmod +x "$HERDR_BIN"
   echo "  ✓ Herdr installiert ($($HERDR_BIN --version 2>/dev/null))"
 elif [ -f "$HERDR_BIN" ]; then
