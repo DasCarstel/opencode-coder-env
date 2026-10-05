@@ -36,16 +36,10 @@ variable "git_branch" {
   default     = "master"
 }
 
-variable "openbao_role_id" {
-  type        = string
-  description = "OpenBao AppRole Role-ID (UUID, nicht der Rollenname)"
-  default     = "a18d13b0-9ccd-304b-da63-db3545546b1d"
-}
-
 variable "openbao_addr" {
   type        = string
   description = "OpenBao Adresse (wird vom Workspace aus erreicht)"
-  default     = "https://openbao.mueller-nas.de"
+  default     = "http://10.0.10.10:8200"
 }
 
 data "coder_parameter" "openbao_approle_secret_id" {
@@ -60,12 +54,7 @@ data "coder_parameter" "openbao_approle_secret_id" {
 # ─── Docker Workspace Container ────────────────────────────────────────────
 
 resource "docker_image" "workspace" {
-  name = "workspace:latest"
-  
-  build {
-    context    = "${path.module}"
-    dockerfile = "Dockerfile"
-  }
+  name = "buildpack-deps:22.04-curl"
 }
 
 resource "docker_container" "workspace" {
@@ -79,7 +68,6 @@ resource "docker_container" "workspace" {
     "CODER_AGENT_TOKEN=${coder_agent.main.token}",
     "OPENBAO_APPROLE_SECRET_ID=${data.coder_parameter.openbao_approle_secret_id.value}",
     "OPENBAO_ADDR=${var.openbao_addr}",
-    "OPENBAO_ROLE_ID=${var.openbao_role_id}",
   ]
 
   command = ["sh", "-c", coder_agent.main.init_script]
@@ -122,11 +110,13 @@ resource "coder_agent" "main" {
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
     apt-get install -y nodejs
 
-    # 3. Repo aus Docker-Image kopieren (bereits eingebaut)
+    # 3. Repo als ZIP herunterladen und mit python3 entpacken (unzip nicht installiert)
     REPO_DIR="/home/${data.coder_workspace_owner.me.name}/opencode-coder-env"
-    mkdir -p "/home/${data.coder_workspace_owner.me.name}"
     if [ ! -d "$REPO_DIR" ]; then
-      cp -r /repo "$REPO_DIR"
+      curl -sL "https://github.com/DasCarstel/opencode-coder-env/archive/refs/heads/master.zip" -o /tmp/repo.zip
+      python3 -c "import zipfile; zipfile.ZipFile('/tmp/repo.zip').extractall('/tmp/')"
+      mv /tmp/opencode-coder-env-master "$REPO_DIR"
+      rm /tmp/repo.zip
     else
       cd "$REPO_DIR"
       git fetch origin master 2>/dev/null || true
@@ -149,45 +139,36 @@ resource "coder_agent" "main" {
       ln -sf "$skill_dir/SKILL.md" ~/.config/opencode/skills/"$skill_name"/SKILL.md
     done
 
-    # 7. OpenCode installieren (via npm, da Node.js bereits installiert)
-    echo "=== Schritt 7: OpenCode installieren ==="
-    npm install -g opencode-ai@latest 2>&1 | tail -5
-    echo "✓ OpenCode installiert"
+    # 7. OpenCode installieren
+    curl -L https://opencode.ai/install.sh | sh
 
     # 8. ssh-mcp installieren
-    echo "=== Schritt 8: ssh-mcp installieren ==="
-    npm install -g ssh-mcp@2.17.0 2>&1 | tail -5
-    echo "✓ ssh-mcp installiert"
+    npm install -g ssh-mcp@2.17.0
 
     # 9. ssh-mcp Konfiguration erstellen
-    echo "=== Schritt 9: ssh-mcp Konfiguration ==="
     cat > ~/.config/ssh-mcp/config.toml << 'SSHCONFIG'
-[defaults]
-defaultProfile = "docker"
-approvalMode = "ask-destructive"
+    [defaults]
+    defaultProfile = "docker"
+    approvalMode = "ask-destructive"
 
-[[profiles]]
-name = "docker"
-host = "10.0.10.10"
-port = 22
-user = "root"
-auth = "key"
-keyRef = "~/.ssh/id_ed25519_agent"
-role = "admin"
-approvalPolicy = "auto"
-SSHCONFIG
+    [[profiles]]
+    name = "docker"
+    host = "10.0.10.10"
+    port = 22
+    user = "root"
+    auth = "key"
+    keyRef = "~/.ssh/id_ed25519_agent"
+    role = "admin"
+    approvalPolicy = "auto"
+    SSHCONFIG
     chmod 700 ~/.config/ssh-mcp
     chmod 600 ~/.config/ssh-mcp/config.toml
-    echo "✓ ssh-mcp konfiguriert"
 
     # 10. startup.sh ausführbar machen und Secrets aus OpenBao holen
-    echo "=== Schritt 10: Secrets aus OpenBao laden ==="
     chmod +x "$REPO_DIR/coder-templates/infrastructure/startup.sh"
-    bash "$REPO_DIR/coder-templates/infrastructure/startup.sh" 2>&1
-    echo "✓ Secrets geladen"
+    bash "$REPO_DIR/coder-templates/infrastructure/startup.sh"
 
     # 11. Wrapper-Scripts für OpenCode-Projekte erstellen
-    echo "=== Schritt 11: Wrapper-Scripts erstellen ==="
     cat > /usr/local/bin/opencode-ha << 'WRAPPER'
 #!/bin/bash
 [ -f /etc/opencode.env ] && source /etc/opencode.env
@@ -201,7 +182,6 @@ WRAPPER
 cd "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env/workspaces/infrastructure/server-management" && exec opencode "$@"
 WRAPPER
     chmod +x /usr/local/bin/opencode-ssh
-    echo "✓ Wrapper-Scripts erstellt"
 
     # 12. Alias für Update des Config-Repos
     echo 'alias update-opencode-config="cd ~/opencode-coder-env && git pull --ff-only"' >> ~/.bashrc

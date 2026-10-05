@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-OPENBAO_ADDR="${OPENBAO_ADDR:-https://openbao.mueller-nas.de}"
+OPENBAO_ADDR="${OPENBAO_ADDR:-http://10.0.10.10:8200}"
 OPENBAO_ROLE_ID="${OPENBAO_ROLE_ID:-mcp-server}"
 
 # /etc/opencode.env vorbereiten

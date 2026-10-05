@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "homeassistant": {
+      "type": "remote",
+      "url": "https://intern-homeassistant.mueller-nas.de/api/mcp",
+      "headers": {
+        "Authorization": "Bearer {env:HA_LLA_TOKEN}",
+        "Accept": "application/json"
+      },
+      "enabled": true,
+      "timeout": 30000
+    }
+  }
+}
