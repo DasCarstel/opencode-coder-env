@@ -98,6 +98,21 @@ beenden sich nicht gegenseitig.
   `TrustedUserCAKeys /etc/ssh/openbao-ca.pub`
   (Key muss dem aktuellen OpenBao-CA-Key entsprechen)
 
+### OpenCode Go (mehrere Keys)
+
+Die API-Keys liegen in OpenBao unter `secret/data/mcp/opencode-go`
+(Felder `default1`, `default2`, `default3`, `active`). Beim Start wird der in
+`active` hinterlegte Key als Umgebungsvariable `OPENCODE_API_KEY` gesetzt.
+
+Im Workspace umschalten:
+
+```bash
+oc-go list           # verfügbare Keys + aktiver Key
+oc-go use default1   # auf default1 wechseln (Service wird neu gestartet)
+```
+
+Der aktive Key wird aus OpenBao gelesen, nicht in Git gespeichert.
+
 ## Bestandsaufnahme (04.10.2026)
 
 - OpenBao: unsealed, SSH CA konfiguriert, AppRole `mcp-server` vorhanden
