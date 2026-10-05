@@ -108,6 +108,74 @@ if [ ! -f /root/.ssh/id_ed25519_coder ]; then
   ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519_coder -N "" -C "coder-workspace-infrastructure" >/dev/null 2>&1
   chmod 600 /root/.ssh/id_ed25519_coder
   echo "  ✓ SSH-Key generiert"
+  echo "  Public Key (muss auf Docker-Host deployed werden):"
+  cat /root/.ssh/id_ed25519_coder.pub
+else
+  echo "  ✓ SSH-Key vorhanden"
+fi
+
+# Herdr installieren (falls nicht vorhanden)
+echo ""
+echo "=== Herdr-Installation ==="
+if ! command -v herdr &> /dev/null; then
+  curl -fsSL https://herdr.dev/install.sh | sh
+  echo 'export PATH="/root/.local/bin:$PATH"' >> /root/.bashrc
+  echo "  ✓ Herdr installiert"
+else
+  echo "  ✓ Herdr vorhanden"
+fi
+
+# ssh-mcp Config erstellen/aktualisieren
+echo ""
+echo "=== ssh-mcp Config ==="
+mkdir -p ~/.config/ssh-mcp
+cat > ~/.config/ssh-mcp/config.toml << 'EOF'
+[defaults]
+defaultProfile = "docker-host"
+
+[[profiles]]
+name = "docker-host"
+host = "10.0.10.10"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_coder"
+role = "admin"
+approvalPolicy = "ask-destructive"
+
+[[profiles]]
+name = "proxmox"
+host = "10.0.10.20"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_coder"
+role = "viewer"
+approvalPolicy = "ask-all"
+
+[[profiles]]
+name = "truenas"
+host = "10.0.10.30"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_coder"
+role = "viewer"
+approvalPolicy = "ask-all"
+EOF
+chmod 700 ~/.config/ssh-mcp
+chmod 600 ~/.config/ssh-mcp/config.toml
+echo "  ✓ ssh-mcp Config erstellt"
+echo ""
+
+# SSH-Key für Infrastruktur-Zugriffe generieren (falls nicht vorhanden)
+echo "=== SSH-Key-Setup ==="
+if [ ! -f /root/.ssh/id_ed25519_coder ]; then
+  mkdir -p /root/.ssh
+  chmod 700 /root/.ssh
+  ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519_coder -N "" -C "coder-workspace-infrastructure" >/dev/null 2>&1
+  chmod 600 /root/.ssh/id_ed25519_coder
+  echo "  ✓ SSH-Key generiert"
 else
   echo "  ✓ SSH-Key vorhanden"
 fi
