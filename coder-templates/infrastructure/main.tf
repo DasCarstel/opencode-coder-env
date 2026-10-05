@@ -75,10 +75,6 @@ resource "docker_volume" "workspace_data" {
   name = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}-data"
 }
 
-resource "docker_volume" "opencode_data" {
-  name = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}-opencode"
-}
-
 resource "docker_container" "workspace" {
   count = data.coder_workspace.me.start_count
 
@@ -116,9 +112,9 @@ resource "docker_container" "workspace" {
     container_path = "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env"
   }
 
-  # Persistentes Volume für OpenCode-Sessions/Chats
+  # Persistenter Ordner für OpenCode-Sessions/Chats (auf dem Coder-Host unter /etc)
   volumes {
-    volume_name    = docker_volume.opencode_data.name
+    host_path      = "/etc/opencode-data/${data.coder_workspace_owner.me.name}"
     container_path = "/root/.local/share/opencode"
   }
 }
