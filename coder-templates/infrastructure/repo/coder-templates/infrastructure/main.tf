@@ -94,6 +94,13 @@ resource "docker_container" "workspace" {
   networks_advanced {
     name = "coder-infra"
   }
+
+  # Herdr-Binary vom Docker-Host einbinden (GitHub ist im Container blockiert)
+  volumes {
+    host_path      = "/opt/opencode-bin/herdr"
+    container_path = "/usr/local/bin/herdr"
+    read_only      = true
+  }
 }
 
 # ── Coder Agent ─────────────────────────────────────────────────────────────
