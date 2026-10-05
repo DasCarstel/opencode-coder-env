@@ -60,7 +60,7 @@ data "coder_parameter" "openbao_approle_secret_id" {
 # ─── Docker Workspace Container ────────────────────────────────────────────
 
 resource "docker_image" "workspace" {
-  name = "workspace:latest"
+  name = "workspace:v2"
   
   build {
     context    = "${path.module}"
