@@ -108,11 +108,36 @@ if [ ! -f /root/.ssh/id_ed25519_coder ]; then
   ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519_coder -N "" -C "coder-workspace-infrastructure" >/dev/null 2>&1
   chmod 600 /root/.ssh/id_ed25519_coder
   echo "  ✓ SSH-Key generiert"
-  echo "  Public Key (muss auf Docker-Host deployed werden):"
-  cat /root/.ssh/id_ed25519_coder.pub
 else
   echo "  ✓ SSH-Key vorhanden"
 fi
+
+# SSH-Config erstellen
+echo "=== SSH-Config ==="
+cat > /root/.ssh/config << 'EOF'
+Host docker
+    HostName 10.0.10.10
+    User root
+    IdentityFile /root/.ssh/id_ed25519_coder
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+
+Host proxmox
+    HostName 10.0.10.20
+    User root
+    IdentityFile /root/.ssh/id_ed25519_coder
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+
+Host truenas
+    HostName 10.0.10.30
+    User root
+    IdentityFile /root/.ssh/id_ed25519_coder
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+EOF
+chmod 600 /root/.ssh/config
+echo "  ✓ SSH-Config erstellt"
 
 # Herdr installieren (falls nicht vorhanden)
 echo ""
@@ -166,27 +191,4 @@ EOF
 chmod 700 ~/.config/ssh-mcp
 chmod 600 ~/.config/ssh-mcp/config.toml
 echo "  ✓ ssh-mcp Config erstellt"
-echo ""
-
-# SSH-Key für Infrastruktur-Zugriffe generieren (falls nicht vorhanden)
-echo "=== SSH-Key-Setup ==="
-if [ ! -f /root/.ssh/id_ed25519_coder ]; then
-  mkdir -p /root/.ssh
-  chmod 700 /root/.ssh
-  ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519_coder -N "" -C "coder-workspace-infrastructure" >/dev/null 2>&1
-  chmod 600 /root/.ssh/id_ed25519_coder
-  echo "  ✓ SSH-Key generiert"
-else
-  echo "  ✓ SSH-Key vorhanden"
-fi
-
-# Herdr installieren (falls nicht vorhanden)
-echo ""
-echo "=== Herdr-Installation ==="
-if ! command -v herdr &> /dev/null; then
-  curl -fsSL https://herdr.dev/install.sh | sh
-  echo "  ✓ Herdr installiert"
-else
-  echo "  ✓ Herdr vorhanden"
-fi
 echo ""
