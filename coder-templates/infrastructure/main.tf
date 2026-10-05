@@ -65,6 +65,9 @@ resource "docker_image" "workspace" {
   build {
     context    = "${path.module}"
     dockerfile = "Dockerfile"
+    build_args = {
+      CACHE_DATE = timestamp()
+    }
   }
 }
 
