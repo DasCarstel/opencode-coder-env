@@ -84,7 +84,7 @@ except (KeyError, json.JSONDecodeError):
     echo "  ⚠ ${varname}: nicht gefunden unter ${path} → ${key}"
   else
     export "${varname}=${value}"
-    echo "${varname}=${value}" >> /etc/opencode.env
+    echo "${varname}=\"${value}\"" >> /etc/opencode.env
     echo "  ✓ ${varname} geladen"
   fi
 }
@@ -98,4 +98,27 @@ read_secret "secret/data/mcp/opencloud" "username" "OPENCLOUD_USERNAME"
 echo ""
 echo "=== OpenBao: Fertig ==="
 echo "  Secrets verfügbar: $(grep -c '=' /etc/opencode.env 2>/dev/null || echo 0)/5"
+echo ""
+
+# SSH-Key für Infrastruktur-Zugriffe generieren (falls nicht vorhanden)
+echo "=== SSH-Key-Setup ==="
+if [ ! -f /root/.ssh/id_ed25519_coder ]; then
+  mkdir -p /root/.ssh
+  chmod 700 /root/.ssh
+  ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519_coder -N "" -C "coder-workspace-infrastructure" >/dev/null 2>&1
+  chmod 600 /root/.ssh/id_ed25519_coder
+  echo "  ✓ SSH-Key generiert"
+else
+  echo "  ✓ SSH-Key vorhanden"
+fi
+
+# Herdr installieren (falls nicht vorhanden)
+echo ""
+echo "=== Herdr-Installation ==="
+if ! command -v herdr &> /dev/null; then
+  curl -fsSL https://herdr.dev/install.sh | sh
+  echo "  ✓ Herdr installiert"
+else
+  echo "  ✓ Herdr vorhanden"
+fi
 echo ""
