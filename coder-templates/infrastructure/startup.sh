@@ -143,9 +143,12 @@ echo "  ✓ SSH-Config erstellt"
 echo ""
 echo "=== Herdr-Installation ==="
 if ! command -v herdr &> /dev/null; then
-  curl -fsSL https://herdr.dev/install.sh | sh
-  echo 'export PATH="/root/.local/bin:$PATH"' >> /root/.bashrc
-  echo "  ✓ Herdr installiert"
+  if curl -fsSL https://herdr.dev/install.sh | sh; then
+    echo 'export PATH="/root/.local/bin:$PATH"' >> /root/.bashrc
+    echo "  ✓ Herdr installiert"
+  else
+    echo "  ⚠ Herdr-Installation fehlgeschlagen (kein Internet?)"
+  fi
 else
   echo "  ✓ Herdr vorhanden"
 fi
