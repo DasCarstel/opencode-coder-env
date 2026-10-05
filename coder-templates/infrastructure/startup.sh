@@ -74,6 +74,7 @@ read_secret "secret/data/mcp/authentik"     "api_key" "AUTHENTIK_API_KEY"
 read_secret "secret/data/mcp/grafana"       "api_key" "GRAFANA_API_KEY"
 read_secret "secret/data/mcp/opencloud"     "api_key" "OPENCLOUD_API_KEY"
 read_secret "secret/data/mcp/opencloud"     "username" "OPENCLOUD_USERNAME"
+read_secret "secret/data/mcp/opencode-go"   "api_key" "OPENCODE_API_KEY"
 
 # ── SSH via OpenBao-CA (kurzlebige Zertifikate) ─────────────────────────────
 echo ""
@@ -226,6 +227,18 @@ with open("/root/.config/opencode/opencode.json", "w") as f:
     json.dump(config, f, indent=2)
 print("  ✓ Globale Config geschrieben")
 PYEOF
+
+# ── OpenCode Go (API-Key aus OpenBao) ───────────────────────────────────────
+if [ -n "${OPENCODE_API_KEY:-}" ]; then
+  export OPENCODE_API_KEY
+  grep -q "OPENCODE_API_KEY" /root/.bashrc 2>/dev/null || \
+    printf 'export OPENCODE_API_KEY="%s"\n' "$OPENCODE_API_KEY" >> /root/.bashrc
+  # Auch dem Hintergrund-Service bekanntmachen
+  opencode service set env OPENCODE_API_KEY "$OPENCODE_API_KEY" >/dev/null 2>&1 || true
+  echo "  ✓ OpenCode Go Key in Umgebung gesetzt"
+else
+  echo "  ⚠ Kein OpenCode Go Key (secret/data/mcp/opencode-go fehlt)"
+fi
 
 # ── Herdr-Server + Workspaces ───────────────────────────────────────────────
 echo ""
