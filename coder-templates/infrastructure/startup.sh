@@ -191,4 +191,107 @@ EOF
 chmod 700 ~/.config/ssh-mcp
 chmod 600 ~/.config/ssh-mcp/config.toml
 echo "  ✓ ssh-mcp Config erstellt"
+
+# OpenCode V2 installieren/upgraden
+echo ""
+echo "=== OpenCode V2 Installation ==="
+CURRENT_VERSION=$(opencode --version 2>&1 | grep -oP 'v\K[0-9]+' | head -1 || echo "0")
+if [ "$CURRENT_VERSION" != "2" ]; then
+  echo "  Installiere OpenCode V2..."
+  curl -fsSL https://opencode.ai/install | bash
+  echo "  ✓ OpenCode V2 installiert"
+else
+  echo "  ✓ OpenCode V2 bereits installiert"
+fi
+
+# Globale OpenCode Konfiguration erstellen
+echo ""
+echo "=== OpenCode Globale Konfiguration ==="
+mkdir -p /root/.config/opencode
+python3 << 'PYEOF'
+import json
+import os
+
+config = {
+    "$schema": "https://opencode.ai/config.json",
+    "mcp": {
+        "servers": {
+            "homeassistant": {
+                "type": "remote",
+                "url": "https://intern-homeassistant.mueller-nas.de/api/mcp",
+                "oauth": False,
+                "headers": {
+                    "Authorization": "Bearer {env:HA_LLA_TOKEN}",
+                    "Accept": "application/json"
+                }
+            }
+        }
+    }
+}
+
+config_path = "/root/.config/opencode/opencode.json"
+with open(config_path, "w") as f:
+    json.dump(config, f, indent=2)
+print(f"  ✓ Globale Config erstellt: {config_path}")
+PYEOF
+
+# OpenCode Service starten
+echo ""
+echo "=== OpenCode Service Start ==="
+source /etc/opencode.env
+export HA_LLA_TOKEN
+cd /home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/homeassistant
+if ! pgrep -f "opencode serve" > /dev/null; then
+  nohup opencode serve --service > /tmp/opencode-service.log 2>&1 &
+  sleep 3
+  if pgrep -f "opencode serve" > /dev/null; then
+    echo "  ✓ OpenCode Service gestartet"
+  else
+    echo "  ⚠ OpenCode Service Start fehlgeschlagen"
+  fi
+else
+  echo "  ✓ OpenCode Service läuft bereits"
+fi
+
+# Herdr Workspace Setup
+echo ""
+echo "=== Herdr Workspace Setup ==="
+export PATH="/root/.local/bin:$PATH"
+
+# Erstelle Herdr Config für Infrastructure Workspaces
+mkdir -p /home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/.herdr
+cat > /home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/.herdr/config.json << 'EOF'
+{
+  "version": 1,
+  "workspaces": [
+    {
+      "name": "homeassistant",
+      "path": "./homeassistant",
+      "agent": "opencode"
+    },
+    {
+      "name": "server-management",
+      "path": "./server-management",
+      "agent": "opencode"
+    }
+  ]
+}
+EOF
+echo "  ✓ Herdr Workspace Config erstellt"
+
+echo ""
+echo "=========================================="
+echo "Infrastructure Workspace Setup abgeschlossen"
+echo "=========================================="
+echo ""
+echo "Verfügbare Komponenten:"
+echo "  • OpenCode V2 mit HA MCP-Server (27 Tools)"
+echo "  • SSH-Verbindungen: docker, proxmox, truenas"
+echo "  • ssh-mcp mit 3 Host-Profilen"
+echo "  • Herdr 0.9.3 für Multi-Session-Management"
+echo ""
+echo "Nutzung:"
+echo "  • HA Workspace: cd ~/opencode-coder-env/workspaces/infrastructure/homeassistant"
+echo "  • SSH Workspace: cd ~/opencode-coder-env/workspaces/infrastructure/server-management"
+echo "  • Herdr: herdr (im infrastructure Verzeichnis)"
 echo ""
