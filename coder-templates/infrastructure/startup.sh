@@ -250,8 +250,8 @@ PYEOF
 # SSH-Key auf Infrastructure-Hosts deployen
 echo ""
 echo "=== SSH-Key Deployment ==="
-if [ -f /root/.ssh/id_ed25519.pub ]; then
-  PUBKEY=$(cat /root/.ssh/id_ed25519.pub)
+if [ -f /root/.ssh/id_ed25519_coder.pub ]; then
+  PUBKEY=$(cat /root/.ssh/id_ed25519_coder.pub)
   
   # Deploy to Docker
   ssh -o StrictHostKeyChecking=no root@10.0.10.10 "mkdir -p ~/.ssh && echo '$PUBKEY' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" 2>/dev/null && echo "  ✓ Key deployed to Docker" || echo "  ⚠ Docker deployment failed"
