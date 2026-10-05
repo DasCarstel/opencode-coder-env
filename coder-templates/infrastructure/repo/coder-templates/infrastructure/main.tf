@@ -81,7 +81,7 @@ resource "docker_container" "workspace" {
   env = [
     "CODER_AGENT_TOKEN=${coder_agent.main.token}",
     "OPENBAO_APPROLE_SECRET_ID=${data.coder_parameter.openbao_approle_secret_id.value}",
-    "OPENBAO_ADDR=${var.openbao_addr}",
+    "OPENBAO_ADDR=https://openbao.mueller-nas.de",
     "OPENBAO_ROLE_ID=${var.openbao_role_id}",
   ]
 

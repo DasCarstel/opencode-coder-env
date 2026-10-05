@@ -10,7 +10,8 @@
 
 set -uo pipefail
 
-OPENBAO_ADDR="${OPENBAO_ADDR:-https://openbao.mueller-nas.de}"
+# OpenBao-Adresse fest verdrahtet (die Container-ENV kann einen veralteten Wert enthalten)
+OPENBAO_ADDR="https://openbao.mueller-nas.de"
 OPENBAO_ROLE_ID="${OPENBAO_ROLE_ID:-mcp-server}"
 HERDR_BIN="/root/.local/bin/herdr"
 
