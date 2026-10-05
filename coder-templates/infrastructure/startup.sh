@@ -197,43 +197,15 @@ echo ""
 echo "=== OpenCode V2 Installation ==="
 CURRENT_VERSION=$(opencode --version 2>&1 | grep -oP 'v\K[0-9]+' | head -1 || echo "0")
 if [ "$CURRENT_VERSION" != "2" ]; then
+  echo "  Deinstalliere OpenCode V1..."
+  npm uninstall -g opencode 2>/dev/null || true
+  rm -f /usr/bin/opencode
   echo "  Installiere OpenCode V2..."
-  curl -fsSL https://opencode.ai/install | bash
+  npm install -g @opencode/cli 2>&1 | tail -5
   echo "  ✓ OpenCode V2 installiert"
 else
   echo "  ✓ OpenCode V2 bereits installiert"
 fi
-
-# Globale OpenCode Konfiguration erstellen
-echo ""
-echo "=== OpenCode Globale Konfiguration ==="
-mkdir -p /root/.config/opencode
-python3 << 'PYEOF'
-import json
-import os
-
-config = {
-    "$schema": "https://opencode.ai/config.json",
-    "mcp": {
-        "servers": {
-            "homeassistant": {
-                "type": "remote",
-                "url": "https://intern-homeassistant.mueller-nas.de/api/mcp",
-                "oauth": False,
-                "headers": {
-                    "Authorization": "Bearer {env:HA_LLA_TOKEN}",
-                    "Accept": "application/json"
-                }
-            }
-        }
-    }
-}
-
-config_path = "/root/.config/opencode/opencode.json"
-with open(config_path, "w") as f:
-    json.dump(config, f, indent=2)
-print(f"  ✓ Globale Config erstellt: {config_path}")
-PYEOF
 
 # OpenCode Service starten
 echo ""
@@ -251,6 +223,20 @@ if ! pgrep -f "opencode serve" > /dev/null; then
   fi
 else
   echo "  ✓ OpenCode Service läuft bereits"
+fi
+
+# HA MCP-Server über CLI hinzufügen (wichtig: nicht manuell in Config!)
+echo ""
+echo "=== HA MCP-Server Setup ==="
+sleep 2
+if ! opencode mcp list 2>&1 | grep -q "homeassistant"; then
+  opencode mcp add homeassistant \
+    --url "https://intern-homeassistant.mueller-nas.de/api/mcp" \
+    --header "Authorization=Bearer $HA_LLA_TOKEN" \
+    --header "Accept=application/json" 2>&1
+  echo "  ✓ HA MCP-Server hinzugefügt"
+else
+  echo "  ✓ HA MCP-Server bereits vorhanden"
 fi
 
 # Herdr Workspace Setup
