@@ -72,15 +72,36 @@ coder templates push infrastructure --directory coder-templates/infrastructure -
 Der Workspace cloned automatisch dieses Repo und holt die Secrets aus OpenBao.
 
 ### 4. OpenCode starten
-```bash
-opencode-ha    # Home Assistant Projekt
-opencode-ssh   # Server Management Projekt
-```
+
+Die Coder-App **„Infrastructure Workspace"** öffnet Herdr mit zwei Workspaces:
+
+- **Home Assistant** → OpenCode mit HA-MCP (27 Tools)
+- **Server Management** → OpenCode mit SSH-MCP (14 Tools)
+
+Beide OpenCode-Instanzen laufen parallel in separaten Herdr-Panes und
+beenden sich nicht gegenseitig.
+
+## Architektur (aktueller Stand)
+
+- **Herdr** ist der Einstiegspunkt (Coder-App). Es verwaltet beide
+  OpenCode-Sitzungen in einem persistenten Server.
+- **Secrets** kommen zur Laufzeit aus OpenBao (AppRole `mcp-server`).
+- **SSH** läuft über kurzlebige Zertifikate der OpenBao-SSH-CA
+  (Rolle `host-access`, Principal `root`) – kein statischer Key.
+- **Herdr-Binary** liegt auf dem Coder-Host unter `/opt/opencode-bin/herdr`
+  und wird per Bind-Mount in den Workspace gemountet (GitHub ist aus dem
+  Container nicht erreichbar).
+
+### Voraussetzungen auf den Hosts
+
+- Docker/Proxmox/TrueNAS vertrauen der OpenBao-CA:
+  `TrustedUserCAKeys /etc/ssh/openbao-ca.pub`
+  (Key muss dem aktuellen OpenBao-CA-Key entsprechen)
 
 ## Bestandsaufnahme (04.10.2026)
 
 - OpenBao: unsealed, SSH CA konfiguriert, AppRole `mcp-server` vorhanden
-- SSH-Rolle `host-access` existiert
+- SSH-Rolle `host-access`: `allowed_users = root`
 - HA `mcp_server` Integration aktiviert und getestet (v1.26.0)
 - HA Token aus OpenBao (`secret/data/mcp/homeassistant` api_key)
 - ssh-mcp v2.17.0 installiert und konfiguriert (`~/.config/ssh-mcp/config.toml`)
