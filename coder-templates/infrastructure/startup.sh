@@ -74,7 +74,11 @@ read_secret "secret/data/mcp/authentik"     "api_key" "AUTHENTIK_API_KEY"
 read_secret "secret/data/mcp/grafana"       "api_key" "GRAFANA_API_KEY"
 read_secret "secret/data/mcp/opencloud"     "api_key" "OPENCLOUD_API_KEY"
 read_secret "secret/data/mcp/opencloud"     "username" "OPENCLOUD_USERNAME"
-read_secret "secret/data/mcp/opencode-go"   "api_key" "OPENCODE_API_KEY"
+# OpenCode Go: mehrere Accounts
+read_secret "secret/data/mcp/opencode-go"   "default1" "OC_GO_DEFAULT1"
+read_secret "secret/data/mcp/opencode-go"   "default2" "OC_GO_DEFAULT2"
+read_secret "secret/data/mcp/opencode-go"   "default3" "OC_GO_DEFAULT3"
+read_secret "secret/data/mcp/opencode-go"   "active"   "OC_GO_ACTIVE"
 
 # ── SSH via OpenBao-CA (kurzlebige Zertifikate) ─────────────────────────────
 echo ""
@@ -228,17 +232,50 @@ with open("/root/.config/opencode/opencode.json", "w") as f:
 print("  ✓ Globale Config geschrieben")
 PYEOF
 
-# ── OpenCode Go (API-Key aus OpenBao) ───────────────────────────────────────
-if [ -n "${OPENCODE_API_KEY:-}" ]; then
+# ── OpenCode Go (mehrere Keys aus OpenBao) ──────────────────────────────────
+OC_GO_ACTIVE="${OC_GO_ACTIVE:-default2}"
+ACTIVE_VAR="OC_GO_${OC_GO_ACTIVE^^}"
+OPENCODE_API_KEY="${!ACTIVE_VAR:-}"
+
+if [ -n "$OPENCODE_API_KEY" ]; then
   export OPENCODE_API_KEY
-  grep -q "OPENCODE_API_KEY" /root/.bashrc 2>/dev/null || \
-    printf 'export OPENCODE_API_KEY="%s"\n' "$OPENCODE_API_KEY" >> /root/.bashrc
-  # Auch dem Hintergrund-Service bekanntmachen
+  sed -i '/^export OPENCODE_API_KEY=/d' /root/.bashrc 2>/dev/null || true
+  printf 'export OPENCODE_API_KEY="%s"\n' "$OPENCODE_API_KEY" >> /root/.bashrc
   opencode service set env OPENCODE_API_KEY "$OPENCODE_API_KEY" >/dev/null 2>&1 || true
-  echo "  ✓ OpenCode Go Key in Umgebung gesetzt"
+  echo "  ✓ OpenCode Go aktiv: $OC_GO_ACTIVE"
 else
-  echo "  ⚠ Kein OpenCode Go Key (secret/data/mcp/opencode-go fehlt)"
+  echo "  ⚠ Kein OpenCode Go Key gefunden"
 fi
+
+# Helper zum Umschalten zwischen den OpenCode-Go-Keys
+cat > /usr/local/bin/oc-go << 'OCGO'
+#!/bin/bash
+# OpenCode Go Key wechseln:  oc-go list  |  oc-go use <default1|default2|default3>
+source /etc/opencode.env 2>/dev/null
+case "${1:-list}" in
+  list)
+    echo "Verfügbare OpenCode-Go-Keys:"
+    for n in default1 default2 default3; do
+      v="OC_GO_${n^^}"; [ -n "${!v:-}" ] && echo "  - $n"
+    done
+    echo "Aktiv: ${OC_GO_ACTIVE:-default2}"
+    ;;
+  use)
+    NAME="${2:-}"
+    [ -z "$NAME" ] && { echo "Nutzung: oc-go use <default1|default2|default3>"; exit 1; }
+    VAR="OC_GO_${NAME^^}"; KEY="${!VAR:-}"
+    [ -z "$KEY" ] && { echo "Unbekannter Key: $NAME"; exit 1; }
+    sed -i '/^export OPENCODE_API_KEY=/d' /root/.bashrc 2>/dev/null || true
+    printf 'export OPENCODE_API_KEY="%s"\n' "$KEY" >> /root/.bashrc
+    export OPENCODE_API_KEY="$KEY"
+    opencode service set env OPENCODE_API_KEY "$KEY" >/dev/null 2>&1 || true
+    echo "✓ Aktiv: $NAME (OpenCode-Service neu gestartet)"
+    ;;
+  *) echo "Nutzung: oc-go [list | use <name>]";;
+esac
+OCGO
+chmod +x /usr/local/bin/oc-go
+echo "  ✓ Helper 'oc-go' installiert"
 
 # ── Herdr-Server + Workspaces ───────────────────────────────────────────────
 echo ""
