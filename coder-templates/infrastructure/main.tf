@@ -155,15 +155,14 @@ resource "coder_agent" "main" {
       git clone --depth 1 --branch master https://github.com/DasCarstel/opencode-coder-env.git "$REPO_DIR" 2>&1
     fi
 
-    # 4. Verzeichnisse + Skills verlinken
+    # 4. Verzeichnisse + Basis-Tooling
     mkdir -p ~/.config/opencode ~/.config/ssh-mcp ~/.cache/opencode/opencode-model-router
     [ -f "$REPO_DIR/tiers.json" ] && ln -sf "$REPO_DIR/tiers.json" ~/.cache/opencode/opencode-model-router/tiers.json || true
-    for skill_dir in "$REPO_DIR/skills/infrastructure"/*/; do
-      [ -d "$skill_dir" ] || continue
-      skill_name=$(basename "$skill_dir")
-      mkdir -p ~/.config/opencode/skills/"$skill_name"
-      ln -sf "$skill_dir/SKILL.md" ~/.config/opencode/skills/"$skill_name"/SKILL.md
-    done
+
+    # 4b. uv/uvx installieren (für Community-MCP-Server wie authentik-mcp)
+    if [ ! -x "$HOME/.local/bin/uvx" ]; then
+      curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 | tail -2 || true
+    fi
 
     # 5. ssh-mcp installieren
     npm install -g ssh-mcp@2.17.0 2>&1 | tail -2 || true

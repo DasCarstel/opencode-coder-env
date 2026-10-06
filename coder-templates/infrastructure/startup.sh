@@ -3,9 +3,9 @@
 #
 # 1. Secrets aus OpenBao (AppRole) laden
 # 2. SSH-Zugang via OpenBao-SSH-CA (kurzlebige Zertifikate)
-# 3. Herdr installieren (aus /repo/bin/herdr)
+# 3. Herdr installieren
 # 4. ssh-mcp konfigurieren
-# 5. OpenCode V2 + MCP-Konfiguration
+# 5. OpenCode V2 + globale MCP-Konfiguration (Workspace-Configs liegen im Repo)
 # 6. Herdr-Server + zwei Workspaces (Home Assistant, Server Management)
 
 set -uo pipefail
@@ -19,6 +19,8 @@ grep -q '/root/.local/bin' /root/.bashrc 2>/dev/null || echo 'export PATH="/root
 OPENBAO_ADDR="https://openbao.mueller-nas.de"
 OPENBAO_ROLE_ID="${OPENBAO_ROLE_ID:-mcp-server}"
 HERDR_BIN="/usr/local/bin/herdr"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # ── /etc/opencode.env vorbereiten ───────────────────────────────────────────
 : > /etc/opencode.env
@@ -50,7 +52,6 @@ if [ -z "$BAO_TOKEN" ]; then
   exit 1
 fi
 export BAO_TOKEN
-printf 'BAO_TOKEN="%s"\n' "$BAO_TOKEN" >> /etc/opencode.env
 printf 'BAO_TOKEN="%s"\n' "$BAO_TOKEN" >> /etc/opencode.env
 echo "  ✓ OpenBao-Token erhalten"
 
@@ -243,71 +244,32 @@ else
   echo "  ⚠ npm nicht verfügbar – OpenCode kann nicht installiert werden"
 fi
 
-# ── MCP-Konfiguration (pro Workspace) ───────────────────────────────────────
+# ── MCP-Konfiguration ───────────────────────────────────────────────────────
 echo ""
 echo "=== MCP-Konfiguration ==="
 mkdir -p /root/.config/opencode
 
-# Globale Config: nur ssh-mcp (HA wird workspace-spezifisch konfiguriert)
-python3 << 'PYEOF'
-import json
-config = {
-    "$schema": "https://opencode.ai/config.json",
-    "mcp": {
-        "servers": {
-            "ssh-mcp": {"type": "local", "command": ["ssh-mcp"]},
-        }
-    },
-}
-with open("/root/.config/opencode/opencode.json", "w") as f:
-    json.dump(config, f, indent=2)
-print("  ✓ Globale Config geschrieben (nur SSH)")
-PYEOF
-PYEOF
+# Globale Config (nur ssh-mcp) aus dem Repo installieren
+GLOBAL_CFG_SRC="$REPO_DIR/coder-templates/infrastructure/config/global-opencode.json"
+if [ -f "$GLOBAL_CFG_SRC" ]; then
+  install -m 600 "$GLOBAL_CFG_SRC" /root/.config/opencode/opencode.json
+  echo "  ✓ Globale Config installiert (nur SSH)"
+else
+  echo "  ⚠ Globale Config nicht gefunden: $GLOBAL_CFG_SRC"
+fi
 
-# Home Assistant Workspace: HA + SSH
-mkdir -p /home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/homeassistant/.config/opencode
-python3 - "$HA_LLA_TOKEN" << 'PYEOF'
-import json, sys
-token = sys.argv[1] if len(sys.argv) > 1 else ""
-config = {
-    "$schema": "https://opencode.ai/config.json",
-    "mcp": {
-        "servers": {
-            "homeassistant": {
-                "type": "remote",
-                "url": "https://intern-homeassistant.mueller-nas.de/api/mcp",
-                "headers": {
-                    "Authorization": "Bearer " + token,
-                    "Accept": "application/json",
-                },
-            },
-            "ssh-mcp": {"type": "local", "command": ["ssh-mcp"]},
-        }
-    },
-}
-with open("/home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/homeassistant/.config/opencode/opencode.json", "w") as f:
-    json.dump(config, f, indent=2)
-print("  ✓ Home Assistant Config (HA + SSH)")
-PYEOF
-
-# Server Management Workspace: nur SSH-MCP
-mkdir -p /home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/server-management/.config/opencode
-python3 << 'PYEOF'
-import json
-config = {
-    "$schema": "https://opencode.ai/config.json",
-    "mcp": {
-        "servers": {
-            "ssh-mcp": {"type": "local", "command": ["ssh-mcp"]},
-        }
-    },
-}
-with open("/home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/server-management/.config/opencode/opencode.json", "w") as f:
-    json.dump(config, f, indent=2)
-print("  ✓ Server Management Config (nur SSH)")
-PYEOF
-PYEOF
+# Secrets in die OpenCode-Service-Umgebung injizieren.
+# Die workspace-spezifischen Configs (im Repo) referenzieren {env:...}.
+if [ -n "${HA_LLA_TOKEN:-}" ]; then
+  opencode service set env HA_LLA_TOKEN "$HA_LLA_TOKEN" >/dev/null 2>&1 \
+    && echo "  ✓ HA_LLA_TOKEN im OpenCode-Service gesetzt" \
+    || echo "  ⚠ HA_LLA_TOKEN konnte nicht gesetzt werden"
+fi
+if [ -n "${AUTHENTIK_API_KEY:-}" ]; then
+  opencode service set env AUTHENTIK_API_KEY "$AUTHENTIK_API_KEY" >/dev/null 2>&1 \
+    && echo "  ✓ AUTHENTIK_API_KEY im OpenCode-Service gesetzt" \
+    || echo "  ⚠ AUTHENTIK_API_KEY konnte nicht gesetzt werden"
+fi
 
 # ── OpenCode Go (mehrere Keys aus OpenBao) ──────────────────────────────────
 OC_GO_ACTIVE="${OC_GO_ACTIVE:-default2}"
@@ -396,7 +358,7 @@ if [ -x "$HERDR_BIN" ]; then
     echo "  ⚠ Herdr-Server-Start fehlgeschlagen"
   fi
 
-  INFRA=/home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure
+  INFRA="$REPO_DIR/workspaces/infrastructure"
 
   # Workspaces anlegen (idempotent)
   "$HERDR_BIN" workspace list 2>/dev/null | grep -q "Home Assistant" \

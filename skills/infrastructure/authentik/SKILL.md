@@ -18,10 +18,10 @@ The `authentik-mcp` server (nikitatsym/authentik-mcp) provides comprehensive Aut
     "servers": {
       "authentik": {
         "type": "local",
-        "command": ["uvx", "--refresh", "--extra-index-url", "https://nikitatsym.github.io/authentik-mcp/simple", "authentik-mcp"],
+        "command": ["/root/.local/bin/uvx", "--extra-index-url", "https://nikitatsym.github.io/authentik-mcp/simple", "authentik-mcp"],
         "environment": {
           "AUTHENTIK_URL": "https://auth.mueller-nas.de",
-          "AUTHENTIK_TOKEN": "{env:AUTHENTIK_BOOTSTRAP_TOKEN}"
+          "AUTHENTIK_TOKEN": "{env:AUTHENTIK_API_KEY}"
         }
       }
     }
@@ -29,7 +29,7 @@ The `authentik-mcp` server (nikitatsym/authentik-mcp) provides comprehensive Aut
 }
 ```
 
-The token is retrieved from OpenBao at `secret/data/authentik/bootstrap-token`.
+The token is retrieved from OpenBao at `secret/data/mcp/authentik` (key `api_key`) and injected into the OpenCode service environment as `AUTHENTIK_API_KEY`.
 
 ## Available Tool Groups
 
