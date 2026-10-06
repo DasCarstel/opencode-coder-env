@@ -148,7 +148,11 @@ resource "coder_agent" "main" {
     REPO_DIR="/home/${data.coder_workspace_owner.me.name}/opencode-coder-env"
     mkdir -p "/home/${data.coder_workspace_owner.me.name}"
     if [ -d "$REPO_DIR/.git" ]; then
-      cd "$REPO_DIR" && git pull --ff-only 2>&1 || true
+      # Deployment-Checkout: hart auf origin/master setzen (lokale Mode-/Edit-Abweichungen verwerfen)
+      cd "$REPO_DIR" \
+        && git fetch --depth 1 origin master 2>&1 \
+        && git -c core.fileMode=false reset --hard FETCH_HEAD 2>&1 \
+        && git clean -fdq -- workspaces 2>/dev/null || true
     else
       # Volume leeren (ohne es zu entfernen, da es gemountet ist)
       find "$REPO_DIR" -mindepth 1 -delete 2>/dev/null || true
@@ -171,7 +175,6 @@ resource "coder_agent" "main" {
     echo 'alias update-opencode-config="cd ~/opencode-coder-env && git pull --ff-only"' >> ~/.bashrc
 
     # 7. Komplettes Setup (Secrets, SSH-CA, Herdr, OpenCode, MCP)
-    chmod +x "$REPO_DIR/coder-templates/infrastructure/startup.sh"
     bash "$REPO_DIR/coder-templates/infrastructure/startup.sh" 2>&1 || echo "⚠ setup mit Fehlern beendet"
 
     echo ""
