@@ -245,6 +245,7 @@ echo "=== MCP-Konfiguration ==="
 mkdir -p /root/.config/opencode
 
 # Home Assistant Workspace: beide MCPs (HA + SSH)
+HA_LLA_TOKEN="${HA_LLA_TOKEN:-}"
 python3 - "$HA_LLA_TOKEN" << 'PYEOF'
 import json, sys
 token = sys.argv[1] if len(sys.argv) > 1 else ""
