@@ -210,9 +210,17 @@ fi
 echo ""
 echo "=== ssh-mcp Config ==="
 mkdir -p /root/.config/ssh-mcp
+mkdir -p /root/.ssh-mcp-transfers && chmod 700 /root/.ssh-mcp-transfers
 cat > /root/.config/ssh-mcp/config.toml << 'MCPCFG'
 [defaults]
 defaultProfile = "docker-host"
+approvalMode = "auto"
+transferRoot = "/root/.ssh-mcp-transfers"
+
+# Interne Hosts: alle Befehlsklassen erlauben (inkl. sudo/privileged).
+# Die eingebaute Forbidden-Liste (rm -rf /, mkfs, ...) greift weiterhin.
+[policy.roleBindings.admin]
+prod = ["read-only", "safe", "destructive", "privileged"]
 
 [[profiles]]
 name = "docker-host"
@@ -222,7 +230,8 @@ user = "root"
 auth = "key"
 keyRef = "/root/.ssh/id_ed25519_mcp"
 role = "admin"
-approvalPolicy = "ask-destructive"
+group = "prod"
+approvalPolicy = "auto"
 
 [[profiles]]
 name = "proxmox"
@@ -231,8 +240,9 @@ port = 22
 user = "root"
 auth = "key"
 keyRef = "/root/.ssh/id_ed25519_mcp"
-role = "viewer"
-approvalPolicy = "ask-all"
+role = "admin"
+group = "prod"
+approvalPolicy = "auto"
 
 [[profiles]]
 name = "truenas"
@@ -241,8 +251,64 @@ port = 22
 user = "root"
 auth = "key"
 keyRef = "/root/.ssh/id_ed25519_mcp"
-role = "viewer"
-approvalPolicy = "ask-all"
+role = "admin"
+group = "prod"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "pbs"
+host = "10.0.10.21"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "prod"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "coder"
+host = "10.0.10.17"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "prod"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "unifi"
+host = "10.0.0.1"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "prod"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "media"
+host = "10.0.10.25"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "prod"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "test"
+host = "10.0.10.40"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "prod"
+approvalPolicy = "auto"
 MCPCFG
 chmod 700 /root/.config/ssh-mcp
 chmod 600 /root/.config/ssh-mcp/config.toml
