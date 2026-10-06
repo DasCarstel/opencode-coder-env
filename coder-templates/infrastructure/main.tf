@@ -126,7 +126,7 @@ resource "coder_agent" "main" {
   os   = "linux"
   arch = data.coder_provisioner.me.arch
 
-  working_directory = "/home/${data.coder_workspace_owner.me.name}"
+  dir = "/home/${data.coder_workspace_owner.me.name}"
 
   startup_script = <<-EOT
     #!/bin/bash
