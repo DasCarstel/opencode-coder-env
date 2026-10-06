@@ -12,6 +12,8 @@ set -uo pipefail
 
 # ── PATH sicherstellen ─────────────────────────────────────────────────
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin:$PATH"
+# PATH auch in .bashrc setzen (für neue Shells)
+grep -q '/root/.local/bin' /root/.bashrc 2>/dev/null || echo 'export PATH="/root/.local/bin:$PATH"' >> /root/.bashrc
 
 # OpenBao-Adresse fest verdrahtet (die Container-ENV kann einen veralteten Wert enthalten)
 OPENBAO_ADDR="https://openbao.mueller-nas.de"
