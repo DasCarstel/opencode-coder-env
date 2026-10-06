@@ -186,7 +186,7 @@ resource "coder_app" "herdr" {
   agent_id     = coder_agent.main.id
   slug         = "herdr"
   display_name = "Infrastructure Workspace"
-  command      = "terminal /usr/local/bin/herdr"
+  command      = "/usr/local/bin/herdr"
   icon         = "/icon/terminal.svg"
   share        = "owner"
 }
