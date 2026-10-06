@@ -150,7 +150,8 @@ resource "coder_agent" "main" {
     if [ -d "$REPO_DIR/.git" ]; then
       cd "$REPO_DIR" && git pull --ff-only 2>&1 || true
     else
-      rm -rf "$REPO_DIR"
+      # Volume leeren (ohne es zu entfernen, da es gemountet ist)
+      find "$REPO_DIR" -mindepth 1 -delete 2>/dev/null || true
       git clone --depth 1 --branch master https://github.com/DasCarstel/opencode-coder-env.git "$REPO_DIR" 2>&1
     fi
 
