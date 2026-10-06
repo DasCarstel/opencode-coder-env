@@ -144,11 +144,15 @@ resource "coder_agent" "main" {
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
     apt-get install -y nodejs
 
-    # 3. Repo aus dem Docker-Image kopieren
+    # 3. Repo von GitHub klonen (oder aktualisieren)
     REPO_DIR="/home/${data.coder_workspace_owner.me.name}/opencode-coder-env"
     mkdir -p "/home/${data.coder_workspace_owner.me.name}"
-    rm -rf "$REPO_DIR"
-    cp -r /repo "$REPO_DIR"
+    if [ -d "$REPO_DIR/.git" ]; then
+      cd "$REPO_DIR" && git pull --ff-only 2>&1 || true
+    else
+      rm -rf "$REPO_DIR"
+      git clone --depth 1 --branch master https://github.com/DasCarstel/opencode-coder-env.git "$REPO_DIR" 2>&1
+    fi
 
     # 4. Verzeichnisse + Skills verlinken
     mkdir -p ~/.config/opencode ~/.config/ssh-mcp ~/.cache/opencode/opencode-model-router
