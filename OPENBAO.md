@@ -27,6 +27,7 @@ OpenBao (Vault-Fork) verwaltet alle Secrets für die Coder-Infrastruktur.
 | secret/data/mcp/grafana | api_key – Grafana API-Key |
 | secret/data/mcp/opencloud | api_key, username – OpenCloud Zugang |
 | secret/data/mcp/opencode-go | default1, default2, default3, active – OpenCode Go API-Keys |
+| secret/data/mcp/ssh-mcp | private_key, public_key – statischer SSH-Key für ssh-mcp |
 | secret/data/ssh/unifi | UniFi SSH-Zugang |
 
 ## SSH-CA
@@ -34,7 +35,13 @@ OpenBao (Vault-Fork) verwaltet alle Secrets für die Coder-Infrastruktur.
 OpenBao fungiert als SSH-Certificate Authority. Der CA-Key wird auf
 docker, proxmox und truenas unter /etc/ssh/openbao-ca.pub abgelegt.
 
-Signierung: ssh/sign/host-access (valid_principals: root)
+Signierung: ssh/sign/host-access (valid_principals: root, TTL 24h)
+
+> **Hinweis:** Die CA-Zertifikate werden nur vom interaktiven `ssh`
+> (`~/.ssh/config`) genutzt. **ssh-mcp** verwendet stattdessen den statischen
+> Key aus `secret/data/mcp/ssh-mcp`, weil die von ssh-mcp genutzte `ssh2`-Library
+> keine OpenSSH-CA-Zertifikate unterstützt. Dessen Public-Key liegt in
+> `authorized_keys` der Zielhosts.
 
 ## Bootstrap
 
