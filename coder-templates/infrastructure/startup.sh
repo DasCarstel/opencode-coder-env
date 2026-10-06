@@ -18,7 +18,7 @@ grep -q '/root/.local/bin' /root/.bashrc 2>/dev/null || echo 'export PATH="/root
 # OpenBao-Adresse fest verdrahtet (die Container-ENV kann einen veralteten Wert enthalten)
 OPENBAO_ADDR="https://openbao.mueller-nas.de"
 OPENBAO_ROLE_ID="${OPENBAO_ROLE_ID:-mcp-server}"
-HERDR_BIN="/root/.local/bin/herdr"
+HERDR_BIN="/usr/local/bin/herdr"
 
 # ── /etc/opencode.env vorbereiten ───────────────────────────────────────────
 : > /etc/opencode.env
@@ -142,7 +142,7 @@ echo "  ✓ SSH-Config erstellt"
 # ── Herdr installieren (robuste Version) ─────────────────────────────────────
 echo ""
 echo "=== Herdr ==="
-mkdir -p /root/.local/bin
+mkdir -p /usr/local/bin
 HERDR_VERSION="0.9.3"
 HERDR_URLS=(
   "https://github.com/herdr-sh/herdr/releases/download/v${HERDR_VERSION}/herdr-linux-amd64"
