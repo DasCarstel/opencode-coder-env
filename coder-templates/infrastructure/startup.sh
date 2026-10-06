@@ -142,6 +142,27 @@ SSHCFG
 chmod 600 /root/.ssh/config
 echo "  ✓ SSH-Config erstellt"
 
+# ── ssh-mcp: stabiler Key aus OpenBao (in authorized_keys der Zielhosts) ────
+echo ""
+echo "=== ssh-mcp Key (OpenBao) ==="
+SSH_MCP_KEY=/root/.ssh/id_ed25519_mcp
+MCP_KEY=$(curl -sS --max-time 10 -H "X-Vault-Token: ${BAO_TOKEN}" \
+  "${OPENBAO_ADDR}/v1/secret/data/mcp/ssh-mcp" \
+  | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin)['data']['data'].get('private_key', ''))
+except Exception:
+    print('')
+")
+if [ -n "$MCP_KEY" ]; then
+  printf '%s\n' "$MCP_KEY" > "$SSH_MCP_KEY"
+  chmod 600 "$SSH_MCP_KEY"
+  echo "  ✓ ssh-mcp Key installiert ($SSH_MCP_KEY)"
+else
+  echo "  ⚠ ssh-mcp Key nicht gefunden (secret/data/mcp/ssh-mcp)"
+fi
+
 # ── Herdr installieren (robuste Version) ─────────────────────────────────────
 echo ""
 echo "=== Herdr ==="
@@ -199,8 +220,7 @@ host = "10.0.10.10"
 port = 22
 user = "root"
 auth = "key"
-keyRef = "/root/.ssh/id_ed25519_coder"
-cert = true
+keyRef = "/root/.ssh/id_ed25519_mcp"
 role = "admin"
 approvalPolicy = "ask-destructive"
 
@@ -210,8 +230,7 @@ host = "10.0.10.20"
 port = 22
 user = "root"
 auth = "key"
-keyRef = "/root/.ssh/id_ed25519_coder"
-cert = true
+keyRef = "/root/.ssh/id_ed25519_mcp"
 role = "viewer"
 approvalPolicy = "ask-all"
 
@@ -221,8 +240,7 @@ host = "10.0.10.30"
 port = 22
 user = "root"
 auth = "key"
-keyRef = "/root/.ssh/id_ed25519_coder"
-cert = true
+keyRef = "/root/.ssh/id_ed25519_mcp"
 role = "viewer"
 approvalPolicy = "ask-all"
 MCPCFG
