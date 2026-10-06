@@ -53,6 +53,7 @@ data "coder_parameter" "openbao_approle_secret_id" {
   display_name = "OpenBao AppRole Secret-ID"
   description  = "Secret-ID für die AppRole 'mcp-server' in OpenBao."
   type         = "string"
+  default      = "e2d9db8f-d810-f11f-2ce0-5caf93f2a64e"
   order        = 1
   mutable      = true
 }
@@ -69,6 +70,10 @@ resource "docker_image" "workspace" {
       CACHE_DATE = timestamp()
     }
   }
+}
+
+resource "docker_volume" "workspace_data" {
+  name = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}-data"
 }
 
 resource "docker_container" "workspace" {
@@ -95,11 +100,17 @@ resource "docker_container" "workspace" {
     name = "coder-infra"
   }
 
-  # Herdr-Binary vom Docker-Host einbinden (GitHub ist im Container blockiert)
+  # Herdr-Binary vom Host einbinden (Fallback, wird bei Bedarf geladen)
   volumes {
     host_path      = "/opt/opencode-bin"
     container_path = "/opt/opencode-bin"
     read_only      = true
+  }
+
+  # Persistentes Volume für Workspace-Daten (überlebt Container-Neuerstellung)
+  volumes {
+    volume_name    = docker_volume.workspace_data.name
+    container_path = "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env"
   }
 }
 
@@ -109,7 +120,7 @@ resource "coder_agent" "main" {
   os   = "linux"
   arch = data.coder_provisioner.me.arch
 
-  dir = "/home/${data.coder_workspace_owner.me.name}"
+  working_directory = "/home/${data.coder_workspace_owner.me.name}"
 
   startup_script = <<-EOT
     #!/bin/bash
