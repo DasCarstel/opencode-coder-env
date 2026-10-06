@@ -10,6 +10,9 @@
 
 set -uo pipefail
 
+# ── PATH sicherstellen ─────────────────────────────────────────────────
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin:$PATH"
+
 # OpenBao-Adresse fest verdrahtet (die Container-ENV kann einen veralteten Wert enthalten)
 OPENBAO_ADDR="https://openbao.mueller-nas.de"
 OPENBAO_ROLE_ID="${OPENBAO_ROLE_ID:-mcp-server}"
@@ -134,12 +137,16 @@ SSHCFG
 chmod 600 /root/.ssh/config
 echo "  ✓ SSH-Config erstellt"
 
-# ── Herdr installieren (Download mit Fallback) ─────────────────────────────
+# ── Herdr installieren (robuste Version) ─────────────────────────────────────
 echo ""
 echo "=== Herdr ==="
 mkdir -p /root/.local/bin
 HERDR_VERSION="0.9.3"
-HERDR_URL="https://herdr.dev/api/releases/v${HERDR_VERSION}/linux-amd64"
+HERDR_URLS=(
+  "https://github.com/herdr-sh/herdr/releases/download/v${HERDR_VERSION}/herdr-linux-amd64"
+  "https://github.com/herdr-sh/herdr/releases/latest/download/herdr-linux-amd64"
+  "https://herdr.dev/api/releases/v${HERDR_VERSION}/linux-amd64"
+)
 
 if [ -x "$HERDR_BIN" ]; then
   echo "  ✓ Herdr vorhanden ($($HERDR_BIN --version 2>/dev/null))"
@@ -153,11 +160,23 @@ elif [ -f /usr/local/bin/herdr ]; then
   echo "  ✓ Herdr aus /usr/local/bin installiert ($($HERDR_BIN --version 2>/dev/null))"
 else
   echo "  → Herdr wird heruntergeladen..."
-  if curl -fsSL --max-time 60 "$HERDR_URL" -o "$HERDR_BIN" 2>/dev/null; then
-    chmod +x "$HERDR_BIN"
-    echo "  ✓ Herdr installiert ($($HERDR_BIN --version 2>/dev/null))"
-  else
+  INSTALLED=false
+  for url in "${HERDR_URLS[@]}"; do
+    echo "    Versuche: $url"
+    if curl -fsSL --max-time 30 "$url" -o "$HERDR_BIN" 2>/dev/null; then
+      chmod +x "$HERDR_BIN"
+      if "$HERDR_BIN" --version >/dev/null 2>&1; then
+        echo "  ✓ Herdr installiert ($($HERDR_BIN --version 2>/dev/null))"
+        INSTALLED=true
+        break
+      else
+        rm -f "$HERDR_BIN"
+      fi
+    fi
+  done
+  if [ "$INSTALLED" = false ]; then
     echo "  ⚠ Herdr-Download fehlgeschlagen – Herdr nicht verfügbar"
+    echo "  Hinweis: Überspringe Herdr-Server-Start"
   fi
 fi
 
@@ -206,12 +225,19 @@ echo "  ✓ ssh-mcp Config erstellt"
 # ── OpenCode V2 ─────────────────────────────────────────────────────────────
 echo ""
 echo "=== OpenCode V2 ==="
-if ! opencode --version 2>/dev/null | grep -q "v2"; then
-  npm uninstall -g opencode 2>/dev/null || true
-  rm -f /usr/bin/opencode
-  npm install -g @opencode/cli 2>&1 | tail -3
+# npm im PATH sicherstellen
+if command -v npm >/dev/null 2>&1; then
+  if ! opencode --version 2>/dev/null | grep -q "v2"; then
+    echo "  → OpenCode wird installiert..."
+    npm uninstall -g opencode 2>/dev/null || true
+    npm uninstall -g @opencode-ai/opencode 2>/dev/null || true
+    rm -f /usr/bin/opencode
+    npm install -g @opencode/cli 2>&1 | tail -5
+  fi
+  echo "  ✓ OpenCode: $(opencode --version 2>&1)"
+else
+  echo "  ⚠ npm nicht verfügbar – OpenCode kann nicht installiert werden"
 fi
-echo "  ✓ OpenCode: $(opencode --version 2>&1)"
 
 # ── MCP-Konfiguration (pro Workspace) ───────────────────────────────────────
 echo ""
@@ -336,6 +362,7 @@ echo "=== Herdr-Server & Workspaces ==="
 export PATH="/root/.local/bin:$PATH"
 
 if [ -x "$HERDR_BIN" ]; then
+  echo "  → Herdr-Server wird gestartet..."
   if ! "$HERDR_BIN" status 2>/dev/null | grep -q "status: running"; then
     nohup "$HERDR_BIN" server > /tmp/herdr-server.log 2>&1 &
     sleep 3
@@ -378,6 +405,8 @@ except Exception:
       fi
     fi
   done
+else
+  echo "  ⚠ Herdr nicht installiert – Server und Workspaces übersprungen"
 fi
 
 echo ""
