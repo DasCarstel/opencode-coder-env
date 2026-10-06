@@ -35,7 +35,7 @@ Authentik über den Community-MCP (`authentik-mcp`).
 ## Skills
 `authentik`, `authentik-integration`, `authentik-troubleshooting`,
 `docker-host`, `docker-host-compose`, `docker-host-filesystem`, `docker-host-git`,
-`create-skill`, `github`
+`create-skill`
 
 ## Referenzen
 - ssh-mcp: https://github.com/tufantunc/ssh-mcp

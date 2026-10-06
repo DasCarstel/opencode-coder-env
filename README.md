@@ -35,8 +35,7 @@ opencode-coder-env/
     │   ├── docker-host-filesystem/
     │   └── docker-host-git/
     └── shared/                               # beide Workspaces
-        ├── create-skill/
-        └── github/
+        └── create-skill/
 ```
 
 ## Wichtige Hinweise
@@ -45,6 +44,7 @@ opencode-coder-env/
 - **Kein eigener MCP-Code**: Nur deklarative Konfiguration, keine `node_modules` oder Build-Schritte
 - **Per-Workspace-Trennung**: Jeder Herdr-Workspace bekommt nur die benötigten MCP-Server und Skills
 - **OpenBao als Secret-Quelle**: Alle API-Keys werden zur Laufzeit aus OpenBao bezogen
+- **GitHub ohne MCP**: private Repos werden mit `git` + Token aus OpenBao geklont/gepusht (kein GitHub-MCP, kein `gh` im Workspace)
 
 ## MCP-Server
 
@@ -110,7 +110,6 @@ eingebunden. Pfade sind relativ zum Arbeitsverzeichnis des Workspace
 | `authentik` (+ `authentik-integration`, `authentik-troubleshooting`) | – | ✅ |
 | `docker-host` (+ `docker-host-compose`, `-filesystem`, `-git`) | – | ✅ |
 | `create-skill` | – | ✅ |
-| `github` | – | ✅ |
 
 Die Built-in-Skills von OpenCode (`opencode`, `report`) sind in beiden
 Workspaces verfügbar.
@@ -129,6 +128,7 @@ OpenBao KV (secret/data/mcp/*):
   - opencloud      → OPENCLOUD_API_KEY / OPENCLOUD_USERNAME
   - opencode-go    → OC_GO_DEFAULT1..3 / OC_GO_ACTIVE
   - ssh-mcp        → private_key (statischer ssh-mcp-Key)
+  - github         → GITHUB_TOKEN (git-Credentials)
   ↓ (geschrieben nach /etc/opencode.env bzw. /root/.ssh/)
 OpenCode MCPs nutzen die Umgebungsvariablen ({env:...})
 ```
@@ -230,7 +230,7 @@ hart auf `origin/master` gesetzt (lokale Abweichungen werden verworfen).
 | | Home Assistant | Server Management |
 |---|---|---|
 | MCP-Server | `homeassistant`, `ssh-mcp` | `authentik`, `ssh-mcp` |
-| Skills | `home-assistant`, `google-home-exposure` | `authentik`, `docker-host*`, `create-skill`, `github` |
+| Skills | `home-assistant`, `google-home-exposure` | `authentik`, `docker-host*`, `create-skill` |
 
 Die Trennung erfolgt über `opencode.json` im jeweiligen Workspace-Verzeichnis
 (Projekt-Config) plus die globale Config (nur `ssh-mcp`).

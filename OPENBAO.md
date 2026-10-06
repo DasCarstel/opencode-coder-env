@@ -28,6 +28,7 @@ OpenBao (Vault-Fork) verwaltet alle Secrets für die Coder-Infrastruktur.
 | secret/data/mcp/opencloud | api_key, username – OpenCloud Zugang |
 | secret/data/mcp/opencode-go | default1, default2, default3, active – OpenCode Go API-Keys |
 | secret/data/mcp/ssh-mcp | private_key, public_key – statischer SSH-Key für ssh-mcp |
+| secret/data/mcp/github | api_key – GitHub PAT (git clone/push in allen Workspaces) |
 | secret/data/ssh/unifi | UniFi SSH-Zugang |
 
 ## SSH-CA

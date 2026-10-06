@@ -88,6 +88,15 @@ read_secret "secret/data/mcp/opencode-go"   "default2" "OC_GO_DEFAULT2"
 read_secret "secret/data/mcp/opencode-go"   "default3" "OC_GO_DEFAULT3"
 read_secret "secret/data/mcp/opencode-go"   "active"   "OC_GO_ACTIVE"
 
+# ── GitHub-Credentials (git clone/push privater Repos) ──────────────────────
+echo ""
+echo "=== Git-Credentials (GitHub) ==="
+if [ -f "$REPO_DIR/scripts/setup-git-credentials.sh" ]; then
+  bash "$REPO_DIR/scripts/setup-git-credentials.sh" || echo "  ⚠ setup-git-credentials fehlgeschlagen"
+else
+  echo "  ⚠ scripts/setup-git-credentials.sh nicht gefunden"
+fi
+
 # ── SSH via OpenBao-CA (kurzlebige Zertifikate) ─────────────────────────────
 echo ""
 echo "=== SSH-Zugang (OpenBao-CA) ==="
