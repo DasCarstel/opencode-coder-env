@@ -53,7 +53,7 @@ data "coder_parameter" "openbao_approle_secret_id" {
   display_name = "OpenBao AppRole Secret-ID"
   description  = "Secret-ID für die AppRole 'mcp-server' in OpenBao."
   type         = "string"
-  default      = "e2d9db8f-d810-f11f-2ce0-5caf93f2a64e"
+  default      = "0f3d31dc-cd9f-a62d-5b47-9148a4e1004b"
   order        = 1
   mutable      = true
 }
