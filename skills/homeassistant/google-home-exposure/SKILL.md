@@ -82,4 +82,4 @@ google_assistant:
 
 ## Related Skills
 
-- **Home Assistant:** `skill({name:"home-assistant"})` for HA configuration
+- **Home Assistant:** `skill({id:"home-assistant"})` for HA configuration

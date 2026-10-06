@@ -12,9 +12,18 @@ Skills are reusable instructions loaded on-demand via the `skill` tool.
 
 Create skills in one of these locations:
 
-- **Project-local:** `.opencode/skills/<name>/SKILL.md`
-- **Global:** `~/.config/opencode/skills/<name>/SKILL.md`
-- **Shared (in repo):** `skills/shared/<name>/SKILL.md` or `skills/<workspace>/<name>/SKILL.md`
+- **Project-local:** `.opencode/skills/<id>/SKILL.md`
+- **Global:** `~/.config/opencode/skills/<id>/SKILL.md`
+- **Repo group:** `skills/<group>/<id>/SKILL.md` (e.g. `skills/server/docker-host-git/`)
+
+Repo groups are wired up per workspace through the `skills` array in
+`opencode.json` (paths are relative to the workspace working directory):
+
+```json
+{ "skills": ["../../../skills/server", "../../../skills/shared"] }
+```
+
+A source root (e.g. `skills/server`) contributes every `<id>/SKILL.md` below it.
 
 ## Required Structure
 
@@ -32,15 +41,16 @@ license: MIT
 <trigger conditions>
 ```
 
-## Name Rules
+## ID Rules
 
-- 1-64 characters
-- Lowercase alphanumeric with hyphens
-- No leading/trailing hyphens
-- No consecutive hyphens
-- Must match directory name
+In OpenCode V2 the skill **ID comes from the file path** (the directory that
+contains `SKILL.md`). The frontmatter `name` is only a display label.
 
-Regex: `^[a-z0-9]+(-[a-z0-9]+)*$`
+- Keep the directory lowercase kebab-case so the ID is portable: `^[a-z0-9]+(-[a-z0-9]+)*$`
+- Avoid generic directory names (`compose`, `git`, `filesystem`) — prefix them
+  (`docker-host-compose`) to prevent ID collisions.
+- Prefer flat directories over nesting: `docker-host/compose/SKILL.md` yields the
+  ID `compose`, **not** `docker-host/compose`.
 
 ## Creating a Skill
 
@@ -87,7 +97,7 @@ Use when deploying new services or updating existing Docker deployments.
 Agents load skills via the tool:
 
 ```
-skill({ name: "skill-name" })
+skill({ id: "skill-id" })
 ```
 
 Available skills appear in the tool description for the agent to discover.

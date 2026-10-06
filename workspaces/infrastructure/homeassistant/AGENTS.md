@@ -5,7 +5,8 @@ Verwaltung von Home Assistant über den nativen MCP-Server (`/api/mcp`, Streamab
 
 ## Authentisierung
 OpenCode lädt den HA-API-Key aus der Umgebungsvariable `HA_LLA_TOKEN`.
-Diese wird im Coder-Template als **Coder Secret** gesetzt und automatisch in den Workspace injiziert.
+Der Wert liegt in OpenBao unter `secret/data/mcp/homeassistant` (Key `api_key`)
+und wird von `startup.sh` in die OpenCode-Service-Umgebung injiziert.
 
 **Kein Token im Repo, keine lokale Datei.**
 

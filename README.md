@@ -29,8 +29,11 @@ opencode-coder-env/
     │   ├── home-assistant/
     │   └── google-home-exposure/
     ├── server/                               # nur Server-Management-Workspace
-    │   ├── authentik/
-    │   └── docker-host/                      # + compose/ filesystem/ git/
+    │   ├── authentik/                        # + authentik-integration/ -troubleshooting/
+    │   ├── docker-host/
+    │   ├── docker-host-compose/
+    │   ├── docker-host-filesystem/
+    │   └── docker-host-git/
     └── shared/                               # beide Workspaces
         ├── create-skill/
         └── github/
@@ -104,8 +107,8 @@ eingebunden. Pfade sind relativ zum Arbeitsverzeichnis des Workspace
 |-------|:--------------:|:-----------------:|
 | `home-assistant` | ✅ | – |
 | `google-home-exposure` | ✅ | – |
-| `authentik` | – | ✅ |
-| `docker-host` (+ `compose`, `filesystem`, `git`) | – | ✅ |
+| `authentik` (+ `authentik-integration`, `authentik-troubleshooting`) | – | ✅ |
+| `docker-host` (+ `docker-host-compose`, `-filesystem`, `-git`) | – | ✅ |
 | `create-skill` | – | ✅ |
 | `github` | – | ✅ |
 

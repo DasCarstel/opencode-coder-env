@@ -79,4 +79,4 @@ Only 5 YAML files are tracked:
 
 ## Related Skills
 
-- **Google Home Exposure:** `skill({name:"google-home-exposure"})` for exposing entities to Google Assistant
+- **Google Home Exposure:** `skill({id:"google-home-exposure"})` for exposing entities to Google Assistant
