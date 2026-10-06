@@ -50,6 +50,8 @@ if [ -z "$BAO_TOKEN" ]; then
   exit 1
 fi
 export BAO_TOKEN
+printf 'BAO_TOKEN="%s"\n' "$BAO_TOKEN" >> /etc/opencode.env
+printf 'BAO_TOKEN="%s"\n' "$BAO_TOKEN" >> /etc/opencode.env
 echo "  ✓ OpenBao-Token erhalten"
 
 # ── OpenBao: Secrets laden ──────────────────────────────────────────────────
@@ -246,8 +248,25 @@ echo ""
 echo "=== MCP-Konfiguration ==="
 mkdir -p /root/.config/opencode
 
-# Home Assistant Workspace: beide MCPs (HA + SSH)
-HA_LLA_TOKEN="${HA_LLA_TOKEN:-}"
+# Globale Config: nur ssh-mcp (HA wird workspace-spezifisch konfiguriert)
+python3 << 'PYEOF'
+import json
+config = {
+    "$schema": "https://opencode.ai/config.json",
+    "mcp": {
+        "servers": {
+            "ssh-mcp": {"type": "local", "command": ["ssh-mcp"]},
+        }
+    },
+}
+with open("/root/.config/opencode/opencode.json", "w") as f:
+    json.dump(config, f, indent=2)
+print("  ✓ Globale Config geschrieben (nur SSH)")
+PYEOF
+PYEOF
+
+# Home Assistant Workspace: HA + SSH
+mkdir -p /home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/homeassistant/.config/opencode
 python3 - "$HA_LLA_TOKEN" << 'PYEOF'
 import json, sys
 token = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -267,9 +286,9 @@ config = {
         }
     },
 }
-with open("/root/.config/opencode/opencode.json", "w") as f:
+with open("/home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/homeassistant/.config/opencode/opencode.json", "w") as f:
     json.dump(config, f, indent=2)
-print("  ✓ Globale Config geschrieben (HA + SSH)")
+print("  ✓ Home Assistant Config (HA + SSH)")
 PYEOF
 
 # Server Management Workspace: nur SSH-MCP
@@ -287,6 +306,7 @@ config = {
 with open("/home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/server-management/.config/opencode/opencode.json", "w") as f:
     json.dump(config, f, indent=2)
 print("  ✓ Server Management Config (nur SSH)")
+PYEOF
 PYEOF
 
 # ── OpenCode Go (mehrere Keys aus OpenBao) ──────────────────────────────────
