@@ -98,7 +98,7 @@ ssh-keygen -t ed25519 -f "$KEY" -N "" -C "coder-workspace" -q
 
 SIGNED=$(curl -sS --max-time 10 -X POST "${OPENBAO_ADDR}/v1/ssh/sign/host-access" \
   -H "X-Vault-Token: ${BAO_TOKEN}" -H "Content-Type: application/json" \
-  -d "{\"public_key\":\"$(cat ${KEY}.pub)\",\"valid_principals\":\"root\"}" \
+  -d "{\"public_key\":\"$(cat ${KEY}.pub)\",\"valid_principals\":\"root\",\"ttl\":\"24h\"}" \
   | python3 -c "
 import sys, json
 try:
@@ -200,6 +200,7 @@ port = 22
 user = "root"
 auth = "key"
 keyRef = "/root/.ssh/id_ed25519_coder"
+cert = true
 role = "admin"
 approvalPolicy = "ask-destructive"
 
@@ -210,6 +211,7 @@ port = 22
 user = "root"
 auth = "key"
 keyRef = "/root/.ssh/id_ed25519_coder"
+cert = true
 role = "viewer"
 approvalPolicy = "ask-all"
 
@@ -220,6 +222,7 @@ port = 22
 user = "root"
 auth = "key"
 keyRef = "/root/.ssh/id_ed25519_coder"
+cert = true
 role = "viewer"
 approvalPolicy = "ask-all"
 MCPCFG
