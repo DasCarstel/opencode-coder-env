@@ -2,14 +2,17 @@
 
 ## Kontext
 Verwaltung der Cleve-Infrastruktur (Proxmox, TrueNAS, Docker) über den
-Community-SSH-MCP (`ssh-mcp`) durch einen WireGuard-VPN-Tunnel.
+Community-SSH-MCP (`ssh-mcp`) durch einen Tailscale-Tunnel.
 
 ## Netzwerk-Verbindung
-- **WireGuard VPN**: Der Workspace verbindet sich über einen WireGuard-Tunnel
-  mit dem Cleve-Netzwerk (192.168.178.0/24)
-- **WireGuard Server**: Docker-Container auf Docker-Kleve (192.168.178.52)
-- **Subnetz**: 10.20.0.0/24 (WireGuard), 192.168.178.0/24 (Cleve LAN)
-- **Client-IP**: 10.20.0.2, **Server-IP**: 10.20.0.1
+- **Tailscale**: Der Workspace ist selbst ein Tailscale-Node (eigenes Tailnet,
+  getrennt vom privaten Netz) und akzeptiert die Subnetz-Route nach Cleve.
+- **Subnet-Router**: Tailscale-Container auf Docker-Kleve (192.168.178.52)
+  annonciert `192.168.178.0/24`.
+- **Erreichbar**: Proxmox-Kleve (.50), TrueNAS-Kleve (.51), Docker-Kleve (.52)
+  über die Subnetz-Route — kein Port-Forwarding, kein NAT.
+- **Auth**: Auth-Key aus OpenBao (`secret/data/mcp/tailscale`, Feld `auth_key`),
+  von `startup.sh` als `TS_AUTHKEY` gesetzt.
 
 ## MCP-Server
 - **ssh-mcp** (lokal, stdio) – im Workspace-Container via `npm install -g ssh-mcp`
@@ -41,4 +44,4 @@ Community-SSH-MCP (`ssh-mcp`) durch einen WireGuard-VPN-Tunnel.
 
 ## Referenzen
 - ssh-mcp: https://github.com/tufantunc/ssh-mcp
-- WireGuard: https://www.wireguard.com/
+- Tailscale: https://tailscale.com/

@@ -79,6 +79,11 @@ resource "docker_volume" "workspace_data" {
   name = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}-data"
 }
 
+# Persistenter Tailscale-State (Node-Identität überlebt Container-Neuerstellung)
+resource "docker_volume" "tailscale_state" {
+  name = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}-tailscale"
+}
+
 resource "docker_container" "workspace" {
   count = data.coder_workspace.me.start_count
 
@@ -103,7 +108,7 @@ resource "docker_container" "workspace" {
     name = "coder-infra"
   }
 
-  # WireGuard: NET_ADMIN + TUN device für VPN-Tunnel
+  # Tailscale: NET_ADMIN + TUN device für den VPN-Tunnel
   cap_add = ["NET_ADMIN"]
   devices = ["/dev/net/tun:/dev/net/tun"]
 
@@ -124,6 +129,12 @@ resource "docker_container" "workspace" {
   volumes {
     host_path      = "/etc/opencode-data/${data.coder_workspace_owner.me.name}"
     container_path = "/root/.local/share/opencode"
+  }
+
+  # Tailscale-State (Node-Identität überlebt Container-Neuerstellung)
+  volumes {
+    volume_name    = docker_volume.tailscale_state.name
+    container_path = "/var/lib/tailscale"
   }
 }
 

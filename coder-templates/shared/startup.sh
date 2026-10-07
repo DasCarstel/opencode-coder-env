@@ -94,6 +94,7 @@ case "$PROFILE" in
     read_secret "secret/data/mcp/opencloud"      "username"  "OPENCLOUD_USERNAME"
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_private_user"  "OCIS_PRIVATE_USER"
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_private_token" "OCIS_PRIVATE_TOKEN"
+    read_secret "secret/data/mcp/tailscale"      "auth_key"  "TS_AUTHKEY"
     ;;
   general)
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_private_user"  "OCIS_PRIVATE_USER"
@@ -345,27 +346,42 @@ MCPCFG
   echo "  ✓ ssh-mcp Config erstellt"
 fi
 
-# ── WireGuard Client (Cleve VPN) ─────────────────────────────────────────────
-echo ""
-echo "=== WireGuard Client (Cleve) ==="
-if [ -f /root/.local/share/opencode/wg-cleve.conf ]; then
-  if ! command -v wg >/dev/null 2>&1; then
-    echo "  → Installing wireguard-tools..."
-    apt-get update -qq && apt-get install -y -qq wireguard-tools 2>&1 | tail -2 || true
-  fi
-  if command -v wg >/dev/null 2>&1; then
-    mkdir -p /etc/wireguard
-    install -m 600 /root/.local/share/opencode/wg-cleve.conf /etc/wireguard/wg-cleve.conf
-    if wg show wg-cleve >/dev/null 2>&1; then
-      echo "  ✓ WireGuard tunnel already active"
+# ── Tailscale (Cleve-Zugang, nur infrastructure) ────────────────────────────
+if [ "$PROFILE" = "infrastructure" ]; then
+  echo ""
+  echo "=== Tailscale (Cleve) ==="
+  if [ -n "${TS_AUTHKEY:-}" ]; then
+    if ! command -v tailscale >/dev/null 2>&1; then
+      echo "  → Tailscale wird installiert..."
+      curl -fsSL https://tailscale.com/install.sh | sh 2>&1 | tail -2 || true
+    fi
+    if command -v tailscale >/dev/null 2>&1; then
+      mkdir -p /var/lib/tailscale /var/run/tailscale
+      TS_SOCK=/var/run/tailscale/tailscaled.sock
+      if ! tailscale --socket="$TS_SOCK" status >/dev/null 2>&1; then
+        echo "  → tailscaled wird gestartet..."
+        nohup tailscaled --state=/var/lib/tailscale/tailscaled.state --socket="$TS_SOCK" \
+          > /tmp/tailscaled.log 2>&1 &
+        sleep 3
+      fi
+      tailscale --socket="$TS_SOCK" up \
+        --authkey="$TS_AUTHKEY" \
+        --hostname="coder-${PROFILE}" \
+        --accept-routes \
+        --accept-dns=false \
+        --ssh=false \
+        --timeout=30s 2>&1 | tail -3 || echo "  ⚠ tailscale up fehlgeschlagen"
+      if tailscale --socket="$TS_SOCK" status >/dev/null 2>&1; then
+        echo "  ✓ Tailscale aktiv: $(tailscale --socket="$TS_SOCK" ip -4 2>/dev/null | head -1)"
+      else
+        echo "  ⚠ Tailscale-Status nicht abrufbar"
+      fi
     else
-      wg-quick up wg-cleve 2>&1 && echo "  ✓ WireGuard tunnel established" || echo "  ⚠ WireGuard tunnel failed"
+      echo "  ⚠ Tailscale nicht verfügbar"
     fi
   else
-    echo "  ⚠ wireguard-tools not available"
+    echo "  ⚠ TS_AUTHKEY nicht gesetzt (secret/data/mcp/tailscale)"
   fi
-else
-  echo "  ⚠ wg-cleve.conf not found on host"
 fi
 
 # ── OpenCode V2 ─────────────────────────────────────────────────────────────

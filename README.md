@@ -15,8 +15,11 @@ opencode-coder-env/
 │   │   ├── server-management/                # Server-Management-Workspace
 │   │   │   ├── opencode.json                 # authentik-MCP + Server-Skills
 │   │   │   └── AGENTS.md
-│   │   └── svelte/                           # Svelte-Entwicklung
-│   │       ├── opencode.json                 # Svelte-MCP (remote) + oCIS privat
+│   │   ├── svelte/                           # Svelte-Entwicklung
+│   │   │   ├── opencode.json                 # Svelte-MCP (remote) + oCIS privat
+│   │   │   └── AGENTS.md
+│   │   └── cleve/                            # Cleve-Infrastruktur (via Tailscale)
+│   │       ├── opencode.json                 # ssh-mcp (global) + oCIS privat
 │   │       └── AGENTS.md
 │   ├── general/
 │   │   └── workspace-global.json
@@ -69,6 +72,7 @@ opencode-coder-env/
 | Home Assistant | HA-Verwaltung | `coder-infra` | `homeassistant`, `ocis` (privat) | `home-assistant`, `google-home-exposure`, `obsidian` |
 | Server Management | Infrastruktur-Hosts | `coder-infra` | `authentik`, `ocis` (privat), `ssh-mcp` | `authentik`, `docker-host*`, `create-skill`, `obsidian` |
 | Svelte | Svelte-Entwicklung | `coder-infra` | `svelte` (remote), `ocis` (privat), `ssh-mcp` | `create-skill`, `obsidian`, `docker-host*` |
+| Cleve | Cleve-Infrastruktur (Proxmox/TrueNAS/Docker) | `coder-infra` | `ssh-mcp`, `ocis` (privat) | `authentik*`, `docker-host*`, `create-skill`, `obsidian` |
 | General | Allgemeine Aufgaben | `coder-gen` | `ocis` (privat), `pdf` | `create-skill`, `obsidian` |
 | MuellerConnect/minijob | Mini-Job | `coder-mc` | `ocis` (Arbeit), `pdf` | `create-skill`, `obsidian` |
 
@@ -160,6 +164,9 @@ Konfiguration: `~/.config/ssh-mcp/config.toml` (von `startup.sh` erzeugt).
 | `unifi` | 10.0.0.1 | UniFi Gateway (UCG-Ultra) |
 | `media` | 10.0.10.25 | Media (CT 115) |
 | `test` | 10.0.10.40 | Test (CT 105) |
+| `cleve-proxmox` | 192.168.178.50 | Proxmox VE (Cleve, via Tailscale) |
+| `cleve-truenas` | 192.168.178.51 | TrueNAS (Cleve, via Tailscale) |
+| `cleve-docker` | 192.168.178.52 | Docker Host (Cleve, via Tailscale) |
 
 - **Auth**: statischer ed25519-Key aus OpenBao (`secret/data/mcp/ssh-mcp`),
   geschrieben nach `/root/.ssh/id_ed25519_mcp`
@@ -170,8 +177,11 @@ Konfiguration: `~/.config/ssh-mcp/config.toml` (von `startup.sh` erzeugt).
 - Die eingebaute **Forbidden-Liste** (`rm -rf /`, `mkfs`, Schreibzugriff auf
   `authorized_keys`, …) bleibt immer aktiv
 
-> **Kleve** (192.168.178.50/51/52) ist noch nicht eingebunden – die Profile
-> folgen, sobald das Netz erreichbar ist.
+> **Kleve** (192.168.178.50/51/52) ist über **Tailscale** angebunden: Der
+> Workspace ist ein Tailscale-Node in einem eigenen Tailnet (getrennt vom
+> privaten Netz), ein Subnet-Router-Container auf Docker-Kleve annonciert
+> `192.168.178.0/24`. Kein Port-Forwarding, kein NAT.
+> Auth-Key: `secret/data/mcp/tailscale`.
 
 ## Skills
 
@@ -206,6 +216,7 @@ OpenBao KV (secret/data/mcp/*):
   - opencloud-ocis → OCIS_PRIVATE_USER/TOKEN, OCIS_MUELLERCONNECT_USER/TOKEN
   - opencode-go    → OC_GO_DEFAULT1..3 / OC_GO_ACTIVE
   - ssh-mcp        → private_key (statischer ssh-mcp-Key)
+  - tailscale      → auth_key (Coder↔Kleve-Tailnet)
   - github         → GITHUB_TOKEN (git-Credentials)
   ↓ (geschrieben nach /etc/opencode.env bzw. /root/.ssh/)
 OpenCode MCPs nutzen die Umgebungsvariablen ({env:...})
@@ -321,5 +332,6 @@ Die Trennung erfolgt über `opencode.json` im jeweiligen Workspace-Verzeichnis
 - authentik-MCP als Community-Server (`uvx`) im Server-Management-Workspace
 - oCIS-MCP (`owncloud/ocis-mcp-server` v1.1.0) für Obsidian-Vaults, Hard-Guardrail via pro-space Service-Accounts
 - Gemeinsames Setup in `coder-templates/shared/startup.sh` (Profile: `infrastructure`, `general`, `muellerconnect`)
-- Coder-Templates: `infrastructure` (HA + Server Management), `general` (isoliert), `muellerconnect` (isoliert)
+- Coder-Templates: `infrastructure` (HA + Server Management + Svelte + Cleve), `general` (isoliert), `muellerconnect` (isoliert)
 - Coder-Infrastruktur: Docker-Container auf 10.0.10.17
+- Cleve-Zugang über **Tailscale** (eigenes Tailnet, Subnet-Router-Container auf Docker-Kleve) — kein WireGuard, kein Port-Forwarding
