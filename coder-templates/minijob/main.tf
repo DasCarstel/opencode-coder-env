@@ -1,10 +1,10 @@
-# Coder Template: infrastructure (OpenCode-Infrastruktur)
+# Coder Template: minijob (MuellerConnect Mini-Job)
 #
-# Provisions einen Docker-Container als Workspace für OpenCode-Entwicklung.
-# Secrets werden zur Laufzeit aus OpenBao via AppRole-Auth bezogen.
+# Isolierter Workspace: NUR der oCIS-MCP (Arbeits-Vault MuellerConnect).
+# Kein ssh-mcp, keine SSH-Keys, kein Zugriff auf das interne VLAN.
+# Netzwerk: coder-mc (dediziert, kein coder-infra).
 #
-# Das komplette Setup (OpenBao, MCP, Herdr, OpenCode) liegt im gemeinsamen
-# Skript coder-templates/shared/startup.sh (Profil: infrastructure).
+# Das komplette Setup liegt in coder-templates/shared/startup.sh (Profil: minijob).
 
 terraform {
   required_providers {
@@ -99,8 +99,9 @@ resource "docker_container" "workspace" {
   memory     = 2048
   shm_size   = 512
 
+  # Isoliertes Netzwerk (kein coder-infra → kein internes VLAN)
   networks_advanced {
-    name = "coder-infra"
+    name = "coder-mc"
   }
 
   # Herdr-Binary vom Host einbinden (Fallback, wird bei Bedarf geladen)
@@ -116,9 +117,9 @@ resource "docker_container" "workspace" {
     container_path = "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env"
   }
 
-  # Persistenter Ordner für OpenCode-Sessions/Chats (auf dem Coder-Host unter /etc)
+  # Persistenter Ordner für OpenCode-Sessions/Chats (eigener Pfad, nicht geteilt)
   volumes {
-    host_path      = "/etc/opencode-data/${data.coder_workspace_owner.me.name}"
+    host_path      = "/etc/opencode-data/${data.coder_workspace_owner.me.name}-mc"
     container_path = "/root/.local/share/opencode"
   }
 }
@@ -135,7 +136,7 @@ resource "coder_agent" "main" {
     #!/bin/bash
     set -euo pipefail
 
-    echo "=== infrastructure Workspace: Initialisierung ==="
+    echo "=== minijob Workspace: Initialisierung ==="
 
     # 1. Grundlegende Tools
     export DEBIAN_FRONTEND=noninteractive
@@ -151,22 +152,20 @@ resource "coder_agent" "main" {
     REPO_DIR="/home/${data.coder_workspace_owner.me.name}/opencode-coder-env"
     mkdir -p "/home/${data.coder_workspace_owner.me.name}"
     if [ -d "$REPO_DIR/.git" ]; then
-      # Deployment-Checkout: hart auf origin/master setzen (lokale Mode-/Edit-Abweichungen verwerfen)
       cd "$REPO_DIR" \
         && git fetch --depth 1 origin master 2>&1 \
         && git -c core.fileMode=false reset --hard FETCH_HEAD 2>&1 \
         && git clean -fdq -- workspaces 2>/dev/null || true
     else
-      # Volume leeren (ohne es zu entfernen, da es gemountet ist)
       find "$REPO_DIR" -mindepth 1 -delete 2>/dev/null || true
       git clone --depth 1 --branch master https://github.com/DasCarstel/opencode-coder-env.git "$REPO_DIR" 2>&1
     fi
 
-    # 4. Komplettes Setup (Secrets, SSH-CA, Herdr, OpenCode, MCP)
-    bash "$REPO_DIR/coder-templates/shared/startup.sh" infrastructure 2>&1 || echo "⚠ setup mit Fehlern beendet"
+    # 4. Komplettes Setup (OpenCode, oCIS-MCP, Herdr)
+    bash "$REPO_DIR/coder-templates/shared/startup.sh" minijob 2>&1 || echo "⚠ setup mit Fehlern beendet"
 
     echo ""
-    echo "=== infrastructure Workspace bereit ==="
+    echo "=== minijob Workspace bereit ==="
   EOT
 }
 
@@ -175,7 +174,7 @@ resource "coder_agent" "main" {
 resource "coder_app" "herdr" {
   agent_id     = coder_agent.main.id
   slug         = "herdr"
-  display_name = "Infrastructure Workspace"
+  display_name = "MuellerConnect Workspace"
   command      = "/usr/local/bin/herdr"
   icon         = "/icon/terminal.svg"
   share        = "owner"

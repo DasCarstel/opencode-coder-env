@@ -15,15 +15,24 @@ opencode-coder-env/
 │   │   └── server-management/                # Server-Management-Workspace
 │   │       ├── opencode.json                 # authentik-MCP + Server-Skills
 │   │       └── AGENTS.md
+│   ├── general/
+│   │   └── workspace-global.json
 │   └── minijob/
 │       └── workspace-global.json
 ├── coder-templates/
-│   └── infrastructure/
+│   ├── shared/
+│   │   └── startup.sh                  # gemeinsames Setup (Profil: infrastructure|general|minijob)
+│   ├── infrastructure/
+│   │   ├── main.tf
+│   │   ├── Dockerfile
+│   │   └── config/
+│   │       └── global-opencode.json          # globale Config (nur ssh-mcp)
+│   ├── general/
+│   │   ├── main.tf
+│   │   └── Dockerfile
+│   └── minijob/
 │       ├── main.tf
-│       ├── Dockerfile
-│       ├── startup.sh
-│       └── config/
-│           └── global-opencode.json          # globale Config (nur ssh-mcp)
+│       └── Dockerfile
 └── skills/
     ├── homeassistant/                        # nur Home-Assistant-Workspace
     │   ├── home-assistant/
@@ -49,6 +58,23 @@ opencode-coder-env/
 - **Per-Workspace-Trennung**: Jeder Herdr-Workspace bekommt nur die benötigten MCP-Server und Skills
 - **OpenBao als Secret-Quelle**: Alle API-Keys werden zur Laufzeit aus OpenBao bezogen
 - **GitHub ohne MCP**: private Repos werden mit `git` + Token aus OpenBao geklont/gepusht (kein GitHub-MCP, kein `gh` im Workspace)
+
+## Workspaces
+
+| Workspace | Zweck | Netzwerk | MCP-Server | Skills |
+|-----------|-------|----------|------------|--------|
+| Home Assistant | HA-Verwaltung | `coder-infra` | `homeassistant`, `ocis` (privat) | `home-assistant`, `google-home-exposure`, `obsidian` |
+| Server Management | Infrastruktur-Hosts | `coder-infra` | `authentik`, `ocis` (privat), `ssh-mcp` | `authentik`, `docker-host*`, `create-skill`, `obsidian` |
+| General | Allgemeine Aufgaben | `coder-gen` | `ocis` (privat) | `create-skill`, `obsidian` |
+| MuellerConnect/minijob | Mini-Job | `coder-mc` | `ocis` (Arbeit) | `create-skill`, `obsidian` |
+
+- **General** und **MuellerConnect/minijob** sind isoliert: kein `ssh-mcp`, keine
+  SSH-Keys, kein Zugriff auf das interne VLAN. Nur der oCIS-MCP (Obsidian-Vault).
+- **General** nutzt den privaten Obsidian-Vault, **MuellerConnect/minijob** den
+  Arbeits-Vault (Hard-Guardrail, siehe oCIS-Artikel).
+- Das komplette Setup liegt in `coder-templates/shared/startup.sh` (Profil:
+  `infrastructure` | `general` | `minijob`). Die Templates `general/` und
+  `minijob/` sind dünne Wrapper.
 
 ## MCP-Server
 
@@ -267,11 +293,13 @@ hart auf `origin/master` gesetzt (lokale Abweichungen werden verworfen).
 Die Trennung erfolgt über `opencode.json` im jeweiligen Workspace-Verzeichnis
 (Projekt-Config) plus die globale Config (nur `ssh-mcp`).
 
-## Aktueller Stand (06.10.2026)
+## Aktueller Stand (07.10.2026)
 
 - OpenBao: unsealed, SSH-CA konfiguriert, AppRole `mcp-server` vorhanden
 - HA `mcp_server` Integration aktiv, Token in OpenBao (`secret/data/mcp/homeassistant`)
 - ssh-mcp v2.17.0 mit statischem Key (`secret/data/mcp/ssh-mcp`), 8 Host-Profile
 - authentik-MCP als Community-Server (`uvx`) im Server-Management-Workspace
-- Skill-Gruppierung: `homeassistant/`, `server/`, `shared/`
+- oCIS-MCP (`owncloud/ocis-mcp-server` v1.1.0) für Obsidian-Vaults, Hard-Guardrail via pro-space Service-Accounts
+- Gemeinsames Setup in `coder-templates/shared/startup.sh` (Profile: `infrastructure`, `general`, `minijob`)
+- Coder-Templates: `infrastructure` (HA + Server Management), `general` (isoliert), `minijob` (isoliert)
 - Coder-Infrastruktur: Docker-Container auf 10.0.10.17
