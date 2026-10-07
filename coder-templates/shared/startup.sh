@@ -307,7 +307,7 @@ role = "admin"
 group = "prod"
 approvalPolicy = "auto"
 
-# Cleve Hosts (via WireGuard tunnel)
+# Cleve Hosts (via Tailscale-Tunnel / Subnet-Route)
 [[profiles]]
 name = "cleve-proxmox"
 host = "192.168.178.50"

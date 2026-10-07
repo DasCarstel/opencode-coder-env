@@ -5,8 +5,9 @@ Verwaltung der Cleve-Infrastruktur (Proxmox, TrueNAS, Docker) über den
 Community-SSH-MCP (`ssh-mcp`) durch einen Tailscale-Tunnel.
 
 ## Netzwerk-Verbindung
-- **Tailscale**: Der Workspace ist selbst ein Tailscale-Node (eigenes Tailnet,
-  getrennt vom privaten Netz) und akzeptiert die Subnetz-Route nach Cleve.
+- **Tailscale**: Der Workspace ist ein Tailscale-Node mit Tag `tag:coder` und
+  akzeptiert die Subnetz-Route nach Cleve. ACLs isolieren ihn von den privaten
+  Geräten (nur `tag:coder` ↔ `tag:kleve`).
 - **Subnet-Router**: Tailscale-Container auf Docker-Kleve (192.168.178.52)
   annonciert `192.168.178.0/24`.
 - **Erreichbar**: Proxmox-Kleve (.50), TrueNAS-Kleve (.51), Docker-Kleve (.52)

@@ -178,9 +178,9 @@ Konfiguration: `~/.config/ssh-mcp/config.toml` (von `startup.sh` erzeugt).
   `authorized_keys`, …) bleibt immer aktiv
 
 > **Kleve** (192.168.178.50/51/52) ist über **Tailscale** angebunden: Der
-> Workspace ist ein Tailscale-Node in einem eigenen Tailnet (getrennt vom
-> privaten Netz), ein Subnet-Router-Container auf Docker-Kleve annonciert
-> `192.168.178.0/24`. Kein Port-Forwarding, kein NAT.
+> Workspace ist ein Tailscale-Node mit Tag `tag:coder`, ein Subnet-Router-Container
+> auf Docker-Kleve (`tag:kleve`) annonciert `192.168.178.0/24`. ACLs isolieren
+> beide von den privaten Geräten. Kein Port-Forwarding, kein NAT.
 > Auth-Key: `secret/data/mcp/tailscale`.
 
 ## Skills
@@ -334,4 +334,4 @@ Die Trennung erfolgt über `opencode.json` im jeweiligen Workspace-Verzeichnis
 - Gemeinsames Setup in `coder-templates/shared/startup.sh` (Profile: `infrastructure`, `general`, `muellerconnect`)
 - Coder-Templates: `infrastructure` (HA + Server Management + Svelte + Cleve), `general` (isoliert), `muellerconnect` (isoliert)
 - Coder-Infrastruktur: Docker-Container auf 10.0.10.17
-- Cleve-Zugang über **Tailscale** (eigenes Tailnet, Subnet-Router-Container auf Docker-Kleve) — kein WireGuard, kein Port-Forwarding
+- Cleve-Zugang über **Tailscale** (Tags `tag:coder`/`tag:kleve` + ACLs, Subnet-Router-Container auf Docker-Kleve) — kein WireGuard, kein Port-Forwarding
