@@ -68,7 +68,7 @@ opencode-coder-env/
 |-----------|-------|----------|------------|--------|
 | Home Assistant | HA-Verwaltung | `coder-infra` | `homeassistant`, `ocis` (privat) | `home-assistant`, `google-home-exposure`, `obsidian` |
 | Server Management | Infrastruktur-Hosts | `coder-infra` | `authentik`, `ocis` (privat), `ssh-mcp` | `authentik`, `docker-host*`, `create-skill`, `obsidian` |
-| Svelte | Svelte-Entwicklung | `coder-infra` | `svelte` (remote), `ocis` (privat), `ssh-mcp` | `create-skill`, `obsidian` |
+| Svelte | Svelte-Entwicklung | `coder-infra` | `svelte` (remote), `ocis` (privat), `ssh-mcp` | `create-skill`, `obsidian`, `docker-host*` |
 | General | Allgemeine Aufgaben | `coder-gen` | `ocis` (privat), `pdf` | `create-skill`, `obsidian` |
 | MuellerConnect/minijob | Mini-Job | `coder-mc` | `ocis` (Arbeit), `pdf` | `create-skill`, `obsidian` |
 
