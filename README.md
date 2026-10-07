@@ -28,12 +28,16 @@ opencode-coder-env/
     ├── homeassistant/                        # nur Home-Assistant-Workspace
     │   ├── home-assistant/
     │   └── google-home-exposure/
+    ├── obsidian/                             # private Obsidian-Vault (HA + Server-Management)
+    │   └── obsidian/
     ├── server/                               # nur Server-Management-Workspace
     │   ├── authentik/                        # + authentik-integration/ -troubleshooting/
     │   ├── docker-host/
     │   ├── docker-host-compose/
     │   ├── docker-host-filesystem/
     │   └── docker-host-git/
+    ├── minijob/                              # nur MuellerConnect/minijob-Workspace
+    │   └── obsidian/
     └── shared/                               # beide Workspaces
         └── create-skill/
 ```
@@ -62,14 +66,40 @@ OpenCode V2 konfiguriert MCP-Server unter `mcp.servers`. Konfig-Dateien werden
 
 - **homeassistant** – remote MCP, `https://intern-homeassistant.mueller-nas.de/api/mcp`,
   Auth: `Authorization: Bearer {env:HA_LLA_TOKEN}`
+- **ocis** – lokaler offizieller ownCloud-MCP (`owncloud/ocis-mcp-server` v1.1.0, Go-Binary),
+  Env `OCIS_MCP_OCIS_URL=https://opencloud.mueller-nas.de`,
+  `OCIS_MCP_APP_TOKEN_USER={env:OCIS_PRIVATE_USER}`, `OCIS_MCP_APP_TOKEN_VALUE={env:OCIS_PRIVATE_TOKEN}`
 
 ### Server-Management-Workspace
 `workspaces/infrastructure/server-management/opencode.json`:
 
 - **authentik** – lokaler Community-MCP (`nikitatsym/authentik-mcp` via `uvx`),
   Env `AUTHENTIK_URL=https://auth.mueller-nas.de`, `AUTHENTIK_TOKEN={env:AUTHENTIK_API_KEY}`
+- **ocis** – lokaler offizieller ownCloud-MCP (`owncloud/ocis-mcp-server` v1.1.0),
+  Env wie im Home-Assistant-Workspace (`OCIS_PRIVATE_USER` / `OCIS_PRIVATE_TOKEN`)
 
 > `uvx` wird vom Template-Startup-Skript installiert (`/root/.local/bin/uvx`).
+> Das `ocis-mcp-server`-Binary lädt `startup.sh` nach `/root/.local/bin/ocis-mcp-server`.
+
+### oCIS (OpenCloud / Obsidian) – Hard-Guardrail
+
+Der offizielle ownCloud-MCP `owncloud/ocis-mcp-server` (v1.1.0, Go) stellt den
+Obsidian-Vault über die oCIS-APIs bereit — die Dateien bleiben ausschließlich
+auf OpenCloud (kein zweiter Speicher).
+
+Die Trennung erfolgt über **zwei getrennte OpenCloud-Service-Accounts** mit je
+einem App-Token, das nur den eigenen Space sieht:
+
+| Workspace | Account | Space | Space-ID (Beginn) |
+|-----------|---------|-------|-------------------|
+| Home Assistant, Server Management | `obsidian-private` | `Obsidian` | `a0ca6a90-…!8da8246b-…` |
+| MuellerConnect/minijob | `obsidian-muellerconnect` | `MuellerConnect` | `8da8246b-…$fb65ae72-…` |
+
+Tokens liegen in OpenBao unter `secret/data/mcp/opencloud-ocis`. Das
+**Infrastructure-Template injiziert nur** `OCIS_PRIVATE_*` — das
+MuellerConnect-Token ist im Infrastructure-Workspace physisch nicht vorhanden.
+Die passende Skill (`obsidian`) liegt pro Workspace unter
+`skills/obsidian/obsidian/` (privat) bzw. `skills/minijob/obsidian/` (Arbeit).
 
 ### ssh-mcp – Hosts & Policy
 Konfiguration: `~/.config/ssh-mcp/config.toml` (von `startup.sh` erzeugt).
@@ -107,6 +137,7 @@ eingebunden. Pfade sind relativ zum Arbeitsverzeichnis des Workspace
 |-------|:--------------:|:-----------------:|
 | `home-assistant` | ✅ | – |
 | `google-home-exposure` | ✅ | – |
+| `obsidian` | ✅ | ✅ |
 | `authentik` (+ `authentik-integration`, `authentik-troubleshooting`) | – | ✅ |
 | `docker-host` (+ `docker-host-compose`, `-filesystem`, `-git`) | – | ✅ |
 | `create-skill` | – | ✅ |
@@ -126,6 +157,7 @@ OpenBao KV (secret/data/mcp/*):
   - authentik      → AUTHENTIK_API_KEY
   - grafana        → GRAFANA_API_KEY
   - opencloud      → OPENCLOUD_API_KEY / OPENCLOUD_USERNAME
+  - opencloud-ocis → OCIS_PRIVATE_USER/TOKEN, OCIS_MUELLERCONNECT_USER/TOKEN
   - opencode-go    → OC_GO_DEFAULT1..3 / OC_GO_ACTIVE
   - ssh-mcp        → private_key (statischer ssh-mcp-Key)
   - github         → GITHUB_TOKEN (git-Credentials)
@@ -229,8 +261,8 @@ hart auf `origin/master` gesetzt (lokale Abweichungen werden verworfen).
 
 | | Home Assistant | Server Management |
 |---|---|---|
-| MCP-Server | `homeassistant`, `ssh-mcp` | `authentik`, `ssh-mcp` |
-| Skills | `home-assistant`, `google-home-exposure` | `authentik`, `docker-host*`, `create-skill` |
+| MCP-Server | `homeassistant`, `ocis`, `ssh-mcp` | `authentik`, `ocis`, `ssh-mcp` |
+| Skills | `home-assistant`, `google-home-exposure`, `obsidian` | `authentik`, `docker-host*`, `create-skill`, `obsidian` |
 
 Die Trennung erfolgt über `opencode.json` im jeweiligen Workspace-Verzeichnis
 (Projekt-Config) plus die globale Config (nur `ssh-mcp`).

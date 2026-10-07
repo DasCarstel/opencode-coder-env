@@ -26,6 +26,7 @@ OpenBao (Vault-Fork) verwaltet alle Secrets für die Coder-Infrastruktur.
 | secret/data/mcp/authentik | api_key – Authentik API-Key |
 | secret/data/mcp/grafana | api_key – Grafana API-Key |
 | secret/data/mcp/opencloud | api_key, username – OpenCloud Zugang |
+| secret/data/mcp/opencloud-ocis | obsidian_private_user, obsidian_private_token, obsidian_muellerconnect_user, obsidian_muellerconnect_token – oCIS App-Tokens pro Obsidian-Vault (Hard-Guardrail) |
 | secret/data/mcp/opencode-go | default1, default2, default3, active – OpenCode Go API-Keys |
 | secret/data/mcp/ssh-mcp | private_key, public_key – statischer SSH-Key für ssh-mcp |
 | secret/data/mcp/github | api_key – GitHub PAT (git clone/push in allen Workspaces) |

@@ -88,11 +88,12 @@ read_secret "secret/data/mcp/opencode-go"   "default2" "OC_GO_DEFAULT2"
 read_secret "secret/data/mcp/opencode-go"   "default3" "OC_GO_DEFAULT3"
 read_secret "secret/data/mcp/opencode-go"   "active"   "OC_GO_ACTIVE"
 
-# OpenCloud oCIS MCP (Obsidian-Vaults, Hard-Guardrail: ein Token pro Space)
+# OpenCloud oCIS MCP (Obsidian-Vault, Hard-Guardrail: ein Token pro Space).
+# Nur das private Token wird hier geladen. Das MuellerConnect-Token gehört
+# ausschließlich in den Work-Workspace (MuellerConnect/minijob) und darf im
+# Infrastructure-Workspace physisch nicht vorhanden sein.
 read_secret "secret/data/mcp/opencloud-ocis" "obsidian_private_user" "OCIS_PRIVATE_USER"
 read_secret "secret/data/mcp/opencloud-ocis" "obsidian_private_token" "OCIS_PRIVATE_TOKEN"
-read_secret "secret/data/mcp/opencloud-ocis" "obsidian_muellerconnect_user" "OCIS_MUELLERCONNECT_USER"
-read_secret "secret/data/mcp/opencloud-ocis" "obsidian_muellerconnect_token" "OCIS_MUELLERCONNECT_TOKEN"
 
 # ── GitHub-Credentials (git clone/push privater Repos) ──────────────────────
 echo ""
@@ -462,11 +463,6 @@ if [ -n "${OCIS_PRIVATE_USER:-}" ] && [ -n "${OCIS_PRIVATE_TOKEN:-}" ]; then
   opencode service set env OCIS_PRIVATE_USER "$OCIS_PRIVATE_USER" >/dev/null 2>&1 || true
   opencode service set env OCIS_PRIVATE_TOKEN "$OCIS_PRIVATE_TOKEN" >/dev/null 2>&1 || true
   echo "  ✓ oCIS Private-Token im OpenCode-Service gesetzt"
-fi
-if [ -n "${OCIS_MUELLERCONNECT_USER:-}" ] && [ -n "${OCIS_MUELLERCONNECT_TOKEN:-}" ]; then
-  opencode service set env OCIS_MUELLERCONNECT_USER "$OCIS_MUELLERCONNECT_USER" >/dev/null 2>&1 || true
-  opencode service set env OCIS_MUELLERCONNECT_TOKEN "$OCIS_MUELLERCONNECT_TOKEN" >/dev/null 2>&1 || true
-  echo "  ✓ oCIS MuellerConnect-Token im OpenCode-Service gesetzt"
 fi
 
 # ── Herdr-Server + Workspaces ───────────────────────────────────────────────
