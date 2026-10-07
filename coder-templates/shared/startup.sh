@@ -21,6 +21,7 @@ esac
 # ── PATH sicherstellen ─────────────────────────────────────────────────
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin:$PATH"
 grep -q '/root/.local/bin' /root/.bashrc 2>/dev/null || echo 'export PATH="/root/.local/bin:$PATH"' >> /root/.bashrc
+mkdir -p /root/.local/bin /usr/local/bin
 
 OPENBAO_ADDR="https://openbao.mueller-nas.de"
 OPENBAO_ROLE_ID="${OPENBAO_ROLE_ID:-mcp-server}"
@@ -469,6 +470,48 @@ case "$PROFILE" in
     opencode service unset env OCIS_PRIVATE_TOKEN >/dev/null 2>&1 || true
     ;;
 esac
+
+# ── Herdr installieren ─────────────────────────────────────────────────────
+echo ""
+echo "=== Herdr ==="
+HERDR_VERSION="0.9.3"
+HERDR_URLS=(
+  "https://github.com/herdr-sh/herdr/releases/download/v${HERDR_VERSION}/herdr-linux-amd64"
+  "https://github.com/herdr-sh/herdr/releases/latest/download/herdr-linux-amd64"
+  "https://herdr.dev/api/releases/v${HERDR_VERSION}/linux-amd64"
+)
+
+if [ -x "$HERDR_BIN" ]; then
+  echo "  ✓ Herdr vorhanden ($($HERDR_BIN --version 2>/dev/null))"
+elif [ -f /opt/opencode-bin/herdr ]; then
+  cp /opt/opencode-bin/herdr "$HERDR_BIN"
+  chmod +x "$HERDR_BIN"
+  echo "  ✓ Herdr aus /opt/opencode-bin installiert ($($HERDR_BIN --version 2>/dev/null))"
+elif [ -f /usr/local/bin/herdr ]; then
+  cp /usr/local/bin/herdr "$HERDR_BIN"
+  chmod +x "$HERDR_BIN"
+  echo "  ✓ Herdr aus /usr/local/bin installiert ($($HERDR_BIN --version 2>/dev/null))"
+else
+  echo "  → Herdr wird heruntergeladen..."
+  INSTALLED=false
+  for url in "${HERDR_URLS[@]}"; do
+    echo "    Versuche: $url"
+    if curl -fsSL --max-time 30 "$url" -o "$HERDR_BIN" 2>/dev/null; then
+      chmod +x "$HERDR_BIN"
+      if "$HERDR_BIN" --version >/dev/null 2>&1; then
+        echo "  ✓ Herdr installiert ($($HERDR_BIN --version 2>/dev/null))"
+        INSTALLED=true
+        break
+      else
+        rm -f "$HERDR_BIN"
+      fi
+    fi
+  done
+  if [ "$INSTALLED" = false ]; then
+    echo "  ⚠ Herdr-Download fehlgeschlagen – Herdr nicht verfügbar"
+    echo "  Hinweis: Überspringe Herdr-Server-Start"
+  fi
+fi
 
 # ── Herdr-Server + Workspaces ───────────────────────────────────────────────
 echo ""
