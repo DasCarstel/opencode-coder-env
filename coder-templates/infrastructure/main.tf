@@ -109,8 +109,14 @@ resource "docker_container" "workspace" {
   }
 
   # Tailscale: NET_ADMIN + TUN device für den VPN-Tunnel
-  cap_add = ["NET_ADMIN"]
-  devices = ["/dev/net/tun:/dev/net/tun"]
+  capabilities {
+    add = ["NET_ADMIN"]
+  }
+
+  devices {
+    host_path      = "/dev/net/tun"
+    container_path = "/dev/net/tun"
+  }
 
   # Herdr-Binary vom Host einbinden (Fallback, wird bei Bedarf geladen)
   volumes {
