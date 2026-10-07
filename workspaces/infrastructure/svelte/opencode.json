@@ -2,11 +2,8 @@
   "$schema": "https://opencode.ai/config.json",
   "skills": [
     "../../../skills/shared",
-    "../../../skills/obsidian",
-    "../../../skills/server/docker-host",
-    "../../../skills/server/docker-host-compose",
-    "../../../skills/server/docker-host-filesystem",
-    "../../../skills/server/docker-host-git"
+    "../../../skills/server",
+    "../../../skills/obsidian"
   ],
   "mcp": {
     "servers": {

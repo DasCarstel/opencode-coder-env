@@ -40,21 +40,24 @@ opencode-coder-env/
 │       ├── main.tf
 │       └── Dockerfile
 └── skills/
-    ├── homeassistant/                        # nur Home-Assistant-Workspace
+    ├── homeassistant/                     # nur Home-Assistant-Workspace
     │   ├── home-assistant/
     │   └── google-home-exposure/
-    ├── obsidian/                             # private Obsidian-Vault (HA + Server-Management)
+    ├── obsidian/                          # private Obsidian-Vault (Infra-Workspaces)
     │   └── obsidian/
-    ├── server/                               # nur Server-Management-Workspace
-    │   ├── authentik/                        # + authentik-integration/ -troubleshooting/
-    │   ├── docker-host/
-    │   ├── docker-host-compose/
-    │   ├── docker-host-filesystem/
-    │   └── docker-host-git/
-    ├── minijob/                              # nur MuellerConnect/minijob-Workspace
+    ├── server/                            # Krefeld-spezifisch (Server-Management/Svelte)
+    │   ├── authentik/                     # + authentik-integration/ -troubleshooting/
+    │   └── docker-host-location/          # Profil-Mapping: Krefeld → docker-host
+    ├── cleve/                             # Kleve-spezifisch (nur Cleve-Workspace)
+    │   └── docker-host-location/          # Profil-Mapping: Kleve → cleve-docker
+    ├── minijob/                           # nur MuellerConnect/minijob-Workspace
     │   └── obsidian/
-    └── shared/                               # beide Workspaces
-        └── create-skill/
+    └── shared/                            # alle Infra-Workspaces (standortunabhängig)
+        ├── create-skill/
+        ├── docker-host/                   # generisch – Profil via docker-host-location
+        ├── docker-host-compose/
+        ├── docker-host-filesystem/
+        └── docker-host-git/
 ```
 
 ## Wichtige Hinweise
@@ -72,7 +75,7 @@ opencode-coder-env/
 | Home Assistant | HA-Verwaltung | `coder-infra` | `homeassistant`, `ocis` (privat) | `home-assistant`, `google-home-exposure`, `obsidian` |
 | Server Management | Infrastruktur-Hosts | `coder-infra` | `authentik`, `ocis` (privat), `ssh-mcp` | `authentik`, `docker-host*`, `create-skill`, `obsidian` |
 | Svelte | Svelte-Entwicklung | `coder-infra` | `svelte` (remote), `ocis` (privat), `ssh-mcp` | `create-skill`, `obsidian`, `docker-host*` |
-| Cleve | Cleve-Infrastruktur (Proxmox/TrueNAS/Docker) | `coder-infra` | `ssh-mcp`, `ocis` (privat) | `authentik*`, `docker-host*`, `create-skill`, `obsidian` |
+| Cleve | Cleve-Infrastruktur (Proxmox/TrueNAS/Docker) | `coder-infra` | `ssh-mcp`, `ocis` (privat) | `docker-host-location` (Kleve), `docker-host*`, `create-skill`, `obsidian` |
 | General | Allgemeine Aufgaben | `coder-gen` | `ocis` (privat), `pdf` | `create-skill`, `obsidian` |
 | MuellerConnect/minijob | Mini-Job | `coder-mc` | `ocis` (Arbeit), `pdf` | `create-skill`, `obsidian` |
 
@@ -183,22 +186,39 @@ Konfiguration: `~/.config/ssh-mcp/config.toml` (von `startup.sh` erzeugt).
 > beide von den privaten Geräten. Kein Port-Forwarding, kein NAT.
 > Auth-Key: `secret/data/mcp/tailscale`.
 
+### Skills-Architektur (generisch + Location)
+
+Die `docker-host*`-Skills sind **standortunabhängig** (in `skills/shared/`):
+Sie referenzieren das Profil nur als `<docker-profil>`. Das konkrete Profil
+kommt aus dem winzigen **`docker-host-location`**-Skill des jeweiligen
+Standortordners:
+
+| Workspace | lädt | Location-Mapping |
+|-----------|------|------------------|
+| Server Management, Svelte | `shared` + `server` + `obsidian` | `docker-host` → 10.0.10.10 |
+| Cleve | `shared` + `cleve` + `obsidian` | `cleve-docker` → 192.168.178.52 |
+
+→ Im Cleve-Workspace existieren keine Krefeld-Profil-Mappings; der Agent
+nimmt das Profil aus dem geladenen Location-Skill und muss es vor jedem
+Befehl nennen.
+
 ## Skills
 
 Skills werden über das `skills`-Array in der jeweiligen `opencode.json`
 eingebunden. Pfade sind relativ zum Arbeitsverzeichnis des Workspace
 (`../../../skills/...`).
 
-| Skill | Home Assistant | Server Management |
-|-------|:--------------:|:-----------------:|
-| `home-assistant` | ✅ | – |
-| `google-home-exposure` | ✅ | – |
-| `obsidian` | ✅ | ✅ |
-| `authentik` (+ `authentik-integration`, `authentik-troubleshooting`) | – | ✅ |
-| `docker-host` (+ `docker-host-compose`, `-filesystem`, `-git`) | – | ✅ |
-| `create-skill` | – | ✅ |
+| Skill | Home Assistant | Server Management | Svelte | Cleve |
+|-------|:--------------:|:-----------------:|:------:|:-----:|
+| `home-assistant` | ✅ | – | – | – |
+| `google-home-exposure` | ✅ | – | – | – |
+| `obsidian` | ✅ | ✅ | ✅ | ✅ |
+| `authentik` (+ `-integration`, `-troubleshooting`) | – | ✅ | – | – |
+| `docker-host-location` | – | ✅ (Krefeld) | ✅ (Krefeld) | ✅ (Kleve) |
+| `docker-host` (+ `-compose`, `-filesystem`, `-git`) | – | ✅ | ✅ | ✅ (generisch) |
+| `create-skill` | – | ✅ | ✅ | ✅ |
 
-Die Built-in-Skills von OpenCode (`opencode`, `report`) sind in beiden
+Die Built-in-Skills von OpenCode (`opencode`, `report`) sind in allen
 Workspaces verfügbar.
 
 ## Secrets-Architektur
@@ -316,10 +336,10 @@ hart auf `origin/master` gesetzt (lokale Abweichungen werden verworfen).
 
 ### MCP- und Skill-Trennung
 
-| | Home Assistant | Server Management |
-|---|---|---|
-| MCP-Server | `homeassistant`, `ocis`, `ssh-mcp` | `authentik`, `ocis`, `ssh-mcp` |
-| Skills | `home-assistant`, `google-home-exposure`, `obsidian` | `authentik`, `docker-host*`, `create-skill`, `obsidian` |
+| | Home Assistant | Server Management / Svelte | Cleve |
+|---|---|---|---|
+| MCP-Server | `homeassistant`, `ocis`, `ssh-mcp` | `authentik` (nur SM), `svelte` (nur Svelte), `ocis`, `ssh-mcp` | `ocis`, `ssh-mcp` |
+| Skills | `home-assistant`, `google-home-exposure`, `obsidian` | `authentik` (nur SM), `docker-host-location` (Krefeld), `docker-host*`, `create-skill`, `obsidian` | `docker-host-location` (Kleve), `docker-host*`, `create-skill`, `obsidian` |
 
 Die Trennung erfolgt über `opencode.json` im jeweiligen Workspace-Verzeichnis
 (Projekt-Config) plus die globale Config (nur `ssh-mcp`).

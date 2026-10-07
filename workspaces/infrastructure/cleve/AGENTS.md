@@ -39,9 +39,12 @@ Community-SSH-MCP (`ssh-mcp`) durch einen Tailscale-Tunnel.
 - Keine Secrets, Tokens oder private Keys im Repo
 
 ## Skills
-`authentik`, `authentik-integration`, `authentik-troubleshooting`,
-`docker-host`, `docker-host-compose`, `docker-host-filesystem`, `docker-host-git`,
-`create-skill`
+`create-skill`, `obsidian`,
+`docker-host-location` (Kleve → `cleve-docker`),
+`docker-host`, `docker-host-compose`, `docker-host-filesystem`, `docker-host-git`
+
+> Die docker-host*-Skills sind generisch (geteilt mit Krefeld). Das konkrete
+> Profil steht im `docker-host-location`-Skill — hier: `cleve-docker`.
 
 ## Referenzen
 - ssh-mcp: https://github.com/tufantunc/ssh-mcp

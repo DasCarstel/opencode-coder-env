@@ -21,5 +21,6 @@ validiert Svelte-Code direkt im Workspace — es wird nichts lokal installiert.
 - Keine Secrets, Tokens oder private Keys im Repo
 
 ## Skills
-`create-skill`, `obsidian`, `docker-host`, `docker-host-compose`,
-`docker-host-filesystem`, `docker-host-git`
+`create-skill`, `obsidian`,
+`docker-host-location` (Krefeld → `docker-host`),
+`docker-host`, `docker-host-compose`, `docker-host-filesystem`, `docker-host-git`

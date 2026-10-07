@@ -26,6 +26,9 @@ Authentik über den Community-MCP (`authentik-mcp`).
 | `media` | 10.0.10.25 | Media (CT 115) |
 | `test` | 10.0.10.40 | Test (CT 105) |
 
+> **Kleve-Hosts** (`cleve-proxmox` .50, `cleve-truenas` .51, `cleve-docker` .52)
+> sind angeschlossen, gehören aber zum **cleve**-Workspace mit eigenen Skills.
+
 ## Richtlinien
 - **NIEMALS raw SSH via bash** (`ssh Docker '...'`, `bash("ssh ...")`) – ausschließlich `ssh-mcp`-Tools
 - Befehle: `run-command({profile:"...", command:"..."})`; lesend: `read-command(...)`; sudo: `privileged-command(...)`
@@ -34,8 +37,12 @@ Authentik über den Community-MCP (`authentik-mcp`).
 
 ## Skills
 `authentik`, `authentik-integration`, `authentik-troubleshooting`,
+`docker-host-location` (Krefeld → `docker-host`),
 `docker-host`, `docker-host-compose`, `docker-host-filesystem`, `docker-host-git`,
 `create-skill`
+
+> Die docker-host*-Skills sind generisch (geteilt mit dem cleve-Workspace).
+> Das konkrete Profil steht im `docker-host-location`-Skill — hier: `docker-host`.
 
 ## Referenzen
 - ssh-mcp: https://github.com/tufantunc/ssh-mcp
