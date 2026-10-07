@@ -305,10 +305,67 @@ keyRef = "/root/.ssh/id_ed25519_mcp"
 role = "admin"
 group = "prod"
 approvalPolicy = "auto"
+
+# Cleve Hosts (via WireGuard tunnel)
+[[profiles]]
+name = "cleve-proxmox"
+host = "192.168.178.50"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "prod"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "cleve-truenas"
+host = "192.168.178.51"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "prod"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "cleve-docker"
+host = "192.168.178.52"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "prod"
+approvalPolicy = "auto"
 MCPCFG
   chmod 700 /root/.config/ssh-mcp
   chmod 600 /root/.config/ssh-mcp/config.toml
   echo "  ✓ ssh-mcp Config erstellt"
+fi
+
+# ── WireGuard Client (Cleve VPN) ─────────────────────────────────────────────
+echo ""
+echo "=== WireGuard Client (Cleve) ==="
+if [ -f /root/.local/share/opencode/wg-cleve.conf ]; then
+  if ! command -v wg >/dev/null 2>&1; then
+    echo "  → Installing wireguard-tools..."
+    apt-get update -qq && apt-get install -y -qq wireguard-tools 2>&1 | tail -2 || true
+  fi
+  if command -v wg >/dev/null 2>&1; then
+    mkdir -p /etc/wireguard
+    install -m 600 /root/.local/share/opencode/wg-cleve.conf /etc/wireguard/wg-cleve.conf
+    if wg show wg-cleve >/dev/null 2>&1; then
+      echo "  ✓ WireGuard tunnel already active"
+    else
+      wg-quick up wg-cleve 2>&1 && echo "  ✓ WireGuard tunnel established" || echo "  ⚠ WireGuard tunnel failed"
+    fi
+  else
+    echo "  ⚠ wireguard-tools not available"
+  fi
+else
+  echo "  ⚠ wg-cleve.conf not found on host"
 fi
 
 # ── OpenCode V2 ─────────────────────────────────────────────────────────────
@@ -535,7 +592,7 @@ if [ -x "$HERDR_BIN" ]; then
   case "$PROFILE" in
     infrastructure)
       WS_BASE="$REPO_DIR/workspaces/infrastructure"
-      WS_LIST=("Home Assistant:homeassistant:opencode-ha" "Server Management:server-management:opencode-sm" "Svelte:svelte:opencode-svelte")
+      WS_LIST=("Home Assistant:homeassistant:opencode-ha" "Server Management:server-management:opencode-sm" "Svelte:svelte:opencode-svelte" "Cleve:cleve:opencode-cleve")
       ;;
     general)
       WS_BASE="$REPO_DIR/workspaces/general"

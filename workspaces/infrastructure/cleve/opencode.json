@@ -1,0 +1,23 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "skills": [
+    "../../../skills/server",
+    "../../../skills/shared",
+    "../../../skills/obsidian"
+  ],
+  "mcp": {
+    "servers": {
+      "ocis": {
+        "type": "local",
+        "command": [
+          "/root/.local/bin/ocis-mcp-server"
+        ],
+        "environment": {
+          "OCIS_MCP_OCIS_URL": "https://opencloud.mueller-nas.de",
+          "OCIS_MCP_APP_TOKEN_USER": "{env:OCIS_PRIVATE_USER}",
+          "OCIS_MCP_APP_TOKEN_VALUE": "{env:OCIS_PRIVATE_TOKEN}"
+        }
+      }
+    }
+  }
+}

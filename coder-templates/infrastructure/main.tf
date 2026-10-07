@@ -103,6 +103,10 @@ resource "docker_container" "workspace" {
     name = "coder-infra"
   }
 
+  # WireGuard: NET_ADMIN + TUN device für VPN-Tunnel
+  cap_add = ["NET_ADMIN"]
+  devices = ["/dev/net/tun:/dev/net/tun"]
+
   # Herdr-Binary vom Host einbinden (Fallback, wird bei Bedarf geladen)
   volumes {
     host_path      = "/opt/opencode-bin"
