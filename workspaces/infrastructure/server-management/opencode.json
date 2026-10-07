@@ -18,6 +18,17 @@
           "AUTHENTIK_URL": "https://auth.mueller-nas.de",
           "AUTHENTIK_TOKEN": "{env:AUTHENTIK_API_KEY}"
         }
+      },
+      "ocis": {
+        "type": "local",
+        "command": [
+          "/root/.local/bin/ocis-mcp-server"
+        ],
+        "environment": {
+          "OCIS_MCP_OCIS_URL": "https://opencloud.mueller-nas.de",
+          "OCIS_MCP_APP_TOKEN_USER": "{env:OCIS_PRIVATE_USER}",
+          "OCIS_MCP_APP_TOKEN_VALUE": "{env:OCIS_PRIVATE_TOKEN}"
+        }
       }
     }
   }
