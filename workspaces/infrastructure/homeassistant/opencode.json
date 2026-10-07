@@ -2,6 +2,8 @@
   "$schema": "https://opencode.ai/config.json",
   "skills": [
     "../../../skills/homeassistant",
+    "../../../skills/server",
+    "../../../skills/shared",
     "../../../skills/obsidian"
   ],
   "mcp": {

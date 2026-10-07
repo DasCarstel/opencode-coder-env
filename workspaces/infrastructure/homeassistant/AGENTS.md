@@ -26,3 +26,12 @@ und wird von `startup.sh` in die OpenCode-Service-Umgebung injiziert.
 - Integration: "Model Context Protocol Server" (`mcp_server`)
 - Der MCP-Endpunkt liefert Tools, Prompts und Resources (Assist-API)
 - Assist-Exposition der Entitäten wird in HA unter "Sprachassistenten" konfiguriert
+
+## Skills
+`home-assistant`, `google-home-exposure`, `obsidian`,
+`docker-host-location` (Krefeld → `docker-host`),
+`docker-host`, `docker-host-compose`, `docker-host-filesystem`, `docker-host-git`,
+`create-skill`
+
+> Die docker-host*-Skills sind generisch (geteilt mit den anderen Workspaces).
+> Das konkrete Profil steht im `docker-host-location`-Skill — hier: `docker-host`.

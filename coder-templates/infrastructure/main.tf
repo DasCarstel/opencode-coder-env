@@ -98,7 +98,7 @@ resource "docker_container" "workspace" {
     "OPENBAO_ROLE_ID=${var.openbao_role_id}",
   ]
 
-  command = ["sh", "-c", coder_agent.main.init_script]
+  command = ["/usr/local/bin/entrypoint.sh"]
 
   cpu_shares = 2048
   memory     = 2048
@@ -151,44 +151,6 @@ resource "coder_agent" "main" {
   arch = data.coder_provisioner.me.arch
 
   dir = "/home/${data.coder_workspace_owner.me.name}"
-
-  startup_script = <<-EOT
-    #!/bin/bash
-    set -euo pipefail
-
-    echo "=== infrastructure Workspace: Initialisierung ==="
-
-    # 1. Grundlegende Tools
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update && apt-get install -y \
-      curl git ca-certificates gnupg python3 python3-pip \
-    && rm -rf /var/lib/apt/lists/*
-
-    # 2. Node.js v22
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-    apt-get install -y nodejs
-
-    # 3. Repo von GitHub klonen (oder aktualisieren)
-    REPO_DIR="/home/${data.coder_workspace_owner.me.name}/opencode-coder-env"
-    mkdir -p "/home/${data.coder_workspace_owner.me.name}"
-    if [ -d "$REPO_DIR/.git" ]; then
-      # Deployment-Checkout: hart auf origin/master setzen (lokale Mode-/Edit-Abweichungen verwerfen)
-      cd "$REPO_DIR" \
-        && git fetch --depth 1 origin master 2>&1 \
-        && git -c core.fileMode=false reset --hard FETCH_HEAD 2>&1 \
-        && git clean -fdq -- workspaces 2>/dev/null || true
-    else
-      # Volume leeren (ohne es zu entfernen, da es gemountet ist)
-      find "$REPO_DIR" -mindepth 1 -delete 2>/dev/null || true
-      git clone --depth 1 --branch master https://github.com/DasCarstel/opencode-coder-env.git "$REPO_DIR" 2>&1
-    fi
-
-    # 4. Komplettes Setup (Secrets, SSH-CA, Herdr, OpenCode, MCP)
-    bash "$REPO_DIR/coder-templates/shared/startup.sh" infrastructure 2>&1 || echo "⚠ setup mit Fehlern beendet"
-
-    echo ""
-    echo "=== infrastructure Workspace bereit ==="
-  EOT
 }
 
 # ─── Coder Apps (Shortcuts in der UI) ────────────────────────────────────────
