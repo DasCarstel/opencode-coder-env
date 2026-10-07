@@ -1,10 +1,10 @@
-# Coder Template: minijob (MuellerConnect Mini-Job)
+# Coder Template: muellerconnect (MuellerConnect Mini-Job)
 #
 # Isolierter Workspace: NUR der oCIS-MCP (Arbeits-Vault MuellerConnect).
 # Kein ssh-mcp, keine SSH-Keys, kein Zugriff auf das interne VLAN.
 # Netzwerk: coder-mc (dediziert, kein coder-infra).
 #
-# Das komplette Setup liegt in coder-templates/shared/startup.sh (Profil: minijob).
+# Das komplette Setup liegt in coder-templates/shared/startup.sh (Profil: muellerconnect).
 
 terraform {
   required_providers {
@@ -136,7 +136,7 @@ resource "coder_agent" "main" {
     #!/bin/bash
     set -euo pipefail
 
-    echo "=== minijob Workspace: Initialisierung ==="
+    echo "=== muellerconnect Workspace: Initialisierung ==="
 
     # 1. Grundlegende Tools
     export DEBIAN_FRONTEND=noninteractive
@@ -162,10 +162,10 @@ resource "coder_agent" "main" {
     fi
 
     # 4. Komplettes Setup (OpenCode, oCIS-MCP, Herdr)
-    bash "$REPO_DIR/coder-templates/shared/startup.sh" minijob 2>&1 || echo "⚠ setup mit Fehlern beendet"
+    bash "$REPO_DIR/coder-templates/shared/startup.sh" muellerconnect 2>&1 || echo "⚠ setup mit Fehlern beendet"
 
     echo ""
-    echo "=== minijob Workspace bereit ==="
+    echo "=== muellerconnect Workspace bereit ==="
   EOT
 }
 

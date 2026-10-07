@@ -4,7 +4,7 @@
 # Aufruf: startup.sh <profil>
 #   infrastructure – HA + Server Management (ssh-mcp, authentik, HA, oCIS privat)
 #   general        – Allgemeine Aufgaben (nur oCIS privat)
-#   minijob        – MuellerConnect Mini-Job (nur oCIS Arbeit)
+#   muellerconnect – MuellerConnect Mini-Job (nur oCIS Arbeit)
 #
 # Gemeinsam: OpenBao-Auth, Secrets, Git-Credentials, OpenCode V2, oCIS-MCP,
 # Herdr, Env-Injektion. Profil-spezifisch: Secrets, MCP-Config, Skills,
@@ -14,8 +14,8 @@ set -uo pipefail
 
 PROFILE="${1:-}"
 case "$PROFILE" in
-  infrastructure|general|minijob) ;;
-  *) echo "ERROR: Profil angeben: infrastructure|general|minijob"; exit 1 ;;
+  infrastructure|general|muellerconnect) ;;
+  *) echo "ERROR: Profil angeben: infrastructure|general|muellerconnect"; exit 1 ;;
 esac
 
 # ── PATH sicherstellen ─────────────────────────────────────────────────
@@ -98,7 +98,7 @@ case "$PROFILE" in
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_private_user"  "OCIS_PRIVATE_USER"
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_private_token" "OCIS_PRIVATE_TOKEN"
     ;;
-  minijob)
+  muellerconnect)
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_muellerconnect_user"  "OCIS_MUELLERCONNECT_USER"
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_muellerconnect_token" "OCIS_MUELLERCONNECT_TOKEN"
     ;;
@@ -338,7 +338,7 @@ echo "=== MCP-Konfiguration ==="
 case "$PROFILE" in
   infrastructure) GLOBAL_CFG_SRC="$REPO_DIR/coder-templates/infrastructure/config/global-opencode.json" ;;
   general)        GLOBAL_CFG_SRC="$REPO_DIR/workspaces/general/workspace-global.json" ;;
-  minijob)        GLOBAL_CFG_SRC="$REPO_DIR/workspaces/minijob/workspace-global.json" ;;
+  muellerconnect)        GLOBAL_CFG_SRC="$REPO_DIR/workspaces/minijob/workspace-global.json" ;;
 esac
 if [ -f "$GLOBAL_CFG_SRC" ]; then
   install -m 600 "$GLOBAL_CFG_SRC" /root/.config/opencode/opencode.json
@@ -459,7 +459,7 @@ case "$PROFILE" in
     opencode service unset env OCIS_MUELLERCONNECT_USER  >/dev/null 2>&1 || true
     opencode service unset env OCIS_MUELLERCONNECT_TOKEN >/dev/null 2>&1 || true
     ;;
-  minijob)
+  muellerconnect)
     if [ -n "${OCIS_MUELLERCONNECT_USER:-}" ] && [ -n "${OCIS_MUELLERCONNECT_TOKEN:-}" ]; then
       opencode service set env OCIS_MUELLERCONNECT_USER "$OCIS_MUELLERCONNECT_USER" >/dev/null 2>&1 || true
       opencode service set env OCIS_MUELLERCONNECT_TOKEN "$OCIS_MUELLERCONNECT_TOKEN" >/dev/null 2>&1 || true
@@ -498,7 +498,7 @@ if [ -x "$HERDR_BIN" ]; then
       WS_BASE="$REPO_DIR/workspaces/general"
       WS_LIST=("General:.:opencode-general")
       ;;
-    minijob)
+    muellerconnect)
       WS_BASE="$REPO_DIR/workspaces/minijob"
       WS_LIST=("MuellerConnect:.:opencode-mc")
       ;;

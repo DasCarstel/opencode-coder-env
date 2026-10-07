@@ -21,7 +21,7 @@ opencode-coder-env/
 │       └── workspace-global.json
 ├── coder-templates/
 │   ├── shared/
-│   │   └── startup.sh                  # gemeinsames Setup (Profil: infrastructure|general|minijob)
+│   │   └── startup.sh                  # gemeinsames Setup (Profil: infrastructure|general|muellerconnect)
 │   ├── infrastructure/
 │   │   ├── main.tf
 │   │   ├── Dockerfile
@@ -30,7 +30,7 @@ opencode-coder-env/
 │   ├── general/
 │   │   ├── main.tf
 │   │   └── Dockerfile
-│   └── minijob/
+│   └── muellerconnect/
 │       ├── main.tf
 │       └── Dockerfile
 └── skills/
@@ -73,8 +73,8 @@ opencode-coder-env/
 - **General** nutzt den privaten Obsidian-Vault, **MuellerConnect/minijob** den
   Arbeits-Vault (Hard-Guardrail, siehe oCIS-Artikel).
 - Das komplette Setup liegt in `coder-templates/shared/startup.sh` (Profil:
-  `infrastructure` | `general` | `minijob`). Die Templates `general/` und
-  `minijob/` sind dünne Wrapper.
+  `infrastructure` | `general` | `muellerconnect`). Die Templates `general/` und
+  `muellerconnect/` sind dünne Wrapper.
 
 ## MCP-Server
 
@@ -300,6 +300,6 @@ Die Trennung erfolgt über `opencode.json` im jeweiligen Workspace-Verzeichnis
 - ssh-mcp v2.17.0 mit statischem Key (`secret/data/mcp/ssh-mcp`), 8 Host-Profile
 - authentik-MCP als Community-Server (`uvx`) im Server-Management-Workspace
 - oCIS-MCP (`owncloud/ocis-mcp-server` v1.1.0) für Obsidian-Vaults, Hard-Guardrail via pro-space Service-Accounts
-- Gemeinsames Setup in `coder-templates/shared/startup.sh` (Profile: `infrastructure`, `general`, `minijob`)
-- Coder-Templates: `infrastructure` (HA + Server Management), `general` (isoliert), `minijob` (isoliert)
+- Gemeinsames Setup in `coder-templates/shared/startup.sh` (Profile: `infrastructure`, `general`, `muellerconnect`)
+- Coder-Templates: `infrastructure` (HA + Server Management), `general` (isoliert), `muellerconnect` (isoliert)
 - Coder-Infrastruktur: Docker-Container auf 10.0.10.17
