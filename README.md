@@ -12,8 +12,11 @@ opencode-coder-env/
 │   │   ├── homeassistant/                    # Home-Assistant-Workspace
 │   │   │   ├── opencode.json                 # HA-MCP + HA-Skills
 │   │   │   └── AGENTS.md
-│   │   └── server-management/                # Server-Management-Workspace
-│   │       ├── opencode.json                 # authentik-MCP + Server-Skills
+│   │   ├── server-management/                # Server-Management-Workspace
+│   │   │   ├── opencode.json                 # authentik-MCP + Server-Skills
+│   │   │   └── AGENTS.md
+│   │   └── svelte/                           # Svelte-Entwicklung
+│   │       ├── opencode.json                 # Svelte-MCP (remote) + oCIS privat
 │   │       └── AGENTS.md
 │   ├── general/
 │   │   └── workspace-global.json
@@ -65,8 +68,9 @@ opencode-coder-env/
 |-----------|-------|----------|------------|--------|
 | Home Assistant | HA-Verwaltung | `coder-infra` | `homeassistant`, `ocis` (privat) | `home-assistant`, `google-home-exposure`, `obsidian` |
 | Server Management | Infrastruktur-Hosts | `coder-infra` | `authentik`, `ocis` (privat), `ssh-mcp` | `authentik`, `docker-host*`, `create-skill`, `obsidian` |
-| General | Allgemeine Aufgaben | `coder-gen` | `ocis` (privat) | `create-skill`, `obsidian` |
-| MuellerConnect/minijob | Mini-Job | `coder-mc` | `ocis` (Arbeit) | `create-skill`, `obsidian` |
+| Svelte | Svelte-Entwicklung | `coder-infra` | `svelte` (remote), `ocis` (privat), `ssh-mcp` | `create-skill`, `obsidian` |
+| General | Allgemeine Aufgaben | `coder-gen` | `ocis` (privat), `pdf` | `create-skill`, `obsidian` |
+| MuellerConnect/minijob | Mini-Job | `coder-mc` | `ocis` (Arbeit), `pdf` | `create-skill`, `obsidian` |
 
 - **General** und **MuellerConnect/minijob** sind isoliert: kein `ssh-mcp`, keine
   SSH-Keys, kein Zugriff auf das interne VLAN. Nur der oCIS-MCP (Obsidian-Vault).
@@ -103,6 +107,22 @@ OpenCode V2 konfiguriert MCP-Server unter `mcp.servers`. Konfig-Dateien werden
   Env `AUTHENTIK_URL=https://auth.mueller-nas.de`, `AUTHENTIK_TOKEN={env:AUTHENTIK_API_KEY}`
 - **ocis** – lokaler offizieller ownCloud-MCP (`owncloud/ocis-mcp-server` v1.1.0),
   Env wie im Home-Assistant-Workspace (`OCIS_PRIVATE_USER` / `OCIS_PRIVATE_TOKEN`)
+
+### Svelte-Workspace
+`workspaces/infrastructure/svelte/opencode.json`:
+
+- **svelte** – offizieller Remote-MCP, `https://mcp.svelte.dev/mcp` (kein API-Key, nichts lokal installiert)
+- **ocis** – lokaler offizieller ownCloud-MCP (`owncloud/ocis-mcp-server` v1.1.0),
+  Env wie im Home-Assistant-Workspace (`OCIS_PRIVATE_USER` / `OCIS_PRIVATE_TOKEN`)
+- **ssh-mcp** – aus der globalen Config (`~/.config/opencode/opencode.json`)
+
+### General / MuellerConnect-Workspace
+`workspaces/general/workspace-global.json` bzw. `workspaces/minijob/workspace-global.json`:
+
+- **ocis** – lokaler offizieller ownCloud-MCP (`owncloud/ocis-mcp-server` v1.1.0),
+  Env: `OCIS_PRIVATE_USER`/`OCIS_PRIVATE_TOKEN` (general) bzw. `OCIS_MUELLERCONNECT_USER`/`OCIS_MUELLERCONNECT_TOKEN` (muellerconnect)
+- **pdf** – lokaler MCP `@sylphx/anymd` v8.5.1 (Nachfolger von `@sylphx/pdf-reader-mcp`),
+  Rust-Binary via npm, lokales Lesen von PDFs und URLs, kein API-Key
 
 > `uvx` wird vom Template-Startup-Skript installiert (`/root/.local/bin/uvx`).
 > Das `ocis-mcp-server`-Binary lädt `startup.sh` nach `/root/.local/bin/ocis-mcp-server`.

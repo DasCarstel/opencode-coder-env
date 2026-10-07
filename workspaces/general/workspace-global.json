@@ -16,6 +16,10 @@
           "OCIS_MCP_APP_TOKEN_USER": "{env:OCIS_PRIVATE_USER}",
           "OCIS_MCP_APP_TOKEN_VALUE": "{env:OCIS_PRIVATE_TOKEN}"
         }
+      },
+      "pdf": {
+        "type": "local",
+        "command": ["npx", "-y", "@sylphx/anymd@8.5.1"]
       }
     }
   }

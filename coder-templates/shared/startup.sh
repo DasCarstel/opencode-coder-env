@@ -535,7 +535,7 @@ if [ -x "$HERDR_BIN" ]; then
   case "$PROFILE" in
     infrastructure)
       WS_BASE="$REPO_DIR/workspaces/infrastructure"
-      WS_LIST=("Home Assistant:homeassistant:opencode-ha" "Server Management:server-management:opencode-sm")
+      WS_LIST=("Home Assistant:homeassistant:opencode-ha" "Server Management:server-management:opencode-sm" "Svelte:svelte:opencode-svelte")
       ;;
     general)
       WS_BASE="$REPO_DIR/workspaces/general"

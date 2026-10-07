@@ -1,8 +1,8 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "skills": [
-    "../../skills/shared",
-    "../../skills/minijob"
+    "../../../skills/shared",
+    "../../../skills/obsidian"
   ],
   "mcp": {
     "servers": {
@@ -13,13 +13,13 @@
         ],
         "environment": {
           "OCIS_MCP_OCIS_URL": "https://opencloud.mueller-nas.de",
-          "OCIS_MCP_APP_TOKEN_USER": "{env:OCIS_MUELLERCONNECT_USER}",
-          "OCIS_MCP_APP_TOKEN_VALUE": "{env:OCIS_MUELLERCONNECT_TOKEN}"
+          "OCIS_MCP_APP_TOKEN_USER": "{env:OCIS_PRIVATE_USER}",
+          "OCIS_MCP_APP_TOKEN_VALUE": "{env:OCIS_PRIVATE_TOKEN}"
         }
       },
-      "pdf": {
-        "type": "local",
-        "command": ["npx", "-y", "@sylphx/anymd@8.5.1"]
+      "svelte": {
+        "type": "remote",
+        "url": "https://mcp.svelte.dev/mcp"
       }
     }
   }
