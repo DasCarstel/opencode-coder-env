@@ -64,7 +64,7 @@ data "coder_parameter" "openbao_approle_secret_id" {
 # ─── Docker Workspace Container ────────────────────────────────────────────
 
 resource "docker_image" "workspace" {
-  name = "workspace:v2"
+  name = "workspace-muellerconnect:v2"
 
   build {
     context    = "${path.module}"
