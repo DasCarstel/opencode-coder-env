@@ -81,6 +81,26 @@ OpenCode V2 konfiguriert MCP-Server unter `mcp.servers`. Konfig-Dateien werden
 > `uvx` wird vom Template-Startup-Skript installiert (`/root/.local/bin/uvx`).
 > Das `ocis-mcp-server`-Binary lädt `startup.sh` nach `/root/.local/bin/ocis-mcp-server`.
 
+### oCIS (OpenCloud / Obsidian) – Hard-Guardrail
+
+Der offizielle ownCloud-MCP `owncloud/ocis-mcp-server` (v1.1.0, Go) stellt den
+Obsidian-Vault über die oCIS-APIs bereit — die Dateien bleiben ausschließlich
+auf OpenCloud (kein zweiter Speicher).
+
+Die Trennung erfolgt über **zwei getrennte OpenCloud-Service-Accounts** mit je
+einem App-Token, das nur den eigenen Space sieht:
+
+| Workspace | Account | Space | Space-ID (Beginn) |
+|-----------|---------|-------|-------------------|
+| Home Assistant, Server Management | `obsidian-private` | `Obsidian` | `a0ca6a90-…!8da8246b-…` |
+| MuellerConnect/minijob | `obsidian-muellerconnect` | `MuellerConnect` | `8da8246b-…$fb65ae72-…` |
+
+Tokens liegen in OpenBao unter `secret/data/mcp/opencloud-ocis`. Das
+**Infrastructure-Template injiziert nur** `OCIS_PRIVATE_*` und entfernt das
+MuellerConnect-Token aktiv — im Infrastructure-Workspace ist es physisch nicht
+vorhanden. Die passende Skill (`obsidian`) liegt pro Workspace unter
+`skills/obsidian/obsidian/` (privat) bzw. `skills/minijob/obsidian/` (Arbeit).
+
 ### ssh-mcp – Hosts & Policy
 Konfiguration: `~/.config/ssh-mcp/config.toml` (von `startup.sh` erzeugt).
 
