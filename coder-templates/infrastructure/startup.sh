@@ -464,6 +464,11 @@ if [ -n "${OCIS_PRIVATE_USER:-}" ] && [ -n "${OCIS_PRIVATE_TOKEN:-}" ]; then
   opencode service set env OCIS_PRIVATE_TOKEN "$OCIS_PRIVATE_TOKEN" >/dev/null 2>&1 || true
   echo "  ✓ oCIS Private-Token im OpenCode-Service gesetzt"
 fi
+# Hard-Guardrail: Das MuellerConnect-Token darf in diesem Workspace nicht
+# existieren. `opencode service set env` persistiert Werte, daher hier auch
+# defensiv entfernen (bereinigt Workspaces aus früheren Versionen).
+opencode service unset env OCIS_MUELLERCONNECT_USER  >/dev/null 2>&1 || true
+opencode service unset env OCIS_MUELLERCONNECT_TOKEN >/dev/null 2>&1 || true
 
 # ── Herdr-Server + Workspaces ───────────────────────────────────────────────
 echo ""
