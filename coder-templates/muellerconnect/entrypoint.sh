@@ -2,8 +2,9 @@
 # entrypoint.sh – Wrapper für robusten Container-Start (muellerconnect)
 #
 # Wird bei JEDEM Container-Start ausgeführt (nicht nur beim ersten).
-# Codiert das Repo, führt startup.sh aus, startet herdr und hält den
-# Container am Laufen (Watchdog).
+# Codiert das Repo, führt startup.sh aus, startet herdr — alles im
+# Hintergrund, damit der Coder-Agent schnell verbinden kann.
+# Danach: exec "$@" (der Payload aus main.tf = Coder-Agent-Bootstrap).
 
 set -euo pipefail
 
@@ -44,23 +45,23 @@ else
   git clone --depth 1 --branch master https://github.com/DasCarstel/opencode-coder-env.git "$REPO_DIR" 2>&1
 fi
 
-# ── 3. startup.sh ausführen ──────────────────────────────────────────────
-echo "  → startup.sh ausführen..."
-bash "$REPO_DIR/coder-templates/shared/startup.sh" "$PROFILE" 2>&1 || echo "  ⚠ startup.sh mit Fehlern beendet"
+# ── 3. Setup im Hintergrund (Agent soll nicht warten) ─────────────────────
+echo "  → Setup im Hintergrund starten..."
+nohup bash -c "
+  bash '$REPO_DIR/coder-templates/shared/startup.sh' '$PROFILE' 2>&1
+  echo '  → herdr prüfen...'
+  if ! herdr status 2>/dev/null | grep -q 'running'; then
+    echo '  → herdr starten...'
+    nohup herdr server > /tmp/herdr-server.log 2>&1 &
+    sleep 3
+  fi
+  if herdr status 2>/dev/null | grep -q 'running'; then
+    echo '  ✓ herdr läuft'
+  else
+    echo '  ⚠ herdr nicht erreichbar'
+  fi
+" > /tmp/entrypoint-setup.log 2>&1 &
 
-# ── 4. herdr starten (idempotent) ─────────────────────────────────────────
-echo "  → herdr prüfen..."
-if ! herdr status 2>/dev/null | grep -q "running"; then
-  echo "  → herdr starten..."
-  nohup herdr server > /tmp/herdr-server.log 2>&1 &
-  sleep 3
-fi
-if herdr status 2>/dev/null | grep -q "running"; then
-  echo "  ✓ herdr läuft"
-else
-  echo "  ⚠ herdr nicht erreichbar"
-fi
-
-# ── 5. Watchdog — Container bleibt am Laufen ──────────────────────────────────
-echo "=== entrypoint.sh: Watchdog aktiv ==="
-tail -f /dev/null
+# ── 4. Payload aus main.tf ausführen (Coder-Agent-Bootstrap) ──────────────
+echo "=== entrypoint.sh: Payload starten ==="
+exec "$@"

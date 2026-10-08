@@ -1,30 +1,32 @@
 #!/bin/bash
-# entrypoint.sh – Wrapper für robusten Container-Start
+# entrypoint.sh – Wrapper für robusten Container-Start (infrastructure)
 #
 # Wird bei JEDEM Container-Start ausgeführt (nicht nur beim ersten).
-# Codiert das Repo, führt startup.sh aus, startet herdr und hält den
-# Container am Laufen (Watchdog).
-#
-# Problem: Coder führt das Agent-startup_script nur beim ersten Start
-# aus. Ein UI-Restart startet den Container neu, aber startup.sh (und
-# damit herdr) nicht erneut. Dieser Wrapper löst das.
+# Codiert das Repo, führt startup.sh aus, startet herdr — alles im
+# Hintergrund, damit der Coder-Agent schnell verbinden kann.
+# Danach: exec "$@" (der Payload aus main.tf = Coder-Agent-Bootstrap).
 
 set -euo pipefail
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin:$PATH"
 
 REPO_DIR="/home/carstenmueller2002/opencode-coder-env"
+PROFILE="infrastructure"
 
-echo "=== entrypoint.sh: Container-Start ==="
+echo "=== entrypoint.sh: Container-Start ($PROFILE) ==="
 
-# ── 1. Grund-Tools ─────────────────────────────────────────────────────────
+# ── 1. Grund-Tools (nur wenn fehlend) ─────────────────────────────────────
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq && apt-get install -y -qq \
-  curl git ca-certificates gnupg python3 python3-pip \
-  && rm -rf /var/lib/apt/lists/*
+if ! command -v curl >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
+  echo "  → Grund-Tools installieren..."
+  apt-get update -qq && apt-get install -y -qq \
+    curl git ca-certificates gnupg python3 python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+fi
 
-# Node.js v22
+# Node.js v22 (nur wenn fehlend)
 if ! command -v node >/dev/null 2>&1; then
+  echo "  → Node.js installieren..."
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   apt-get install -y nodejs
 fi
@@ -43,23 +45,23 @@ else
   git clone --depth 1 --branch master https://github.com/DasCarstel/opencode-coder-env.git "$REPO_DIR" 2>&1
 fi
 
-# ── 3. startup.sh ausführen (Secrets, SSH, herdr, OpenCode, MCP) ──────────
-echo "  → startup.sh ausführen..."
-bash "$REPO_DIR/coder-templates/shared/startup.sh" infrastructure 2>&1 || echo "  ⚠ startup.sh mit Fehlern beendet"
+# ── 3. Setup im Hintergrund (Agent soll nicht warten) ─────────────────────
+echo "  → Setup im Hintergrund starten..."
+nohup bash -c "
+  bash '$REPO_DIR/coder-templates/shared/startup.sh' '$PROFILE' 2>&1
+  echo '  → herdr prüfen...'
+  if ! herdr status 2>/dev/null | grep -q 'running'; then
+    echo '  → herdr starten...'
+    nohup herdr server > /tmp/herdr-server.log 2>&1 &
+    sleep 3
+  fi
+  if herdr status 2>/dev/null | grep -q 'running'; then
+    echo '  ✓ herdr läuft'
+  else
+    echo '  ⚠ herdr nicht erreichbar'
+  fi
+" > /tmp/entrypoint-setup.log 2>&1 &
 
-# ── 4. herdr starten (idempotent) ─────────────────────────────────────────
-echo "  → herdr prüfen..."
-if ! herdr status 2>/dev/null | grep -q "running"; then
-  echo "  → herdr starten..."
-  nohup herdr server > /tmp/herdr-server.log 2>&1 &
-  sleep 3
-fi
-if herdr status 2>/dev/null | grep -q "running"; then
-  echo "  ✓ herdr läuft"
-else
-  echo "  ⚠ herdr nicht erreichbar"
-fi
-
-# ── 5. Watchdog — Container bleibt am Laufen ──────────────────────────────────
-echo "=== entrypoint.sh: Watchdog aktiv ==="
-tail -f /dev/null
+# ── 4. Payload aus main.tf ausführen (Coder-Agent-Bootstrap) ──────────────
+echo "=== entrypoint.sh: Payload starten ==="
+exec "$@"

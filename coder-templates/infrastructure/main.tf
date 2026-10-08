@@ -98,7 +98,8 @@ resource "docker_container" "workspace" {
     "OPENBAO_ROLE_ID=${var.openbao_role_id}",
   ]
 
-  command = ["/usr/local/bin/entrypoint.sh"]
+  # Coder-Agent-Bootstrap (offizielles init_script) als Payload nach dem ENTRYPOINT-Wrapper
+  command = ["sh", "-c", coder_agent.main.init_script]
 
   cpu_shares = 2048
   memory     = 2048
