@@ -5,10 +5,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     jq \
     python3 \
+    python3-pip \
     openssl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --version 1.1.0 --prefix /usr/local
+RUN pip3 install --no-cache-dir uv
+
+RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --non-interactive --prefix /usr/local
 
 RUN mkdir -p /root/.hermes
 
