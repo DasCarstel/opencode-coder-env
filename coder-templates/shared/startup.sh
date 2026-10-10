@@ -87,6 +87,7 @@ except Exception:
 case "$PROFILE" in
   infrastructure)
     read_secret "secret/data/mcp/homeassistant"  "api_key"   "HA_LLA_TOKEN"
+    read_secret "secret/data/mcp/homeassistant-kleve" "api_key" "HA_KLEVE_LLA_TOKEN"
     read_secret "secret/data/mcp/authentik"      "api_key"   "AUTHENTIK_API_KEY"
     read_secret "secret/data/mcp/grafana"        "api_key"   "GRAFANA_API_KEY"
     read_secret "secret/data/mcp/opencloud"      "api_key"   "OPENCLOUD_API_KEY"
@@ -608,6 +609,11 @@ if [ "$PROFILE" = "infrastructure" ]; then
     opencode service set env HA_LLA_TOKEN "$HA_LLA_TOKEN" >/dev/null 2>&1 \
       && echo "  ✓ HA_LLA_TOKEN im OpenCode-Service gesetzt" \
       || echo "  ⚠ HA_LLA_TOKEN konnte nicht gesetzt werden"
+  fi
+  if [ -n "${HA_KLEVE_LLA_TOKEN:-}" ]; then
+    opencode service set env HA_KLEVE_LLA_TOKEN "$HA_KLEVE_LLA_TOKEN" >/dev/null 2>&1 \
+      && echo "  ✓ HA_KLEVE_LLA_TOKEN im OpenCode-Service gesetzt" \
+      || echo "  ⚠ HA_KLEVE_LLA_TOKEN konnte nicht gesetzt werden"
   fi
   if [ -n "${AUTHENTIK_API_KEY:-}" ]; then
     opencode service set env AUTHENTIK_API_KEY "$AUTHENTIK_API_KEY" >/dev/null 2>&1 \

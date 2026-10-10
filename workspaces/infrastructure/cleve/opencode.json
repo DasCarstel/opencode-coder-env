@@ -24,6 +24,14 @@
           "ssh-mcp",
           "--config=/root/.config/ssh-mcp/config-cleve.toml"
         ]
+      },
+      "homeassistant-kleve": {
+        "type": "remote",
+        "url": "http://192.168.178.52:8123/api/mcp",
+        "headers": {
+          "Authorization": "Bearer {env:HA_KLEVE_LLA_TOKEN}",
+          "Accept": "application/json"
+        }
       }
     }
   }
