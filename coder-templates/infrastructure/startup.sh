@@ -73,8 +73,7 @@ except Exception:
     echo "  ⚠ ${varname}: nicht gefunden"
   else
     export "${varname}=${value}"
-    printf '%s="%s"\n' "${varname}" "${value}" >> /etc/opencode.env
-    echo "  ✓ ${varname} geladen"
+    printf '%s="%s"\n' "${varname}" "${value}"  "  ✓ ${varname} geladen"
   fi
 }
 read_secret "secret/data/mcp/homeassistant" "api_key" "HA_LLA_TOKEN"
