@@ -26,6 +26,13 @@
           "OCIS_MCP_APP_TOKEN_USER": "{env:OCIS_PRIVATE_USER}",
           "OCIS_MCP_APP_TOKEN_VALUE": "{env:OCIS_PRIVATE_TOKEN}"
         }
+      },
+      "ssh-mcp": {
+        "type": "local",
+        "command": [
+          "ssh-mcp",
+          "--config=/root/.config/ssh-mcp/config-full.toml"
+        ]
       }
     }
   }

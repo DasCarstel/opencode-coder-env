@@ -213,10 +213,12 @@ defaultProfile = "docker-host"
 approvalMode = "auto"
 transferRoot = "/root/.ssh-mcp-transfers"
 
-# Interne Hosts: alle Befehlsklassen erlauben (inkl. sudo/privileged).
+# Krefeld-Hosts (prod) + Kleve-Hosts (kleve): fuer server-management- und
+# homeassistant-Space - alle Befehlsklassen pro Gruppe erlaubt.
 # Die eingebaute Forbidden-Liste (rm -rf /, mkfs, ...) greift weiterhin.
 [policy.roleBindings.admin]
 prod = ["read-only", "safe", "destructive", "privileged"]
+kleve = ["read-only", "safe", "destructive", "privileged"]
 
 [[profiles]]
 name = "docker-host"
@@ -315,7 +317,7 @@ user = "root"
 auth = "key"
 keyRef = "/root/.ssh/id_ed25519_mcp"
 role = "admin"
-group = "prod"
+group = "kleve"
 approvalPolicy = "auto"
 
 [[profiles]]
@@ -326,7 +328,7 @@ user = "root"
 auth = "key"
 keyRef = "/root/.ssh/id_ed25519_mcp"
 role = "admin"
-group = "prod"
+group = "kleve"
 approvalPolicy = "auto"
 
 [[profiles]]
@@ -337,11 +339,191 @@ user = "root"
 auth = "key"
 keyRef = "/root/.ssh/id_ed25519_mcp"
 role = "admin"
+group = "kleve"
+approvalPolicy = "auto"
+MCPCFG
+  cat > /root/.config/ssh-mcp/config-full.toml << 'MCPCFG'
+[defaults]
+defaultProfile = "docker-host"
+approvalMode = "auto"
+transferRoot = "/root/.ssh-mcp-transfers"
+
+# Krefeld-Hosts (prod) + Kleve-Hosts (kleve): fuer server-management- und
+# homeassistant-Space - alle Befehlsklassen pro Gruppe erlaubt.
+# Die eingebaute Forbidden-Liste (rm -rf /, mkfs, ...) greift weiterhin.
+[policy.roleBindings.admin]
+prod = ["read-only", "safe", "destructive", "privileged"]
+kleve = ["read-only", "safe", "destructive", "privileged"]
+
+[[profiles]]
+name = "docker-host"
+host = "10.0.10.10"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
 group = "prod"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "proxmox"
+host = "10.0.10.20"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "prod"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "truenas"
+host = "10.0.10.30"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "prod"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "pbs"
+host = "10.0.10.21"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "prod"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "coder"
+host = "10.0.10.17"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "prod"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "unifi"
+host = "10.0.0.1"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "prod"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "media"
+host = "10.0.10.25"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "prod"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "test"
+host = "10.0.10.40"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "prod"
+approvalPolicy = "auto"
+
+# Cleve Hosts (via Tailscale-Tunnel / Subnet-Route)
+[[profiles]]
+name = "cleve-proxmox"
+host = "192.168.178.50"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "kleve"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "cleve-truenas"
+host = "192.168.178.51"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "kleve"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "cleve-docker"
+host = "192.168.178.52"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "kleve"
+approvalPolicy = "auto"
+MCPCFG
+  cat > /root/.config/ssh-mcp/config-cleve.toml << 'MCPCFG'
+[defaults]
+defaultProfile = "cleve-docker"
+approvalMode = "auto"
+transferRoot = "/root/.ssh-mcp-transfers"
+
+# Nur Kleve-Hosts (via Tailscale-Tunnel / Subnet-Route) - fuer den cleve-Space.
+# Kein prod-Binding: Krefeld-Hosts sind hier bewusst nicht definiert
+# (harte Trennlinie Site-Krefeld / Site-Kleve).
+[policy.roleBindings.admin]
+kleve = ["read-only", "safe", "destructive", "privileged"]
+
+[[profiles]]
+name = "cleve-proxmox"
+host = "192.168.178.50"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "kleve"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "cleve-truenas"
+host = "192.168.178.51"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "kleve"
+approvalPolicy = "auto"
+
+[[profiles]]
+name = "cleve-docker"
+host = "192.168.178.52"
+port = 22
+user = "root"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp"
+role = "admin"
+group = "kleve"
 approvalPolicy = "auto"
 MCPCFG
   chmod 700 /root/.config/ssh-mcp
-  chmod 600 /root/.config/ssh-mcp/config.toml
+  chmod 600 /root/.config/ssh-mcp/config.toml /root/.config/ssh-mcp/config-full.toml /root/.config/ssh-mcp/config-cleve.toml
   echo "  ✓ ssh-mcp Config erstellt"
 fi
 
