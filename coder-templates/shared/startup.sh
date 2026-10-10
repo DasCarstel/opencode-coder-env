@@ -845,3 +845,18 @@ echo ""
 echo "=== $PROFILE Workspace bereit ==="
 echo "  Öffne die App in Coder."
 echo ""
+
+# ~ == HA-Kleve TCP-Relay (fuer Container ohne Tailscale, z. B. hermes) == ~
+HA_FORWARD_SCRIPT="/home/carstenmueller2002/opencode-coder-env/coder-templates/shared/ha-forward.py"
+if [ -f "$HA_FORWARD_SCRIPT" ]; then
+  if ! curl -sS --max-time 3 -o /dev/null http://127.0.0.1:18123/api/ 2>/dev/null; then
+    echo "  > HA-Kleve TCP-Relay starten (127.0.0.1:18123 -> 192.168.178.52:8123)..."
+    pkill -f "ha-forward.py" 2>/dev/null || true
+    nohup python3 "$HA_FORWARD_SCRIPT" 18123 192.168.178.52 8123 > /tmp/ha-forward.log 2>&1 &
+    sleep 1
+  else
+    echo "  > HA-Kleve TCP-Relay laeuft bereits"
+  fi
+fi
+
+echo ""
