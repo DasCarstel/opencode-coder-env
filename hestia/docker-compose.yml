@@ -22,6 +22,12 @@ services:
       OC_SERVER_USER: opencode
       OC_SUGGEST_DIR: /home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/server-management
       ROLLOUT_WORKFLOW: rollout.yml
+      # Übergangs-fallback bis OpenBao-AppRole 'hestia' angelegt ist
+      # (bootstrap.py überschreibt mit OpenBao-Werten, wenn OPENBAO_ROLE_ID gesetzt):
+      OC_SERVER_PASSWORD: ${OC_SERVER_PASSWORD:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      HESTIA_PASSWORD: ${HESTIA_PASSWORD:-}
+      HESTIA_PROXY_SECRET: ${HESTIA_PROXY_SECRET:-}
       # Optional: überschreibt alles (sonst aus OpenBao)
       # HESTIA_PASSWORD: ""
       # OC_SERVER_PASSWORD: ""

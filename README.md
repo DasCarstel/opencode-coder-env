@@ -6,7 +6,17 @@ Konfigurations-Repository für OpenCode in Coder Workspaces.
 
 ```
 opencode-coder-env/
-├── tiers.json                                # Model-Router Konfiguration
+├── tiers.json                                # Model-Router Konfiguration (Referenz)
+├── .opencode/
+│   └── opencode-model-router.overrides.jsonc # ← SOT der Tier-Anbindung (Hestia-managed)
+├── hestia/                                   # Hestia — OpenCode Model Panel
+│   ├── backend/                              # Python-Stdlib-Backend (kein Build im Container)
+│   ├── frontend/                             # Svelte-Source + gebautes dist/
+│   ├── skills/model-curator/                 # Hermes-Skill (Standardprofil, kleve ohne)
+│   ├── ci/                                   # validate.py, rollout_coder.py, setup/
+│   ├── Dockerfile
+│   └── docker-compose.yml
+├── .github/workflows/                        # validate + rollout + deploy (CI/CD)
 ├── workspaces/
 │   ├── infrastructure/
 │   │   ├── homeassistant/                    # Home-Assistant-Workspace
@@ -67,6 +77,29 @@ opencode-coder-env/
 - **Per-Workspace-Trennung**: Jeder Herdr-Workspace bekommt nur die benötigten MCP-Server und Skills
 - **OpenBao als Secret-Quelle**: Alle API-Keys werden zur Laufzeit aus OpenBao bezogen
 - **GitHub ohne MCP**: private Repos werden mit `git` + Token aus OpenBao geklont/gepusht (kein GitHub-MCP, kein `gh` im Workspace)
+
+## Hestia — OpenCode Model Panel
+
+Model-Verwaltung für das OpenCode-Fleet (Fast/Medium/Heavy der Model-Router-Tiers):
+
+- **URL**: https://hestia.mueller-nas.de (Authentik-SSO, Gruppe `admin` + Superuser;
+  direkter Port `10.0.10.17:49400` bleibt mit HTTP-Basic als fallback)
+- **Single Source of Truth**: `.opencode/opencode-model-router.overrides.jsonc`
+  (Repo-Root). Das `opencode-model-router`-Plugin (v2, `plugins`-Key in der
+  Profile-Configs) findet sie per cwd-Suche — jeder Coder-Container zieht sie
+  automatisch.
+- **Ablauf „Anwenden"**: Panel validiert gegen Live-Katalog → Commit auf master
+  (GitHub Contents API) → CI/CD: `validate-hestia-config.yml` → `rollout.yml`
+  (Coder-API: infrastructure/general/muellerconnect neu aufsetzen; entrypoint
+  zieht frisches Repo) → Overrides aktiv.
+- **KI-Vorschlag**: `/api/suggest` dispatcht OpenCode-Session mit Katalog+Preisen
+  und liefert begründete 3-Tier-Empfehlung (Budget: Moderat — nutzt fast/medium).
+- **Hermes**: `model-curator`-Skill (Standardprofil) fragt Hestia im Lesemodus;
+  kleve-Profil ist bewusst ausgeschlossen.
+- **One-Time-Setup** (GitHub-Secrets, Runner, OpenBao-AppRole):
+  `hestia/ci/setup/README.md`
+- **Phase 5 (später)**: Accounts/Abo-Rotation (OpenBao default1–3), Auto-Failover
+  (Plugin-Evaluation), `/accounts`-Endpunkt.
 
 ## Workspaces
 

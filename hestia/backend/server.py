@@ -40,6 +40,11 @@ STATIC_DIR = os.environ.get(
 HESTIA_USER = os.environ.get("HESTIA_USER", "hestia")
 HESTIA_PASSWORD = os.environ.get("HESTIA_PASSWORD") or secrets.token_urlsafe(24)
 PRESET_PROVIDER = os.environ.get("HESTIA_PRESET_PROVIDER", "opencode-go")
+# Traefik-SSO: forwardAuth (authentik@file) setzt X-authentik-*; zusätzlich malgré
+# ein Proxy-Secret-Header (customRequestHeaders-Middleware), damit direkte
+# Zugriffe auf 10.0.10.17:49400 die Header nicht fälschen können.
+HESTIA_PROXY_SECRET = os.environ.get("HESTIA_PROXY_SECRET", "")
+PROXY_SECRET_HEADER = "X-Hestia-Proxy-Secret"
 TIER_DEFS = ("fast", "medium", "heavy")
 
 
@@ -119,6 +124,11 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _authorized(self) -> bool:
+        # SSO-Pfad: Traefik markiert authentifizierte Requests mit dem Proxy-Secret
+        if HESTIA_PROXY_SECRET:
+            if self.headers.get(PROXY_SECRET_HEADER, "") == HESTIA_PROXY_SECRET \
+                    and self.headers.get("X-authentik-username"):
+                return True
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Basic "):
             return False
