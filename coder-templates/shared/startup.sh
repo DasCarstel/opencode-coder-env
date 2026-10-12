@@ -121,6 +121,8 @@ read_secret "secret/data/mcp/opencode-go" "default1" "OC_GO_DEFAULT1"
 read_secret "secret/data/mcp/opencode-go" "default2" "OC_GO_DEFAULT2"
 read_secret "secret/data/mcp/opencode-go" "default3" "OC_GO_DEFAULT3"
 read_secret "secret/data/mcp/opencode-go" "active"   "OC_GO_ACTIVE"
+# OpenCode-Server-Password (Fleet-Zugriff: Hestia + Hermes space-matrix)
+read_secret "secret/data/mcp/hermes-opencode-service" "password" "OPENCODE_SERVER_PASSWORD"
 
 # ── GitHub-Credentials (git clone/push privater Repos) ──────────────────────
 echo ""
@@ -731,6 +733,35 @@ esac
 OCGO
 chmod +x /usr/local/bin/oc-go
 echo "  ✓ Helper 'oc-go' installiert"
+
+# ── OpenCode-Server (Service): 0.0.0.0 + OpenBao-paritätisches Passwort ─────
+# Der v2-Background-Service regeneriert bei fehlender Konfig Passwort und
+# bindet loopback — für Hestia/Hermes-Fleet-Zugriff (Port 49374) brauchen wir
+# 0.0.0.0 + das Passwort aus secret/data/mcp/hermes-opencode-service (Goldquelle).
+echo ""
+echo "=== OpenCode-Server-Binding (Service) ==="
+if [ -n "${OPENCODE_SERVER_PASSWORD:-}" ]; then
+  opencode service set env OPENCODE_SERVER_PASSWORD "${OPENCODE_SERVER_PASSWORD}" >/dev/null 2>&1 || true
+fi
+mkdir -p ~/.config/opencode
+python3 - <<'PY' >/dev/null 2>&1
+import os, json
+p = os.path.expanduser("~/.config/opencode/service.json")
+try:
+    d = json.load(open(p))
+except Exception:
+    d = {}
+d["hostname"] = "0.0.0.0"
+d.setdefault("port", 49374)
+pw = os.environ.get("OPENCODE_SERVER_PASSWORD")
+if pw:
+    d["password"] = pw
+json.dump(d, open(p, "w"), indent=2)
+PY
+opencode service restart >/dev/null 2>&1 || true
+ss -tlnp 2>/dev/null | grep 49374 >/dev/null \
+  && echo "  ✓ OpenCode-Server: 0.0.0.0:49374" \
+  || echo "  ⚠ OpenCode-Server-Binding unklar"
 
 # ── oCIS MCP Server (OpenCloud / Obsidian) ──────────────────────────────────
 echo ""

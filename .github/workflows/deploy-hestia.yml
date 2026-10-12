@@ -34,6 +34,8 @@ jobs:
         run: |
           rsync -a --delete -e "ssh -i ~/.ssh/id_ed25519_coderdeploy -o IdentitiesOnly=yes" \
             --exclude 'frontend/node_modules' \
+            --exclude '.env' \
+            --exclude 'hestia.env' \
             "$(pwd)/hestia/" root@10.0.10.17:/opt/docker-compose/hestia/
 
       - name: docker compose build + up -d (auf Coder-Host)
