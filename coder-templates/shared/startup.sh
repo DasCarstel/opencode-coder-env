@@ -29,6 +29,17 @@ HERDR_BIN="/usr/local/bin/herdr"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# ── Versions-Pins laden (repo-gesteuert; Anzeige: scripts/check-updates.sh) ─
+if [ -f "$SCRIPT_DIR/../versions.env" ]; then
+  # shellcheck source=../versions.env
+  source "$SCRIPT_DIR/../versions.env"
+else
+  echo "⚠ coder-templates/versions.env nicht gefunden – Versionspins nicht verfügbar"
+  SSH_MCP_VERSION=""
+  OCIS_MCP_VERSION=""
+  HERDR_VERSION=""
+fi
+
 # ── /etc/opencode.env vorbereiten ───────────────────────────────────────────
 : > /etc/opencode.env
 chmod 600 /etc/opencode.env
@@ -196,13 +207,28 @@ except Exception:
     echo "  ⚠ ssh-mcp Key nicht gefunden (secret/data/mcp/ssh-mcp)"
   fi
 
-  # ── uvx + ssh-mcp installieren ────────────────────────────────────────────
+  # ── uvx + ssh-mcp installieren (Pin via versions.env, Stempel-Datei) ──────
   echo ""
   echo "=== uvx / ssh-mcp ==="
   if [ ! -x "$HOME/.local/bin/uvx" ]; then
     curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 | tail -2 || true
   fi
-  npm install -g ssh-mcp@2.17.0 2>&1 | tail -2 || true
+  SSH_MCP_STAMP="$HOME/.local/bin/.ssh-mcp-version"
+  if [ -z "${SSH_MCP_VERSION}" ]; then
+    echo "  ⚠ SSH_MCP_VERSION nicht gesetzt – ssh-mcp läuft weiter in aktueller Version"
+  elif [ "$(cat "$SSH_MCP_STAMP" 2>/dev/null)" != "${SSH_MCP_VERSION}" ]; then
+    echo "  → ssh-mcp ${SSH_MCP_VERSION} installieren..."
+    if npm install -g "ssh-mcp@${SSH_MCP_VERSION}" >/tmp/npm-ssh-mcp.log 2>&1; then
+      tail -2 /tmp/npm-ssh-mcp.log
+      echo "${SSH_MCP_VERSION}" > "$SSH_MCP_STAMP"
+      echo "  ✓ ssh-mcp ${SSH_MCP_VERSION} installiert"
+    else
+      tail -3 /tmp/npm-ssh-mcp.log
+      echo "  ⚠ ssh-mcp ${SSH_MCP_VERSION} konnte nicht installiert werden – bisherige Version bleibt"
+    fi
+  else
+    echo "  ✓ ssh-mcp bereits auf Pin (${SSH_MCP_VERSION})"
+  fi
 
   # ── ssh-mcp Konfiguration ───────────────────────────────────────────────────
   echo ""
@@ -566,9 +592,9 @@ if [ "$PROFILE" = "infrastructure" ]; then
   fi
 fi
 
-# ── OpenCode V2 ─────────────────────────────────────────────────────────────
+# ── OpenCode V2 (Hybrid: bei jedem Start auf npm-latest abgleichen) ────────
 echo ""
-echo "=== OpenCode V2 ==="
+echo "=== OpenCode V2 (immer latest) ==="
 mkdir -p ~/.config/opencode ~/.cache/opencode/opencode-model-router
 if [ -f "$REPO_DIR/tiers.json" ]; then
   ln -sf "$REPO_DIR/tiers.json" ~/.cache/opencode/opencode-model-router/tiers.json || true
@@ -576,14 +602,28 @@ fi
 echo 'alias update-opencode-config="cd ~/opencode-coder-env && git pull --ff-only"' >> ~/.bashrc
 
 if command -v npm >/dev/null 2>&1; then
-  if ! opencode --version 2>/dev/null | grep -q "v2"; then
-    echo "  → OpenCode wird installiert..."
+  CUR=$(opencode --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  NEW=$(npm view @opencode/cli version 2>/dev/null | tail -1)
+  if [ -z "$CUR" ] || { [ -n "$NEW" ] && [ "$CUR" != "$NEW" ]; }; then
+    echo "  → OpenCode installieren/aktualisieren: ${CUR:-fehlt} → ${NEW:-latest} ..."
     npm uninstall -g opencode 2>/dev/null || true
     npm uninstall -g @opencode-ai/opencode 2>/dev/null || true
     rm -f /usr/bin/opencode
-    npm install -g @opencode/cli 2>&1 | tail -5
+    npm install -g @opencode/cli 2>&1 | tail -3
+    GOT=$(opencode --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    if [ -n "$GOT" ]; then
+      echo "  ✓ OpenCode: $(opencode --version 2>&1)"
+      opencode service restart >/dev/null 2>&1 \
+        && echo "  ✓ OpenCode-Service neu gestartet" \
+        || echo "  ⚠ OpenCode-Service läuft noch nicht – Neustart wird ohnehin beim Boot erfolgen"
+    else
+      echo "  ⚠ OpenCode-Installation fehlgeschlagen: $(opencode --version 2>&1)"
+    fi
+  elif [ -z "$NEW" ]; then
+    echo "  ⚠ npm-Abfrage fehlgeschlagen – OpenCode ${CUR:-?} bleibt bestehen"
+  else
+    echo "  ✓ OpenCode bereits aktuell: $(opencode --version 2>&1)"
   fi
-  echo "  ✓ OpenCode: $(opencode --version 2>&1)"
 else
   echo "  ⚠ npm nicht verfügbar – OpenCode kann nicht installiert werden"
 fi
@@ -696,16 +736,23 @@ echo "  ✓ Helper 'oc-go' installiert"
 echo ""
 echo "=== oCIS MCP Server (OpenCloud) ==="
 OCIS_MCP_BIN="/root/.local/bin/ocis-mcp-server"
-if [ ! -x "$OCIS_MCP_BIN" ]; then
-  echo "  → lade ocis-mcp-server herunter..."
-  curl -fsSL -o /tmp/ocis-mcp.tar.gz "https://github.com/owncloud/ocis-mcp-server/releases/download/v1.1.0/ocis-mcp-server_1.1.0_linux_amd64.tar.gz" \
-    && tar xzf /tmp/ocis-mcp.tar.gz -C /tmp \
-    && install -m 0755 /tmp/ocis-mcp-server "$OCIS_MCP_BIN" \
-    && rm -f /tmp/ocis-mcp.tar.gz /tmp/ocis-mcp-server \
-    && echo "  ✓ ocis-mcp-server installiert" \
-    || echo "  ⚠ ocis-mcp-server konnte nicht heruntergeladen werden"
+OCIS_MCP_STAMP="/root/.local/bin/.ocis-mcp-server-version"
+if [ -z "${OCIS_MCP_VERSION}" ]; then
+  echo "  ⚠ OCIS_MCP_VERSION nicht gesetzt – ocis-mcp-server läuft weiter in aktueller Version"
+elif [ ! -x "$OCIS_MCP_BIN" ] || [ "$(cat "$OCIS_MCP_STAMP" 2>/dev/null)" != "${OCIS_MCP_VERSION}" ]; then
+  echo "  → lade ocis-mcp-server v${OCIS_MCP_VERSION} herunter..."
+  if curl -fsSL -o /tmp/ocis-mcp.tar.gz \
+      "https://github.com/owncloud/ocis-mcp-server/releases/download/v${OCIS_MCP_VERSION}/ocis-mcp-server_${OCIS_MCP_VERSION}_linux_amd64.tar.gz" \
+     && tar xzf /tmp/ocis-mcp.tar.gz -C /tmp \
+     && install -m 0755 /tmp/ocis-mcp-server "$OCIS_MCP_BIN" \
+     && rm -f /tmp/ocis-mcp.tar.gz /tmp/ocis-mcp-server; then
+    echo "${OCIS_MCP_VERSION}" > "$OCIS_MCP_STAMP"
+    echo "  ✓ ocis-mcp-server installiert (v${OCIS_MCP_VERSION})"
+  else
+    echo "  ⚠ ocis-mcp-server konnte nicht auf v${OCIS_MCP_VERSION} gebracht werden – alte Version (falls vorhanden) bleibt"
+  fi
 else
-  echo "  ✓ ocis-mcp-server bereits installiert"
+  echo "  ✓ ocis-mcp-server bereits auf Pin (v${OCIS_MCP_VERSION})"
 fi
 
 # Profil-spezifische Token-Env + Hard-Guardrail (jeder Workspace sieht nur
@@ -731,45 +778,40 @@ case "$PROFILE" in
     ;;
 esac
 
-# ── Herdr installieren ─────────────────────────────────────────────────────
+# ── Herdr installieren (Pin via versions.env; Quelle: herdr.dev-API,
+#    Fallback: Host-Bind-Mount /opt/opencode-bin) ───────────────────────────
 echo ""
 echo "=== Herdr ==="
-HERDR_VERSION="0.9.3"
-HERDR_URLS=(
-  "https://github.com/herdr-sh/herdr/releases/download/v${HERDR_VERSION}/herdr-linux-amd64"
-  "https://github.com/herdr-sh/herdr/releases/latest/download/herdr-linux-amd64"
-  "https://herdr.dev/api/releases/v${HERDR_VERSION}/linux-amd64"
-)
+herdrver() { "$1" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1; }
 
-if [ -x "$HERDR_BIN" ]; then
-  echo "  ✓ Herdr vorhanden ($($HERDR_BIN --version 2>/dev/null))"
-elif [ -f /opt/opencode-bin/herdr ]; then
-  cp /opt/opencode-bin/herdr "$HERDR_BIN"
-  chmod +x "$HERDR_BIN"
-  echo "  ✓ Herdr aus /opt/opencode-bin installiert ($($HERDR_BIN --version 2>/dev/null))"
-elif [ -f /usr/local/bin/herdr ]; then
-  cp /usr/local/bin/herdr "$HERDR_BIN"
-  chmod +x "$HERDR_BIN"
-  echo "  ✓ Herdr aus /usr/local/bin installiert ($($HERDR_BIN --version 2>/dev/null))"
+HERDR_CUR=$(herdrver "$HERDR_BIN")
+HERDR_HOSTBIN=/opt/opencode-bin/herdr
+if [ -z "${HERDR_VERSION}" ]; then
+  echo "  ⚠ HERDR_VERSION nicht gesetzt – Herdr läuft weiter in Version ${HERDR_CUR:-?}"
+elif [ "$HERDR_CUR" = "${HERDR_VERSION}" ]; then
+  echo "  ✓ Herdr bereits auf Pin (${HERDR_VERSION})"
+elif [ -x "$HERDR_HOSTBIN" ] && [ "$(herdrver "$HERDR_HOSTBIN")" = "${HERDR_VERSION}" ]; then
+  cp "$HERDR_HOSTBIN" "$HERDR_BIN" \
+    && chmod +x "$HERDR_BIN" \
+    && echo "  ✓ Herdr ${HERDR_VERSION} aus /opt/opencode-bin installiert" \
+    || echo "  ⚠ Herdr aus /opt/opencode-bin konnte nicht installiert werden"
 else
-  echo "  → Herdr wird heruntergeladen..."
-  INSTALLED=false
-  for url in "${HERDR_URLS[@]}"; do
-    echo "    Versuche: $url"
-    if curl -fsSL --max-time 30 "$url" -o "$HERDR_BIN" 2>/dev/null; then
-      chmod +x "$HERDR_BIN"
-      if "$HERDR_BIN" --version >/dev/null 2>&1; then
-        echo "  ✓ Herdr installiert ($($HERDR_BIN --version 2>/dev/null))"
-        INSTALLED=true
-        break
-      else
-        rm -f "$HERDR_BIN"
-      fi
+  echo "  → Herdr ${HERDR_VERSION} wird heruntergeladen (herdr.dev)..."
+  if curl -fsSL --max-time 60 -o "$HERDR_BIN.tmp" \
+      "https://herdr.dev/api/releases/v${HERDR_VERSION}/linux-amd64" \
+     && chmod +x "$HERDR_BIN.tmp" \
+     && [ "$(herdrver "$HERDR_BIN.tmp")" = "${HERDR_VERSION}" ]; then
+    mv "$HERDR_BIN.tmp" "$HERDR_BIN"
+    echo "  ✓ Herdr installiert (${HERDR_VERSION})"
+  else
+    rm -f "$HERDR_BIN.tmp"
+    if [ -x "$HERDR_HOSTBIN" ]; then
+      cp "$HERDR_HOSTBIN" "$HERDR_BIN" && chmod +x "$HERDR_BIN" \
+        && echo "  ⚠ Download fehlgeschlagen – bleibe bei Version $(herdrver "$HERDR_BIN") aus /opt/opencode-bin" \
+        || echo "  ⚠ Download fehlgeschlagen und Host-Fallback nicht installierbar"
+    else
+      echo "  ⚠ Herdr ${HERDR_VERSION} weder per Download noch Host-Fallback verfügbar"
     fi
-  done
-  if [ "$INSTALLED" = false ]; then
-    echo "  ⚠ Herdr-Download fehlgeschlagen – Herdr nicht verfügbar"
-    echo "  Hinweis: Überspringe Herdr-Server-Start"
   fi
 fi
 
