@@ -1,0 +1,54 @@
+// opencode-model-router Overrides — Single Source of Truth der Tier-Anbindung
+//
+// Dieses File wird vom Plugin `opencode-model-router` gelesen (deep-merge über
+// die gebündelten Defaults): Das Plugin durchsucht den Working directory nach
+// oben bis zur Repo-Root, sodass jeder OpenCode-Workspaces-Container im Repo
+// automatisch dieselbe Konfiguration zieht — kein Symlink, kein Cache-Eingriff.
+//
+// Verwaltet vom Hestia-Panel (hestia/): Änderungen laufen über
+//   POST /api/apply  → schreibe dieses File → git push → CI/CD-Rollout
+// Manuelle Edits sind weiterhin möglich (JSONC: // und /* */ erlaubt).
+{
+  "activePreset": "opencode-go",
+  "presets": {
+    "opencode-go": {
+      "fast": {
+        "model": "opencode-go/mimo-v2.5",
+        "costRatio": 1,
+        "description": "MiMo V2.5 für Explorer, Suche und einfache Lesesvorgänge",
+        "steps": 30,
+        "whenToUse": [
+          "Codebase-Exploration und Suche",
+          "Einfache File-Lese- und Listing-Operationen",
+          "Grep/glob-Operationen",
+          "Schnelle Lookups und Recherche"
+        ]
+      },
+      "medium": {
+        "model": "opencode-go/deepseek-v4-flash",
+        "costRatio": 5,
+        "description": "DeepSeek V4 Flash für Implementation, Refactoring und Tests",
+        "steps": 50,
+        "whenToUse": [
+          "Feature-Implementierung",
+          "Refactoring",
+          "Tests schreiben",
+          "Code-Review",
+          "Bug fixes"
+        ]
+      },
+      "heavy": {
+        "model": "opencode-go/glm-5.3-flash",
+        "costRatio": 12,
+        "description": "GLM 5.3 Flash für Architektur, komplexes Debugging und Security",
+        "steps": 120,
+        "whenToUse": [
+          "Architektur-Entscheidungen",
+          "Komplexes Debugging (nach 2+ Fehlschlägen)",
+          "Security-Review",
+          "Performance-Optimierung"
+        ]
+      }
+    }
+  }
+}

@@ -4,6 +4,7 @@
     "../../skills/shared",
     "../../skills/minijob"
   ],
+  "plugins": ["opencode-model-router"],
   "mcp": {
     "servers": {
       "ocis": {

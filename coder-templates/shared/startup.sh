@@ -595,10 +595,10 @@ fi
 # ── OpenCode V2 (Hybrid: bei jedem Start auf npm-latest abgleichen) ────────
 echo ""
 echo "=== OpenCode V2 (immer latest) ==="
-mkdir -p ~/.config/opencode ~/.cache/opencode/opencode-model-router
-if [ -f "$REPO_DIR/tiers.json" ]; then
-  ln -sf "$REPO_DIR/tiers.json" ~/.cache/opencode/opencode-model-router/tiers.json || true
-fi
+mkdir -p ~/.config/opencode
+# Model-Router-Konfiguration liegt in .opencode/opencode-model-router.overrides.jsonc
+# am Repo-Root (das Plugin durchsucht von cwd aufwärts bis Repo-Root) —
+# kein Symlink/Cache-Eingriff mehr nötig. tiers.json bleibt Referenz/Historie.
 echo 'alias update-opencode-config="cd ~/opencode-coder-env && git pull --ff-only"' >> ~/.bashrc
 
 if command -v npm >/dev/null 2>&1; then

@@ -4,6 +4,7 @@
     "../../skills/shared",
     "../../skills/obsidian"
   ],
+  "plugins": ["opencode-model-router"],
   "mcp": {
     "servers": {
       "ocis": {
