@@ -32,12 +32,13 @@ jobs:
 
       - name: hestia/ synchronisieren
         run: |
-          rsync -a --delete --exclude 'frontend/node_modules' \
+          rsync -a --delete -e "ssh -i ~/.ssh/id_ed25519_coderdeploy -o IdentitiesOnly=yes" \
+            --exclude 'frontend/node_modules' \
             "$(pwd)/hestia/" root@10.0.10.17:/opt/docker-compose/hestia/
 
       - name: docker compose build + up -d (auf Coder-Host)
         run: |
-          ssh -i ~/.ssh/id_ed25519_coderdeploy root@10.0.10.17 \
+          ssh -i ~/.ssh/id_ed25519_coderdeploy -o IdentitiesOnly=yes root@10.0.10.17 \
             "cd /opt/docker-compose/hestia && docker compose build --pull && docker compose up -d && docker image prune -f"
 
       - name: Healthcheck
