@@ -1,0 +1,31 @@
+name: validate-hestia-config
+
+# Validiert die Tier-Overrides (JSONC + Live-Katalog-Check gegen models.dev).
+# Läuft bei jedem Overrides-Commit (vor dem Rollout), bei PRs und täglich.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - ".opencode/**"
+      - "hestia/ci/**"
+      - ".github/workflows/validate-hestia-config.yml"
+  pull_request:
+    paths:
+      - ".opencode/**"
+  schedule:
+    - cron: "0 6 * * *" # täglich 06:00 UTC — Modell-Ausfall-Sonde (Phase-5-Stufe-B)
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tier-Konfiguration validieren
+        run: python hestia/ci/validate.py
+        env:
+          MODEL_CATALOG_URL: https://models.dev/api.json

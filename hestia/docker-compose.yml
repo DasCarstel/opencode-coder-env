@@ -1,0 +1,33 @@
+services:
+  hestia:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hestia-panel:latest
+    container_name: hestia
+    restart: unless-stopped
+    tty: true
+    stdin_open: true
+    networks:
+      - coder-infra
+    ports:
+      - "49400:8000"
+    environment:
+      OPENBAO_ADDR: https://openbao.mueller-nas.de
+      OPENBAO_ROLE_ID: ${HESTIA_OPENBAO_ROLE_ID:-}
+      OPENBAO_SECRET_ID: ${HESTIA_OPENBAO_SECRET_ID:-}
+      GITHUB_REPO: DasCarstel/opencode-coder-env
+      GITHUB_REF: master
+      OC_SERVER_URL: http://coder-carstenmueller2002-infrastructure:49374
+      OC_SERVER_USER: opencode
+      OC_SUGGEST_DIR: /home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/server-management
+      ROLLOUT_WORKFLOW: rollout.yml
+      # Optional: überschreibt alles (sonst aus OpenBao)
+      # HESTIA_PASSWORD: ""
+      # OC_SERVER_PASSWORD: ""
+      # GITHUB_TOKEN: ""
+    command: ["python3", "bootstrap.py"]
+
+networks:
+  coder-infra:
+    external: true

@@ -1,0 +1,34 @@
+name: rollout
+
+# Rollout der Tier-Overrides auf alle OpenCode-Coder-Workspaces:
+# Push auf .opencode/opencode-model-router.overrides.jsonc → validieren →
+# Coder-Workspaces (infrastructure, general, muellerconnect) neu aufsetzen.
+# entrypoint.sh der Container zieht beim Start frisches Repo = Overrides aktiv.
+# Wenn CODER_URL/CODER_TOKEN leer sind, wird der Restart-Schritt übersprungen
+# (Setup: hestia/ci/setup/README.md).
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - ".opencode/opencode-model-router.overrides.jsonc"
+  workflow_dispatch:
+
+jobs:
+  restart-workspaces:
+    runs-on: ubuntu-latest
+    env:
+      CODER_URL: ${{ secrets.CODER_URL }}
+      CODER_TOKEN: ${{ secrets.CODER_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Schema-Check (schnell)
+        run: python hestia/ci/validate.py
+      - name: Coder-Workspaces neu aufsetzen (Hestia-Rollout)
+        if: ${{ env.CODER_URL != '' && env.CODER_TOKEN != '' }}
+        run: python hestia/ci/rollout_coder.py
+      - name: Rollout übersprungen (Secrets fehlen)
+        if: ${{ !(env.CODER_URL != '' && env.CODER_TOKEN != '') }}
+        run: |
+          echo "::notice::CODER_URL / CODER_TOKEN nicht gesetzt — Restart-Schritt übersprungen."
+          echo " Setup-Anleitung: hestia/ci/setup/README.md (Schritt 3: GitHub-Secrets)."
