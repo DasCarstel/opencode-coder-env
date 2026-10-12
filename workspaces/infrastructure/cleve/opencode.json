@@ -24,5 +24,10 @@
         }
       }
     }
+  },
+  "permission": {
+    "edit": "allow",
+    "bash": "allow",
+    "webfetch": "allow"
   }
 }

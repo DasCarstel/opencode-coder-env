@@ -9,8 +9,13 @@ validiert Svelte-Code direkt im Workspace — es wird nichts lokal installiert.
   - URL: `https://mcp.svelte.dev/mcp`
   - Kein API-Key, keine lokale Installation
   - Tools: `list-sections`, `get-documentation`, `svelte-autofixer`, `playground-link`
-- **ssh-mcp** (lokal, stdio) – aus der globalen Config (`~/.config/opencode/opencode.json`)
+- **ssh-mcp** (lokal, stdio) – aus der Projekt-Config dieses Workspaces (`opencode.json`)
   - Host-Zugriff auf die Infrastruktur (Docker, Proxmox, TrueNAS, …)
+  - Config: `/root/.config/ssh-mcp/config-full.toml` (alle Krefeld-Hosts, Gruppe prod) —
+    identisch zum Server-Management-Space
+- **authentik** (lokal) – Authentik-Verwaltung
+  - Env: `AUTHENTIK_API_KEY` (aus OpenBao, service-weit injiziert)
+  - URL: `https://auth.mueller-nas.de`
 - **ocis** (lokal) – privater Obsidian-Vault
   - Env: `OCIS_PRIVATE_USER` / `OCIS_PRIVATE_TOKEN` (aus OpenBao)
 

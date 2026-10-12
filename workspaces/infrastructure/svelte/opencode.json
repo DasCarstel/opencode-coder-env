@@ -7,6 +7,19 @@
   ],
   "mcp": {
     "servers": {
+      "authentik": {
+        "type": "local",
+        "command": [
+          "/root/.local/bin/uvx",
+          "--extra-index-url",
+          "https://nikitatsym.github.io/authentik-mcp/simple",
+          "authentik-mcp"
+        ],
+        "environment": {
+          "AUTHENTIK_URL": "https://auth.mueller-nas.de",
+          "AUTHENTIK_TOKEN": "{env:AUTHENTIK_API_KEY}"
+        }
+      },
       "ocis": {
         "type": "local",
         "command": [
@@ -18,10 +31,22 @@
           "OCIS_MCP_APP_TOKEN_VALUE": "{env:OCIS_PRIVATE_TOKEN}"
         }
       },
+      "ssh-mcp": {
+        "type": "local",
+        "command": [
+          "ssh-mcp",
+          "--config=/root/.config/ssh-mcp/config-full.toml"
+        ]
+      },
       "svelte": {
         "type": "remote",
         "url": "https://mcp.svelte.dev/mcp"
       }
     }
+  },
+  "permission": {
+    "edit": "allow",
+    "bash": "allow",
+    "webfetch": "allow"
   }
 }

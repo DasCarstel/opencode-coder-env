@@ -32,7 +32,7 @@ opencode-coder-env/
 │   │   ├── main.tf
 │   │   ├── Dockerfile
 │   │   └── config/
-│   │       └── global-opencode.json          # globale Config (nur ssh-mcp)
+│   │       └── global-opencode.json          # globale Config (leer – MCP-Trennung per Projekt-Configs)
 │   ├── general/
 │   │   ├── main.tf
 │   │   └── Dockerfile
@@ -74,7 +74,7 @@ opencode-coder-env/
 |-----------|-------|----------|------------|--------|
 | Home Assistant | HA-Verwaltung | `coder-infra` | `homeassistant`, `ocis` (privat) | `home-assistant`, `google-home-exposure`, `obsidian` |
 | Server Management | Infrastruktur-Hosts | `coder-infra` | `authentik`, `ocis` (privat), `ssh-mcp` | `authentik`, `docker-host*`, `create-skill`, `obsidian` |
-| Svelte | Svelte-Entwicklung | `coder-infra` | `svelte` (remote), `ocis` (privat), `ssh-mcp` | `create-skill`, `obsidian`, `docker-host*` |
+| Svelte | Svelte-Entwicklung | `coder-infra` | `authentik`, `svelte` (remote), `ocis` (privat), `ssh-mcp` | `create-skill`, `obsidian`, `docker-host*` |
 | Cleve | Cleve-Infrastruktur (Proxmox/TrueNAS/Docker) | `coder-infra` | `ssh-mcp`, `ocis` (privat) | `docker-host-location` (Kleve), `docker-host*`, `create-skill`, `obsidian` |
 | General | Allgemeine Aufgaben | `coder-gen` | `ocis` (privat), `pdf` | `create-skill`, `obsidian` |
 | MuellerConnect/minijob | Mini-Job | `coder-mc` | `ocis` (Arbeit), `pdf` | `create-skill`, `obsidian` |
@@ -119,9 +119,12 @@ OpenCode V2 konfiguriert MCP-Server unter `mcp.servers`. Konfig-Dateien werden
 `workspaces/infrastructure/svelte/opencode.json`:
 
 - **svelte** – offizieller Remote-MCP, `https://mcp.svelte.dev/mcp` (kein API-Key, nichts lokal installiert)
+- **authentik** – lokaler Authentik-MCP wie im Server-Management-Space
+  (Env: `AUTHENTIK_API_KEY`, URL `https://auth.mueller-nas.de`)
 - **ocis** – lokaler offizieller ownCloud-MCP (`owncloud/ocis-mcp-server` v1.1.0),
   Env wie im Home-Assistant-Workspace (`OCIS_PRIVATE_USER` / `OCIS_PRIVATE_TOKEN`)
-- **ssh-mcp** – aus der globalen Config (`~/.config/opencode/opencode.json`)
+- **ssh-mcp** – aus der Projekt-Config (`config-full.toml`, alle Krefeld-Hosts, Gruppe prod) —
+  identisch zum Server-Management-Space
 
 ### General / MuellerConnect-Workspace
 `workspaces/general/workspace-global.json` bzw. `workspaces/minijob/workspace-global.json`:
@@ -338,11 +341,11 @@ hart auf `origin/master` gesetzt (lokale Abweichungen werden verworfen).
 
 | | Home Assistant | Server Management / Svelte | Cleve |
 |---|---|---|---|
-| MCP-Server | `homeassistant`, `ocis`, `ssh-mcp` | `authentik` (nur SM), `svelte` (nur Svelte), `ocis`, `ssh-mcp` | `ocis`, `ssh-mcp` |
+| MCP-Server | `homeassistant`, `ocis`, `ssh-mcp` | `authentik`, `svelte` (nur Svelte), `ocis`, `ssh-mcp` | `ocis`, `ssh-mcp` |
 | Skills | `home-assistant`, `google-home-exposure`, `obsidian` | `authentik` (nur SM), `docker-host-location` (Krefeld), `docker-host*`, `create-skill`, `obsidian` | `docker-host-location` (Kleve), `docker-host*`, `create-skill`, `obsidian` |
 
 Die Trennung erfolgt über `opencode.json` im jeweiligen Workspace-Verzeichnis
-(Projekt-Config) plus die globale Config (nur `ssh-mcp`).
+(Projekt-Config); die globale Config enthält bewusst keine MCP-Server.
 
 ## Aktueller Stand (07.10.2026)
 
