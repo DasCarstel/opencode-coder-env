@@ -1,11 +1,12 @@
 name: deploy-hestia
 
-# Deploys das Hestia-Panel auf den Coder-Host (10.0.0.10.17):
+# Deploys das Hestia-Panel auf den Coder-Host (10.0.10.17):
 # hestia/ synchronisieren → docker compose build + up -d.
 #
 # Voraussetzungen (einmalig, siehe hestia/ci/setup/README.md):
 #   1. Self-hosted GitHub-Runner mit Label `docker-host` auf dem Docker-Host (CT 100)
-#   2. SSH-Deploy-Key (GitHub-Secret CODER_DEPLOY_KEY) erlaubt root-Zugang zum Coder-Host
+#   2. GitHub-Secret CODER_DEPLOY_KEY (privater Deploy-Key, pubkey liegt im
+#      authorized_keys des Coder-Hosts — Setup-Script legt beides an)
 on:
   push:
     branches: [master]
@@ -17,13 +18,15 @@ on:
 jobs:
   deploy:
     runs-on: [self-hosted, docker-host]
+    env:
+      CODER_DEPLOY_KEY: ${{ secrets.CODER_DEPLOY_KEY }}
     steps:
       - uses: actions/checkout@v4
-
       - name: Deploy-Key hinterlegen
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.CODER_DEPLOY_KEY }}" > ~/.ssh/id_ed25519_coderdeploy
+          sed -i 's/\r$//' ~/.ssh/id_ed25519_coderdeploy
           chmod 600 ~/.ssh/id_ed25519_coderdeploy
           ssh-keyscan -H 10.0.10.17 >> ~/.ssh/known_hosts 2>/dev/null
 
@@ -40,5 +43,4 @@ jobs:
       - name: Healthcheck
         run: |
           sleep 5
-          curl -fsS -u "hestia:${{ secrets.HESTIA_PASSWORD }}" http://10.0.10.17:49400/api/health | tee /dev/stderr | grep -q '"ok"' \
-            || curl -fsS http://10.0.10.17:49400/api/health
+          curl -fsS http://10.0.10.17:49400/api/health | tee /dev/stderr | grep -q '"ok"'

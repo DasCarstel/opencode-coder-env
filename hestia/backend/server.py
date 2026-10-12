@@ -195,30 +195,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if not self._authorized():
-            return self._denied()
+        # /api/health ist bewusst unauthentifiziert (Monitoring-freundlich, keine
+        # sensiblen Inhalte) — alles andere verlangt Basic/SSO.
         path = urlparse(self.path).path
         if path == "/api/health":
-            ok_oc = False
-            ok_gh = False
-            try:
-                catalog.fetch_models()
-                ok_oc = True
-            except Exception as e:
-                _log(f"health: oc={e}")
-            try:
-                github_api.get_overrides()
-                ok_gh = True
-            except Exception as e:
-                _log(f"health: gh={e}")
-            return self._json({
-                "status": "ok" if (ok_oc and ok_gh) else "degraded",
-                "serverTime": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "openCodeReachable": ok_oc,
-                "githubReachable": ok_gh,
-                "repo": github_api.GITHUB_REPO,
-                "overridesPath": github_api.OVERRIDES_PATH,
-            })
+            return self._health()
+        if not self._authorized():
+            return self._denied()
         if path == "/api/catalog":
             try:
                 models = catalog.fetch_models()
@@ -245,6 +228,28 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"error": str(e)}, 500)
         self._static(path)
+
+    def _health(self):
+        ok_oc = False
+        ok_gh = False
+        try:
+            catalog.fetch_models()
+            ok_oc = True
+        except Exception as e:
+            _log(f"health: oc={e}")
+        try:
+            github_api.get_overrides()
+            ok_gh = True
+        except Exception as e:
+            _log(f"health: gh={e}")
+        return self._json({
+            "status": "ok" if (ok_oc and ok_gh) else "degraded",
+            "serverTime": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "openCodeReachable": ok_oc,
+            "githubReachable": ok_gh,
+            "repo": github_api.GITHUB_REPO,
+            "overridesPath": github_api.OVERRIDES_PATH,
+        })
 
     def do_POST(self):
         if not self._authorized():
