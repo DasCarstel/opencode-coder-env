@@ -27,8 +27,10 @@ OC_SUGGEST_DIR = os.environ.get(
 # Override per OC_SUGGEST_MODEL ("provider/model#variant"); leer = Tier-Heavy.
 OC_SUGGEST_MODEL = os.environ.get("OC_SUGGEST_MODEL", "").strip()
 PRESET = os.environ.get("HESTIA_PRESET_PROVIDER", "opencode-go")
-POLL_INTERVAL = 6.0
-POLL_TIMEOUT = 720.0
+POLL_INTERVAL = 5.0
+POLL_TIMEOUT = float(os.environ.get("OC_SUGGEST_TIMEOUT", "420"))
+STALL_TIMEOUT = float(os.environ.get("OC_SUGGEST_STALL_TIMEOUT", "90"))
+TRIES = int(os.environ.get("OC_SUGGEST_TRIES", "2"))
 
 
 def _headers():
@@ -140,10 +142,38 @@ def resolve_analysis_model() -> tuple:
     return body, info
 
 
-def suggest() -> dict:
-    if not OC_SERVER_PASSWORD:
-        raise RuntimeError("OC_SERVER_PASSWORD nicht gesetzt")
-    prompt = _build_prompt()
+class StallError(RuntimeError):
+    """Die Provider-Anfrage liefert keinen Fortschritt (0 Token / keine Updates)."""
+
+
+def _active_ids() -> set:
+    _, act = _req("GET", f"{OC_SERVER_URL}/api/session/active")
+    active = act.get("data", act) if isinstance(act, dict) else act
+    if isinstance(active, dict):
+        return set(active.keys())
+    if isinstance(active, list):
+        return {s.get("id") for s in active}
+    return set()
+
+
+def _progress(sid: str) -> tuple:
+    """Fortschritts-Signatur: (tokenSumme, updated-Zeit)."""
+    st, res = _req("GET", f"{OC_SERVER_URL}/api/session/{sid}")
+    if st != 200:
+        return (0, 0)
+    d = res.get("data", res) if isinstance(res, dict) else res
+    tok = d.get("tokens") or {}
+    cache = tok.get("cache") or {}
+    total = (tok.get("input") or 0) + (tok.get("output") or 0) + (tok.get("reasoning") or 0) + (cache.get("read") or 0)
+    updated = ((d.get("time") or {}).get("updated")) or 0
+    return (total, updated)
+
+
+def _interrupt(sid: str):
+    _req("POST", f"{OC_SERVER_URL}/api/session/{sid}/interrupt")
+
+
+def _attempt(prompt: str, model_body, used_info: dict) -> dict:
     sstatus, sres = _req("POST", f"{OC_SERVER_URL}/api/session",
                          {"location": {"directory": OC_SUGGEST_DIR},
                           "title": "Hestia Modell-Vorschlag"})
@@ -153,12 +183,11 @@ def suggest() -> dict:
     if not sid:
         raise RuntimeError(f"Keine Session-ID: {sres}")
 
-    # Analyse-Modell = aktuelles @heavy (Fallback: Session-Default)
-    model_body, used_info = resolve_analysis_model()
     if model_body:
-        mstatus, mres = _req("POST", f"{OC_SERVER_URL}/api/session/{sid}/model", {"model": model_body})
+        mstatus, _ = _req("POST", f"{OC_SERVER_URL}/api/session/{sid}/model", {"model": model_body})
         if mstatus not in (200, 201, 204):
-            used_info = {"source": "session-default", "note": f"Modell-Umschaltung fehlgeschlagen ({mstatus})"}
+            used_info.clear()
+            used_info.update({"source": "session-default", "note": f"Modell-Umschaltung fehlgeschlagen ({mstatus})"})
     if used_info.get("model"):
         used_info["label"] = used_info["model"] + (f"#{used_info['variant']}" if used_info.get("variant") else "")
     else:
@@ -166,25 +195,30 @@ def suggest() -> dict:
 
     pstatus, pres = _req("POST", f"{OC_SERVER_URL}/api/session/{sid}/prompt", {"text": prompt})
     if pstatus not in (200, 201, 202):
+        _interrupt(sid)
         raise RuntimeError(f"Prompt-Feuern fehlgeschlagen ({pstatus}): {pres}")
 
-    done_at = None
     deadline = time.time() + POLL_TIMEOUT
+    last_progress = time.time()
+    last_sig = _progress(sid)
     while time.time() < deadline:
         time.sleep(POLL_INTERVAL)
-        ast, act = _req("GET", f"{OC_SERVER_URL}/api/session/active")
-        active = act.get("data", act) if isinstance(act, dict) else act
-        if isinstance(active, dict):
-            ids = set(active.keys())
-        elif isinstance(active, list):
-            ids = {s.get("id") for s in active}
-        else:
-            ids = set()
-        if sid not in ids:
-            done_at = True
-            break
-    if not done_at:
-        raise RuntimeError("Timeout: Analyse-Session läuft weiterhin (Ergebnis später über /api/session/%s/message abrufbar)" % sid)
+        if sid not in _active_ids():
+            break  # fertig
+        sig = _progress(sid)
+        if sig != last_sig:
+            last_sig, last_progress = sig, time.time()
+        elif time.time() - last_progress > STALL_TIMEOUT:
+            _interrupt(sid)
+            raise StallError(
+                f"Keine Provider-Antwort seit {int(STALL_TIMEOUT)}s (Session {sid} abgebrochen) — "
+                "modell-/provider-seitiger Hänger. Bitte erneut versuchen."
+            )
+    else:
+        _interrupt(sid)
+        raise RuntimeError(
+            f"Timeout nach {int(POLL_TIMEOUT)}s (Session {sid} abgebrochen) — bitte erneut versuchen."
+        )
 
     mstatus, mres = _req("GET", f"{OC_SERVER_URL}/api/session/{sid}/message?limit=100")
     if mstatus != 200:
@@ -205,6 +239,27 @@ def suggest() -> dict:
     m = re.search(r"\{.*\}", full, re.S)
     if not m:
         raise RuntimeError(f"Kein JSON in der Antwort erkannt: {full[:300]}")
-    blob = m.group(0)
-    decision = json.loads(blob)
-    return {"session": sid, "decision": decision, "raw": full, "analyzedWith": used_info}
+    decision = json.loads(m.group(0))
+    return {"session": sid, "decision": decision, "raw": full}
+
+
+def suggest() -> dict:
+    """KI-Vorschlag mit einem automatischen Neuversuch bei Hängern."""
+    if not OC_SERVER_PASSWORD:
+        raise RuntimeError("OC_SERVER_PASSWORD nicht gesetzt")
+    prompt = _build_prompt()
+    model_body, used_info = resolve_analysis_model()
+    last_err = None
+    for attempt in range(1, max(1, TRIES) + 1):
+        try:
+            res = _attempt(prompt, model_body, used_info)
+            res["analyzedWith"] = used_info
+            res["attempt"] = attempt
+            return res
+        except Exception as e:  # noqa: BLE001 — Retry dann Fehler nach außen
+            last_err = e
+            if attempt < max(1, TRIES):
+                time.sleep(3)
+                continue
+    raise RuntimeError(f"Analyse fehlgeschlagen nach {TRIES} Versuch(en): {last_err}")
+

@@ -6,6 +6,7 @@ let config = $state(null)
 let catalog = $state({ models: [] })
 let suggestResult = $state(null)
 let analyzeInfo = $state(null)
+let suggestElapsed = $state(0)
 let suggestBusy = $state(false)
 let applyBusy = $state(false)
 let applyResult = $state(null)
@@ -77,6 +78,8 @@ async function runSuggest() {
   suggestResult = null
   analyzeInfo = null
   error = null
+  suggestElapsed = 0
+  const timer = setInterval(() => { suggestElapsed += 1 }, 1000)
   try {
     // POST erzwingen (ohne Body würde fetch sonst GET senden)
     const r = await api('/api/suggest', { body: {}, method: 'POST' })
@@ -86,6 +89,7 @@ async function runSuggest() {
   } catch (e) {
     error = 'KI-Vorschlag: ' + e.message
   } finally {
+    clearInterval(timer)
     suggestBusy = false
   }
 }
@@ -191,8 +195,11 @@ load()
     günstigste zuverlässige 3-Tier-Anordnung vor. Dauer: 1–5 Minuten.
   </p>
   <button class="primary" onclick={runSuggest} disabled={suggestBusy}>
-    {suggestBusy ? 'Analysiere (Katalog → KI → Vorschlag)…' : '🔀 KI-Vorschlag erstellen'}
+    {suggestBusy ? `Analysiere … ${suggestElapsed}s (Katalog → KI → Vorschlag)` : '🔀 KI-Vorschlag erstellen'}
   </button>
+  {#if suggestBusy}
+    <p class="muted">Läuft auf dem aktuell konfigurierten Heavy-Modell. Bei Hängern bricht der Server nach ~90 s ab und startet automatisch einen neuen Versuch.</p>
+  {/if}
   {#if suggestResult}
     <div class="suggest">
       {#if analyzeInfo}<p class="muted">Analysiert mit: <span class="mono">{analyzeInfo.label}</span>
