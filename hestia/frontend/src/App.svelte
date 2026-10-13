@@ -352,19 +352,25 @@ loadFailover()
           {#each ['fast', 'medium', 'heavy'] as tier}
             {@const paid = suggestResult[tier]?.paid}
             {@const free = suggestResult[tier]?.free}
-            <tr>
-              <td rowspan={free ? 2 : 1}>{TIER_INFO[tier].title}</td>
-              <td><input type="radio" name={'pick-' + tier} checked={!useFree[tier]}
-                    onchange={() => (useFree[tier] = false)} /> bezahlt</td>
+            <tr class={!useFree[tier] ? 'rowActive' : ''}>
+              <td rowspan={free ? 2 : 1} class="tierCell">{TIER_INFO[tier].title}</td>
+              <td>
+                <button class="chip {!useFree[tier] ? 'chipActive' : ''}" onclick={() => (useFree[tier] = false)}>
+                  bezahlt
+                </button>
+              </td>
               <td class="mono">{paid?.model}</td>
               <td>{priceText(paid?.model || '')}</td>
               <td class="muted">{paid?.variant || '—'}</td>
               <td class="muted">{paid?.reason}</td>
             </tr>
             {#if free}
-              <tr>
-                <td><input type="radio" name={'pick-' + tier} checked={useFree[tier]}
-                      onchange={() => (useFree[tier] = true)} /> gratis</td>
+              <tr class={useFree[tier] ? 'rowActive' : ''}>
+                <td>
+                  <button class="chip {useFree[tier] ? 'chipActive' : ''}" onclick={() => (useFree[tier] = true)}>
+                    gratis
+                  </button>
+                </td>
                 <td class="mono">{free.model}</td>
                 <td>{priceText(free.model)}</td>
                 <td class="muted">{free.variant || '—'}</td>
@@ -520,4 +526,13 @@ loadFailover()
   .row { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
   .suggest { margin-top: 14px; }
   .errbox { border-color: var(--err); }
+  .tierCell { vertical-align: top; white-space: nowrap; }
+  .chip {
+    padding: 3px 11px; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--muted); font-size: .72rem;
+    cursor: pointer; line-height: 1.4;
+  }
+  .chip:hover { border-color: var(--fire); color: var(--text); }
+  .chipActive { background: var(--fire); border-color: var(--fire); color: #1a120a; font-weight: 600; }
+  .rowActive td { background: rgba(224, 115, 29, 0.06); }
 </style>
