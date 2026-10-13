@@ -169,7 +169,8 @@ def effective_agents(preset: dict, overrides: dict) -> dict:
         ov = overrides.get(agent) or {}
         ref = (ov.get("model") or "").strip()
         var = (ov.get("variant") or "").strip()
-        manual = bool(ref)
+        # "source": "manual" => im Panel gewählt; "derived" => aus @medium abgeleitet
+        manual = (ov.get("source") == "manual") or (bool(ref) and not ov.get("source"))
         if not ref:                                  # hergeleitet
             ref = med_ref
             var = med_var if agent == "build" else highest_variant(med_ref)
@@ -183,8 +184,10 @@ def effective_agents(preset: dict, overrides: dict) -> dict:
 
 
 def agents_to_display(eff: dict) -> dict:
-    """Nur die speicherbaren Felder (ohne Anzeige-Metadaten)."""
-    return {a: {"model": eff[a]["model"], "variant": eff[a]["variant"] or ""} for a in PRIMARY_AGENTS}
+    """Speicherbare Felder inkl. Herkunft (manual|derived) für den Editor."""
+    return {a: {"model": eff[a]["model"], "variant": eff[a]["variant"] or "",
+                "source": "manual" if eff[a]["manual"] else "derived"}
+            for a in PRIMARY_AGENTS}
 
 
 # ── HTTP-Handler ───────────────────────────────────────────────────────────
