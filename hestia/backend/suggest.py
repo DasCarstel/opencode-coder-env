@@ -100,12 +100,16 @@ ANTWORTE NUR MIT folgendem JSON (keine weiteren Worte, keine Backticks):
   "heavy": {{"model": "opencode-go/<modelID>", "variant": "<variant|leer>", "reason": "<1 Satz>"}}}}"""
 
 
-def _resolve_tier_model(tier: str):
-    """Modell + Info eines Tiers aus den Overrides (None, wenn nicht nutzbar)."""
-    ref = OC_SUGGEST_MODEL if tier == "heavy" and OC_SUGGEST_MODEL else ""
-    variant = ""
-    if ref and "#" in ref:
-        ref, _, variant = ref.partition("#")
+def _resolve_tier_model(tier: str, override_ref: str = "", override_variant: str = "") -> tuple:
+    """Modell + Info eines Tiers aus den Overrides (None, wenn nicht nutzbar).
+
+    override_ref/override_variant: explizit gewähltes Analyse-Modell (Panel),
+    hat Vorrang vor dem committeten Tier-Modell.
+    """
+    ref = override_ref
+    variant = override_variant
+    if not ref and tier == "heavy" and OC_SUGGEST_MODEL:
+        ref, _, variant = OC_SUGGEST_MODEL.partition("#")
     if not ref:
         try:
             from github_api import get_overrides
@@ -130,13 +134,24 @@ def _resolve_tier_model(tier: str):
     return body, {"model": ref, "variant": variant or None, "label": label}
 
 
-def analysis_candidates() -> list:
-    """Kandidaten-Kette: @heavy -> @medium -> Session-Default (kein fixiertes Modell)."""
+def analysis_candidates(override_ref: str = "", override_variant: str = "") -> list:
+    """Kandidaten-Kette: gewähltes/@heavy -> @medium -> Session-Default.
+
+    Ein explizit gewähltes Modell (override_ref) ersetzt den ersten Kandidaten;
+    die Fallback-Kette bleibt als Sicherheitsnetz erhalten.
+    """
     chain = []
-    for tier in ("heavy", "medium"):
-        body, info = _resolve_tier_model(tier)
+    if override_ref:
+        body, info = _resolve_tier_model("heavy", override_ref, override_variant)
         if body:
-            chain.append((body, {"source": f"tier-{tier}", **info}))
+            chain.append((body, {"source": "panel-selection", **info}))
+    if not chain:
+        body, info = _resolve_tier_model("heavy")
+        if body:
+            chain.append((body, {"source": "tier-heavy", **info}))
+    body, info = _resolve_tier_model("medium")
+    if body:
+        chain.append((body, {"source": "tier-medium", **info}))
     chain.append((None, {"source": "session-default", "label": "Session-Default"}))
     return chain
 
@@ -248,26 +263,43 @@ def _attempt(prompt: str, model_body, used_info: dict) -> dict:
     return {"session": sid, "decision": decision, "raw": full}
 
 
-def suggest() -> dict:
-    """KI-Vorschlag mit einem automatischen Neuversuch bei Hängern."""
+def suggest(override_ref: str = "", override_variant: str = "", progress=None) -> dict:
+    """KI-Vorschlag. progress(dict) wird über den Live-Zustand informiert
+    (Modell, Versuch, Hinweis) — für die Anzeige im Panel während des Laufs."""
     if not OC_SERVER_PASSWORD:
         raise RuntimeError("OC_SERVER_PASSWORD nicht gesetzt")
     prompt = _build_prompt()
-    candidates = analysis_candidates()
+    candidates = analysis_candidates(override_ref, override_variant)
+
+    def report(**kw):
+        if progress:
+            try:
+                progress(kw)
+            except Exception:
+                pass
+
     errors = []
     for idx, (model_body, info) in enumerate(candidates):
+        label = info.get("label", "?")
+        report(model=label, source=info.get("source"), attempt=idx + 1, total=len(candidates),
+               phase="start", note=None)
         try:
             res = _attempt(prompt, model_body, info)
             res["analyzedWith"] = info
             res["attempt"] = idx + 1
             if idx > 0:
                 info["note"] = (
-                    f"Fallback (vorher: {', '.join(c[1].get('label','?') for c in candidates[:idx])} "
+                    f"Fallback (vorher: {', '.join(c[1].get('label', '?') for c in candidates[:idx])} "
                     "antwortete nicht)"
                 )
+            report(model=label, source=info.get("source"), attempt=idx + 1, total=len(candidates),
+                   phase="done", note=info.get("note"))
             return res
         except Exception as e:  # noqa: BLE001 — nächster Kandidat
-            errors.append(f"{info.get('label','?')}: {e}")
+            errors.append(f"{label}: {e}")
+            report(model=label, source=info.get("source"), attempt=idx + 1, total=len(candidates),
+                   phase="aborted", note=str(e)[:200])
             continue
+    report(phase="failed", note=" | ".join(errors)[:300])
     raise RuntimeError("Analyse fehlgeschlagen — " + " | ".join(errors))
 

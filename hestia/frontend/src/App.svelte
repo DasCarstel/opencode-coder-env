@@ -7,6 +7,9 @@ let catalog = $state({ models: [] })
 let suggestResult = $state(null)
 let analyzeInfo = $state(null)
 let suggestElapsed = $state(0)
+let liveStatus = $state(null)
+let analysisModel = $state('')
+let analysisVariant = $state('(keine)')
 let suggestBusy = $state(false)
 let applyBusy = $state(false)
 let applyResult = $state(null)
@@ -73,16 +76,37 @@ function tierNorm(tier) {
   return { model: src.model, variant: src.variant === '(keine)' ? '' : src.variant }
 }
 
+const committedHeavy = $derived(config?.tiers?.heavy?.model || '')
+const committedHeavyLabel = $derived(
+  config?.tiers?.heavy?.model
+    ? config.tiers.heavy.model + (config.tiers.heavy.variant ? '#' + config.tiers.heavy.variant : '')
+    : '—'
+)
+const editorHeavyLabel = $derived(
+  heavy.model ? heavy.model + (heavy.variant && heavy.variant !== '(keine)' ? '#' + heavy.variant : '') : ''
+)
+const editorHeavyDiffers = $derived(
+  !!heavy.model && (heavy.model !== committedHeavy || (heavy.variant !== '(keine)' && heavy.variant !== '' && heavy.variant !== (config?.tiers?.heavy?.variant || '')))
+)
+
 async function runSuggest() {
   suggestBusy = true
   suggestResult = null
   analyzeInfo = null
   error = null
   suggestElapsed = 0
+  liveStatus = null
   const timer = setInterval(() => { suggestElapsed += 1 }, 1000)
+  const poll = setInterval(async () => {
+    try { liveStatus = await api('/api/suggest/status') } catch { /* ignore */ }
+  }, 4000)
   try {
-    // POST erzwingen (ohne Body würde fetch sonst GET senden)
-    const r = await api('/api/suggest', { body: {}, method: 'POST' })
+    const body = {}
+    if (analysisModel) {
+      body.model = analysisModel
+      if (analysisVariant && analysisVariant !== '(keine)') body.variant = analysisVariant
+    }
+    const r = await api('/api/suggest', { body, method: 'POST' })
     if (!r || !r.decision) throw new Error('Unerwartete Antwort vom Server (kein Vorschlag enthalten)')
     suggestResult = r.decision
     analyzeInfo = r.analyzedWith || null
@@ -90,7 +114,9 @@ async function runSuggest() {
     error = 'KI-Vorschlag: ' + e.message
   } finally {
     clearInterval(timer)
+    clearInterval(poll)
     suggestBusy = false
+    liveStatus = null
   }
 }
 
@@ -192,13 +218,40 @@ load()
   <h2>KI-Vorschlag</h2>
   <p class="muted">
     OpenCode analysiert den Live-Katalog (alle OpenCode-Go-Modelle mit Preisen) und schlägt die
-    günstigste zuverlässige 3-Tier-Anordnung vor. Dauer: 1–5 Minuten.
+    günstigste zuverlässige 3-Tier-Anordnung vor. Dauer: ~10 s bis 2 Min (je nach Modell).
   </p>
+  <div class="tierRow" style="grid-template-columns: 1fr 2fr 1fr">
+    <div class="tierLabel">
+      <strong>Analyse-Modell</strong>
+      <span class="muted">Womit soll die Analyse rechnen?</span>
+    </div>
+    <select bind:value={analysisModel} onchange={() => (analysisVariant = '(keine)')}>
+      <option value="">Automatisch — committetes @heavy ({committedHeavyLabel})</option>
+      {#if editorHeavyDiffers}
+        <option value={heavy.model}>Editor-Auswahl ({editorHeavyLabel})</option>
+      {/if}
+      {#each goModels as m}
+        <option value={m.ref}>{m.name} · {m.modelID} · {priceText(m.ref)}</option>
+      {/each}
+    </select>
+    <select bind:value={analysisVariant} disabled={!analysisModel}>
+      {#each variantOptions(analysisModel || committedHeavy) as v}<option value={v}>{v}</option>{/each}
+    </select>
+  </div>
   <button class="primary" onclick={runSuggest} disabled={suggestBusy}>
-    {suggestBusy ? `Analysiere … ${suggestElapsed}s (Katalog → KI → Vorschlag)` : '🔀 KI-Vorschlag erstellen'}
+    {suggestBusy ? `Analysiere … ${suggestElapsed}s` : '🔀 KI-Vorschlag erstellen'}
   </button>
   {#if suggestBusy}
-    <p class="muted">Läuft auf dem aktuell konfigurierten Heavy-Modell. Bei Hängern bricht der Server nach ~90 s ab und startet automatisch einen neuen Versuch.</p>
+    <p class="muted">
+      {#if liveStatus?.model}
+        Analysiert gerade mit <span class="mono">{liveStatus.model}</span>
+        {#if liveStatus.attempt && liveStatus.total}· Versuch {liveStatus.attempt}/{liveStatus.total}{/if}
+        · {suggestElapsed}s
+      {:else}
+        Vorbereitung … {suggestElapsed}s
+      {/if}
+      {#if liveStatus?.note}· {liveStatus.note}{/if}
+    </p>
   {/if}
   {#if suggestResult}
     <div class="suggest">

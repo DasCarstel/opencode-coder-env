@@ -45,6 +45,20 @@ PRESET_PROVIDER = os.environ.get("HESTIA_PRESET_PROVIDER", "opencode-go")
 # Zugriffe auf 10.0.10.17:49400 die Header nicht fälschen können.
 HESTIA_PROXY_SECRET = os.environ.get("HESTIA_PROXY_SECRET", "")
 PROXY_SECRET_HEADER = "X-Hestia-Proxy-Secret"
+
+# Live-Zustand des (einzigen) laufenden KI-Vorschlags — für /api/suggest/status
+SUGGEST_STATE = {
+    "running": False,
+    "startedAt": None,
+    "model": None,
+    "source": None,
+    "attempt": None,
+    "total": None,
+    "phase": None,
+    "note": None,
+    "finishedAt": None,
+}
+SUGGEST_LOCK = __import__("threading").Lock()
 TIER_DEFS = ("fast", "medium", "heavy")
 
 
@@ -227,6 +241,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": str(e)}, 404)
             except Exception as e:
                 return self._json({"error": str(e)}, 500)
+        if path == "/api/suggest/status":
+            with SUGGEST_LOCK:
+                state = dict(SUGGEST_STATE)
+            if state.get("running") and state.get("startedAt"):
+                state["elapsed"] = round(time.time() - state["startedAt"], 1)
+            return self._json(state)
         if path in ("/api/apply", "/api/suggest", "/api/rollout"):
             return self._json(
                 {"error": f"{path} ist POST-only (der Aufruf kam als GET an)"}, 405
@@ -292,7 +312,31 @@ class Handler(BaseHTTPRequestHandler):
             # synchron: ThreadingHTTPServer bedient jeden Request in eigenem
             # Thread — der Client wartet bis zur fertigen Analyse (1–5 min).
             try:
-                res = suggest_mod.suggest()
+                payload = self._body()
+                override = (payload.get("model") or "").strip()
+                variant = (payload.get("variant") or "").strip()
+                if override:
+                    ok, res = catalog.usable(override)
+                    if not ok:
+                        return self._json({"error": res}, 400)
+
+                def progress(state: dict):
+                    with SUGGEST_LOCK:
+                        SUGGEST_STATE.update(state)
+
+                with SUGGEST_LOCK:
+                    SUGGEST_STATE.update({
+                        "running": True, "startedAt": time.time(), "finishedAt": None,
+                        "model": None, "source": None, "attempt": None,
+                        "total": None, "phase": "starting", "note": None,
+                    })
+                try:
+                    res = suggest_mod.suggest(override_ref=override, override_variant=variant,
+                                              progress=progress)
+                finally:
+                    with SUGGEST_LOCK:
+                        SUGGEST_STATE.update({"running": False, "finishedAt": time.time(),
+                                              "phase": SUGGEST_STATE.get("phase") or "done"})
                 _log(f"suggest ok (session {res['session']})")
                 return self._json(res)
             except RuntimeError as e:
