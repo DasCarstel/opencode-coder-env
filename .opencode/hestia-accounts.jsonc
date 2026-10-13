@@ -1,5 +1,13 @@
 {
-  "checkIntervalSeconds": 300,
+  "checkIntervalSeconds": 300,          // Abfrageintervall der Quota (Sekunden)
+
+  // Anzeige-Schwellen für die Panel-Karte "OpenCode Go — Budget"
+  "display": {
+    "barMetric": "used",                // used = Balken zeigt Verbrauch | free = Restbudget
+    "warnBelowPercentFree": 50,         // gelbe Warnstufe ab hier
+    "criticalBelowPercentFree": 10      // rote/kritische Stufe ab hier (0 = erschöpft)
+  },
+
   "policy": {
     "mode": "auto",                    // auto | notify | off
     "switchWhenExhausted": true,       // 0 % frei / status "rate-limited" in irgendeinem Fenster

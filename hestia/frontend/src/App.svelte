@@ -271,7 +271,7 @@ async function runFailoverCheck() {
   }
 }
 
-// Budget-System (OpenCode Go): Konten + Verbrauchsfenster anzeigen (P1: nur Anzeige)
+// Budget-System (OpenCode Go): Konten + Verbrauchsfenster (Anzeige + Kontowechsel)
 async function loadAccounts() {
   try { accStatus = await api('/api/accounts') } catch { /* ignore */ }
 }
@@ -289,10 +289,29 @@ async function runAccountsCheck() {
   }
 }
 
+// Konto wechseln: dispatcht switch-account.yml; die OpenCode-Services der Container starten neu
+async function runAccountsSwitch(id) {
+  if (!id) return
+  if (!confirm(`Konto auf "${id}" wechseln?\n\nDer OpenCode-Service der Container wird neu gestartet — laufende Sessions brechen dabei ab.`)) return
+  accBusy = true
+  error = null
+  try {
+    await api('/api/accounts/switch', { body: { id } })
+    await loadAccounts()
+  } catch (e) {
+    error = 'Wechsel: ' + e.message
+  } finally {
+    accBusy = false
+  }
+}
+
 const WIN_LABELS = { rolling: '5 h', weekly: 'Woche', monthly: 'Monat' }
 
-function barColor(free) {
-  return free < 10 ? 'var(--err)' : (free < 50 ? 'var(--warn)' : 'var(--ok)')
+// Farbe nach Restbudget; Schwellen kommen aus der Config (.opencode/hestia-accounts.jsonc → display)
+function barColor(free, display) {
+  const warn = display?.warnBelowPercentFree ?? 50
+  const crit = display?.criticalBelowPercentFree ?? 10
+  return free < crit ? 'var(--err)' : (free < warn ? 'var(--warn)' : 'var(--ok)')
 }
 
 function fmtReset(iso) {
@@ -592,6 +611,7 @@ setInterval(loadAccounts, 60000)
     <label class="muted" style="font-weight:400; margin-left:12px">
       Modus {accStatus?.mode || '—'} · aktiv: <span class="mono">{accStatus?.active || '—'}</span>
       {#if accStatus?.lastRun}· zuletzt {fmtTime(accStatus.lastRun)}{/if}
+      {#if accStatus?.lastSwitch}· letzter Wechsel {fmtTime(accStatus.lastSwitch)}{/if}
     </label>
   </h2>
 
@@ -599,7 +619,12 @@ setInterval(loadAccounts, 60000)
     <button onclick={runAccountsCheck} disabled={accBusy}>
       {accBusy ? 'Frage ab …' : '⟳ Jetzt prüfen'}
     </button>
-    <span class="muted">Alle {accStatus?.interval || 300}s automatisch · nur Anzeige, kein automatischer Wechsel.</span>
+    <span class="muted">
+      Abfrage alle {accStatus?.interval || 300}s ·
+      {accStatus?.mode === 'auto' ? 'Automatik aktiv (Wechsel bei erschöpftem Abo)'
+        : accStatus?.mode === 'notify' ? 'nur Meldung (Wechsel per Button)' : 'nur Anzeige'} ·
+      Schwellen und Policy: <span class="mono">.opencode/hestia-accounts.jsonc</span>
+    </span>
   </div>
 
   {#if accStatus?.error}
@@ -608,6 +633,8 @@ setInterval(loadAccounts, 60000)
 
   {#if accStatus?.accounts?.length}
     {#each accStatus.accounts as acc (acc.id)}
+      {@const deadWins = Object.entries(acc.windows || {}).filter(([, x]) => x.status === 'rate-limited').map(([k]) => WIN_LABELS[k])}
+      {@const disp = accStatus?.display || {}}
       <div class="subRow" style="margin-top:10px">
         <div class="row" style="margin-top:0">
           <strong>{acc.label}</strong>
@@ -615,16 +642,26 @@ setInterval(loadAccounts, 60000)
           {#if acc.isActive}<span class="badge active">aktiv</span>{/if}
           {#if !acc.hasKey}<span class="badge warn">kein Key</span>{/if}
           {#if acc.error}<span class="badge err">{acc.error}</span>{/if}
+          {#if deadWins.length}<span class="badge err">erschöpft: {deadWins.join(', ')}</span>{/if}
+          {#if !acc.isActive && acc.ok}
+            <button class="mini" onclick={() => runAccountsSwitch(acc.id)} disabled={accBusy}
+              title="Konto wechseln (Service-Neustart)">⇄ wechseln</button>
+          {/if}
         </div>
         {#each ['rolling', 'weekly', 'monthly'] as w (w)}
           {@const win = acc.windows?.[w]}
           {#if win}
+            {@const fillPct = Math.max(0, Math.min(100, disp.barMetric === 'free' ? win.free : win.used))}
             <div class="budgetBar" title={fmtReset(win.resetsAt)}>
               <span class="budgetName">{WIN_LABELS[w]}</span>
               <span class="budgetTrack">
-                <span class="budgetFill" style="width:{Math.max(0, Math.min(100, win.free))}%; background:{barColor(win.free)}"></span>
+                <span class="budgetFill" style="width:{fillPct}%; background:{barColor(win.free, disp)}"></span>
               </span>
-              <span class="muted">{Math.round(win.free)} % frei · {fmtReset(win.resetsAt) || win.status}</span>
+              <span class="muted">
+                {Math.round(win.used)} % verbraucht · {Math.round(win.free)} % frei
+                {#if win.status === 'rate-limited'}<span class="badge err">gesperrt</span>{/if}
+                {#if fmtReset(win.resetsAt)} · {fmtReset(win.resetsAt)}{/if}
+              </span>
             </div>
           {/if}
         {/each}
@@ -637,7 +674,8 @@ setInterval(loadAccounts, 60000)
   {#if accStatus?.recommendation?.switchRecommended}
     <p class="muted" style="margin-top:10px; border-top:1px solid var(--line); padding-top:8px">
       💡 Wechsel empfohlen → <span class="mono">{accStatus.recommendation.target}</span>
-      ({accStatus.recommendation.reason}) — <span class="muted">kein automatischer Wechsel in P1</span>
+      ({accStatus.recommendation.reason})
+      <button class="mini" onclick={() => runAccountsSwitch(accStatus.recommendation.target)} disabled={accBusy}>⇄ jetzt wechseln</button>
     </p>
   {/if}
 </div>
@@ -699,4 +737,5 @@ setInterval(loadAccounts, 60000)
   .budgetName { color: var(--muted); }
   .budgetTrack { display: block; height: 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; }
   .budgetFill { display: block; height: 100%; border-radius: 999px; }
+  .mini { padding: 1px 6px; font-size: .78rem; }
 </style>

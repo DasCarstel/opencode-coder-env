@@ -242,6 +242,8 @@ def refresh(force: bool = False) -> dict:
         STATE["lastRun"] = time.time()
         STATE["error"] = cfg.get("_error")
         STATE["recommendation"] = rec
+        STATE["display"] = cfg.get("display") or {}
+        STATE["policy"] = policy
         _STATE_CACHE["at"] = time.time()
         return dict(STATE)
 
