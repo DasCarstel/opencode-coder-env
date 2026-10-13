@@ -40,6 +40,9 @@ def _default_config() -> dict:
         "fallback": [],
         "pool": {"followActive": False, "onlyActiveWhenExpiring": False},
         "restart": True,
+        # Weitere Hermes-Profile des Multiplexers (je eigene config.yaml/.env
+        # unter /opt/data/profiles/<name>/). Leeres Dict = nur das Default-Profil.
+        "profiles": {},
     }
 
 
@@ -74,7 +77,39 @@ def _public(cfg: dict) -> dict:
                  "onlyActiveWhenExpiring": bool(
                      (cfg.get("pool") or {}).get("onlyActiveWhenExpiring"))},
         "restart": bool(cfg.get("restart", True)),
+        "profiles": _profiles_public(cfg.get("profiles") or {}, cfg),
     }
+
+
+def _profiles_public(profiles: dict, cfg: dict) -> dict:
+    """profiles für das Panel normalisieren und fehlende Felder aus dem
+    Top-Level erben (das Apply-Skript macht beim Schreiben dasselbe)."""
+    base_primary = cfg.get("primary") or {}
+    base_fb = cfg.get("fallback") or []
+    base_pool = cfg.get("pool") or {}
+    out = {}
+    for name, prof in (profiles or {}).items():
+        if not isinstance(prof, dict):
+            continue
+        prof_primary = prof.get("primary") if isinstance(prof.get("primary"), dict) else {}
+        prof_pool = prof.get("pool") if isinstance(prof.get("pool"), dict) else {}
+        fb = prof.get("fallback") if "fallback" in prof else base_fb
+        out[str(name)] = {
+            "enabled": bool(prof.get("enabled", True)),
+            "primary": {"provider": str(prof_primary.get("provider")
+                                       or base_primary.get("provider") or ""),
+                        "model": str(prof_primary.get("model")
+                                     or base_primary.get("model") or "")},
+            "fallback": fb if isinstance(fb, list) else [],
+            "pool": {
+                "followActive": bool(prof_pool["followActive"])
+                if "followActive" in prof_pool else bool(base_pool.get("followActive")),
+                "onlyActiveWhenExpiring": bool(prof_pool["onlyActiveWhenExpiring"])
+                if "onlyActiveWhenExpiring" in prof_pool
+                else bool(base_pool.get("onlyActiveWhenExpiring")),
+            },
+        }
+    return out
 
 
 def health() -> dict:
@@ -149,8 +184,47 @@ def apply(payload: dict) -> dict:
             continue                      # "—" = kein Fallback → überspringen
         fb_out.append(_validate(f, f"fallback[{i}]"))
 
+    # Weitere Profile: das Panel ist schreibgeschützt, also nur validieren und
+    # durchreichen. Fehlen sie im Payload, werden die der aktuellen SOT
+    # übernommen — sonst würde ein apply() die Profile löschen.
+    current = config(force=True)
+    profiles_in = payload.get("profiles")
+    if not isinstance(profiles_in, dict):
+        profiles_in = current.get("profiles") or {}
+    profiles_out = {}
+    for name, prof in profiles_in.items():
+        if not isinstance(prof, dict):
+            continue
+        label = f"profiles.{name}"
+        if prof.get("enabled") is False:
+            profiles_out[str(name)] = {"enabled": False}
+            continue
+        p_out = {"enabled": True}
+        p_in = prof.get("primary") if isinstance(prof.get("primary"), dict) else {}
+        if p_in:
+            p_out["primary"] = _validate(p_in, f"{label}.primary")
+        else:
+            # Erbt den Top-Level-Primary → nicht neu validieren (schon geprüft).
+            p_out["primary"] = primary
+        p_fb = prof.get("fallback")
+        if p_fb is None:
+            p_out["fallback"] = fb_out           # erbt Top-Level
+        else:
+            items = []
+            for i, f in enumerate(p_fb, start=1):
+                if not isinstance(f, dict) or (not f.get("model") and not f.get("provider")):
+                    continue
+                items.append(_validate(f, f"{label}.fallback[{i}]"))
+            p_out["fallback"] = items
+        if isinstance(prof.get("pool"), dict):
+            p_out["pool"] = {
+                "followActive": bool(prof["pool"].get("followActive")),
+                "onlyActiveWhenExpiring": bool(prof["pool"].get("onlyActiveWhenExpiring")),
+            }
+        profiles_out[str(name)] = p_out
+
     pool_in = payload.get("pool") or {}
-    current_pool = (config(force=True).get("pool") or {})
+    current_pool = (current.get("pool") or {})
     new_cfg = {
         "enabled": bool(payload.get("enabled", True)),
         "primary": primary,
@@ -162,21 +236,27 @@ def apply(payload: dict) -> dict:
                      "onlyActiveWhenExpiring",
                      (current_pool or {}).get("onlyActiveWhenExpiring")))},
         "restart": bool(payload.get("restart", True)),
+        "profiles": profiles_out,
     }
     new_text = json.dumps(new_cfg, indent=2, ensure_ascii=False) + "\n"
 
-    current = config()   # gerade frisch gelesen (Cache)
-    changed = _public(current) != new_cfg
+    changed = _public(config()) != new_cfg
     commit = None
     if changed:
         desc = ", ".join(f"{f['provider']}/{f['model']}" for f in fb_out) or "—"
+        prof_desc = ", ".join(
+            f"{n}={p['primary']['provider']}/{p['primary']['model']}"
+            for n, p in profiles_out.items() if p.get("primary")
+        ) or "—"
         commit = github_api.put_files({CONFIG_PATH: new_text}, (
             "hestia: Hermes-Update\n\n"
             f"primary={primary['provider']}/{primary['model']}\n"
             f"fallback={desc}\n"
-            f"pool.followActive={new_cfg['pool']['followActive']}"
+            f"pool.followActive={new_cfg['pool']['followActive']}\n"
+            f"profiles={prof_desc}"
         ))
-        _log(f"Hermes-SOT aktualisiert: {primary['provider']}/{primary['model']} | fallback={desc}")
+        _log(f"Hermes-SOT aktualisiert: {primary['provider']}/{primary['model']} | "
+             f"fallback={desc} | profiles={prof_desc}")
 
     try:
         dispatched = github_api.dispatch_workflow(WORKFLOW, inputs={

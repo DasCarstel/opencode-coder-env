@@ -509,6 +509,24 @@ setInterval(loadHermes, 60000)
     </span>
   </div>
   <div class="row">
+    <span class="muted">Profile:
+      {#if !Object.keys(hermesStatus?.config?.profiles || {}).length}
+        <span class="mono">nur das Default-Profil</span>
+      {:else}
+        {#each Object.entries(hermesStatus.config.profiles) as [name, prof]}
+          <span class="badge">{name}</span>
+          <span class="mono">
+            {prof?.primary?.provider || '—'}/{prof?.primary?.model || '—'}
+          </span>
+          · {(prof?.fallback || []).length} Fallback
+          · {prof?.pool?.followActive ? 'Pool folgt aktivem Konto' : 'Pool fest'}
+          {#if !prof?.enabled}<span class="badge warn">deaktiviert</span>{/if}
+          <br />
+        {/each}
+      {/if}
+    </span>
+  </div>
+  <div class="row">
     <button class="primary" onclick={runHermesApply} disabled={hermesBusy || !hermesSel}>
       {hermesBusy ? 'Wende an …' : 'Speichern & anwenden'}
     </button>
@@ -517,6 +535,7 @@ setInterval(loadHermes, 60000)
   <p class="muted" style="margin-top:8px">
     Anwenden aktualisiert <span class="mono">/opt/data/config.yaml</span> und startet Hermes neu
     (laufende Hermes-Sessions brechen ab). SOT: <span class="mono">.opencode/hestia-hermes.jsonc</span>.
+    Weitere Profile (schreibgeschützt) bekommen ihre eigenen Dateien unter <span class="mono">/opt/data/profiles/&lt;name&gt;/</span>.
   </p>
 </div>
 

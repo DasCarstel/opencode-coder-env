@@ -11,7 +11,9 @@
 # 3) fallback_providers als YAML-Liste schreiben (die CLI erzeugt sonst ein Dict,
 #    das Hermes ignoriert) — bestehenden Block entfernen, neuen anhängen
 # 4) optional den Abo-Pool (OPENCODE_GO_API_KEY*) aus OpenBao neu setzen
-# 5) hermes config check, optionaler Neustart + Health-Wait, Zusammenfassung
+# 5) dasselbe für jedes weitere SOT-Profil ("profiles") — der Multiplexer
+#    bedient mehrere Profile mit je eigenen Dateien unter /opt/data/profiles/
+# 6) hermes config check, optionaler Neustart + Health-Wait, Zusammenfassung
 #
 # Sicherheit: die API-Keys stehen nie im Log, nie in einer Kommandozeile und nie
 # im Workflow-Log — sie wandern ausschließlich über stdin.
@@ -54,7 +56,8 @@ if [[ ! -r "$SOT_PATH" ]]; then
   exit 1
 fi
 # Ein Helper für die ganze SOT:jq ist auf dem Runner nicht garantiert.
-IFS=$'\t' read -r PRIMARY_PROVIDER PRIMARY_MODEL FALLBACKS_JSON POOL_FOLLOW RESTART ENABLED < <(
+# IFS=Tabulator, weil die JSON-Werte Leerzeichen enthalten.
+IFS=$'\t' read -r PRIMARY_PROVIDER PRIMARY_MODEL FALLBACKS_JSON POOL_FOLLOW RESTART ENABLED PROFILES_JSON < <(
   python3 - "$SOT_PATH" <<'PY'
 import json, sys
 try:
@@ -68,19 +71,54 @@ except Exception as e:
     sys.stderr.write(f"SOT nicht lesbar: {e}\n")
     sys.exit(1)
 p = cfg.get("primary") or {}
-fb = []
-for f in (cfg.get("fallback") or []):
-    if not isinstance(f, dict):
+pool_top = cfg.get("pool") or {}
+
+
+def norm_fb(raw):
+    out = []
+    for f in (raw or []):
+        if not isinstance(f, dict):
+            continue
+        if f.get("provider") and f.get("model"):
+            out.append({"provider": str(f["provider"]), "model": str(f["model"])})
+    return out
+
+
+fb = norm_fb(cfg.get("fallback"))
+
+# Weitere Profile: jedes erbt vom Top-Level, was es nicht selbst setzt.
+profiles = []
+for name, prof in (cfg.get("profiles") or {}).items():
+    if not isinstance(prof, dict):
         continue
-    if f.get("provider") and f.get("model"):
-        fb.append({"provider": str(f["provider"]), "model": str(f["model"])})
+    if prof.get("enabled") is False:
+        continue
+    pp = prof.get("primary") if isinstance(prof.get("primary"), dict) else {}
+    pool_p = prof.get("pool") if isinstance(prof.get("pool"), dict) else {}
+    prof_fb = norm_fb(prof["fallback"]) if "fallback" in prof else fb
+    profiles.append({
+        "name": str(name),
+        "provider": str(pp.get("provider") or p.get("provider") or ""),
+        "model": str(pp.get("model") or p.get("model") or ""),
+        "fallback": json.dumps(prof_fb, separators=(",", ":")),
+        "pool_follow": "true" if (
+            pool_p.get("followActive") if "followActive" in pool_p
+            else pool_top.get("followActive")
+        ) else "false",
+        "pool_only_active": "true" if (
+            pool_p.get("onlyActiveWhenExpiring") if "onlyActiveWhenExpiring" in pool_p
+            else pool_top.get("onlyActiveWhenExpiring")
+        ) else "false",
+    })
+
 print("\t".join([
     str(p.get("provider") or ""),
     str(p.get("model") or ""),
     json.dumps(fb, separators=(",", ":")),
-    "true" if (cfg.get("pool") or {}).get("followActive") else "false",
+    "true" if pool_top.get("followActive") else "false",
     "false" if cfg.get("restart") is False else "true",
     "true" if cfg.get("enabled", True) else "false",
+    json.dumps(profiles, separators=(",", ":")),
 ]))
 PY
 )
@@ -96,6 +134,9 @@ fi
 echo "→ Primary: $PRIMARY_PROVIDER/$PRIMARY_MODEL"
 echo "→ Fallbacks: $FALLBACKS_JSON"
 echo "→ Pool folgt aktivem Konto: $POOL_FOLLOW · nur aktives Abo: $SINGLE · Restart: $RESTART"
+if [[ "$PROFILES_JSON" != "[]" ]]; then
+  echo "→ Weitere Profile: $PROFILES_JSON"
+fi
 
 # Kurzer Health-Check: Container muss laufen, sonst ist alles sinnlos.
 if ! "${SSH[@]}" "docker inspect -f '{{.State.Running}}' '$HERMES_CONTAINER' 2>/dev/null" | grep -q true; then
@@ -167,24 +208,39 @@ def main():
 main()
 PY
 
-"${SSH[@]}" "docker exec '$HERMES_CONTAINER' cat $CONFIG_IN_CONTAINER" \
-  | python3 "$WORK/fallbacks.py" "$FALLBACKS_JSON" > "$WORK/config.yaml"
-"${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > $CONFIG_IN_CONTAINER'" < "$WORK/config.yaml"
-"${SSH[@]}" "docker exec -u 0 '$HERMES_CONTAINER' sh -lc 'chown hermes:hermes $CONFIG_IN_CONTAINER; chmod 600 $CONFIG_IN_CONTAINER'"
-echo "→ fallback_providers ersetzt (alter Block entfernt, neue Liste angehängt)"
+# Schreibt eine beliebige config.yaml im Container: Fallback-Liste ersetzen.
+# $1 = Pfad im Container, $2 = Fallback-JSON, $3 = Label für die Logs.
+write_fallbacks() {
+  local cfg="$1" fb_json="$2" label="$3"
+  local base
+  base="$(basename "$cfg")"
+  "${SSH[@]}" "docker exec '$HERMES_CONTAINER' cat $cfg" \
+    | python3 "$WORK/fallbacks.py" "$fb_json" > "$WORK/$base.new"
+  "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > $cfg'" < "$WORK/$base.new"
+  "${SSH[@]}" "docker exec -u 0 '$HERMES_CONTAINER' sh -lc 'chown hermes:hermes $cfg; chmod 600 $cfg'"
+  echo "  → [$label] fallback_providers ersetzt (alter Block entfernt, neue Liste angehängt)"
+}
+
+write_fallbacks "$CONFIG_IN_CONTAINER" "$FALLBACKS_JSON" "default"
 echo "→ Fallback-Kette laut Hermes:"
 "${SSH[@]}" "docker exec -u 0 '$HERMES_CONTAINER' sh -lc 'HOME=/opt/data $HERMES_BIN fallback list'" | sed 's/^/   /'
 
 # --- 5) Abo-Pool aus OpenBao -------------------------------------------------
 # Reihenfolge = aktives Abo zuerst, dann die übrigen; die Nummern-Suffixe
 # (_2/_3) stehen für die Priorität im Pool (fill_first).
-if [[ "$POOL_FOLLOW" == "true" ]]; then
+# Wird für das Default-Profil und jedes SOT-Profil mit pool.followActive=true
+# benutzt ($1 = .env-Pfad im Container, $2 = Label, $3 = single true|false).
+apply_pool() {
+  local env_path="$1" label="$2" single="$3"
   if [[ ! -r "$OPENBAO_TOKEN_FILE" ]]; then
-    echo "⚠ pool.followActive=true, aber OpenBao-Token fehlt: $OPENBAO_TOKEN_FILE — Pool unverändert"
-  else
-    VAULT_TOKEN="$(cat "$OPENBAO_TOKEN_FILE")"
-    # Keys holen und direkt in eine Datei schreiben (nie ausgeben).
-    # Reihenfolge: aktives Abo zuerst, dann die restlichen Keys alphabetisch.
+    echo "⚠ [$label] pool.followActive=true, aber OpenBao-Token fehlt: $OPENBAO_TOKEN_FILE — Pool unverändert"
+    return 0
+  fi
+  local vault_token tag
+  vault_token="$(cat "$OPENBAO_TOKEN_FILE")"
+  # Keys holen und direkt in eine Datei schreiben (nie ausgeben).
+  # Reihenfolge: aktives Abo zuerst, dann die restlichen Keys alphabetisch.
+  if [[ ! -f "$WORK/pool.py" ]]; then
     cat >"$WORK/pool.py" <<'PY'
 """OpenBao-JSON (stdin) → JSON-Array der Keys in Pool-Reihenfolge.
 
@@ -211,19 +267,23 @@ else:
     pool = ([active_key] if active_key else []) + [v for k, v in keys.items() if k != active]
 sys.stdout.write(json.dumps(pool))
 PY
-    curl -sS -H "X-Vault-Token: $VAULT_TOKEN" "$OPENBAO_ADDR/v1/$SECRET_PATH" \
-      | python3 "$WORK/pool.py" "$SINGLE" > "$WORK/pool.json"
-    # Aktuelle .env holen und die OPENCODE_GO_API_KEY-Zeilen ersetzen.
-    "${SSH[@]}" "docker exec '$HERMES_CONTAINER' cat $ENV_IN_CONTAINER" > "$WORK/env.old" || true
-    python3 - "$WORK/env.old" "$WORK/pool.json" > "$WORK/env.new" <<'PY'
+  fi
+  # Eigene Arbeitsdateien je Profil, damit parallele Pfade sich nicht mischen.
+  tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '_')"
+  curl -sS -H "X-Vault-Token: $vault_token" "$OPENBAO_ADDR/v1/$SECRET_PATH" \
+    | python3 "$WORK/pool.py" "$single" > "$WORK/pool.$tag.json"
+  # Aktuelle .env holen und die OPENCODE_GO_API_KEY-Zeilen ersetzen.
+  "${SSH[@]}" "docker exec '$HERMES_CONTAINER' cat $env_path" > "$WORK/env.$tag.old" || true
+  python3 - "$WORK/env.$tag.old" "$WORK/pool.$tag.json" "$label" > "$WORK/env.$tag.new" <<'PY'
 import json, re, sys
 
+label = sys.argv[3] if len(sys.argv) > 3 else "default"
 old = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
 keys = json.loads(open(sys.argv[2], encoding="utf-8").read())
 if not keys:
     # Kein Key im OpenBao-Secret gefunden (oder single=true ohne aktives Abo) —
     # dann dürfen die bestehenden Zeilen nicht entfernt werden.
-    sys.stderr.write("✗ OpenBao lieferte keinen API-Key — Pool bleibt unverändert\n")
+    sys.stderr.write(f"✗ [{label}] OpenBao lieferte keinen API-Key — Pool bleibt unverändert\n")
     sys.exit(3)
 names = ["OPENCODE_GO_API_KEY"] + [f"OPENCODE_GO_API_KEY_{i}" for i in range(2, len(keys) + 1)]
 mapping = dict(zip(names, keys))
@@ -247,14 +307,15 @@ for name, key in mapping.items():       # fehlende Zeilen ergänzen
 
 # nur Längen ausgeben — die Werte selbst bleiben geheim
 sys.stderr.write(
-    "→ Pool-Keys gesetzt: " + ", ".join(f"{n} ({len(v)} Zeichen)" for n, v in mapping.items()) + "\n"
+    f"  → [{label}] Pool-Keys gesetzt: "
+    + ", ".join(f"{n} ({len(v)} Zeichen)" for n, v in mapping.items()) + "\n"
 )
 sys.stdout.write("\n".join(out) + "\n")
 PY
-    # Sicherheitsnetz: jeder gesetzte OPENCODE_GO_API_KEY*-Wert muss ein echter
-    # Key sein (>= 20 Zeichen). Sonst bricht der Lauf ab, BEVOR die .env
-    # überschrieben wird — verhindert den "Name statt Key"-Fehler (401).
-    if ! python3 - "$WORK/env.new" <<'PY'
+  # Sicherheitsnetz: jeder gesetzte OPENCODE_GO_API_KEY*-Wert muss ein echter
+  # Key sein (>= 20 Zeichen). Sonst bricht der Lauf ab, BEVOR die .env
+  # überschrieben wird — verhindert den "Name statt Key"-Fehler (401).
+  if ! python3 - "$WORK/env.$tag.new" <<'PY'
 import re, sys
 bad = []
 for line in open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines():
@@ -265,19 +326,147 @@ if bad:
     sys.stderr.write("✗ Pool-Werte zu kurz, vermutlich Name statt Key: " + ", ".join(bad) + "\n")
     sys.exit(1)
 PY
-    then
-      echo "✗ Pool nicht geschrieben — bestehende .env bleibt unverändert (Backup/Review nötig)" >&2
-      exit 1
-    fi
-    # In-place überschreiben (ein mv auf /opt/data scheitert im Volume).
-    "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > $ENV_IN_CONTAINER && chown hermes:hermes $ENV_IN_CONTAINER && chmod 600 $ENV_IN_CONTAINER'" <"$WORK/env.new"
-    echo "✓ Pool aus OpenBao übernommen (aktives Abo zuerst)"
-    if [[ "$SINGLE" == "true" ]]; then
-      echo "  → Modus SINGLE: Pool enthält NUR das aktive Abo (OPENCODE_GO_API_KEY_2/_3 entfernt)"
-    fi
+  then
+    echo "✗ [$label] Pool nicht geschrieben — bestehende .env bleibt unverändert (Backup/Review nötig)" >&2
+    return 1
   fi
+  # In-place überschreiben (ein mv auf /opt/data scheitert im Volume).
+  "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > $env_path && chown hermes:hermes $env_path && chmod 600 $env_path'" <"$WORK/env.$tag.new"
+  echo "✓ [$label] Pool aus OpenBao übernommen (aktives Abo zuerst)"
+  if [[ "$single" == "true" ]]; then
+    echo "  → [$label] Modus SINGLE: Pool enthält NUR das aktive Abo (OPENCODE_GO_API_KEY_2/_3 entfernt)"
+  fi
+}
+
+if [[ "$POOL_FOLLOW" == "true" ]]; then
+  apply_pool "$ENV_IN_CONTAINER" "default" "$SINGLE"
 else
   echo "→ Pool bleibt unverändert (pool.followActive=false)"
+fi
+
+# --- 5b) Weitere Hermes-Profile (Multiplexer) -------------------------------
+# Jedes Profil hat eigene Dateien: /opt/data/profiles/<name>/config.yaml und
+# .env. Die Hermes-CLI kann das Profil nicht adressieren (HERMES_PROFILE wird
+# ignoriert), daher werden die Dateien direkt editiert.
+cat >"$WORK/model.py" <<'PY'
+"""Setzt model.provider + model.default in der YAML-Config (stdin).
+
+Ersetzt NUR die Zeilen innerhalb des model:-Blocks. Gleichnamige Keys in
+anderen Blöcken (z. B. telemetry.provider) bleiben unberührt. Fehlt der Block,
+wird er neu angehängt.
+
+Aufruf: model.py <provider> <model>
+"""
+import re, sys
+
+
+def yaml_scalar(v):
+    v = str(v)
+    if re.search(r"[:#\-{}\[\],&*?|<>=!%@`\"'\s]", v):
+        return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return v
+
+
+def main():
+    text = sys.stdin.read()
+    provider = sys.argv[1] if len(sys.argv) > 1 else ""
+    model = sys.argv[2] if len(sys.argv) > 2 else ""
+    lines = text.splitlines()
+
+    out, i, in_block, seen = [], 0, False, False
+    while i < len(lines):
+        line = lines[i]
+        if not in_block and re.match(r"^model\s*:", line):
+            in_block, seen = True, True
+            out.append(line)
+            i += 1
+            continue
+        if in_block:
+            # Folgezeilen des Blocks: eingerückt ODER leer. Alles andere
+            # (Spalte 0) beendet den Block.
+            if line.strip() == "":
+                out.append(line)
+                i += 1
+                continue
+            if line[:1] in (" ", "\t"):
+                m = re.match(r"^(\s*)provider\s*:", line)
+                if m:
+                    out.append(f"{m.group(1)}provider: {yaml_scalar(provider)}")
+                    i += 1
+                    continue
+                m = re.match(r"^(\s*)default\s*:", line)
+                if m:
+                    out.append(f"{m.group(1)}default: {yaml_scalar(model)}")
+                    i += 1
+                    continue
+                out.append(line)
+                i += 1
+                continue
+            in_block = False
+        out.append(line)
+        i += 1
+
+    if not seen:
+        out.append("")
+        out.append("model:")
+        out.append(f"  provider: {yaml_scalar(provider)}")
+        out.append(f"  default: {yaml_scalar(model)}")
+
+    while out and out[-1].strip() == "":
+        out.pop()
+    sys.stdout.write("\n".join(out) + "\n")
+
+
+main()
+PY
+
+PROFILES_APPLIED=0
+if [[ "$PROFILES_JSON" != "[]" ]]; then
+  while IFS=$'\t' read -r P_NAME P_PRIMARY_PROVIDER P_PRIMARY_MODEL P_FB_JSON P_POOL_FOLLOW P_POOL_ONLY; do
+    [[ -z "$P_NAME" ]] && continue
+    P_CONFIG="/opt/data/profiles/$P_NAME/config.yaml"
+    P_ENV="/opt/data/profiles/$P_NAME/.env"
+    # Profil-Dateien müssen existieren, sonst nichts anfassen.
+    if ! "${SSH[@]}" "docker exec '$HERMES_CONTAINER' test -f '$P_CONFIG'" 2>/dev/null; then
+      echo "⚠ Profil '$P_NAME' übersprungen: $P_CONFIG nicht gefunden"
+      continue
+    fi
+    echo "→ Profil '$P_NAME': $P_PRIMARY_PROVIDER/$P_PRIMARY_MODEL · Fallbacks: $P_FB_JSON"
+    "${SSH[@]}" "docker exec '$HERMES_CONTAINER' sh -lc 'cp -a $P_CONFIG $P_CONFIG.bak-hestia-\$(date +%s)'"
+    echo "  → [$P_NAME] Backup: $("${SSH[@]}" "docker exec '$HERMES_CONTAINER' sh -lc 'ls -1 $P_CONFIG.bak-hestia-* 2>/dev/null | tail -1'")"
+
+    # Primary + Fallback in einem Durchgang: erst model.provider/model.default,
+    # dann der fallback_providers-Block (liest die bereits korrigierte Datei).
+    "${SSH[@]}" "docker exec '$HERMES_CONTAINER' cat $P_CONFIG" \
+      | python3 "$WORK/model.py" "$P_PRIMARY_PROVIDER" "$P_PRIMARY_MODEL" > "$WORK/p.$P_NAME.model.yaml"
+    "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > $P_CONFIG'" < "$WORK/p.$P_NAME.model.yaml"
+    echo "  → [$P_NAME] model.provider=$P_PRIMARY_PROVIDER · model.default=$P_PRIMARY_MODEL"
+    write_fallbacks "$P_CONFIG" "$P_FB_JSON" "$P_NAME"
+
+    # Pool: nur wenn für dieses Profil followActive gilt.
+    P_SINGLE="$SINGLE"
+    if [[ "$P_POOL_ONLY" == "true" ]]; then
+      P_SINGLE="true"
+    fi
+    if [[ "$P_POOL_FOLLOW" == "true" ]]; then
+      apply_pool "$P_ENV" "$P_NAME" "$P_SINGLE"
+    else
+      echo "  → [$P_NAME] Pool bleibt unverändert (pool.followActive=false)"
+    fi
+    PROFILES_APPLIED=$((PROFILES_APPLIED + 1))
+  done < <(python3 - "$PROFILES_JSON" <<'PY'
+import json, sys
+# profiles_json enthält fertige, geerbte Objekte → nur noch in Zeilen zerlegen.
+for p in json.loads(sys.argv[1]):
+    print("\t".join([
+        p["name"], p["provider"], p["model"], p["fallback"],
+        p["pool_follow"], p["pool_only_active"],
+    ]))
+PY
+)
+  if [[ "$PROFILES_APPLIED" -gt 0 ]]; then
+    echo "✓ $PROFILES_APPLIED Profil(e) angewendet (von $(python3 -c 'import json,sys;print(len(json.loads(sys.argv[1])))' "$PROFILES_JSON") in der SOT)"
+  fi
 fi
 
 # --- 6) Validierung ----------------------------------------------------------
@@ -310,3 +499,6 @@ fi
 
 # --- 8) Zusammenfassung ------------------------------------------------------
 echo "✓ Hermes angewendet: primary=$PRIMARY_PROVIDER/$PRIMARY_MODEL · fallbacks=$FALLBACKS_JSON · pool=$POOL_FOLLOW · single=$SINGLE · restart=$RESTART"
+if [[ "$PROFILES_JSON" != "[]" ]]; then
+  echo "✓ Profile angewendet: $PROFILES_APPLIED · $PROFILES_JSON"
+fi
