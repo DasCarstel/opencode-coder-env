@@ -96,12 +96,19 @@ mcp_servers:
       OCIS_USER: ${OCIS_MUELLERCONNECT_USER}
       OCIS_TOKEN: ${OCIS_MUELLERCONNECT_TOKEN}
 
+  # Remote Notion MCP (offiziell, OAuth). Einmaliger Login: `hermes mcp login notion`
+  # Tokens liegen persistent unter /root/.hermes/mcp-tokens/ (Volume hermes_state).
+  notion:
+    url: "https://mcp.notion.com/mcp"
+    auth: oauth
+
 toolsets:
   enabled:
     - mcp-homeassistant
     - mcp-opencode
     - mcp-ocis-private
     - mcp-ocis-muellerconnect
+    - mcp-notion
     - clarify
 
 trust: untrusted
