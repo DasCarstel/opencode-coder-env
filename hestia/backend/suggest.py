@@ -14,7 +14,7 @@ import time
 import urllib.request
 import urllib.error
 
-from catalog import fetch_models
+from catalog import fetch_models, usable
 
 OC_SERVER_URL = os.environ.get("OC_SERVER_URL", "http://localhost:49374").rstrip("/")
 OC_SERVER_USER = os.environ.get("OC_SERVER_USER", "opencode")
@@ -23,9 +23,12 @@ OC_SUGGEST_DIR = os.environ.get(
     "OC_SUGGEST_DIR",
     "/home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/server-management",
 )
-OC_SUGGEST_MODEL = os.environ.get("OC_SUGGEST_MODEL", "")  # leer = Session-Default; Budget-Hinweis: fast/gleiche Tier уровня ok
+# Analyse-Modell: standardmäßig das aktuelle @heavy-Modell aus den Overrides.
+# Override per OC_SUGGEST_MODEL ("provider/model#variant"); leer = Tier-Heavy.
+OC_SUGGEST_MODEL = os.environ.get("OC_SUGGEST_MODEL", "").strip()
+PRESET = os.environ.get("HESTIA_PRESET_PROVIDER", "opencode-go")
 POLL_INTERVAL = 6.0
-POLL_TIMEOUT = 540.0
+POLL_TIMEOUT = 720.0
 
 
 def _headers():
@@ -95,6 +98,48 @@ ANTWORTE NUR MIT folgendem JSON (keine weiteren Worte, keine Backticks):
   "heavy": {{"model": "opencode-go/<modelID>", "variant": "<variant|leer>", "reason": "<1 Satz>"}}}}"""
 
 
+def resolve_analysis_model() -> tuple:
+    """Analyse-Modell bestimmen: aktuelles @heavy-Modell aus den Overrides.
+
+    Reihenfolge: OC_SUGGEST_MODEL (env) → @heavy aus .opencode-Overrides →
+    Session-Default. Gibt (model_ref|None, info) zurück; info dokumentiert die
+    Wahl für die Anzeige im Panel.
+    """
+    ref = OC_SUGGEST_MODEL
+    variant = ""
+    source = "env"
+    if "#" in ref:
+        ref, _, variant = ref.partition("#")
+    if not ref:
+        source = "tier-heavy"
+        try:
+            from github_api import get_overrides
+            preset = (get_overrides()["config"].get("presets") or {}).get(PRESET) or {}
+            heavy = preset.get("heavy") or {}
+            ref = (heavy.get("model") or "").strip()
+            variant = (heavy.get("variant") or "").strip()
+        except Exception:
+            ref = ""
+    if not ref:
+        return None, {"source": "session-default"}
+    ok, res = usable(ref)
+    if not ok:
+        return None, {"source": "session-default", "note": res}
+    provider, _, mid = ref.partition("/")
+    if variant and variant not in (res.get("variants") or []):
+        note_v = f"Variante '{variant}' nicht verfügbar — ohne Variante"
+        variant = ""
+    else:
+        note_v = ""
+    info = {"source": source, "model": ref, "variant": variant or None}
+    if note_v:
+        info["note"] = note_v
+    body = {"providerID": provider, "id": mid}
+    if variant:
+        body["variant"] = variant  # leeres variant-Feld lässt den Lauf sofort fehlschlagen
+    return body, info
+
+
 def suggest() -> dict:
     if not OC_SERVER_PASSWORD:
         raise RuntimeError("OC_SERVER_PASSWORD nicht gesetzt")
@@ -107,6 +152,18 @@ def suggest() -> dict:
     sid = (sres.get("data") or sres).get("id") if isinstance(sres, dict) else None
     if not sid:
         raise RuntimeError(f"Keine Session-ID: {sres}")
+
+    # Analyse-Modell = aktuelles @heavy (Fallback: Session-Default)
+    model_body, used_info = resolve_analysis_model()
+    if model_body:
+        mstatus, mres = _req("POST", f"{OC_SERVER_URL}/api/session/{sid}/model", {"model": model_body})
+        if mstatus not in (200, 201, 204):
+            used_info = {"source": "session-default", "note": f"Modell-Umschaltung fehlgeschlagen ({mstatus})"}
+    if used_info.get("model"):
+        used_info["label"] = used_info["model"] + (f"#{used_info['variant']}" if used_info.get("variant") else "")
+    else:
+        used_info["label"] = "Session-Default"
+
     pstatus, pres = _req("POST", f"{OC_SERVER_URL}/api/session/{sid}/prompt", {"text": prompt})
     if pstatus not in (200, 201, 202):
         raise RuntimeError(f"Prompt-Feuern fehlgeschlagen ({pstatus}): {pres}")
@@ -150,4 +207,4 @@ def suggest() -> dict:
         raise RuntimeError(f"Kein JSON in der Antwort erkannt: {full[:300]}")
     blob = m.group(0)
     decision = json.loads(blob)
-    return {"session": sid, "decision": decision, "raw": full}
+    return {"session": sid, "decision": decision, "raw": full, "analyzedWith": used_info}

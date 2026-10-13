@@ -5,6 +5,7 @@ let health = $state(null)
 let config = $state(null)
 let catalog = $state({ models: [] })
 let suggestResult = $state(null)
+let analyzeInfo = $state(null)
 let suggestBusy = $state(false)
 let applyBusy = $state(false)
 let applyResult = $state(null)
@@ -74,12 +75,14 @@ function tierNorm(tier) {
 async function runSuggest() {
   suggestBusy = true
   suggestResult = null
+  analyzeInfo = null
   error = null
   try {
     // POST erzwingen (ohne Body würde fetch sonst GET senden)
     const r = await api('/api/suggest', { body: {}, method: 'POST' })
     if (!r || !r.decision) throw new Error('Unerwartete Antwort vom Server (kein Vorschlag enthalten)')
     suggestResult = r.decision
+    analyzeInfo = r.analyzedWith || null
   } catch (e) {
     error = 'KI-Vorschlag: ' + e.message
   } finally {
@@ -192,6 +195,8 @@ load()
   </button>
   {#if suggestResult}
     <div class="suggest">
+      {#if analyzeInfo}<p class="muted">Analysiert mit: <span class="mono">{analyzeInfo.label}</span>
+        {#if analyzeInfo.note}· {analyzeInfo.note}{/if}</p>{/if}
       <p class="muted">{suggestResult.reasoning}</p>
       <table>
         <thead><tr><th>Tier</th><th>Vorschlag</th><th>Variante</th><th>Begründung</th></tr></thead>
