@@ -120,12 +120,13 @@ Neben den Repo-Skills gibt es die **Built-in-Skills** von OpenCode (`opencode`,
 
 ## Agent-Konventionen (`AGENTS.md`)
 
-Jeder Workspace hat ein `AGENTS.md` in seinem Verzeichnis (General und minijob
-seit 2026-10-13 ergänzt); OpenCode lädt es beim Start als Projekt-Instruktion.
-Verbindliche Konvention in **allen** Workspaces:
+OpenCode lädt `AGENTS.md` aus dem Workspace-Verzeichnis **und allen übergeordneten
+Ordnern** (bis zum Repo-Root) sowie die globale `~/.config/opencode/AGENTS.md`.
+Repo-weite Konventionen stehen daher **nur einmal** im Root-`AGENTS.md`
+([`../AGENTS.md`](../AGENTS.md)); die Verzeichnis-`AGENTS.md` beschreiben nur ihren
+Workspace.
 
-- **Rückfragen an den Nutzer werden immer über das native OpenCode-Tool `question`
-  gestellt** — mit klickbaren Auswahlmöglichkeiten, **nie** als Freitext am Ende
-  einer Antwort.
-- `question` ist ein **OpenCode-Built-in-Tool, kein MCP-Server**; in der
-  Konfiguration heißt es ebenfalls `question` (z. B. unter `permission`/`tools`).
+- **Rückfragen an den Nutzer werden immer über das native Tool `question` gestellt**
+  (klickbare Optionen), **nie** als Freitext — festgelegt im Root-`AGENTS.md`.
+- Workspace-`AGENTS.md`: Server Management, Home Assistant, Svelte, Cleve, General,
+  minijob (die letzten beiden seit 2026-10-13).
