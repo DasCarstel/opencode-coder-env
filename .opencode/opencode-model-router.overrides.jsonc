@@ -8,7 +8,6 @@
 // Verwaltet vom Hestia-Panel (hestia/): Änderungen laufen über
 //   POST /api/apply  → schreibe dieses File → git push → CI/CD-Rollout
 // Manuelle Edits sind weiterhin möglich (JSONC: // und /* */ erlaubt).
-// Hinweis: Jede Änderung an dieser Datei löst validate-hestia-config + rollout aus.
 {
   "activePreset": "opencode-go",
   "presets": {
