@@ -1,0 +1,10 @@
+{
+  "fast": {
+    "model": "opencode-go/mimo-v2.6-flash",
+    "variant": ""
+  },
+  "medium": {
+    "model": "opencode-go/claude-haiku-5-5",
+    "variant": "medium"
+  }
+}

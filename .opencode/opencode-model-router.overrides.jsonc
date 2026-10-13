@@ -13,7 +13,7 @@
   "presets": {
     "opencode-go": {
       "fast": {
-        "model": "opencode-go/mimo-v2.6-flash",
+        "model": "opencode/mimo-v2.6-flash-free",
         "costRatio": 1,
         "description": "MiMo V2.5 für Explorer, Suche und einfache Lesesvorgänge",
         "steps": 30,
@@ -25,7 +25,7 @@
         ]
       },
       "medium": {
-        "model": "opencode-go/deepseek-v4.1-flash",
+        "model": "opencode/space-bunny-free",
         "costRatio": 5,
         "description": "DeepSeek V4 Flash für Implementation, Refactoring und Tests",
         "steps": 50,
@@ -35,7 +35,8 @@
           "Tests schreiben",
           "Code-Review",
           "Bug fixes"
-        ]
+        ],
+        "variant": "high"
       },
       "heavy": {
         "model": "opencode-go/gpt-6-luna",

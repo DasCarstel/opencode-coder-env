@@ -1,11 +1,11 @@
 {
   "build": {
-    "model": "opencode-go/deepseek-v4.1-flash",
-    "variant": "",
+    "model": "opencode/space-bunny-free",
+    "variant": "high",
     "source": "derived"
   },
   "plan": {
-    "model": "opencode-go/deepseek-v4.1-flash",
+    "model": "opencode/space-bunny-free",
     "variant": "max",
     "source": "derived"
   }
