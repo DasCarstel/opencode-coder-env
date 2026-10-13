@@ -10,6 +10,30 @@ let suggestElapsed = $state(0)
 let liveStatus = $state(null)
 let analysisModel = $state('')
 let analysisVariant = $state('(keine)')
+let buildSel = $state({ model: '', variant: '(keine)' })
+let planSel = $state({ model: '', variant: '(keine)' })
+let primary = $state(null)
+
+const VARIANT_RANK = { minimal: 1, none: 2, low: 3, medium: 4, thinking: 4, high: 5, xhigh: 6, max: 7 }
+function highestVariantOf(ref) {
+  const m = modelOf(ref)
+  const vs = (m?.variants || []).filter(v => v in VARIANT_RANK)
+  return vs.sort((a, b) => VARIANT_RANK[a] - VARIANT_RANK[b]).pop() || ''
+}
+function refOf(sel, fallback) {
+  if (!sel.model) return fallback
+  const v = sel.variant && sel.variant !== '(keine)' ? sel.variant : ''
+  return sel.model + (v ? '#' + v : '')
+}
+const derivedBuild = $derived(medium.model ? medium.model + (medium.variant && medium.variant !== '(keine)' ? '#' + medium.variant : '') : '')
+const derivedPlan = $derived(medium.model ? medium.model + (highestVariantOf(medium.model) ? '#' + highestVariantOf(medium.model) : '') : '')
+const effBuild = $derived(refOf(buildSel, derivedBuild))
+const effPlan = $derived(refOf(planSel, derivedPlan))
+function onAnalysisModelChange() {
+  const [m, v] = (analysisModel || '').split('#')
+  analysisModel = m
+  analysisVariant = v || '(keine)'
+}
 let suggestBusy = $state(false)
 let applyBusy = $state(false)
 let applyResult = $state(null)
@@ -43,6 +67,17 @@ async function load() {
       api('/api/config'),
       api('/api/catalog'),
     ])
+    primary = config.primaryAgents || null
+    for (const [key, sel] of [['build', buildSel], ['plan', planSel]]) {
+      const p = primary?.[key]
+      if (p?.manual) {
+        sel.model = p.model || ''
+        sel.variant = p.variant || '(keine)'
+      } else {
+        sel.model = ''
+        sel.variant = '(keine)'
+      }
+    }
     const t = config.tiers || {}
     for (const tier of ['fast', 'medium', 'heavy']) {
       const cur = t[tier] || {}
@@ -138,6 +173,10 @@ async function runApply() {
   try {
     const body = {
       tiers: { fast: tierNorm('fast'), medium: tierNorm('medium'), heavy: tierNorm('heavy') },
+      primaryAgents: {
+        build: { model: buildSel.model, variant: buildSel.variant === '(keine)' ? '' : buildSel.variant },
+        plan: { model: planSel.model, variant: planSel.variant === '(keine)' ? '' : planSel.variant },
+      },
     }
     applyResult = await api('/api/apply', { body })
     await load()
@@ -234,8 +273,10 @@ loadRolloutStatus()
       <strong>Analyse-Modell</strong>
       <span class="muted">Womit soll die Analyse rechnen?</span>
     </div>
-    <select bind:value={analysisModel} onchange={() => (analysisVariant = '(keine)')}>
+    <select bind:value={analysisModel} onchange={onAnalysisModelChange}>
       <option value="">Automatisch — committetes @heavy ({committedHeavyLabel})</option>
+      {#if effBuild}<option value={effBuild}>Build ({buildSel.model ? 'manuell' : 'hergeleitet von @medium'}) · {effBuild}</option>{/if}
+      {#if effPlan}<option value={effPlan}>Plan ({planSel.model ? 'manuell' : 'hergeleitet von @medium'}) · {effPlan}</option>{/if}
       {#if editorHeavyDiffers}
         <option value={heavy.model}>Editor-Auswahl ({editorHeavyLabel})</option>
       {/if}
@@ -308,6 +349,28 @@ loadRolloutStatus()
         {#each variantOptions(src.model) as v}<option value={v}>{v}</option>{/each}
       </select>
     </div>
+    {#if tier === 'medium'}
+      {#each [{ key: 'build', label: 'Build', sel: buildSel, hint: 'Standardvariante', eff: effBuild },
+              { key: 'plan', label: 'Plan', sel: planSel, hint: 'höchste Variante', eff: effPlan }] as ag}
+        <div class="tierRow subRow">
+          <div class="tierLabel">
+            <strong>↳ {ag.label}</strong>
+            <span class="muted">
+              {ag.sel.model ? `manuell · aktuell: ${ag.eff}` : `hergeleitet von @medium (${ag.hint}) · ${ag.eff || '—'}`}
+            </span>
+          </div>
+          <select bind:value={ag.sel.model}>
+            <option value="">hergeleitet von @medium</option>
+            {#each goModels as m}
+              <option value={m.ref}>{m.name} · {m.modelID} · {priceText(m.ref)}</option>
+            {/each}
+          </select>
+          <select bind:value={ag.sel.variant} disabled={!ag.sel.model}>
+            {#each variantOptions(ag.sel.model || medium.model) as v}<option value={v}>{v}</option>{/each}
+          </select>
+        </div>
+      {/each}
+    {/if}
   {/each}
   <div class="row">
     <button class="primary" onclick={runApply} disabled={applyBusy}>
@@ -374,6 +437,7 @@ loadRolloutStatus()
   .brand { display: flex; gap: 12px; align-items: center; }
   .status { display: flex; gap: 8px; align-items: center; }
   .tierRow { display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 10px; align-items: center; margin-bottom: 10px; }
+  .subRow { padding-left: 22px; border-left: 2px solid var(--line); margin-left: 6px; }
   .tierLabel { display: flex; flex-direction: column; gap: 2px; }
   .row { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
   .suggest { margin-top: 14px; }

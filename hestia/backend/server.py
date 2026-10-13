@@ -60,6 +60,11 @@ SUGGEST_STATE = {
 }
 SUGGEST_LOCK = __import__("threading").Lock()
 TIER_DEFS = ("fast", "medium", "heavy")
+# Primary-Agents: abgeleitet aus @medium, im Panel manuell überschreibbar
+PRIMARY_AGENTS = ("build", "plan")
+AGENTS_PATH = os.environ.get("HESTIA_AGENTS_PATH", ".opencode/hestia-primary-agents.json")
+VARIANT_RANK = {"minimal": 1, "none": 2, "low": 3, "medium": 4, "thinking": 4,
+                "high": 5, "xhigh": 6, "max": 7}
 
 
 def _log(msg: str):
@@ -128,6 +133,58 @@ def build_config(current: dict, tiers: dict) -> dict:
     presets[preset] = new_preset
     cfg["presets"] = presets
     return cfg
+
+
+
+# ── Primary-Agents (build/plan): Ableitung aus @medium + Overrides ──────────
+def highest_variant(model_ref: str) -> str:
+    """Höchste Effort-Variante eines Modells laut Live-Katalog ("" = keine)."""
+    m = catalog.find_model(model_ref)
+    if not m:
+        return ""
+    ranked = sorted([v for v in (m.get("variants") or []) if v in VARIANT_RANK],
+                    key=lambda v: VARIANT_RANK[v])
+    return ranked[-1] if ranked else ""
+
+
+def agents_from_overrides() -> dict:
+    """Manuelle Build/Plan-Overrides aus dem Repo lesen ({build:{model,variant},...})."""
+    try:
+        raw = github_api.get_file(AGENTS_PATH)
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+
+def effective_agents(preset: dict, overrides: dict) -> dict:
+    """Effektive Primär-Agenten: manuell > hergeleitet aus @medium.
+
+    build = @medium (Standardvariante) · plan = @medium (höchste Variante)
+    """
+    medium = preset.get("medium") or {}
+    med_ref = (medium.get("model") or "").strip()
+    med_var = (medium.get("variant") or "").strip()
+    out = {}
+    for agent in PRIMARY_AGENTS:
+        ov = overrides.get(agent) or {}
+        ref = (ov.get("model") or "").strip()
+        var = (ov.get("variant") or "").strip()
+        manual = bool(ref)
+        if not ref:                                  # hergeleitet
+            ref = med_ref
+            var = med_var if agent == "build" else highest_variant(med_ref)
+        out[agent] = {
+            "model": ref,
+            "variant": var or None,
+            "manual": manual,
+            "source": "manuell" if manual else "hergeleitet (Medium)",
+        }
+    return out
+
+
+def agents_to_display(eff: dict) -> dict:
+    """Nur die speicherbaren Felder (ohne Anzeige-Metadaten)."""
+    return {a: {"model": eff[a]["model"], "variant": eff[a]["variant"] or ""} for a in PRIMARY_AGENTS}
 
 
 # ── HTTP-Handler ───────────────────────────────────────────────────────────
@@ -228,10 +285,13 @@ class Handler(BaseHTTPRequestHandler):
                 r = github_api.get_overrides()
                 cfg = r["config"]
                 preset = cfg.get("presets", {}).get(PRESET_PROVIDER, {})
+                overrides = agents_from_overrides()
+                eff = effective_agents(preset, overrides)
                 return self._json({
                     "activePreset": cfg.get("activePreset"),
                     "presetProvider": PRESET_PROVIDER,
                     "tiers": {t: preset.get(t, {}) for t in TIER_DEFS},
+                    "primaryAgents": eff,
                     "modes": list(cfg.get("modes") or {}),
                     "sha": r["sha"],
                     "html_url": r["html_url"],
@@ -296,28 +356,56 @@ class Handler(BaseHTTPRequestHandler):
                 cfg = build_config(r["config"], tiers)
                 new_jsonc = hjsonc.serialize(cfg)
                 models_desc = {t: (tiers[t]["model"] + (f"#{tiers[t]['variant']}" if tiers[t]["variant"] else "")) for t in TIER_DEFS}
-                if new_jsonc.strip() == (r["content"] or "").strip():
-                    # Keine inhaltliche Änderung → GitHub erzeugt kein Push-Event,
-                    # also würde keine Pipeline laufen. Stattdessen direkt ausrollen.
+
+                # Primary-Agents: manuelle Auswahl validieren, sonst aus @medium ableiten
+                want = payload.get("primaryAgents") or {}
+                overrides = {}
+                for agent in PRIMARY_AGENTS:
+                    ov = want.get(agent) or {}
+                    ref = (ov.get("model") or "").strip()
+                    if not ref:
+                        continue                      # leer = hergeleitet
+                    ok, res = catalog.usable(ref)
+                    if not ok:
+                        raise ApplyError(f"{agent}: {res}")
+                    m = res
+                    var = (ov.get("variant") or "").strip()
+                    if var and var not in (m["variants"] or []):
+                        raise ApplyError(f"{agent}: Variante '{var}' nicht verfügbar für {ref}")
+                    overrides[agent] = {"model": ref, "variant": var}
+                preset = cfg.get("presets", {}).get(PRESET_PROVIDER, {})
+                eff = effective_agents(preset, overrides)
+                agents_json = json.dumps(agents_to_display(eff), indent=2, ensure_ascii=False) + "\n"
+
+                agents_current = github_api.get_file(AGENTS_PATH) or ""
+                agents_desc = {a: (eff[a]["model"] + (f"#{eff[a]['variant']}" if eff[a]["variant"] else "")) for a in PRIMARY_AGENTS}
+
+                if new_jsonc.strip() == (r["content"] or "").strip() and agents_json.strip() == agents_current.strip():
                     wf = os.environ.get("ROLLOUT_WORKFLOW", "rollout.yml")
                     try:
                         github_api.dispatch_workflow(wf)
                         note = f"unverändert — Rollout ({wf}) direkt gestartet"
                     except ConfigError as e:
                         note = f"unverändert — KEIN Rollout gestartet: {e}"
-                    _log(f"apply unchanged: {models_desc}")
+                    _log(f"apply unchanged: {models_desc} | agents {agents_desc}")
                     return self._json({"applied": True, "unchanged": True, "tiers": models_desc,
-                                       "rollout": note})
+                                       "primaryAgents": agents_desc, "rollout": note})
+
                 msg = (
                     "hestia: Tier-Update\n\n"
-                    f"fast={models_desc['fast']}\nmedium={models_desc['medium']}\nheavy={models_desc['heavy']}"
+                    f"fast={models_desc['fast']}\nmedium={models_desc['medium']}\nheavy={models_desc['heavy']}\n"
+                    f"build={agents_desc['build']}\nplan={agents_desc['plan']}"
                 )
-                res = github_api.put_overrides(new_jsonc, msg)
-                _log(f"apply ok: {models_desc}")
+                res = github_api.put_files({
+                    github_api.OVERRIDES_PATH: new_jsonc,
+                    AGENTS_PATH: agents_json,
+                }, msg)
+                _log(f"apply ok: {models_desc} | agents {agents_desc}")
                 return self._json({
                     "applied": True,
                     "unchanged": False,
                     "tiers": models_desc,
+                    "primaryAgents": agents_desc,
                     "commit": res,
                     "rollout": "CI/CD läuft (validate + Container-Restart)",
                 })

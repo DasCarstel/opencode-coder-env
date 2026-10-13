@@ -133,3 +133,45 @@ def latest_run(workflow: str) -> dict:
         "html_url": r.get("html_url"),
         "created_at": r.get("created_at"),
     }
+
+
+def get_file(path: str) -> str | None:
+    """Inhalt einer (optionalen) Datei von GitHub holen; None wenn nicht vorhanden."""
+    status, d = _req("GET", f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{path}?ref={GITHUB_REF}")
+    if status != 200:
+        return None
+    return base64.b64decode(d.get("content", "")).decode()
+
+
+def put_files(files: dict, message: str) -> dict:
+    """Mehrere Dateien in EINEM Commit schreiben (Git-Data-API) — ein Push = ein Rollout."""
+    st, refd = _req("GET", f"{GITHUB_API}/repos/{GITHUB_REPO}/git/ref/heads/{GITHUB_REF}")
+    if st != 200:
+        raise ConfigError(f"Ref nicht lesbar ({st}): {refd.get('message','')}")
+    base_commit = refd["object"]["sha"]
+    st, cm = _req("GET", f"{GITHUB_API}/repos/{GITHUB_REPO}/git/commits/{base_commit}")
+    if st != 200:
+        raise ConfigError(f"Commit nicht lesbar ({st})")
+    base_tree = cm["tree"]["sha"]
+
+    entries = []
+    for path, content in files.items():
+        st, b = _req("POST", f"{GITHUB_API}/repos/{GITHUB_REPO}/git/blobs",
+                     {"content": content, "encoding": "utf-8"})
+        if st not in (200, 201):
+            raise ConfigError(f"Blob {path} fehlgeschlagen ({st})")
+        entries.append({"path": path, "mode": "100644", "type": "blob", "sha": b["sha"]})
+
+    st, tr = _req("POST", f"{GITHUB_API}/repos/{GITHUB_REPO}/git/trees",
+                  {"base_tree": base_tree, "tree": entries})
+    if st not in (200, 201):
+        raise ConfigError(f"Tree fehlgeschlagen ({st})")
+    st, nc = _req("POST", f"{GITHUB_API}/repos/{GITHUB_REPO}/git/commits",
+                  {"message": message, "tree": tr["sha"], "parents": [base_commit]})
+    if st not in (200, 201):
+        raise ConfigError(f"Commit fehlgeschlagen ({st})")
+    st, up = _req("PATCH", f"{GITHUB_API}/repos/{GITHUB_REPO}/git/refs/heads/{GITHUB_REF}",
+                  {"sha": nc["sha"]})
+    if st not in (200, 201):
+        raise ConfigError(f"Ref-Update fehlgeschlagen ({st})")
+    return {"sha": nc["sha"], "html_url": nc.get("html_url", ""), "branch": GITHUB_REF}
