@@ -14,9 +14,19 @@ let buildSel = $state({ model: '', variant: '(keine)' })
 let planSel = $state({ model: '', variant: '(keine)' })
 let primary = $state(null)
 let useFree = $state({ fast: false, medium: false })
-let fallbacks = $state({ fast: null, medium: null })
+// Ausfall-Modelle je Tier: {model, variant, disabled:true} = bewusst keines
+let fallbacks = $state({
+  fast: { model: '', variant: '(keine)', disabled: true },
+  medium: { model: '', variant: '(keine)', disabled: true },
+})
+// true = vom Nutzer manuell gesetzt → Auto-Vorschlag (paidCounterpart) überschreibt nicht mehr
+let fbManual = $state({ fast: false, medium: false })
 let foStatus = $state(null)
 let foBusy = $state(false)
+// Auto-Failover-Einstellungen (POST /api/failover/settings)
+let foSettings = $state({ enabled: true, threshold: 3, intervalSeconds: 300, timeoutSeconds: 30 })
+let foSaveBusy = $state(false)
+let foSaveResult = $state(null)
 let accStatus = $state(null)
 let accBusy = $state(false)
 
@@ -101,10 +111,16 @@ async function load() {
       src.model = cur.model || ''
       src.variant = cur.variant || ''
     }
-    // Persistierte Ausfall-Modelle aus dem Repository in den Editor spiegeln
+    // Persistierte Ausfall-Modelle aus dem Repository in den Editor spiegeln.
+    // Ohne gespeichertes Fallback gilt "bewusst kein Ausfall-Modell" (disabled).
     const fb = config.fallbacks || {}
-    fallbacks.fast = fb.fast || null
-    fallbacks.medium = fb.medium || null
+    for (const tier of ['fast', 'medium']) {
+      const c = fb[tier]
+      fallbacks[tier] = c?.model
+        ? { model: c.model, variant: c.variant || '(keine)', disabled: false }
+        : { model: '', variant: '(keine)', disabled: true }
+      fbManual[tier] = false
+    }
   } catch (e) {
     error = e.message
   }
@@ -129,15 +145,50 @@ function paidCounterpart(ref) {
 }
 
 // Manuelle Modellwahl im Tier-Editor: bei einem Gratis-Modell (fast/medium)
-// wird das bezahlte Gegenstück als Ausfall-Modell hinterlegt, sonst geräumt.
+// wird das bezahlte Gegenstück als Ausfall-Modell vorgeschlagen (sofern der
+// Nutzer nicht selbst schon eines gewählt hat), sonst geräumt.
 function onModelChange(tier, src) {
   src.variant = src.variant || '(keine)'
   if (tier !== 'fast' && tier !== 'medium') return
+  if (fbManual[tier]) return
   if (isFree(src.model)) {
     const c = paidCounterpart(src.model)
-    fallbacks[tier] = c ? { model: c.ref, variant: '' } : null
+    fallbacks[tier] = c
+      ? { model: c.ref, variant: '(keine)', disabled: false }
+      : { model: '', variant: '(keine)', disabled: true }
   } else {
-    fallbacks[tier] = null
+    fallbacks[tier] = { model: '', variant: '(keine)', disabled: true }
+  }
+}
+
+// Ausfall-Modell manuell wählen ("— kein Ausfall-Modell —" ⇒ disabled)
+function onFallbackModelChange(tier) {
+  fbManual[tier] = true
+  const fb = fallbacks[tier]
+  if (!fb.model) {
+    fb.variant = '(keine)'
+    fb.disabled = true
+  } else {
+    fb.disabled = false
+    if (!(variantOptions(fb.model) || []).includes(fb.variant)) fb.variant = '(keine)'
+  }
+}
+
+function onFallbackVariantChange(tier) {
+  fbManual[tier] = true
+  const fb = fallbacks[tier]
+  fb.variant = fb.variant || '(keine)'
+  fb.disabled = !fb.model
+}
+
+// Für /api/apply: leere Auswahl ⇒ bewusst kein Ausfall-Modell (disabled: true)
+function fallbackNorm(tier) {
+  const fb = fallbacks[tier] || {}
+  if (!fb.model) return { model: '', variant: '', disabled: true }
+  return {
+    model: fb.model,
+    variant: !fb.variant || fb.variant === '(keine)' ? '' : fb.variant,
+    disabled: false,
   }
 }
 
@@ -215,9 +266,9 @@ function acceptSuggestion() {
     src.variant = chosen.variant || '(keine)'
     // die nicht gewählte Variante als Ausfall-Modell hinterlegen (fast/medium)
     if (tier !== 'heavy' && other?.model) {
-      fallbacks[tier] = { model: other.model, variant: other.variant || '' }
+      fallbacks[tier] = { model: other.model, variant: other.variant || '(keine)', disabled: false }
     } else {
-      fallbacks[tier] = null
+      fallbacks[tier] = { model: '', variant: '(keine)', disabled: true }
     }
   }
 }
@@ -234,8 +285,8 @@ async function runApply() {
         plan: { model: planSel.model, variant: planSel.variant === '(keine)' ? '' : planSel.variant },
       },
       fallbacks: {
-        fast: fallbacks.fast || null,
-        medium: fallbacks.medium || null,
+        fast: fallbackNorm('fast'),
+        medium: fallbackNorm('medium'),
       },
     }
     applyResult = await api('/api/apply', { body })
@@ -263,7 +314,42 @@ async function loadRolloutStatus() {
 }
 
 async function loadFailover() {
-  try { foStatus = await api('/api/failover/status') } catch { /* ignore */ }
+  try {
+    const st = await api('/api/failover/status')
+    foStatus = st
+    // Formular aus dem Server-Stand vorbefüllen
+    foSettings = {
+      enabled: !!st?.autoFailover,
+      threshold: Number(st?.threshold) || foSettings.threshold,
+      intervalSeconds: Number(st?.interval) || foSettings.intervalSeconds,
+      timeoutSeconds: Number(st?.timeout) || foSettings.timeoutSeconds,
+    }
+  } catch { /* ignore */ }
+}
+
+// Auto-Failover-Einstellungen persistieren (SOT des Backends)
+async function saveFailoverSettings() {
+  foSaveBusy = true
+  foSaveResult = null
+  error = null
+  try {
+    const res = await api('/api/failover/settings', {
+      method: 'POST',
+      body: {
+        enabled: !!foSettings.enabled,
+        threshold: Number(foSettings.threshold) || 1,
+        intervalSeconds: Number(foSettings.intervalSeconds) || 60,
+        timeoutSeconds: Number(foSettings.timeoutSeconds) || 5,
+      },
+    })
+    foSaveResult = res
+    await loadFailover()
+  } catch (e) {
+    foSaveResult = { error: e.message }
+    error = 'Ausfallschutz-Einstellungen: ' + e.message
+  } finally {
+    foSaveBusy = false
+  }
 }
 
 async function runFailoverCheck() {
@@ -648,17 +734,35 @@ setInterval(loadHermes, 60000)
       </select>
     </div>
     {#if tier === 'fast' || tier === 'medium'}
-      {#if fallbacks[tier]}
-        <p class="muted fbHint">
-          Ausfallschutz (automatisch):
-          <span class="mono">{fallbacks[tier].model}{fallbacks[tier].variant ? '#' + fallbacks[tier].variant : ''}</span>
-        </p>
-      {:else if isFree(src.model) && !paidCounterpart(src.model)}
+      <div class="tierRow fbRow">
+        <div class="tierLabel">
+          <strong><span class="fireMark">🛡</span> Ausfallschutz</strong>
+          <span class="muted">
+            {#if fbManual[tier]}manuell gewählt{:else}Vorschlag vom Tier-Modell{/if}
+            · greift automatisch bei Fehlern
+          </span>
+        </div>
+        <select
+          bind:value={fallbacks[tier].model}
+          onchange={() => onFallbackModelChange(tier)}
+        >
+          <option value="">— kein Ausfall-Modell —</option>
+          {#each goModels as m}
+            <option value={m.ref}>{m.name} · {m.modelID} · {priceText(m.ref)}{isFree(m.ref) ? ' · gratis' : ''}</option>
+          {/each}
+        </select>
+        <select
+          bind:value={fallbacks[tier].variant}
+          onchange={() => onFallbackVariantChange(tier)}
+          disabled={!fallbacks[tier].model || fallbacks[tier].disabled}
+        >
+          {#each variantOptions(fallbacks[tier].model) as v}<option value={v}>{v}</option>{/each}
+        </select>
+      </div>
+      {#if isFree(src.model) && !fallbacks[tier].model}
         <p class="muted fbHint warn">
-          Gratis-Modell ohne bezahltes Gegenstück – bitte Ausfall-Modell prüfen
+          Gratis-Modell ohne Ausfall-Modell – bei Ausfall bleibt das Tier ohne Ersatz
         </p>
-      {:else if src.model && !isFree(src.model)}
-        <p class="muted fbHint">Ausfallschutz: – (Tier ist bezahlt)</p>
       {/if}
     {/if}
     {#if tier === 'medium'}
@@ -738,6 +842,50 @@ setInterval(loadHermes, 60000)
       {/each}
     </p>
   {/if}
+
+  <div class="foBox">
+    <h3>🛡 Ausfallschutz (Einstellungen)</h3>
+    <p class="muted">
+      Der Failover-Wächter prüft die Tiers selbstständig und schaltet bei gehäuften Fehlern auf das
+      Ausfall-Modell um — die Auswahl oben (je Tier) wird mit „Anwenden“ gespeichert, diese
+      Werte hier im Backend.
+    </p>
+    <div class="row" style="margin-top:8px">
+      <label class="foCheck">
+        <input type="checkbox" bind:checked={foSettings.enabled} disabled={foSaveBusy} />
+        Auto-Failover aktiv
+      </label>
+      <label>
+        Fehlerschwelle
+        <input type="number" min="1" max="10" step="1" bind:value={foSettings.threshold} disabled={foSaveBusy} />
+      </label>
+      <label>
+        Prüfintervall (Sekunden)
+        <input type="number" min="60" step="10" bind:value={foSettings.intervalSeconds} disabled={foSaveBusy} />
+      </label>
+      <label>
+        Probe-Timeout (Sekunden)
+        <input type="number" min="5" max="300" step="5" bind:value={foSettings.timeoutSeconds} disabled={foSaveBusy} />
+      </label>
+    </div>
+    <div class="row">
+      <button onclick={saveFailoverSettings} disabled={foSaveBusy}>
+        {foSaveBusy ? 'Speichere …' : '💾 Einstellungen speichern'}
+      </button>
+      {#if foSaveResult?.saved}
+        <span class="muted">
+          Gespeichert {#if foSaveResult.commit?.sha}· Commit <span class="mono">{foSaveResult.commit.sha.slice(0, 8)}</span>{/if}
+        </span>
+      {:else if foSaveResult?.error}
+        <span class="muted" style="color:var(--err)">⚠ {foSaveResult.error}</span>
+      {/if}
+      <span class="muted">
+        Status: {foStatus?.autoFailover ? 'aktiv' : 'inaktiv'}
+        · Schwelle {foStatus?.threshold ?? '—'}
+        · alle {foStatus?.interval ?? '—'}s · Timeout {foStatus?.timeout ?? '—'}s
+      </span>
+    </div>
+  </div>
 </div>
 
 <div class="card">
@@ -871,6 +1019,23 @@ setInterval(loadHermes, 60000)
   .tierLabel { display: flex; flex-direction: column; gap: 2px; }
   .fbHint { margin: -4px 0 10px 2px; font-size: .78rem; }
   .fbHint.warn { color: var(--err); }
+  /* Ausfallschutz-Zeile (je Tier) + Einstellungsblock */
+  .fbRow {
+    margin: -4px 0 10px 6px; padding: 8px 10px; border-radius: 8px;
+    border: 1px dashed var(--line); background: var(--panel-2);
+  }
+  .fbRow .tierLabel strong { color: var(--fire-soft); font-size: .82rem; }
+  .fireMark { filter: saturate(1.2); }
+  .fbRow select { font-size: .8rem; }
+  .foBox {
+    margin-top: 14px; padding: 12px; border: 1px solid var(--line);
+    border-left: 3px solid var(--fire); border-radius: 8px; background: var(--panel-2);
+  }
+  .foBox h3 { margin: 0 0 6px; font-size: .9rem; color: var(--fire-soft); }
+  .foBox p { margin: 0; }
+  .foBox label { display: inline-flex; align-items: center; gap: 6px; font-size: .8rem; color: var(--muted); }
+  .foBox input[type=number] { width: 86px; }
+  .foCheck { color: var(--text) !important; font-weight: 600; }
   .row { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
   .suggest { margin-top: 14px; }
   .errbox { border-color: var(--err); }

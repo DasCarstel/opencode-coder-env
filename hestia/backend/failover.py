@@ -13,6 +13,10 @@ Ablauf:
   - Nach HESTIA_FAIL_THRESHOLD Fehlschlägen in Folge UND wenn ein Ausfall-Modell
     hinterlegt ist, wird dieses als Tier-Modell geschrieben (Commit + Rollout) —
     automatisch nur wenn HESTIA_AUTO_FAILOVER=1, sonst per Klick im Panel.
+
+Die Laufzeit-Parameter (enabled/threshold/Intervall/Timeout) liegen in der SOT
+.opencode/hestia-failover.jsonc und werden über POST /api/failover/settings vom
+Panel geschrieben; fehlt die Datei, gelten die HESTIA_*-Defaults.
 """
 import json
 import os
@@ -25,15 +29,36 @@ import suggest
 
 TIERS = ("fast", "medium", "heavy")
 FALLBACKS_PATH = os.environ.get("HESTIA_FALLBACKS_PATH", ".opencode/hestia-fallbacks.json")
+FAILOVER_SETTINGS_PATH = os.environ.get(
+    "HESTIA_FAILOVER_SETTINGS_PATH", ".opencode/hestia-failover.jsonc"
+)
 PROBE_TIMEOUT = int(os.environ.get("HESTIA_PROBE_TIMEOUT", "35"))
 THRESHOLD = int(os.environ.get("HESTIA_FAIL_THRESHOLD", "2"))
 INTERVAL = int(os.environ.get("HESTIA_PROBE_INTERVAL", "900"))
 AUTO = os.environ.get("HESTIA_AUTO_FAILOVER", "0") == "1"
 
+# Grenzen für die Panel-Eingaben (POST /api/failover/settings)
+THRESHOLD_RANGE = (1, 10)
+INTERVAL_RANGE = (60, 86400)
+TIMEOUT_RANGE = (5, 300)
+SETTINGS_KEYS = ("enabled", "threshold", "intervalSeconds", "timeoutSeconds")
+
+
+def default_settings() -> dict:
+    """Startwerte = heutige Env-Defaults (Fallback, falls die SOT fehlt)."""
+    return {
+        "enabled": bool(AUTO),
+        "threshold": THRESHOLD,
+        "intervalSeconds": INTERVAL,
+        "timeoutSeconds": PROBE_TIMEOUT,
+    }
+
+
 STATE = {
     "autoFailover": AUTO,
     "interval": INTERVAL,
     "threshold": THRESHOLD,
+    "timeout": PROBE_TIMEOUT,
     "fallbacks": {},
     "current": {},
     "fails": {},
@@ -44,8 +69,114 @@ STATE = {
 LOCK = threading.Lock()
 
 
+class SettingsError(Exception):
+    """Ungültige Nutzereingabe für die Ausfallschutz-Einstellungen."""
+
+
 def _log(msg):
     print(f"[hestia-failover] {time.strftime('%Y-%m-%d %H:%M:%S')} {msg}", flush=True)
+
+
+def _clamp_int(value, lo: int, hi: int, fallback: int) -> int:
+    """Zahl aus der SOT übernehmen; unbrauchbar → Default (kein Panel-Fehler)."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return n if lo <= n <= hi else fallback
+
+
+def read_settings() -> dict:
+    """Ausfallschutz-SOT lesen und normalisieren.
+
+    Fehlende/kaputte Datei oder GitHub-Fehler → die Env-Defaults, damit das
+    Panel immer eine plausible Konfiguration sieht.
+    """
+    data = {}
+    try:
+        raw = github_api.get_file(FAILOVER_SETTINGS_PATH)
+        if raw:
+            import hjsonc
+            data = hjsonc.parse(raw) or {}
+    except Exception as e:  # noqa: BLE001
+        _log(f"settings: {FAILOVER_SETTINGS_PATH} nicht lesbar ({e}) — Defaults")
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    d = default_settings()
+    enabled = d["enabled"]
+    if isinstance(data.get("enabled"), bool):
+        enabled = data["enabled"]
+    return {
+        "enabled": enabled,
+        "threshold": _clamp_int(data.get("threshold"), *THRESHOLD_RANGE, d["threshold"]),
+        "intervalSeconds": _clamp_int(
+            data.get("intervalSeconds"), *INTERVAL_RANGE, d["intervalSeconds"]),
+        "timeoutSeconds": _clamp_int(
+            data.get("timeoutSeconds"), *TIMEOUT_RANGE, d["timeoutSeconds"]),
+    }
+
+
+def _require_int(payload: dict, key: str, lo: int, hi: int) -> int:
+    value = payload[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SettingsError(f"'{key}': muss eine ganze Zahl zwischen {lo} und {hi} sein")
+    if not (lo <= value <= hi):
+        raise SettingsError(f"'{key}': {value} liegt außerhalb {lo}..{hi}")
+    return value
+
+
+def update_settings(payload: dict) -> dict:
+    """Panel-Einstellungen validieren, als SOT committen und STATE aktualisieren.
+
+    Wirkt sofort: der Hintergrund-Thread liest das Intervall je Iteration neu.
+    """
+    if not isinstance(payload, dict):
+        raise SettingsError("Body muss ein JSON-Objekt sein")
+    unknown = sorted(set(payload) - set(SETTINGS_KEYS))
+    if unknown:
+        raise SettingsError(f"unbekannte Felder: {', '.join(unknown)}")
+
+    current = read_settings()
+    if "enabled" not in payload:
+        raise SettingsError("'enabled' fehlt")
+    enabled = payload["enabled"]
+    if not isinstance(enabled, bool):
+        raise SettingsError("'enabled' muss true oder false sein")
+    for key in ("threshold", "intervalSeconds"):
+        if key not in payload:
+            raise SettingsError(f"'{key}' fehlt")
+
+    settings = {
+        "enabled": enabled,
+        "threshold": _require_int(payload, "threshold", *THRESHOLD_RANGE),
+        "intervalSeconds": _require_int(payload, "intervalSeconds", *INTERVAL_RANGE),
+        # optional: ohne Feld bleibt der aktuelle Wert (SOT, sonst Default)
+        "timeoutSeconds": (
+            _require_int(payload, "timeoutSeconds", *TIMEOUT_RANGE)
+            if "timeoutSeconds" in payload else current["timeoutSeconds"]
+        ),
+    }
+
+    header = (
+        "// Ausfallschutz-Einstellungen (SOT des Hestia-Panels).\n"
+        "// Geschrieben über POST /api/failover/settings, gelesen von hestia/backend/failover.py.\n"
+    )
+    text = header + json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
+    commit = github_api.put_files(
+        {FAILOVER_SETTINGS_PATH: text}, "hestia: Ausfallschutz-Einstellungen aktualisiert")
+
+    with LOCK:
+        STATE["autoFailover"] = settings["enabled"]
+        STATE["threshold"] = settings["threshold"]
+        STATE["interval"] = settings["intervalSeconds"]
+        STATE["timeout"] = settings["timeoutSeconds"]
+    _log(
+        f"settings: enabled={settings['enabled']} threshold={settings['threshold']} "
+        f"intervall={settings['intervalSeconds']}s timeout={settings['timeoutSeconds']}s "
+        f"(Commit {str((commit or {}).get('sha', ''))[:8]})"
+    )
+    return {"saved": True, "settings": settings, "commit": commit}
 
 
 def read_fallbacks() -> dict:
@@ -156,20 +287,32 @@ def _swap_tier(tier: str, backup: dict):
 
 
 def loop():
-    _log(f"Auto-Ausfallschutz aktiv (Intervall {INTERVAL}s, Schwelle {THRESHOLD})")
+    with LOCK:
+        _log(f"Auto-Ausfallschutz aktiv (Intervall {STATE['interval']}s, "
+             f"Schwelle {STATE['threshold']}, Timeout {STATE['timeout']}s)")
     while True:
         try:
             run_probes()
         except Exception as e:  # noqa: BLE001
             _log(f"Probe fehlgeschlagen: {e}")
-        time.sleep(INTERVAL)
+        # Intervall je Iteration neu lesen → Panel-Änderung wirkt ohne Neustart.
+        with LOCK:
+            wait = int(STATE["interval"])
+        time.sleep(wait)
 
 
 def start():
     try:
+        settings = read_settings()
         with LOCK:
+            STATE["autoFailover"] = settings["enabled"]
+            STATE["threshold"] = settings["threshold"]
+            STATE["interval"] = settings["intervalSeconds"]
+            STATE["timeout"] = settings["timeoutSeconds"]
             STATE["fallbacks"] = read_fallbacks()
     except Exception:
         pass
-    if AUTO:
+    with LOCK:
+        auto = bool(STATE["autoFailover"])
+    if auto:
         threading.Thread(target=loop, daemon=True).start()

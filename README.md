@@ -26,6 +26,7 @@ opencode-coder-env/
 │   ├── hestia-accounts.jsonc                   # OpenCode-Go-Konten + Feld "active"
 │   ├── hestia-primary-agents.json              # build/plan-Modelle
 │   ├── hestia-fallbacks.json                  # bezahlte Ausfall-Modelle
+│   ├── hestia-failover.jsonc                  # Ausfallschutz-Einstellungen
 │   └── hestia-hermes.jsonc                     # Hermes-Steuerung
 ├── docs/                      # diese Dokumentation
 ├── coder-templates/

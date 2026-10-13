@@ -73,7 +73,7 @@ Schwellenwerte) steht als Klartext in `hestia/docker-compose.yml`.
 
 ## Single Sources of Truth
 
-Fünf Dateien unter `.opencode/` im Repo-Root, alle von Hestia verwaltet:
+Sechs Dateien unter `.opencode/` im Repo-Root, alle von Hestia verwaltet:
 
 | Datei | Inhalt | Wer liest sie |
 |-------|--------|---------------|
@@ -82,6 +82,7 @@ Fünf Dateien unter `.opencode/` im Repo-Root, alle von Hestia verwaltet:
 | `hestia-fallbacks.json` | Ausfallmodell je Tier (Model + Variant) | Hestia (`failover.py`), CI |
 | `hestia-hermes.jsonc` | Hermes-Modell, Fallback-Kette, Pool-Regeln, Profil-Overrides | Hestia (`hermes.py`), Workflow `apply-hermes` |
 | `hestia-primary-agents.json` | Agent→Modell-Zuordnung für `build` und `plan` | Hestia (`/api/config`) |
+| `hestia-failover.jsonc` | **Ausfallschutz-Einstellungen**: `enabled`, `threshold`, `intervalSeconds`, `timeoutSeconds` | Hestia (`failover.py`) |
 
 Das Overrides-File ist JSONC (Kommentare erlaubt) und wird vom Router-Plugin per
 **cwd-Suche nach oben** bis zur Repo-Root gefunden. Deshalb braucht kein Workspace
@@ -131,6 +132,7 @@ Autorisierung; ein GET auf einen POST-only-Endpunkt liefert 405 mit Klartext-Hin
 | `/api/apply` | Tier-Konfiguration validieren + committen + Rollout auslösen |
 | `/api/suggest` | KI-Modellvorschlag starten (asynchron) |
 | `/api/failover/check` | Failover-Probe sofort ausführen |
+| `/api/failover/settings` | Ausfallschutz-Einstellungen speichern (SOT-Commit, wirkt sofort) |
 | `/api/accounts/check` | Budget aller Konten sofort neu abfragen |
 | `/api/accounts/switch` | manueller Kontowechsel |
 | `/api/hermes/apply` | Hermes-Konfiguration verteilen |
@@ -271,7 +273,9 @@ Konfiguration, die ein einzelnes `oc-go` nachträglich divergieren könnte.
 
 Wird ein Tier auf ein **Gratis-Modell** gesetzt (Kosten 0/0), hinterlegt Hestia
 automatisch das **bezahlte Gegenstück** als Ausfallmodell in
-`.opencode/hestia-fallbacks.json` (Model + Variant je Tier).
+`.opencode/hestia-fallbacks.json` (Model + Variant je Tier). Dieses Ausfallmodell
+lässt sich im **Tier-Editor** je Tier auch **manuell** wählen — oder bewusst auf
+„kein Ausfall-Modell" setzen; die Auswahl wird mit dem Tier-Update committet.
 
 | Tier | Modell | Ausfallmodell |
 |------|--------|---------------|
@@ -281,11 +285,19 @@ automatisch das **bezahlte Gegenstück** als Ausfallmodell in
 
 Bei wiederholtem Fehlschlag schaltet der Auto-Failover auf das bezahlte Modell:
 
-| Env | Standard | Wirkung |
-|-----|----------|---------|
-| `HESTIA_AUTO_FAILOVER` | `0` | `0` = nur manuell (Panel-Button), `1` = automatisch beim Probe-Lauf |
-| `HESTIA_PROBE_INTERVAL` | `900` s | Intervall der Erreichbarkeitsproben |
-| `HESTIA_FAIL_THRESHOLD` | `2` | Fehlversuche bis zum Umschalten |
+Die Schalter und Schwellen stehen in `.opencode/hestia-failover.jsonc` und sind im
+Tier-Editor einstellbar (`POST /api/failover/settings`); die Env-Variablen dienen
+nur noch als Startwerte, wenn die SOT fehlt:
+
+| Einstellung | Feld in der SOT | Startwert (Env) | Wirkung |
+|-------------|-----------------|-----------------|---------|
+| Auto-Failover | `enabled` | `HESTIA_AUTO_FAILOVER` (`0`) | `false` = nur manuell (Panel-Button), `true` = automatisch beim Probe-Lauf |
+| Prüfintervall | `intervalSeconds` | `HESTIA_PROBE_INTERVAL` (`900`) | Intervall der Erreichbarkeitsproben (60..86400 s) |
+| Fehlerschwelle | `threshold` | `HESTIA_FAIL_THRESHOLD` (`2`) | Fehlversuche bis zum Umschalten (1..10) |
+| Probe-Timeout | `timeoutSeconds` | `HESTIA_PROBE_TIMEOUT` (`35`) | Zeitfenster je Probe (5..300 s) |
+
+Änderungen wirken **sofort** (der Hintergrund-Thread liest Intervall und Schwelle
+je Iteration neu) und brauchen keinen Container-Neustart.
 
 Status über `/api/failover/status`, Sofort-Prüfung per `POST /api/failover/check`.
 

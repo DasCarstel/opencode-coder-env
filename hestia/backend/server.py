@@ -19,6 +19,8 @@ Endpoints (alle unter Basic Auth):
   POST /api/accounts/switch   Konto-Wechsel anstoßen (id optional = Empfehlung)
   GET  /api/hermes            Hermes-Zustand (SOT + Health + Workflow)
   POST /api/hermes/apply      Hermes Primary/Fallback/Pool setzen (SOT-Commit + CI)
+  GET  /api/failover/status   Ausfallschutz-Zustand (autoFailover/interval/threshold/timeout/…)
+  POST /api/failover/settings Ausfallschutz-Einstellungen (SOT-Commit + STATE-Update)
   GET  /*                     statisches Frontend (dist/)
 """
 import base64
@@ -76,6 +78,9 @@ TIER_DEFS = ("fast", "medium", "heavy")
 PRIMARY_AGENTS = ("build", "plan")
 AGENTS_PATH = os.environ.get("HESTIA_AGENTS_PATH", ".opencode/hestia-primary-agents.json")
 FALLBACKS_PATH = os.environ.get("HESTIA_FALLBACKS_PATH", ".opencode/hestia-fallbacks.json")
+FAILOVER_SETTINGS_PATH = os.environ.get(
+    "HESTIA_FAILOVER_SETTINGS_PATH", ".opencode/hestia-failover.jsonc"
+)
 VARIANT_RANK = {"minimal": 1, "none": 2, "low": 3, "medium": 4, "thinking": 4,
                 "high": 5, "xhigh": 6, "max": 7}
 
@@ -362,7 +367,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(hermes_mod.state())
         if path in ("/api/apply", "/api/suggest", "/api/rollout",
                     "/api/accounts/check", "/api/accounts/switch",
-                    "/api/hermes/apply"):
+                    "/api/hermes/apply", "/api/failover/settings",
+                    "/api/failover/check"):
             return self._json(
                 {"error": f"{path} ist POST-only (der Aufruf kam als GET an)"}, 405
             )
@@ -429,6 +435,13 @@ class Handler(BaseHTTPRequestHandler):
                 fb_out = {}
                 for tier in ("fast", "medium"):
                     fb = fb_in.get(tier) or {}
+                    if not isinstance(fb, dict):
+                        fb = {}
+                    if fb.get("disabled") is True:
+                        # Bewusst ohne Ausfall-Modell: kein Eintrag schreiben und
+                        # auch nicht automatisch ergänzen (Gratis-Tier bleibt ohne Backup).
+                        _log(f"Ausfall-Modell {tier}: bewusst deaktiviert")
+                        continue
                     ref = (fb.get("model") or "").strip()
                     if not ref and catalog.is_free(tiers[tier]["model"]):
                         # Gratis-Tier ohne gesendetes Ausfall-Modell: das bezahlte
@@ -539,6 +552,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(res)
             except Exception as e:
                 _log(f"failover check error: {e}")
+                return self._json({"error": str(e)}, 500)
+
+        if path == "/api/failover/settings":
+            # Nur Hestia-intern: SOT committen + STATE zur Laufzeit aktualisieren
+            # (der Probe-Thread liest Intervall/Schwelle je Iteration neu).
+            try:
+                res = failover_mod.update_settings(self._body())
+                return self._json(res)
+            except (failover_mod.SettingsError, ApplyError) as e:
+                return self._json({"error": str(e)}, 400)
+            except ConfigError as e:
+                return self._json({"error": str(e)}, 502)
+            except Exception as e:
+                _log(f"failover settings error: {e}")
                 return self._json({"error": str(e)}, 500)
         if path == "/api/accounts/check":
             try:

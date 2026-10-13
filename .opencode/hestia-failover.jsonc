@@ -1,0 +1,8 @@
+// Ausfallschutz-Einstellungen (SOT des Hestia-Panels).
+// Geschrieben über POST /api/failover/settings, gelesen von hestia/backend/failover.py.
+{
+  "enabled": false,
+  "threshold": 2,
+  "intervalSeconds": 900,
+  "timeoutSeconds": 35
+}
