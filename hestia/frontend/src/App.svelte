@@ -267,12 +267,13 @@ loadRolloutStatus()
         {#if analyzeInfo.note}· {analyzeInfo.note}{/if}</p>{/if}
       <p class="muted">{suggestResult.reasoning}</p>
       <table>
-        <thead><tr><th>Tier</th><th>Vorschlag</th><th>Variante</th><th>Begründung</th></tr></thead>
+        <thead><tr><th>Tier</th><th>Vorschlag</th><th>Preis in/out $/M</th><th>Variante</th><th>Begründung</th></tr></thead>
         <tbody>
           {#each ['fast', 'medium', 'heavy'] as tier}
             <tr>
               <td>{TIER_INFO[tier].title}</td>
               <td class="mono">{suggestResult[tier]?.model}</td>
+              <td>{priceText(suggestResult[tier]?.model || '')}</td>
               <td class="muted">{suggestResult[tier]?.variant || '—'}</td>
               <td class="muted">{suggestResult[tier]?.reason}</td>
             </tr>
