@@ -111,6 +111,11 @@ Model-Verwaltung für das OpenCode-Fleet (Fast/Medium/Heavy der Model-Router-Tie
   `.github/workflows/switch-account.yml` → `hestia/ci/switch-account.sh`
   (OpenBao `active` + `opencode service set env` je Container, **kein**
   Container-Neustart).
+- **Anzeige/Schwellen konfigurierbar**: Die Budget-Karte zeigt **Verbrauch**
+  (Balken) plus „x % verbraucht · y % frei", markiert erschöpfte Fenster/Konten
+  und hat manuelle Wechsel-Buttons. Farbschwellen stehen in
+  `.opencode/hestia-accounts.jsonc` unter `display` (barMetric,
+  warnBelowPercentFree, criticalBelowPercentFree).
 - **KI-Vorschlag**: `/api/suggest` dispatcht eine OpenCode-Session und lässt sie
   mit dem gewählten Modell analysieren — Default: **@heavy aus den committeten
   Overrides** (inkl. Effort-Variante), im Panel frei wählbar (Editor-Auswahl oder
