@@ -84,7 +84,8 @@ def _fetch(account: dict, provider: dict) -> dict:
     key = _key((account.get("keyRef") or {}).get("field") or account.get("id") or "")
     if not key:
         return {"ok": False, "error": "kein Key im Env", "windows": {}}
-    headers = {"Accept": "application/json"}
+    # opencode.ai weist den Default-urllib-User-Agent mit 403 ab → eigener UA nötig.
+    headers = {"Accept": "application/json", "User-Agent": "Hestia/1.0 (opencode-model-panel)"}
     if (provider.get("auth") or "bearer").lower() == "bearer":
         headers["Authorization"] = f"Bearer {key}"
     req = urllib.request.Request(url, headers=headers)
@@ -92,9 +93,16 @@ def _fetch(account: dict, provider: dict) -> dict:
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
-        if e.code == 403:
+        body = ""
+        try:
+            body = e.read().decode(errors="replace")[:200].strip()
+        except Exception:  # noqa: BLE001
+            pass
+        # Nur ein echtes EntitlementError ist "nicht abonniert" — andere 403
+        # (z. B. WAF/User-Agent) mit Code + Body zeigen, damit sie diagnostizierbar sind.
+        if e.code == 403 and "EntitlementError" in body:
             return {"ok": False, "error": "nicht abonniert", "windows": {}}
-        return {"ok": False, "error": f"HTTP {e.code}", "windows": {}}
+        return {"ok": False, "error": f"HTTP {e.code}: {body}".strip(), "windows": {}}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e), "windows": {}}
 
