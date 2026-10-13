@@ -116,6 +116,12 @@ Model-Verwaltung für das OpenCode-Fleet (Fast/Medium/Heavy der Model-Router-Tie
   und hat manuelle Wechsel-Buttons. Farbschwellen stehen in
   `.opencode/hestia-accounts.jsonc` unter `display` (barMetric,
   warnBelowPercentFree, criticalBelowPercentFree).
+- **Hermes steuern**: Hestia gibt dem Hermes-Agenten Modell, Fallback-Kette und
+  Abo-Pool vor. SOT: `.opencode/hestia-hermes.jsonc`; Panel-Karte „Hermes —
+  Modell/Provider"; Verteilung über `.github/workflows/apply-hermes.yml` +
+  `hestia/ci/apply-hermes.sh` (config set, fallback_providers, Pool aus OpenBao,
+  Restart). Nach einem Konto-Wechsel wird der Pool automatisch nachgezogen
+  (`pool.followActive`).
 - **KI-Vorschlag**: `/api/suggest` dispatcht eine OpenCode-Session und lässt sie
   mit dem gewählten Modell analysieren — Default: **@heavy aus den committeten
   Overrides** (inkl. Effort-Variante), im Panel frei wählbar (Editor-Auswahl oder
