@@ -198,7 +198,8 @@ def _probe(key: str, provider: dict) -> tuple:
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "User-Agent": "Hestia/1.0 (opencode-model-panel)",
+        # Cloudflare blockt 'Hestia/...' mit Fehler 1010 → Browser-UA nötig
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
         "x-opencode-session": "hestia-probe",
     }
     if (provider.get("auth") or "bearer").lower() == "bearer":
