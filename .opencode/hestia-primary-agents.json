@@ -1,0 +1,10 @@
+{
+  "build": {
+    "model": "opencode-go/deepseek-v4.1-flash",
+    "variant": ""
+  },
+  "plan": {
+    "model": "opencode-go/deepseek-v4.1-flash",
+    "variant": "max"
+  }
+}
