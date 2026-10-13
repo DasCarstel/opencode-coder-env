@@ -34,6 +34,11 @@ services:
       HESTIA_AUTO_FAILOVER: ${HESTIA_AUTO_FAILOVER:-0}
       HESTIA_PROBE_INTERVAL: ${HESTIA_PROBE_INTERVAL:-900}
       HESTIA_FAIL_THRESHOLD: ${HESTIA_FAIL_THRESHOLD:-2}
+      # KI-Vorschlag: Stille-Timeout (Sekunden) und Gesamtlimit je Kandidat.
+      # 300 s, weil gpt-6-luna#max mit dem vollen Katalog-Prompt > 150 s braucht
+      # (führte sonst regelmäßig in den Fallback auf @medium).
+      OC_SUGGEST_STALL_TIMEOUT: ${OC_SUGGEST_STALL_TIMEOUT:-45}
+      OC_SUGGEST_TIMEOUT: ${OC_SUGGEST_TIMEOUT:-300}
       # Konto-Wechsel (P2): Mindestabstand zwischen zwei Dispatches + Ziel-Workflow
       HESTIA_SWITCH_COOLDOWN: ${HESTIA_SWITCH_COOLDOWN:-1800}
       HESTIA_SWITCH_WORKFLOW: ${HESTIA_SWITCH_WORKFLOW:-switch-account.yml}

@@ -38,11 +38,20 @@ OC_PASSWORD=$(curl -s -H "X-Vault-Token: $BAO_TOKEN" "$OPENBAO_ADDR/v1/secret/da
 # OpenBao Token nicht weitergeben
 unset BAO_TOKEN
 
+# Aktives Abo ist ein NAME (default1..3) → den passenden KEY auflösen und die
+# beiden übrigen als Pool-Einträge mitgeben. (Bugfix 2026-10-13: vorher stand
+# hier der Name in OPENCODE_GO_API_KEY → 401 "Invalid credential".)
+case "${OC_GO_ACTIVE:-default1}" in
+    default2) ACTIVE_KEY="$OC_GO_DEFAULT2"; POOL_A="$OC_GO_DEFAULT1"; POOL_B="$OC_GO_DEFAULT3" ;;
+    default3) ACTIVE_KEY="$OC_GO_DEFAULT3"; POOL_A="$OC_GO_DEFAULT1"; POOL_B="$OC_GO_DEFAULT2" ;;
+    *)        ACTIVE_KEY="$OC_GO_DEFAULT1"; POOL_A="$OC_GO_DEFAULT2"; POOL_B="$OC_GO_DEFAULT3" ;;
+esac
+
 # .env für Hermes erstellen (nur freigegebene Werte)
 cat > /root/.hermes/.env <<EOF
-OPENCODE_GO_API_KEY=${OC_GO_ACTIVE}
-OPENCODE_GO_API_KEY_2=${OC_GO_DEFAULT1}
-OPENCODE_GO_API_KEY_3=${OC_GO_DEFAULT2}
+OPENCODE_GO_API_KEY=${ACTIVE_KEY}
+OPENCODE_GO_API_KEY_2=${POOL_A}
+OPENCODE_GO_API_KEY_3=${POOL_B}
 HA_LLA_TOKEN=${HA_TOKEN}
 OPENCODE_SERVER_PASSWORD=${OC_PASSWORD}
 OCIS_PRIVATE_USER=${OC_PRIVATE_USER}
