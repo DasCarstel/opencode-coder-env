@@ -1,42 +1,37 @@
-// hestia-hermes.jsonc — Single Source of Truth für den Hermes-Agenten (Nous Research).
-// Wird von hestia/backend/hermes.py gelesen/geschrieben und über
-// .github/workflows/apply-hermes.yml per SSH in den Container "hermes" verteilt:
-//   Primary   → hermes config set model.provider / model.default
-//   Fallback  → YAML-Liste fallback_providers in /opt/data/config.yaml
-//   Pool      → OPENCODE_GO_API_KEY* in /opt/data/.env (Reihenfolge = aktives Abo zuerst)
-//   Restart   → docker restart hermes (laufende Sessions brechen ab)
-//
-// Mehrere Profile: "hermes gateway list" zeigt, dass ein Multiplexer mehrere
-// Profile bedient (default, kleve, ...). Jedes Profil hat eigene Dateien unter
-// /opt/data/profiles/<name>/ — die Top-Level-Werte gelten für "default",
-// "profiles.<name>" überschreibt sie feldweise (siehe unten).
 {
   "enabled": true,
-  "primary": { "provider": "opencode-go", "model": "deepseek-v4.1-flash" },
+  "primary": {
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash"
+  },
   "fallback": [
-    { "provider": "opencode-go", "model": "gpt-6-luna" },
-    { "provider": "opencode-go", "model": "mimo-v2.6-flash" }
+    {
+      "provider": "opencode-go",
+      "model": "gpt-6-luna"
+    },
+    {
+      "provider": "opencode-go",
+      "model": "mimo-v2.6-flash"
+    }
   ],
-  // pool.followActive: Abo-Pool aus OpenBao neu setzen (aktiv zuerst)
-  // pool.onlyActiveWhenExpiring: wenn true, wird während eines leergefahrenen
-  // Abos nur DIESER Key in den Pool geschrieben (die _2/_3-Zeilen verschwinden).
-  "pool": { "followActive": true, "onlyActiveWhenExpiring": false },
+  "pool": {
+    "followActive": true,
+    "onlyActiveWhenExpiring": false
+  },
   "restart": true,
-
-  // Weitere Hermes-Profile, die derselbe Multiplexer bedient ("hermes gateway
-  // list"). Jedes Profil hat EIGENE Dateien:
-  //   config → /opt/data/profiles/<name>/config.yaml
-  //   env    → /opt/data/profiles/<name>/.env
-  // Nicht gesetzte Felder erben die Top-Level-Werte (primary/fallback/pool).
-  // "enabled": false überspringt das Profil beim Apply komplett.
   "profiles": {
     "kleve": {
       "enabled": true,
-      "primary": { "provider": "opencode-go", "model": "glm-5.3-flash" },
+      "primary": {
+        "provider": "opencode-go",
+        "model": "glm-5.3-flash"
+      },
       "fallback": [
-        { "provider": "opencode-go", "model": "gpt-6-luna" }
+        {
+          "provider": "opencode-go",
+          "model": "gpt-6-luna"
+        }
       ]
-      // pool nicht gesetzt → erbt { followActive: true, onlyActiveWhenExpiring: false }
     }
   }
 }
