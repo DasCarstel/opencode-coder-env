@@ -31,6 +31,8 @@ POLL_INTERVAL = 5.0
 POLL_TIMEOUT = float(os.environ.get("OC_SUGGEST_TIMEOUT", "150"))
 STALL_TIMEOUT = float(os.environ.get("OC_SUGGEST_STALL_TIMEOUT", "45"))
 TRIES = int(os.environ.get("OC_SUGGEST_TRIES", "1"))
+# Analyse-Sessions nach dem Lauf automatisch löschen (1 = zum Debuggen behalten)
+KEEP_SESSIONS = os.environ.get("OC_SUGGEST_KEEP_SESSIONS", "0") == "1"
 
 
 def _headers():
@@ -193,6 +195,21 @@ def _interrupt(sid: str):
     _req("POST", f"{OC_SERVER_URL}/api/session/{sid}/interrupt")
 
 
+def _delete_session(sid: str):
+    """Analyse-Session vollständig entfernen (kein Session-Müll im Workspace)."""
+    if KEEP_SESSIONS:
+        return False
+    try:
+        _interrupt(sid)  # falls noch laufend
+    except Exception:
+        pass
+    try:
+        st, _ = _req("DELETE", f"{OC_SERVER_URL}/api/session/{sid}")
+        return st in (200, 202, 204)
+    except Exception:
+        return False
+
+
 def _attempt(prompt: str, model_body, used_info: dict) -> dict:
     sstatus, sres = _req("POST", f"{OC_SERVER_URL}/api/session",
                          {"location": {"directory": OC_SUGGEST_DIR},
@@ -203,64 +220,65 @@ def _attempt(prompt: str, model_body, used_info: dict) -> dict:
     if not sid:
         raise RuntimeError(f"Keine Session-ID: {sres}")
 
-    if model_body:
-        mstatus, _ = _req("POST", f"{OC_SERVER_URL}/api/session/{sid}/model", {"model": model_body})
-        if mstatus not in (200, 201, 204):
-            used_info.clear()
-            used_info.update({"source": "session-default", "note": f"Modell-Umschaltung fehlgeschlagen ({mstatus})"})
-    if used_info.get("model"):
-        used_info["label"] = used_info["model"] + (f"#{used_info['variant']}" if used_info.get("variant") else "")
-    else:
-        used_info["label"] = "Session-Default"
+    try:
+        if model_body:
+            mstatus, _ = _req("POST", f"{OC_SERVER_URL}/api/session/{sid}/model", {"model": model_body})
+            if mstatus not in (200, 201, 204):
+                used_info.clear()
+                used_info.update({"source": "session-default", "note": f"Modell-Umschaltung fehlgeschlagen ({mstatus})"})
+        if used_info.get("model"):
+            used_info["label"] = used_info["model"] + (f"#{used_info['variant']}" if used_info.get("variant") else "")
+        else:
+            used_info["label"] = "Session-Default"
 
-    pstatus, pres = _req("POST", f"{OC_SERVER_URL}/api/session/{sid}/prompt", {"text": prompt})
-    if pstatus not in (200, 201, 202):
-        _interrupt(sid)
-        raise RuntimeError(f"Prompt-Feuern fehlgeschlagen ({pstatus}): {pres}")
+        pstatus, pres = _req("POST", f"{OC_SERVER_URL}/api/session/{sid}/prompt", {"text": prompt})
+        if pstatus not in (200, 201, 202):
+            raise RuntimeError(f"Prompt-Feuern fehlgeschlagen ({pstatus}): {pres}")
 
-    deadline = time.time() + POLL_TIMEOUT
-    last_progress = time.time()
-    last_sig = _progress(sid)
-    while time.time() < deadline:
-        time.sleep(POLL_INTERVAL)
-        if sid not in _active_ids():
-            break  # fertig
-        sig = _progress(sid)
-        if sig != last_sig:
-            last_sig, last_progress = sig, time.time()
-        elif time.time() - last_progress > STALL_TIMEOUT:
-            _interrupt(sid)
-            raise StallError(
-                f"Keine Provider-Antwort seit {int(STALL_TIMEOUT)}s (Session {sid} abgebrochen) — "
-                "modell-/provider-seitiger Hänger. Bitte erneut versuchen."
-            )
-    else:
-        _interrupt(sid)
-        raise RuntimeError(
-            f"Timeout nach {int(POLL_TIMEOUT)}s (Session {sid} abgebrochen) — bitte erneut versuchen."
-        )
+        deadline = time.time() + POLL_TIMEOUT
+        last_progress = time.time()
+        last_sig = _progress(sid)
+        while time.time() < deadline:
+            time.sleep(POLL_INTERVAL)
+            if sid not in _active_ids():
+                break  # fertig
+            sig = _progress(sid)
+            if sig != last_sig:
+                last_sig, last_progress = sig, time.time()
+            elif time.time() - last_progress > STALL_TIMEOUT:
+                raise StallError(
+                    f"Keine Provider-Antwort seit {int(STALL_TIMEOUT)}s — "
+                    "modell-/provider-seitiger Hänger."
+                )
+        else:
+            raise RuntimeError(f"Timeout nach {int(POLL_TIMEOUT)}s — bitte erneut versuchen.")
 
-    mstatus, mres = _req("GET", f"{OC_SERVER_URL}/api/session/{sid}/message?limit=100")
-    if mstatus != 200:
-        raise RuntimeError(f"Message-Abruf fehlgeschlagen ({mstatus}): {mres}")
-    raw = mres.get("data") if isinstance(mres, dict) else mres
-    msgs = raw if isinstance(raw, list) else (raw.get("messages") or [] if isinstance(raw, dict) else [])
-    texts = []
-    for msg in msgs:
-        # v2 API: {"type": "assistant", "content": [{"type": "text", "text": ...}, ...]}
-        if msg.get("type") != "assistant" and msg.get("role") != "assistant":
-            continue
-        parts = msg.get("content") or msg.get("parts") or []
-        for part in parts:
-            if isinstance(part, dict) and part.get("type") == "text" and part.get("text"):
-                texts.append(part["text"])
-    full = "\n".join(texts)
-    import re
-    m = re.search(r"\{.*\}", full, re.S)
-    if not m:
-        raise RuntimeError(f"Kein JSON in der Antwort erkannt: {full[:300]}")
-    decision = json.loads(m.group(0))
-    return {"session": sid, "decision": decision, "raw": full}
+        mstatus, mres = _req("GET", f"{OC_SERVER_URL}/api/session/{sid}/message?limit=100")
+        if mstatus != 200:
+            raise RuntimeError(f"Message-Abruf fehlgeschlagen ({mstatus}): {mres}")
+        raw = mres.get("data") if isinstance(mres, dict) else mres
+        msgs = raw if isinstance(raw, list) else (raw.get("messages") or [] if isinstance(raw, dict) else [])
+        texts = []
+        for msg in msgs:
+            # v2 API: {"type": "assistant", "content": [{"type": "text", "text": ...}, ...]}
+            if msg.get("type") != "assistant" and msg.get("role") != "assistant":
+                continue
+            parts = msg.get("content") or msg.get("parts") or []
+            for part in parts:
+                if isinstance(part, dict) and part.get("type") == "text" and part.get("text"):
+                    texts.append(part["text"])
+        full = "\n".join(texts)
+        import re
+        m = re.search(r"\{.*\}", full, re.S)
+        if not m:
+            raise RuntimeError(f"Kein JSON in der Antwort erkannt: {full[:300]}")
+        decision = json.loads(m.group(0))
+        deleted = _delete_session(sid)
+        return {"session": sid, "decision": decision, "raw": full,
+                "sessionDeleted": bool(deleted)}
+    except Exception:
+        _delete_session(sid)
+        raise
 
 
 def suggest(override_ref: str = "", override_variant: str = "", progress=None) -> dict:

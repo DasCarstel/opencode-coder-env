@@ -94,10 +94,13 @@ Model-Verwaltung für das OpenCode-Fleet (Fast/Medium/Heavy der Model-Router-Tie
   infrastructure/general/muellerconnect werden neu gestartet; deren entrypoint
   zieht frisches Repo) → Overrides aktiv.
 - **KI-Vorschlag**: `/api/suggest` dispatcht eine OpenCode-Session und lässt sie
-  mit dem **aktuell konfigurierten @heavy-Modell** (inkl. Effort-Variante) den
-  Katalog analysieren — die stärkste Wahl, ohne festes Modell. Override per
-  `OC_SUGGEST_MODEL=provider/model#variant`, Fallback = Session-Default.
-  Das Panel zeigt an, womit analysiert wurde.
+  mit dem gewählten Modell analysieren — Default: **@heavy aus den committeten
+  Overrides** (inkl. Effort-Variante), im Panel frei wählbar (Editor-Auswahl oder
+  jedes Katalog-Modell). Live-Status über `/api/suggest/status` (Modell, Versuch,
+  Laufzeit). **Fallback-Kette** heavy → medium → Session-Default; die Analyse-Session
+  wird danach **automatisch gelöscht** (`OC_SUGGEST_KEEP_SESSIONS=1` behält sie zum
+  Debuggen). Stellschrauben: `OC_SUGGEST_STALL_TIMEOUT` (45 s),
+  `OC_SUGGEST_TIMEOUT` (150 s), `OC_SUGGEST_MODEL`.
 - **Hermes**: `model-curator`-Skill (Standardprofil) fragt Hestia im Lesemodus;
   kleve-Profil ist bewusst ausgeschlossen.
 - **One-Time-Setup** (GitHub-Secrets, Runner, OpenBao-AppRole):
