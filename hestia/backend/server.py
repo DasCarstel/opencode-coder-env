@@ -227,6 +227,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": str(e)}, 404)
             except Exception as e:
                 return self._json({"error": str(e)}, 500)
+        if path in ("/api/apply", "/api/suggest", "/api/rollout"):
+            return self._json(
+                {"error": f"{path} ist POST-only (der Aufruf kam als GET an)"}, 405
+            )
         self._static(path)
 
     def _health(self):

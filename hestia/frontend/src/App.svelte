@@ -76,7 +76,9 @@ async function runSuggest() {
   suggestResult = null
   error = null
   try {
-    const r = await api('/api/suggest')
+    // POST erzwingen (ohne Body würde fetch sonst GET senden)
+    const r = await api('/api/suggest', { body: {}, method: 'POST' })
+    if (!r || !r.decision) throw new Error('Unerwartete Antwort vom Server (kein Vorschlag enthalten)')
     suggestResult = r.decision
   } catch (e) {
     error = 'KI-Vorschlag: ' + e.message
