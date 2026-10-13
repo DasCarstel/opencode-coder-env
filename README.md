@@ -102,6 +102,15 @@ Model-Verwaltung für das OpenCode-Fleet (Fast/Medium/Heavy der Model-Router-Tie
   `@medium=opencode/space-bunny-free#high` (Fallback `opencode-go/claude-haiku-5-5#medium`),
   `@heavy=opencode-go/gpt-6-luna#max`. Status: `/api/failover/status`,
   Sofort-Prüfung: `POST /api/failover/check`.
+- **Budget/Abos**: `GET /api/accounts` zeigt je OpenCode-Go-Abo das Restbudget
+  (5 h/Woche/Monat, Quelle `opencode.ai/zen/go/v1/usage`). Konfiguration modular in
+  `.opencode/hestia-accounts.jsonc` (Provider-Adapter + Konten + Policy).
+- **Auto-Kontowechsel**: Bei erschöpftem Abo (0 % frei) wechselt Hestia
+  automatisch (`mode: auto`) bzw. nach Bestätigung (`notify`) auf das Konto mit dem
+  meisten Restbudget; zusätzlich weiches Gleichgewicht für Woche/Monat. Mechanik:
+  `.github/workflows/switch-account.yml` → `hestia/ci/switch-account.sh`
+  (OpenBao `active` + `opencode service set env` je Container, **kein**
+  Container-Neustart).
 - **KI-Vorschlag**: `/api/suggest` dispatcht eine OpenCode-Session und lässt sie
   mit dem gewählten Modell analysieren — Default: **@heavy aus den committeten
   Overrides** (inkl. Effort-Variante), im Panel frei wählbar (Editor-Auswahl oder
@@ -114,8 +123,10 @@ Model-Verwaltung für das OpenCode-Fleet (Fast/Medium/Heavy der Model-Router-Tie
   kleve-Profil ist bewusst ausgeschlossen.
 - **One-Time-Setup** (GitHub-Secrets, Runner, OpenBao-AppRole):
   `hestia/ci/setup/README.md`
-- **Phase 5 / O6 (später, nur auf Freigabe)**: Accounts/Abo-Rotation (OpenBao
-  default1–3, `/accounts`-Tab), CI-Issue bei Modellverlust, Failover-Plugin-Evaluation.
+- **Phase 5 / O6 (teilweise umgesetzt, 2026-10-13)**: Das Budget-System
+  (Anzeige je Abo, Auto-/Notify-Kontowechsel) ist **umgesetzt** — siehe
+  Budget/Abos und Auto-Kontowechsel oben. Offen bleiben: Feinschliff der
+  Abo-Rotation, CI-Issue bei Modellverlust sowie die Gemini/Codex-Adapter.
   Offene Kleinigkeiten (O7): Preset-Name neutralisieren, OpenCode-Go-Konto zurück
   auf `default1`, optional `OC_SUGGEST_TIMEOUT` erhöhen.
 
