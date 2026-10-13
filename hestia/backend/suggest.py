@@ -84,6 +84,17 @@ ROLLEN (Task-Taxonomie des Routers):
 - @medium (costRatio 5): Implementation, Refactoring, Tests — der Arbeitspferd-Tier.
 - @heavy (costRatio 12): Architektur, komplexes Debugging (nach 2+ Fehlschlägen), Security-Review — selten, aber stark.
 
+OPENCODE-KONTEXT — so werden die Modelle tatsächlich eingesetzt:
+- @fast/@medium/@heavy sind Router-Subagents für DELEGIERTE Aufgaben (Tier-Routing).
+- Das Medium-Modell hat zusätzlich eine Doppelrolle als Primary-Agent:
+  * `build` (Standard-Coding-Agent, mit dem der Nutzer interaktiv arbeitet) läuft auf **Medium mit Standardvariante**
+    — es antwortet auf JEDE Nachricht: Latenz/Preis pro Nachricht zählen, es muss aber auch selbst implementieren können.
+  * `plan` (Nur-Lese-Planung) läuft auf **Medium mit der HÖCHSTEN Effort-Variante** — hier zählt Reasoning-Qualität,
+    Geschwindigkeit ist zweitrangig; ein Modell ohne sinnvoll abgestufte Varianten (low..max) ist dafür unattraktiv.
+- Eingebaute Subagents ohne eigenes Modell (`general`, `explore`) erben das Session-Modell (= Medium).
+- Effort-Varianten (low/medium/high/xhigh/max) steuern das Reasoning-Budget.
+=> Bewerte Medium deshalb DOPPELT: als Arbeitspferd für Implementation UND als interaktives Chat-/Plan-Modell.
+
 AKTUELLE WERTE: {current_str}
 
 MODELL-KATALOG (opencode-go, alle active; Preis = USD pro Mio Tokens):
@@ -93,7 +104,8 @@ AUFGABE: Wähle je Tier das kosten-günstigste Modell, das die Rolle zuverlässi
 (cheap-but-capable statt Kompromiss-frei). Berücksichtige: Tool-Fähigkeit ist Pflicht;
 @heavy braucht starkes Reasoning (max-effort Variante bevorzugen wenn vorhanden);
 wähle Varianten aus der Liste. Wenn sich zwischen zwei Modellen der Preis kaum
-unterscheidet, nimm das neuere/stärkere.
+unterscheidet, nimm das neuere/stärkere. Für @medium gilt zusätzlich die Doppelrolle
+(build/plan interaktiv) aus dem OpenCode-Kontext — träge Standardvarianten abwerten.
 
 ANTWORTE NUR MIT folgendem JSON (keine weiteren Worte, keine Backticks):
 {{"reasoning": "ein Satz Gesamtbegründung",
