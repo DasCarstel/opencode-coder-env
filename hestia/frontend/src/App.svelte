@@ -69,6 +69,85 @@ let pwInput = $state(getPassword())
 let catFilterOpenGoOnly = $state(true)
 let priceTableShowAll = $state(false)
 
+// ── Automatik des KI-Vorschlags (GET /api/suggest/status, POST /api/suggest/settings) ──
+let suggestStatus = $state(null)
+let autoSaveBusy = $state(false)
+let autoSaveResult = $state(null)
+// Formular in Stunden (die API rechnet in Sekunden)
+let autoForm = $state({ enabled: false, intervalHours: 24, cooldownHours: 24, analysisModel: '' })
+
+const hoursToSec = (h) => Math.max(0, Math.round((Number(h) || 0) * 3600))
+const secToHours = (s) => {
+  const n = Number(s)
+  if (!Number.isFinite(n) || n <= 0) return 0
+  return Math.round((n / 3600) * 100) / 100
+}
+
+async function loadSuggestStatus() {
+  try {
+    const st = await api('/api/suggest/status')
+    suggestStatus = st
+    const a = st?.auto
+    if (a) {
+      autoForm = {
+        enabled: !!a.enabled,
+        intervalHours: secToHours(a.checkIntervalSeconds) || autoForm.intervalHours,
+        cooldownHours: secToHours(a.cooldownSeconds) || autoForm.cooldownHours,
+        analysisModel: typeof a.analysisModel === 'string' ? a.analysisModel : '',
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+async function saveAutoSettings() {
+  autoSaveBusy = true
+  autoSaveResult = null
+  error = null
+  try {
+    const res = await api('/api/suggest/settings', {
+      method: 'POST',
+      body: {
+        enabled: !!autoForm.enabled,
+        checkIntervalSeconds: Math.max(900, hoursToSec(autoForm.intervalHours)),   // min 0,25 h
+        cooldownSeconds: Math.max(3600, hoursToSec(autoForm.cooldownHours)),       // min 1 h
+        analysisModel: autoForm.analysisModel || '',
+      },
+    })
+    autoSaveResult = res
+    await loadSuggestStatus()
+  } catch (e) {
+    autoSaveResult = { error: e.message }
+    error = 'Automatik-Einstellungen: ' + e.message
+  } finally {
+    autoSaveBusy = false
+  }
+}
+
+// Zeit-Hilfen für die Statuszeile
+function agoText(ts) {
+  if (!ts) return '—'
+  const s = Math.max(0, Math.round(Date.now() / 1000 - Number(ts)))
+  if (s < 90) return `vor ${s} s`
+  if (s < 5400) return `vor ${Math.round(s / 60)} min`
+  if (s < 172800) return `vor ${Math.round(s / 3600)} h`
+  return fmtTime(ts)
+}
+function durText(sec) {
+  const n = Number(sec)
+  if (!Number.isFinite(n) || n <= 0) return '—'
+  if (n < 90) return `${Math.round(n)} s`
+  if (n < 5400) return `${Math.round(n / 60)} min`
+  if (n % 3600 === 0) return `${Math.round(n / 3600)} h`
+  return `${Math.floor(n / 3600)} h ${Math.round((n % 3600) / 60)} min`
+}
+function stampText(ts) {
+  if (!ts) return '—'
+  const d = new Date(Number(ts) * 1000)
+  return Number.isNaN(d.getTime())
+    ? '—'
+    : d.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
 // Formular-Zustand (Tier-Editor)
 let fast = $state({ model: '', variant: '' })
 let medium = $state({ model: '', variant: '' })
@@ -223,6 +302,34 @@ const editorHeavyDiffers = $derived(
   !!heavy.model && (heavy.model !== committedHeavy || (heavy.variant !== '(keine)' && heavy.variant !== '' && heavy.variant !== (config?.tiers?.heavy?.variant || '')))
 )
 
+// ── gespeicherter Automatik-Vorschlag ──
+const autoProposal = $derived(suggestStatus?.proposal || null)
+const autoProposalResult = $derived(autoProposal?.result || null)
+
+function tierChoiceOf(res, tier) {
+  const d = res?.[tier]
+  if (!d) return null
+  return (useFree[tier] && d.free) ? (d.free || d.paid) : (d.paid || d.free || null)
+}
+
+// Weicht der Vorschlag von der aktiven (geladenen) Konfiguration ab?
+const proposalDiffers = $derived.by(() => {
+  const res = autoProposalResult
+  if (!res) return false
+  const cfg = config?.tiers || {}
+  let seen = false
+  for (const tier of ['fast', 'medium', 'heavy']) {
+    const c = tierChoiceOf(res, tier)
+    if (!c?.model) continue
+    seen = true
+    const cur = cfg[tier] || {}
+    const curRef = (cur.model || '') + (cur.variant ? '#' + cur.variant : '')
+    const newRef = c.model + (c.variant ? '#' + c.variant : '')
+    if (curRef !== newRef) return true
+  }
+  return seen ? false : false
+})
+
 async function runSuggest() {
   suggestBusy = true
   suggestResult = null
@@ -251,12 +358,13 @@ async function runSuggest() {
     clearInterval(poll)
     suggestBusy = false
     liveStatus = null
+    loadSuggestStatus()
   }
 }
 
-function acceptSuggestion() {
+function acceptSuggestion(res = suggestResult) {
   for (const tier of ['fast', 'medium', 'heavy']) {
-    const d = suggestResult?.[tier]
+    const d = res?.[tier]
     if (!d) continue
     const chosen = (useFree[tier] && d.free) ? d.free : d.paid
     const other = (useFree[tier] && d.free) ? d.paid : d.free
@@ -465,8 +573,10 @@ loadRolloutStatus()
 loadFailover()
 loadAccounts()
 loadHermes()
+loadSuggestStatus()
 setInterval(loadAccounts, 60000)
 setInterval(loadHermes, 60000)
+setInterval(loadSuggestStatus, 60000)
 </script>
 
 <header>
@@ -497,6 +607,48 @@ setInterval(loadHermes, 60000)
 {/if}
 
 {#if error}<div class="card errbox">⚠️ {error}</div>{/if}
+
+<!-- gemeinsame Vorschlags-Darstellung (manueller Lauf + gespeicherter Automatik-Vorschlag) -->
+{#snippet suggestTable(res, btnLabel = '↓ In den Editor übernehmen')}
+  {#if res.reasoning}<p class="muted">{res.reasoning}</p>{/if}
+  <table>
+    <thead><tr><th>Tier</th><th>Wahl</th><th>Modell</th><th>Preis in/out $/M</th><th>Variante</th><th>Begründung</th></tr></thead>
+    <tbody>
+      {#each ['fast', 'medium', 'heavy'] as tier}
+        {@const paid = res[tier]?.paid}
+        {@const free = res[tier]?.free}
+        <tr class={!useFree[tier] ? 'rowActive' : ''}>
+          <td rowspan={free ? 2 : 1} class="tierCell">{TIER_INFO[tier].title}</td>
+          <td>
+            <button class="chip {!useFree[tier] ? 'chipActive' : ''}" onclick={() => (useFree[tier] = false)}>
+              bezahlt
+            </button>
+          </td>
+          <td class="mono">{paid?.model}</td>
+          <td>{priceText(paid?.model || '')}</td>
+          <td class="muted">{paid?.variant || '—'}</td>
+          <td class="muted">{paid?.reason}</td>
+        </tr>
+        {#if free}
+          <tr class={useFree[tier] ? 'rowActive' : ''}>
+            <td>
+              <button class="chip {useFree[tier] ? 'chipActive' : ''}" onclick={() => (useFree[tier] = true)}>
+                gratis
+              </button>
+            </td>
+            <td class="mono">{free.model}</td>
+            <td>{priceText(free.model)}</td>
+            <td class="muted">{free.variant || '—'}</td>
+            <td class="muted">{free.reason}</td>
+          </tr>
+        {/if}
+      {/each}
+    </tbody>
+  </table>
+  <div class="row">
+    <button onclick={() => acceptSuggestion(res)}>{btnLabel}</button>
+  </div>
+{/snippet}
 
 <div class="card">
   <h2>Aktive Tier-Konfiguration</h2>
@@ -672,46 +824,85 @@ setInterval(loadHermes, 60000)
     <div class="suggest">
       {#if analyzeInfo}<p class="muted">Analysiert mit: <span class="mono">{analyzeInfo.label}</span>
         {#if analyzeInfo.note}· {analyzeInfo.note}{/if}</p>{/if}
-      <p class="muted">{suggestResult.reasoning}</p>
-      <table>
-        <thead><tr><th>Tier</th><th>Wahl</th><th>Modell</th><th>Preis in/out $/M</th><th>Variante</th><th>Begründung</th></tr></thead>
-        <tbody>
-          {#each ['fast', 'medium', 'heavy'] as tier}
-            {@const paid = suggestResult[tier]?.paid}
-            {@const free = suggestResult[tier]?.free}
-            <tr class={!useFree[tier] ? 'rowActive' : ''}>
-              <td rowspan={free ? 2 : 1} class="tierCell">{TIER_INFO[tier].title}</td>
-              <td>
-                <button class="chip {!useFree[tier] ? 'chipActive' : ''}" onclick={() => (useFree[tier] = false)}>
-                  bezahlt
-                </button>
-              </td>
-              <td class="mono">{paid?.model}</td>
-              <td>{priceText(paid?.model || '')}</td>
-              <td class="muted">{paid?.variant || '—'}</td>
-              <td class="muted">{paid?.reason}</td>
-            </tr>
-            {#if free}
-              <tr class={useFree[tier] ? 'rowActive' : ''}>
-                <td>
-                  <button class="chip {useFree[tier] ? 'chipActive' : ''}" onclick={() => (useFree[tier] = true)}>
-                    gratis
-                  </button>
-                </td>
-                <td class="mono">{free.model}</td>
-                <td>{priceText(free.model)}</td>
-                <td class="muted">{free.variant || '—'}</td>
-                <td class="muted">{free.reason}</td>
-              </tr>
-            {/if}
-          {/each}
-        </tbody>
-      </table>
-      <div class="row">
-        <button onclick={acceptSuggestion}>↓ In den Editor übernehmen</button>
-      </div>
+      {@render suggestTable(suggestResult)}
     </div>
   {/if}
+
+  <!-- ── Automatik ─────────────────────────────────────────────── -->
+  <div class="autoBox">
+    <h3>⏱ Automatik</h3>
+    <p class="muted">
+      Läuft nur, wenn sich Preise/Modelle ändern; max. 1 Lauf je Cooldown. Manueller Lauf nutzt weiter @heavy.
+    </p>
+
+    {#if autoProposal}
+      <div class="proposalHead">
+        <strong>Automatischer Vorschlag vom {stampText(autoProposal.generatedAt)}</strong>
+        <span class="mono muted">Modell {autoProposal.model || '—'}</span>
+        {#if proposalDiffers}
+          <span class="badge warn">weicht ab</span>
+        {:else}
+          <span class="badge active">unverändert</span>
+        {/if}
+      </div>
+      {#if autoProposalResult}
+        <div class="suggest" style="margin-top:6px">
+          {@render suggestTable(autoProposalResult, '↓ In den Editor übernehmen')}
+        </div>
+        <p class="muted" style="margin-top:4px">
+          Übernehmen füllt nur den Tier-Editor — speichern musst du selbst mit „✔ Anwenden“.
+        </p>
+      {:else}
+        <p class="muted">Kein Ergebnis im gespeicherten Vorschlag enthalten.</p>
+      {/if}
+    {:else}
+      <p class="muted">Noch kein automatischer Vorschlag vorhanden.</p>
+    {/if}
+
+    <p class="muted" style="margin-top:8px">
+      Automatik: <strong>{suggestStatus?.auto?.enabled ? 'an' : 'aus'}</strong>
+      · letzte Prüfung {agoText(suggestStatus?.auto?.lastCheck)}
+      · Änderung erkannt: {stampText(suggestStatus?.auto?.lastChange)}
+      · nächste Prüfung in {durText(suggestStatus?.auto?.nextCheckIn)}
+      {#if suggestStatus?.auto?.fingerprint}· Fingerprint <span class="mono">{suggestStatus.auto.fingerprint}</span>{/if}
+    </p>
+
+    <div class="row" style="margin-top:8px">
+      <label class="foCheck">
+        <input type="checkbox" bind:checked={autoForm.enabled} disabled={autoSaveBusy} />
+        Automatik (nur bei Katalogänderung)
+      </label>
+      <label>
+        Prüfintervall (Stunden)
+        <input type="number" min="0.25" step="0.25" bind:value={autoForm.intervalHours} disabled={autoSaveBusy} />
+      </label>
+      <label>
+        Cooldown (Stunden)
+        <input type="number" min="1" step="1" bind:value={autoForm.cooldownHours} disabled={autoSaveBusy} />
+      </label>
+    </div>
+    <div class="row">
+      <label>
+        Analyse-Modell (Automatik)
+        <select bind:value={autoForm.analysisModel} disabled={autoSaveBusy}>
+          <option value="">— @medium-Fallback —</option>
+          {#each goModels as m}
+            <option value={m.ref}>{m.name} · {m.modelID} · {priceText(m.ref)}{isFree(m.ref) ? ' · gratis' : ''}</option>
+          {/each}
+        </select>
+      </label>
+      <button onclick={saveAutoSettings} disabled={autoSaveBusy}>
+        {autoSaveBusy ? 'Speichere …' : '💾 Automatik speichern'}
+      </button>
+      {#if autoSaveResult?.saved}
+        <span class="muted">
+          Gespeichert {#if autoSaveResult.commit?.sha}· Commit <span class="mono">{autoSaveResult.commit.sha.slice(0, 8)}</span>{/if}
+        </span>
+      {:else if autoSaveResult?.error}
+        <span class="muted" style="color:var(--err)">⚠ {autoSaveResult.error}</span>
+      {/if}
+    </div>
+  </div>
 </div>
 
 <div class="card">
@@ -1037,6 +1228,20 @@ setInterval(loadHermes, 60000)
   .foBox input[type=number] { width: 86px; }
   .foCheck { color: var(--text) !important; font-weight: 600; }
   .row { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+  /* Automatik-Block der KI-Vorschlag-Karte */
+  .autoBox {
+    margin-top: 16px; padding: 12px; border: 1px solid var(--line);
+    border-left: 3px solid var(--fire); border-radius: 8px; background: var(--panel-2);
+  }
+  .autoBox h3 { margin: 0 0 6px; font-size: .9rem; color: var(--fire-soft); }
+  .autoBox p { margin: 0; }
+  .autoBox label { display: inline-flex; align-items: center; gap: 6px; font-size: .8rem; color: var(--muted); }
+  .autoBox input[type=number] { width: 86px; }
+  .autoBox select { max-width: 460px; }
+  .proposalHead {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); font-size: .85rem;
+  }
   .suggest { margin-top: 14px; }
   .errbox { border-color: var(--err); }
   .tierCell { vertical-align: top; white-space: nowrap; }

@@ -21,6 +21,8 @@ Endpoints (alle unter Basic Auth):
   POST /api/hermes/apply      Hermes Primary/Fallback/Pool setzen (SOT-Commit + CI)
   GET  /api/failover/status   Ausfallschutz-Zustand (autoFailover/interval/threshold/timeout/…)
   POST /api/failover/settings Ausfallschutz-Einstellungen (SOT-Commit + STATE-Update)
+  GET  /api/suggest/status    Live-Zustand + auto (Einstellungen/Fingerprint/Zeiten) + proposal
+  POST /api/suggest/settings  Automatik-Einstellungen (SOT-Commit + STATE-Update)
   GET  /*                     statisches Frontend (dist/)
 """
 import base64
@@ -360,6 +362,13 @@ class Handler(BaseHTTPRequestHandler):
                 state = dict(SUGGEST_STATE)
             if state.get("running") and state.get("startedAt"):
                 state["elapsed"] = round(time.time() - state["startedAt"], 1)
+            try:
+                auto, proposal = suggest_mod.auto_status()
+            except Exception as e:  # noqa: BLE001 — Status darf nie ausfallen
+                _log(f"suggest auto status error: {e}")
+                auto, proposal = {}, None
+            state["auto"] = auto
+            state["proposal"] = proposal
             return self._json(state)
         if path in ("/api/accounts", "/api/accounts/status"):
             return self._json(accounts_mod.state())
@@ -368,7 +377,7 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/api/apply", "/api/suggest", "/api/rollout",
                     "/api/accounts/check", "/api/accounts/switch",
                     "/api/hermes/apply", "/api/failover/settings",
-                    "/api/failover/check"):
+                    "/api/failover/check", "/api/suggest/settings"):
             return self._json(
                 {"error": f"{path} ist POST-only (der Aufruf kam als GET an)"}, 405
             )
@@ -545,6 +554,19 @@ class Handler(BaseHTTPRequestHandler):
                 _log(f"suggest error: {e}")
                 return self._json({"error": str(e)}, 500)
 
+        if path == "/api/suggest/settings":
+            # SOT der Automatik committen + Laufzeit-Zustand aktualisieren
+            # (der Prüf-Thread liest Intervall/Cooldown je Iteration neu).
+            try:
+                return self._json(suggest_mod.update_settings(self._body()))
+            except (suggest_mod.SettingsError, ApplyError) as e:
+                return self._json({"error": str(e)}, 400)
+            except ConfigError as e:
+                return self._json({"error": str(e)}, 502)
+            except Exception as e:
+                _log(f"suggest settings error: {e}")
+                return self._json({"error": str(e)}, 500)
+
         if path == "/api/failover/check":
             try:
                 payload = self._body()
@@ -629,6 +651,10 @@ def main():
         accounts_mod.start()
     except Exception as e:  # noqa: BLE001
         _log(f"Accounts-Start fehlgeschlagen: {e}")
+    try:
+        suggest_mod.start()
+    except Exception as e:  # noqa: BLE001
+        _log(f"Suggest-Automatik-Start fehlgeschlagen: {e}")
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     _log(f"Hestia backend listening on :{port} (user={HESTIA_USER}; static={STATIC_DIR})")
     if not os.environ.get("HESTIA_PASSWORD"):

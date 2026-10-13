@@ -8,12 +8,15 @@ Muster wie im Hermes-'space-matrix'-Bericht dokumentiert (Server v2.0.24):
   GET  /api/session/active         → Ende-Erkennung (sid fehlt ⇒ fertig)
 """
 import base64
+import hashlib
 import json
 import os
+import threading
 import time
 import urllib.request
 import urllib.error
 
+import catalog
 from catalog import fetch_models, usable
 
 OC_SERVER_URL = os.environ.get("OC_SERVER_URL", "http://localhost:49374").rstrip("/")
@@ -473,4 +476,424 @@ def suggest(override_ref: str = "", override_variant: str = "", progress=None) -
             continue
     report(phase="failed", note=" | ".join(errors)[:300])
     raise RuntimeError("Analyse fehlgeschlagen — " + " | ".join(errors))
+
+
+# ── Automatik: ereignisgesteuerter KI-Vorschlag ────────────────────────────
+# Die Parameter (enabled/checkIntervalSeconds/cooldownSeconds/analysisModel) liegen
+# in der SOT .opencode/hestia-suggest.jsonc und werden über POST /api/suggest/settings
+# vom Panel geschrieben; fehlt die Datei, gelten die Env-Defaults.
+#
+# Ein automatischer Lauf startet nur, wenn sich der relevante Modellkatalog MATERIELL
+# ändert (Preis, neues/entferntes Modell, Varianten, Status) UND der Cooldown seit
+# dem letzten Auto-Lauf abgelaufen ist. Der lokale Fingerprint-Zustand liegt unter
+# STATE_PATH (Bind-Mount /etc/hestia:/app/data) und wird NICHT committet.
+SETTINGS_PATH = os.environ.get(
+    "HESTIA_SUGGEST_PATH", ".opencode/hestia-suggest.jsonc"
+)
+STATE_PATH = os.environ.get(
+    "HESTIA_SUGGEST_STATE_PATH", "/app/data/hestia-suggest-state.json"
+)
+DEFAULT_CHECK_INTERVAL = int(os.environ.get("HESTIA_SUGGEST_CHECK_INTERVAL", "21600"))
+DEFAULT_COOLDOWN = int(os.environ.get("HESTIA_SUGGEST_COOLDOWN", "86400"))
+DEFAULT_ANALYSIS_MODEL = os.environ.get(
+    "HESTIA_SUGGEST_ANALYSIS_MODEL", "opencode/space-bunny-free#high"
+)
+DEFAULT_ENABLED = os.environ.get("HESTIA_SUGGEST_AUTO", "0") == "1"
+# Provider, deren Modelle als "relevant" gelten (wie im Katalog/Prompt gefiltert).
+FINGERPRINT_PROVIDERS = [
+    p.strip() for p in os.environ.get(
+        "HESTIA_PROVIDERS", "opencode-go,opencode").split(",") if p.strip()
+]
+
+# Grenzen für die Panel-Eingaben (POST /api/suggest/settings)
+CHECK_INTERVAL_RANGE = (900, 604800)
+COOLDOWN_RANGE = (3600, 2592000)
+SETTINGS_KEYS = ("enabled", "checkIntervalSeconds", "cooldownSeconds", "analysisModel")
+
+# Laufzeit-Zustand: settings + persistenter Teil aus STATE_PATH.
+STATE = {
+    "enabled": DEFAULT_ENABLED,
+    "checkIntervalSeconds": DEFAULT_CHECK_INTERVAL,
+    "cooldownSeconds": DEFAULT_COOLDOWN,
+    "analysisModel": DEFAULT_ANALYSIS_MODEL,
+    "fingerprint": "",
+    "lastCheck": None,
+    "lastChange": None,
+    "lastAutoRun": None,
+    "generatedAt": None,
+    "model": None,
+    "result": None,
+}
+LOCK = threading.Lock()
+
+
+class SettingsError(Exception):
+    """Ungültige Nutzereingabe für die KI-Vorschlag-Einstellungen."""
+
+
+def _log(msg):
+    print(f"[hestia-suggest] {time.strftime('%Y-%m-%d %H:%M:%S')} {msg}", flush=True)
+
+
+def _clamp_int(value, lo: int, hi: int, fallback: int) -> int:
+    """Zahl aus der SOT übernehmen; unbrauchbar → Default (kein Panel-Fehler)."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return n if lo <= n <= hi else fallback
+
+
+def default_settings() -> dict:
+    """Startwerte = Env-Defaults (Fallback, falls die SOT fehlt)."""
+    return {
+        "enabled": bool(DEFAULT_ENABLED),
+        "checkIntervalSeconds": DEFAULT_CHECK_INTERVAL,
+        "cooldownSeconds": DEFAULT_COOLDOWN,
+        "analysisModel": DEFAULT_ANALYSIS_MODEL,
+    }
+
+
+def read_settings() -> dict:
+    """SOT der Automatik lesen und normalisieren.
+
+    Fehlende/kaputte Datei oder GitHub-Fehler → die Env-Defaults, damit das Panel
+    immer eine plausible Konfiguration sieht (Muster failover.read_settings).
+    """
+    data = {}
+    try:
+        import github_api
+        raw = github_api.get_file(SETTINGS_PATH)
+        if raw:
+            import hjsonc
+            data = hjsonc.parse(raw) or {}
+    except Exception as e:  # noqa: BLE001
+        _log(f"settings: {SETTINGS_PATH} nicht lesbar ({e}) — Defaults")
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    d = default_settings()
+    enabled = d["enabled"]
+    if isinstance(data.get("enabled"), bool):
+        enabled = data["enabled"]
+    model = data.get("analysisModel")
+    return {
+        "enabled": enabled,
+        "checkIntervalSeconds": _clamp_int(
+            data.get("checkIntervalSeconds"), *CHECK_INTERVAL_RANGE, d["checkIntervalSeconds"]),
+        "cooldownSeconds": _clamp_int(
+            data.get("cooldownSeconds"), *COOLDOWN_RANGE, d["cooldownSeconds"]),
+        "analysisModel": (model.strip() if isinstance(model, str) else d["analysisModel"]),
+    }
+
+
+def catalog_fingerprint() -> str:
+    """Kurzer, stabiler Hash über die MATERIELLEN Felder des Modellkatalogs.
+
+    Erfasst: Modell-ID, Status, Varianten, Preise (input/output, inkl. Cache).
+    Erfasst NICHT: Namen, Beschreibungen, Limit-/Release-Angaben — reine Doku- oder
+    Beschreibungsänderungen dürfen keinen Lauf auslösen. Rückgabe: 12 Hex-Zeichen.
+    """
+    rows = []
+    for m in catalog.fetch_models() or []:
+        if not isinstance(m, dict):
+            continue
+        if (m.get("providerID") or "") not in FINGERPRINT_PROVIDERS:
+            continue
+        cost = m.get("cost") or {}
+        rows.append([
+            m.get("providerID") or "",
+            m.get("modelID") or "",
+            m.get("status") or "",
+            sorted(str(v) for v in (m.get("variants") or [])),
+            [
+                cost.get("input"),
+                cost.get("output"),
+                (cost.get("cacheRead") if isinstance(cost, dict) else None),
+                (cost.get("cacheWrite") if isinstance(cost, dict) else None),
+            ],
+        ])
+    rows.sort(key=lambda r: (r[0], r[1]))
+    blob = json.dumps(rows, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
+def read_state() -> dict:
+    """Persistenter Laufzeit-Zustand lesen (fehlend/kaputt → leere Defaults)."""
+    out = {
+        "fingerprint": "", "lastCheck": None, "lastChange": None,
+        "lastAutoRun": None, "generatedAt": None, "model": None, "result": None,
+    }
+    try:
+        with open(STATE_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            for key in out:
+                if key in data:
+                    out[key] = data[key]
+    except FileNotFoundError:
+        pass
+    except Exception as e:  # noqa: BLE001
+        _log(f"state: {STATE_PATH} nicht lesbar ({e}) — starte ohne Historie")
+    return out
+
+
+def write_state(data: dict) -> bool:
+    """Laufzeit-Zustand schreiben. Fehler degradieren (nur loggen), kein Crash."""
+    payload = {
+        "fingerprint": data.get("fingerprint", ""),
+        "lastCheck": data.get("lastCheck"),
+        "lastChange": data.get("lastChange"),
+        "lastAutoRun": data.get("lastAutoRun"),
+        "generatedAt": data.get("generatedAt"),
+        "model": data.get("model"),
+        "result": data.get("result"),
+    }
+    try:
+        os.makedirs(os.path.dirname(STATE_PATH) or ".", exist_ok=True)
+        tmp = STATE_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False)
+        os.replace(tmp, STATE_PATH)
+        return True
+    except Exception as e:  # noqa: BLE001
+        _log(f"state: {STATE_PATH} nicht schreibbar ({e})")
+        return False
+
+
+def _require_int(payload: dict, key: str, lo: int, hi: int) -> int:
+    value = payload[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SettingsError(f"'{key}': muss eine ganze Zahl zwischen {lo} und {hi} sein")
+    if not (lo <= value <= hi):
+        raise SettingsError(f"'{key}': {value} liegt außerhalb {lo}..{hi}")
+    return value
+
+
+def _require_model(value: str) -> str:
+    """Analyse-Modell prüfen (leer = Tier-Kette aus den Overrides verwenden)."""
+    ref = (value or "").strip()
+    if not ref:
+        return ""
+    base = ref.partition("#")[0]
+    ok, res = catalog.usable(base)
+    if not ok:
+        raise SettingsError(f"'analysisModel': {res}")
+    return ref
+
+
+def update_settings(payload: dict) -> dict:
+    """Panel-Einstellungen validieren, als SOT committen und STATE aktualisieren.
+
+    Wirkt sofort: der Hintergrund-Thread liest Intervall/Cooldown je Iteration neu.
+    """
+    if not isinstance(payload, dict):
+        raise SettingsError("Body muss ein JSON-Objekt sein")
+    unknown = sorted(set(payload) - set(SETTINGS_KEYS))
+    if unknown:
+        raise SettingsError(f"unbekannte Felder: {', '.join(unknown)}")
+
+    current = read_settings()
+    if "enabled" not in payload:
+        raise SettingsError("'enabled' fehlt")
+    enabled = payload["enabled"]
+    if not isinstance(enabled, bool):
+        raise SettingsError("'enabled' muss true oder false sein")
+
+    settings = {
+        "enabled": enabled,
+        "checkIntervalSeconds": _require_int(
+            payload, "checkIntervalSeconds", *CHECK_INTERVAL_RANGE
+        ) if "checkIntervalSeconds" in payload else current["checkIntervalSeconds"],
+        "cooldownSeconds": _require_int(
+            payload, "cooldownSeconds", *COOLDOWN_RANGE
+        ) if "cooldownSeconds" in payload else current["cooldownSeconds"],
+        "analysisModel": _require_model(
+            payload["analysisModel"] if "analysisModel" in payload
+            else current["analysisModel"]
+        ),
+    }
+
+    header = (
+        "// KI-Vorschlag-Automatik (SOT des Hestia-Panels).\n"
+        "// Geschrieben über POST /api/suggest/settings, gelesen von hestia/backend/suggest.py.\n"
+    )
+    text = header + json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
+    import github_api
+    commit = github_api.put_files(
+        {SETTINGS_PATH: text}, "hestia: KI-Vorschlag-Automatik aktualisiert"
+    )
+
+    with LOCK:
+        STATE["enabled"] = settings["enabled"]
+        STATE["checkIntervalSeconds"] = settings["checkIntervalSeconds"]
+        STATE["cooldownSeconds"] = settings["cooldownSeconds"]
+        STATE["analysisModel"] = settings["analysisModel"]
+        snapshot = dict(STATE)
+    write_state(snapshot)
+    # Wird die Automatik erst jetzt (im Panel) eingeschaltet, muss der Thread
+    # starten — beim Container-Start lief er wegen enabled=false noch nicht.
+    if settings["enabled"]:
+        _ensure_thread()
+    _log(
+        f"settings: enabled={settings['enabled']} "
+        f"intervall={settings['checkIntervalSeconds']}s "
+        f"cooldown={settings['cooldownSeconds']}s "
+        f"modell={settings['analysisModel'] or '(Tier-Kette)'} "
+        f"(Commit {str((commit or {}).get('sha', ''))[:8]})"
+    )
+    return {"saved": True, "settings": settings, "commit": commit}
+
+
+def _save_all() -> None:
+    with LOCK:
+        snapshot = dict(STATE)
+    write_state(snapshot)
+
+
+def run_auto_check() -> dict:
+    """Ein Prüf-Zyklus: Fingerprint → (geändert + Cooldown ok) → KI-Lauf.
+
+    Rückgabe enthält die Entscheidung, damit der Zustand nachvollziehbar bleibt.
+    """
+    settings = read_settings()
+    with LOCK:
+        STATE["enabled"] = settings["enabled"]
+        STATE["checkIntervalSeconds"] = settings["checkIntervalSeconds"]
+        STATE["cooldownSeconds"] = settings["cooldownSeconds"]
+        STATE["analysisModel"] = settings["analysisModel"]
+        stored = STATE.get("fingerprint") or ""
+
+    now = time.time()
+    fp = catalog_fingerprint()
+
+    # 1) Baseline: ohne gespeicherten Fingerprint NUR merken, kein Lauf
+    #    (verhindert einen KI-Lauf bei jedem Deploy/Neustart).
+    if not stored:
+        with LOCK:
+            STATE["fingerprint"] = fp
+            STATE["lastCheck"] = now
+        _save_all()
+        return {"action": "baseline", "fingerprint": fp}
+
+    # 2) unverändert → nichts tun
+    if fp == stored:
+        with LOCK:
+            STATE["lastCheck"] = now
+        _save_all()
+        return {"action": "unchanged", "fingerprint": fp}
+
+    # 3) materiell geändert → Cooldown prüfen
+    with LOCK:
+        STATE["lastCheck"] = now
+        STATE["lastChange"] = now
+    _log(f"Katalog geändert: {stored} -> {fp}")
+
+    last_run = STATE.get("lastAutoRun") or 0.0
+    if now - last_run < settings["cooldownSeconds"]:
+        # Fingerprint bewusst NICHT updaten: die Änderung bleibt "anstehend" und
+        # läuft nach Ablauf des Cooldowns nach.
+        _save_all()
+        remain = int(settings["cooldownSeconds"] - (now - last_run))
+        _log(f"Änderung im Cooldown ({remain}s verbleibend) — kein Auto-Lauf")
+        return {"action": "cooldown", "fingerprint": fp, "cooldownRemaining": remain}
+
+    if not settings["enabled"]:
+        _save_all()
+        return {"action": "disabled", "fingerprint": fp}
+
+    ref, _, variant = (settings["analysisModel"] or "").partition("#")
+    try:
+        res = suggest(override_ref=ref, override_variant=variant)
+    except Exception as e:  # noqa: BLE001
+        _log(f"Auto-Lauf fehlgeschlagen: {e}")
+        _save_all()
+        return {"action": "failed", "fingerprint": fp, "error": str(e)}
+
+    model = ((res.get("analyzedWith") or {}).get("label")
+             or settings["analysisModel"] or "unbekannt")
+    with LOCK:
+        STATE["fingerprint"] = fp
+        STATE["lastAutoRun"] = now
+        STATE["generatedAt"] = time.time()
+        STATE["model"] = model
+        STATE["result"] = {"decision": res.get("decision"), "session": res.get("session"),
+                           "analyzedWith": res.get("analyzedWith")}
+    _save_all()
+    _log(f"Auto-Lauf fertig ({model})")
+    return {"action": "ran", "fingerprint": fp, "model": model}
+
+
+def auto_status() -> dict:
+    """Ausschnitt für GET /api/suggest/status."""
+    with LOCK:
+        enabled = bool(STATE["enabled"])
+        interval = int(STATE["checkIntervalSeconds"])
+        last_check = STATE["lastCheck"]
+        fingerprint = STATE["fingerprint"] or ""
+        generated = STATE["generatedAt"]
+        model = STATE["model"]
+        result = STATE["result"]
+    now = time.time()
+    next_in = max(0, int(interval - (now - last_check))) if last_check else interval
+    return {
+        "enabled": enabled,
+        "checkIntervalSeconds": interval,
+        "cooldownSeconds": int(STATE["cooldownSeconds"]),
+        "analysisModel": STATE["analysisModel"],
+        "lastCheck": last_check,
+        "lastChange": STATE["lastChange"],
+        "lastAutoRun": STATE["lastAutoRun"],
+        "fingerprint": fingerprint,
+        "nextCheckIn": next_in,
+    }, ({"generatedAt": generated, "model": model, "result": result}
+        if result and generated else None)
+
+
+def loop():
+    _log(f"Automatik-Thread gestartet (Intervall {STATE['checkIntervalSeconds']}s, "
+         f"Cooldown {STATE['cooldownSeconds']}s)")
+    while True:
+        try:
+            run_auto_check()
+        except Exception as e:  # noqa: BLE001
+            _log(f"Prüfzyklus fehlgeschlagen: {e}")
+        with LOCK:
+            wait = int(STATE["checkIntervalSeconds"])
+        time.sleep(max(60, wait))
+
+
+_THREAD = None
+
+
+def _ensure_thread() -> None:
+    """Prüf-Thread sicherstellen — auch wenn `enabled` erst später im Panel
+    aktiviert wird (dann existiert seit dem Container-Start noch kein Thread)."""
+    global _THREAD
+    if _THREAD is None or not _THREAD.is_alive():
+        _THREAD = threading.Thread(target=loop, daemon=True)
+        _THREAD.start()
+
+
+def start():
+    """Hintergrund-Thread anstoßen (nur wenn enabled). Fehler → nur loggen."""
+    try:
+        settings = read_settings()
+        persisted = read_state()
+        with LOCK:
+            STATE["enabled"] = settings["enabled"]
+            STATE["checkIntervalSeconds"] = settings["checkIntervalSeconds"]
+            STATE["cooldownSeconds"] = settings["cooldownSeconds"]
+            STATE["analysisModel"] = settings["analysisModel"]
+            for key, value in persisted.items():
+                if value is not None:
+                    STATE[key] = value
+            enabled = bool(STATE["enabled"])
+    except Exception as e:  # noqa: BLE001
+        _log(f"Start fehlgeschlagen: {e}")
+        return
+    if enabled:
+        _ensure_thread()
+    else:
+        _log("Automatik deaktiviert (enabled=false) — kein Thread")
 

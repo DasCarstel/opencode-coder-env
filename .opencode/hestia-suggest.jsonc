@@ -1,0 +1,12 @@
+// KI-Vorschlag-Automatik (SOT des Hestia-Panels).
+// Geschrieben über POST /api/suggest/settings, gelesen von hestia/backend/suggest.py.
+//
+// Der automatische Lauf startet nur, wenn sich der relevante Modellkatalog
+// materiell ändert (Preis, neues/entferntes Modell, Varianten, Status) und
+// der Cooldown seit dem letzten Auto-Lauf abgelaufen ist.
+{
+  "enabled": false,
+  "checkIntervalSeconds": 21600,
+  "cooldownSeconds": 86400,
+  "analysisModel": "opencode/space-bunny-free#high"
+}

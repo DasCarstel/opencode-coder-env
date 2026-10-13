@@ -38,6 +38,13 @@ jobs:
             --exclude 'hestia.env' \
             "$(pwd)/hestia/" root@10.0.10.17:/opt/docker-compose/hestia/
 
+      - name: Datenordner anlegen (auf Coder-Host)
+        # Bind-Mount-Ziel des Panels (/etc/hestia → /app/data): muss existieren und
+        # root gehören, sonst legt Docker einen root:root-Ordner mit falschen Rechten an.
+        run: |
+          ssh -i ~/.ssh/id_ed25519_coderdeploy -o IdentitiesOnly=yes root@10.0.10.17 \
+            "mkdir -p /etc/hestia && chmod 0755 /etc/hestia"
+
       - name: docker compose build + up -d (auf Coder-Host)
         run: |
           ssh -i ~/.ssh/id_ed25519_coderdeploy -o IdentitiesOnly=yes root@10.0.10.17 \

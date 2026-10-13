@@ -12,6 +12,10 @@ services:
       - coder-infra
     ports:
       - "49400:8000"
+    volumes:
+      # Lokaler Laufzeit-Zustand der KI-Vorschlag-Automatik (Fingerprints, letzter
+      # Vorschlag) — statischer Host-Ordner, NICHT im Repo (wird vom Deploy angelegt).
+      - /etc/hestia:/app/data
     environment:
       OPENBAO_ADDR: https://openbao.mueller-nas.de
       OPENBAO_ROLE_ID: ${HESTIA_OPENBAO_ROLE_ID:-}
