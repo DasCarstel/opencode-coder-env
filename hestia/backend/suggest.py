@@ -28,9 +28,9 @@ OC_SUGGEST_DIR = os.environ.get(
 OC_SUGGEST_MODEL = os.environ.get("OC_SUGGEST_MODEL", "").strip()
 PRESET = os.environ.get("HESTIA_PRESET_PROVIDER", "opencode-go")
 POLL_INTERVAL = 5.0
-POLL_TIMEOUT = float(os.environ.get("OC_SUGGEST_TIMEOUT", "420"))
-STALL_TIMEOUT = float(os.environ.get("OC_SUGGEST_STALL_TIMEOUT", "90"))
-TRIES = int(os.environ.get("OC_SUGGEST_TRIES", "2"))
+POLL_TIMEOUT = float(os.environ.get("OC_SUGGEST_TIMEOUT", "150"))
+STALL_TIMEOUT = float(os.environ.get("OC_SUGGEST_STALL_TIMEOUT", "45"))
+TRIES = int(os.environ.get("OC_SUGGEST_TRIES", "1"))
 
 
 def _headers():
@@ -100,46 +100,51 @@ ANTWORTE NUR MIT folgendem JSON (keine weiteren Worte, keine Backticks):
   "heavy": {{"model": "opencode-go/<modelID>", "variant": "<variant|leer>", "reason": "<1 Satz>"}}}}"""
 
 
-def resolve_analysis_model() -> tuple:
-    """Analyse-Modell bestimmen: aktuelles @heavy-Modell aus den Overrides.
-
-    Reihenfolge: OC_SUGGEST_MODEL (env) → @heavy aus .opencode-Overrides →
-    Session-Default. Gibt (model_ref|None, info) zurück; info dokumentiert die
-    Wahl für die Anzeige im Panel.
-    """
-    ref = OC_SUGGEST_MODEL
+def _resolve_tier_model(tier: str):
+    """Modell + Info eines Tiers aus den Overrides (None, wenn nicht nutzbar)."""
+    ref = OC_SUGGEST_MODEL if tier == "heavy" and OC_SUGGEST_MODEL else ""
     variant = ""
-    source = "env"
-    if "#" in ref:
+    if ref and "#" in ref:
         ref, _, variant = ref.partition("#")
     if not ref:
-        source = "tier-heavy"
         try:
             from github_api import get_overrides
             preset = (get_overrides()["config"].get("presets") or {}).get(PRESET) or {}
-            heavy = preset.get("heavy") or {}
-            ref = (heavy.get("model") or "").strip()
-            variant = (heavy.get("variant") or "").strip()
+            entry = preset.get(tier) or {}
+            ref = (entry.get("model") or "").strip()
+            variant = (entry.get("variant") or "").strip()
         except Exception:
-            ref = ""
+            return None, {}
     if not ref:
-        return None, {"source": "session-default"}
+        return None, {}
     ok, res = usable(ref)
     if not ok:
-        return None, {"source": "session-default", "note": res}
+        return None, {}
     provider, _, mid = ref.partition("/")
     if variant and variant not in (res.get("variants") or []):
-        note_v = f"Variante '{variant}' nicht verfügbar — ohne Variante"
         variant = ""
-    else:
-        note_v = ""
-    info = {"source": source, "model": ref, "variant": variant or None}
-    if note_v:
-        info["note"] = note_v
     body = {"providerID": provider, "id": mid}
     if variant:
         body["variant"] = variant  # leeres variant-Feld lässt den Lauf sofort fehlschlagen
-    return body, info
+    label = ref + (f"#{variant}" if variant else "")
+    return body, {"model": ref, "variant": variant or None, "label": label}
+
+
+def analysis_candidates() -> list:
+    """Kandidaten-Kette: @heavy -> @medium -> Session-Default (kein fixiertes Modell)."""
+    chain = []
+    for tier in ("heavy", "medium"):
+        body, info = _resolve_tier_model(tier)
+        if body:
+            chain.append((body, {"source": f"tier-{tier}", **info}))
+    chain.append((None, {"source": "session-default", "label": "Session-Default"}))
+    return chain
+
+
+def resolve_analysis_model() -> tuple:
+    """Erstes Analyse-Modell (=@heavy bzw. Override); Kettenlogik in analysis_candidates()."""
+    chain = analysis_candidates()
+    return chain[0][0], chain[0][1]
 
 
 class StallError(RuntimeError):
@@ -248,18 +253,21 @@ def suggest() -> dict:
     if not OC_SERVER_PASSWORD:
         raise RuntimeError("OC_SERVER_PASSWORD nicht gesetzt")
     prompt = _build_prompt()
-    model_body, used_info = resolve_analysis_model()
-    last_err = None
-    for attempt in range(1, max(1, TRIES) + 1):
+    candidates = analysis_candidates()
+    errors = []
+    for idx, (model_body, info) in enumerate(candidates):
         try:
-            res = _attempt(prompt, model_body, used_info)
-            res["analyzedWith"] = used_info
-            res["attempt"] = attempt
+            res = _attempt(prompt, model_body, info)
+            res["analyzedWith"] = info
+            res["attempt"] = idx + 1
+            if idx > 0:
+                info["note"] = (
+                    f"Fallback (vorher: {', '.join(c[1].get('label','?') for c in candidates[:idx])} "
+                    "antwortete nicht)"
+                )
             return res
-        except Exception as e:  # noqa: BLE001 — Retry dann Fehler nach außen
-            last_err = e
-            if attempt < max(1, TRIES):
-                time.sleep(3)
-                continue
-    raise RuntimeError(f"Analyse fehlgeschlagen nach {TRIES} Versuch(en): {last_err}")
+        except Exception as e:  # noqa: BLE001 — nächster Kandidat
+            errors.append(f"{info.get('label','?')}: {e}")
+            continue
+    raise RuntimeError("Analyse fehlgeschlagen — " + " | ".join(errors))
 
