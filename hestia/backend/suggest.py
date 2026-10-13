@@ -165,7 +165,77 @@ def resolve_analysis_model() -> tuple:
 
 
 class StallError(RuntimeError):
-    """Die Provider-Anfrage liefert keinen Fortschritt (0 Token / keine Updates)."""
+    """Keine Lebenszeichen vom Modell (Event-Stille) — echter Hänger."""
+
+
+def _event_watch(sid: str, deadline: float, stall_timeout: float, on_progress=None) -> str:
+    """Wartet auf den Abschluss der Session über den SSE-Stream /api/event.
+
+    Liveness = JEDES Event zu unserer Session (reasoning.delta/text.delta/…).
+    Erst Event-Stille über stall_timeout gilt als Hänger. Rückgabe:
+    "succeeded" | "failed:<typ>" | "stalled" | "timeout" | "unwatchable"
+    """
+    import http.client
+    from urllib.parse import urlparse
+    u = urlparse(OC_SERVER_URL)
+    host, port = u.hostname, u.port or 80
+    auth = base64.b64encode(f"{OC_SERVER_USER}:{OC_SERVER_PASSWORD}".encode()).decode()
+
+    started = time.time()
+    last_activity = started
+    deltas = 0
+    conn = None
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=120)
+        conn.request("GET", "/api/event", headers={
+            "Authorization": f"Basic {auth}",
+            "Accept": "text/event-stream",
+            "Cache-Control": "no-cache",
+        })
+        resp = conn.getresponse()
+        if resp.status != 200:
+            return "unwatchable"
+        while True:
+            now = time.time()
+            if now > deadline:
+                _interrupt(sid)
+                return "timeout"
+            if now - last_activity > stall_timeout:
+                _interrupt(sid)
+                return "stalled"
+            line = resp.readline()          # blockiert bis Zeile/Heartbeat
+            if not line:
+                return "unwatchable"
+            if not line.startswith(b"data: "):
+                continue
+            try:
+                ev = json.loads(line[6:].decode(errors="ignore"))
+            except Exception:
+                continue
+            if sid not in json.dumps(ev):
+                continue
+            last_activity = time.time()
+            etype = ev.get("type", "")
+            if etype.endswith(".delta"):
+                deltas += 1
+                if on_progress and deltas % 10 == 0:
+                    on_progress(deltas=deltas, elapsed=round(time.time() - started, 1))
+            if etype.startswith("session.execution."):
+                phase = etype.rsplit(".", 1)[-1]
+                if phase == "succeeded":
+                    if on_progress:
+                        on_progress(deltas=deltas, elapsed=round(time.time() - started, 1))
+                    return "succeeded"
+                if phase in ("failed", "cancelled", "aborted", "interrupted"):
+                    return f"failed:{phase}"
+    except Exception:
+        return "unwatchable"
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
 
 def _active_ids() -> set:
@@ -210,7 +280,7 @@ def _delete_session(sid: str):
         return False
 
 
-def _attempt(prompt: str, model_body, used_info: dict) -> dict:
+def _attempt(prompt: str, model_body, used_info: dict, on_progress=None) -> dict:
     sstatus, sres = _req("POST", f"{OC_SERVER_URL}/api/session",
                          {"location": {"directory": OC_SUGGEST_DIR},
                           "title": "Hestia Modell-Vorschlag"})
@@ -235,23 +305,44 @@ def _attempt(prompt: str, model_body, used_info: dict) -> dict:
         if pstatus not in (200, 201, 202):
             raise RuntimeError(f"Prompt-Feuern fehlgeschlagen ({pstatus}): {pres}")
 
-        deadline = time.time() + POLL_TIMEOUT
-        last_progress = time.time()
-        last_sig = _progress(sid)
-        while time.time() < deadline:
-            time.sleep(POLL_INTERVAL)
-            if sid not in _active_ids():
-                break  # fertig
-            sig = _progress(sid)
-            if sig != last_sig:
-                last_sig, last_progress = sig, time.time()
-            elif time.time() - last_progress > STALL_TIMEOUT:
-                raise StallError(
-                    f"Keine Provider-Antwort seit {int(STALL_TIMEOUT)}s — "
-                    "modell-/provider-seitiger Hänger."
-                )
-        else:
+        # ── Warten: bevorzugt über den Event-Stream (echte Denk-Aktivität) ──
+        _progress_cb = on_progress
+
+        def _live(**kw):
+            if _progress_cb:
+                try:
+                    _progress_cb(**kw)
+                except Exception:
+                    pass
+
+        result = _event_watch(sid, deadline=time.time() + POLL_TIMEOUT,
+                              stall_timeout=STALL_TIMEOUT, on_progress=_live)
+        if result == "unwatchable":
+            # Fallback: klassisches Polling (falls /api/event nicht verfügbar)
+            deadline = time.time() + POLL_TIMEOUT
+            last_progress = time.time()
+            last_sig = _progress(sid)
+            while time.time() < deadline:
+                time.sleep(POLL_INTERVAL)
+                if sid not in _active_ids():
+                    result = "succeeded"
+                    break
+                sig = _progress(sid)
+                if sig != last_sig:
+                    last_sig, last_progress = sig, time.time()
+                elif time.time() - last_progress > STALL_TIMEOUT:
+                    result = "stalled"
+                    break
+            else:
+                result = "timeout"
+        if result == "stalled":
+            raise StallError(
+                f"Keine Lebenszeichen (Events/Tokens) seit {int(STALL_TIMEOUT)}s — echter Hänger."
+            )
+        if result == "timeout":
             raise RuntimeError(f"Timeout nach {int(POLL_TIMEOUT)}s — bitte erneut versuchen.")
+        if result.startswith("failed:"):
+            raise RuntimeError(f"Session endete mit '{result.split(':', 1)[1]}'")
 
         mstatus, mres = _req("GET", f"{OC_SERVER_URL}/api/session/{sid}/message?limit=100")
         if mstatus != 200:
@@ -301,8 +392,12 @@ def suggest(override_ref: str = "", override_variant: str = "", progress=None) -
         label = info.get("label", "?")
         report(model=label, source=info.get("source"), attempt=idx + 1, total=len(candidates),
                phase="start", note=None)
+        def _tier_progress(**kw):
+            report(model=label, source=info.get("source"), attempt=idx + 1,
+                   total=len(candidates), phase="running", **kw)
+
         try:
-            res = _attempt(prompt, model_body, info)
+            res = _attempt(prompt, model_body, info, on_progress=_tier_progress)
             res["analyzedWith"] = info
             res["attempt"] = idx + 1
             if idx > 0:

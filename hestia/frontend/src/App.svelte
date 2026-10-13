@@ -226,7 +226,8 @@ loadRolloutStatus()
   <h2>KI-Vorschlag</h2>
   <p class="muted">
     OpenCode analysiert den Live-Katalog (alle OpenCode-Go-Modelle mit Preisen) und schlägt die
-    günstigste zuverlässige 3-Tier-Anordnung vor. Dauer: ~10 s bis 2 Min (je nach Modell).
+    günstigste zuverlässige 3-Tier-Anordnung vor. Das Modell darf ruhig länger „denken“ — solange
+    Aktivität ankommt, läuft die Analyse weiter; erst bei kompletter Stille (~60 s) übernimmt der Fallback.
   </p>
   <div class="tierRow" style="grid-template-columns: 1fr 2fr 1fr">
     <div class="tierLabel">
@@ -254,6 +255,7 @@ loadRolloutStatus()
       {#if liveStatus?.model}
         Analysiert gerade mit <span class="mono">{liveStatus.model}</span>
         {#if liveStatus.attempt && liveStatus.total}· Versuch {liveStatus.attempt}/{liveStatus.total}{/if}
+        {#if liveStatus.deltas}· {liveStatus.deltas} Denk-Schritte{/if}
         · {suggestElapsed}s
       {:else}
         Vorbereitung … {suggestElapsed}s
