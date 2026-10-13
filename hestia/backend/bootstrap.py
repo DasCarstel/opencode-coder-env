@@ -8,6 +8,7 @@ Secrets (AppRole-Policy muss covered paths freigeben):
   secret/data/mcp/github                    → GITHUB_TOKEN (api_key)
   secret/data/mcp/hermes-opencode-service   → OC_SERVER_PASSWORD (password)
   secret/data/mcp/hestia                    → HESTIA_PASSWORD (password) [optional]
+  secret/data/mcp/opencode-go               → OC_GO_DEFAULT1..3 + OC_GO_ACTIVE (je ein Feld)
 """
 import json
 import os
@@ -24,6 +25,13 @@ SOURCES = [
     ("secret/data/mcp/hestia", "password", "HESTIA_PASSWORD"),
 ]
 
+# OpenCode-Go-Konten: alle Felder liegen in EINEM Secret → ein Request.
+GO_ACCOUNTS_PATH = "secret/data/mcp/opencode-go"
+GO_FIELDS = [("default1", "OC_GO_DEFAULT1"),
+             ("default2", "OC_GO_DEFAULT2"),
+             ("default3", "OC_GO_DEFAULT3"),
+             ("active", "OC_GO_ACTIVE")]
+
 
 def log(msg):
     print(f"[hestia-bootstrap] {msg}", flush=True)
@@ -37,6 +45,27 @@ def bao_request(path, payload=None, token=None):
     req = urllib.request.Request(f"{OPENBAO_ADDR}/v1/{path}", data=data, headers=headers)
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.loads(resp.read().decode())
+
+
+def _load_go_accounts(token):
+    """OpenCode-Go-Keys + aktives Konto in einem Request laden (Budget-System)."""
+    loaded = []
+    try:
+        data = bao_request(GO_ACCOUNTS_PATH, token=token)["data"]["data"]
+    except Exception as e:
+        log(f"  ⚠ OpenCode-Go-Konten: {GO_ACCOUNTS_PATH} nicht lesbar ({e})")
+        return
+    for field, envname in GO_FIELDS:
+        value = data.get(field, "")
+        if value:
+            os.environ[envname] = value
+            loaded.append(envname)
+            log(f"  ✓ {envname} geladen")
+        else:
+            log(f"  ⚠ {envname}: Key '{field}' leer in {GO_ACCOUNTS_PATH}")
+    if loaded:
+        log(f"  ✓ OpenCode-Go: {len(loaded)}/{len(GO_FIELDS)} Felder geladen "
+            f"(aktiv: {os.environ.get('OC_GO_ACTIVE', '—')})")
 
 
 def main():
@@ -56,6 +85,7 @@ def main():
                         log(f"  ⚠ {envname}: Key '{key}' leer in {path}")
                 except Exception as e:
                     log(f"  ⚠ {envname}: {path} nicht lesbar ({e})")
+            _load_go_accounts(token)
             os.environ["BAO_TOKEN"] = token
         except Exception as e:
             log(f"⚠ OpenBao-Login fehlgeschlagen ({e}) — fahre mit Container-Env fort")

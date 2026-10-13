@@ -17,6 +17,8 @@ let useFree = $state({ fast: false, medium: false })
 let fallbacks = $state({ fast: null, medium: null })
 let foStatus = $state(null)
 let foBusy = $state(false)
+let accStatus = $state(null)
+let accBusy = $state(false)
 
 const VARIANT_RANK = { minimal: 1, none: 2, low: 3, medium: 4, thinking: 4, high: 5, xhigh: 6, max: 7 }
 function highestVariantOf(ref) {
@@ -269,9 +271,48 @@ async function runFailoverCheck() {
   }
 }
 
+// Budget-System (OpenCode Go): Konten + Verbrauchsfenster anzeigen (P1: nur Anzeige)
+async function loadAccounts() {
+  try { accStatus = await api('/api/accounts') } catch { /* ignore */ }
+}
+
+async function runAccountsCheck() {
+  accBusy = true
+  error = null
+  try {
+    accStatus = { ...(accStatus || {}), ...(await api('/api/accounts/check', { body: {}, method: 'POST' })) }
+    await loadAccounts()
+  } catch (e) {
+    error = 'Budget: ' + e.message
+  } finally {
+    accBusy = false
+  }
+}
+
+const WIN_LABELS = { rolling: '5 h', weekly: 'Woche', monthly: 'Monat' }
+
+function barColor(free) {
+  return free < 10 ? 'var(--err)' : (free < 50 ? 'var(--warn)' : 'var(--ok)')
+}
+
+function fmtReset(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return 'Reset ' + d.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
+function fmtTime(ts) {
+  if (!ts) return '—'
+  const d = new Date(ts * 1000)
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })
+}
+
 load()
 loadRolloutStatus()
 loadFailover()
+loadAccounts()
+setInterval(loadAccounts, 60000)
 </script>
 
 <header>
@@ -547,6 +588,62 @@ loadFailover()
 
 <div class="card">
   <h2>
+    OpenCode Go — Budget
+    <label class="muted" style="font-weight:400; margin-left:12px">
+      Modus {accStatus?.mode || '—'} · aktiv: <span class="mono">{accStatus?.active || '—'}</span>
+      {#if accStatus?.lastRun}· zuletzt {fmtTime(accStatus.lastRun)}{/if}
+    </label>
+  </h2>
+
+  <div class="row" style="margin-top:0">
+    <button onclick={runAccountsCheck} disabled={accBusy}>
+      {accBusy ? 'Frage ab …' : '⟳ Jetzt prüfen'}
+    </button>
+    <span class="muted">Alle {accStatus?.interval || 300}s automatisch · nur Anzeige, kein automatischer Wechsel.</span>
+  </div>
+
+  {#if accStatus?.error}
+    <p class="muted" style="color:var(--err)">⚠ {accStatus.error}</p>
+  {/if}
+
+  {#if accStatus?.accounts?.length}
+    {#each accStatus.accounts as acc (acc.id)}
+      <div class="subRow" style="margin-top:10px">
+        <div class="row" style="margin-top:0">
+          <strong>{acc.label}</strong>
+          <span class="mono muted">{acc.id}</span>
+          {#if acc.isActive}<span class="badge active">aktiv</span>{/if}
+          {#if !acc.hasKey}<span class="badge warn">kein Key</span>{/if}
+          {#if acc.error}<span class="badge err">{acc.error}</span>{/if}
+        </div>
+        {#each ['rolling', 'weekly', 'monthly'] as w (w)}
+          {@const win = acc.windows?.[w]}
+          {#if win}
+            <div class="budgetBar" title={fmtReset(win.resetsAt)}>
+              <span class="budgetName">{WIN_LABELS[w]}</span>
+              <span class="budgetTrack">
+                <span class="budgetFill" style="width:{Math.max(0, Math.min(100, win.free))}%; background:{barColor(win.free)}"></span>
+              </span>
+              <span class="muted">{Math.round(win.free)} % frei · {fmtReset(win.resetsAt) || win.status}</span>
+            </div>
+          {/if}
+        {/each}
+      </div>
+    {/each}
+  {:else}
+    <p class="muted">Noch keine Kontendaten — SOT: <span class="mono">.opencode/hestia-accounts.jsonc</span></p>
+  {/if}
+
+  {#if accStatus?.recommendation?.switchRecommended}
+    <p class="muted" style="margin-top:10px; border-top:1px solid var(--line); padding-top:8px">
+      💡 Wechsel empfohlen → <span class="mono">{accStatus.recommendation.target}</span>
+      ({accStatus.recommendation.reason}) — <span class="muted">kein automatischer Wechsel in P1</span>
+    </p>
+  {/if}
+</div>
+
+<div class="card">
+  <h2>
     Preisübersicht
     <label class="muted" style="font-weight:400; margin-left:12px">
       <input type="checkbox" bind:checked={catFilterOpenGoOnly} /> nur erlaubte Provider ({allowed.join(", ")})
@@ -598,4 +695,8 @@ loadFailover()
   .chip:hover { border-color: var(--fire); color: var(--text); }
   .chipActive { background: var(--fire); border-color: var(--fire); color: #1a120a; font-weight: 600; }
   .rowActive td { background: rgba(224, 115, 29, 0.06); }
+  .budgetBar { display: grid; grid-template-columns: 64px 120px 1fr; gap: 8px; align-items: center; margin-top: 5px; font-size: .78rem; }
+  .budgetName { color: var(--muted); }
+  .budgetTrack { display: block; height: 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; }
+  .budgetFill { display: block; height: 100%; border-radius: 999px; }
 </style>

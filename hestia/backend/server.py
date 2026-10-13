@@ -14,6 +14,8 @@ Endpoints (alle unter Basic Auth):
   POST /api/apply             Tier-Wechsel validieren → Override committen → CI/CD
   POST /api/suggest           KI-Analyse → 3-Tier-Vorschlag (JSON)
   POST /api/rollout           Force-Rollout (Workflow-Dispatch)
+  GET  /api/accounts          Budget-Status aller Provider-Konten (inkl. Empfehlung)
+  POST /api/accounts/check    Konten sofort neu abfragen (kein Wechsel in P1)
   GET  /*                     statisches Frontend (dist/)
 """
 import base64
@@ -34,6 +36,7 @@ from github_api import ConfigError  # noqa: E402
 import hjsonc  # noqa: E402
 import suggest as suggest_mod  # noqa: E402
 import failover as failover_mod  # noqa: E402
+import accounts as accounts_mod  # noqa: E402
 
 STATIC_DIR = os.environ.get(
     "HESTIA_STATIC", os.path.join(os.path.dirname(BASE_DIR), "frontend", "dist")
@@ -349,7 +352,9 @@ class Handler(BaseHTTPRequestHandler):
             if state.get("running") and state.get("startedAt"):
                 state["elapsed"] = round(time.time() - state["startedAt"], 1)
             return self._json(state)
-        if path in ("/api/apply", "/api/suggest", "/api/rollout"):
+        if path in ("/api/accounts", "/api/accounts/status"):
+            return self._json(accounts_mod.state())
+        if path in ("/api/apply", "/api/suggest", "/api/rollout", "/api/accounts/check"):
             return self._json(
                 {"error": f"{path} ist POST-only (der Aufruf kam als GET an)"}, 405
             )
@@ -527,6 +532,13 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 _log(f"failover check error: {e}")
                 return self._json({"error": str(e)}, 500)
+        if path == "/api/accounts/check":
+            try:
+                self._body()
+                return self._json(accounts_mod.run_check())
+            except Exception as e:
+                _log(f"accounts check error: {e}")
+                return self._json({"error": str(e)}, 500)
         if path == "/api/rollout":
             try:
                 payload = self._body()
@@ -546,6 +558,10 @@ def main():
         failover_mod.start()
     except Exception as e:  # noqa: BLE001
         _log(f"Failover-Start fehlgeschlagen: {e}")
+    try:
+        accounts_mod.start()
+    except Exception as e:  # noqa: BLE001
+        _log(f"Accounts-Start fehlgeschlagen: {e}")
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     _log(f"Hestia backend listening on :{port} (user={HESTIA_USER}; static={STATIC_DIR})")
     if not os.environ.get("HESTIA_PASSWORD"):

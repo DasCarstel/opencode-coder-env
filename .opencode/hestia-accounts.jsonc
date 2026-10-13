@@ -1,0 +1,29 @@
+{
+  "checkIntervalSeconds": 300,
+  "policy": {
+    "mode": "auto",                    // auto | notify | off
+    "switchWhenExhausted": true,       // 0 % frei / status "rate-limited" in irgendeinem Fenster
+    "select": "most_headroom",
+    "balance": {
+      "enabled": true,
+      "windows": ["weekly", "monthly"],
+      "maxSpreadPercentPoints": 25,    // aktives Konto > Ø der anderen + X Verbrauchs-pp
+      "minHeadroomPercent": 30         // nur wechseln, wenn Zielkonto >= X % frei hat
+    }
+  },
+  "providers": {
+    "opencode-go": {
+      "type": "http-json",
+      "url": "https://opencode.ai/zen/go/v1/usage",
+      "auth": "bearer",
+      "windows": { "rolling": "rolling", "weekly": "weekly", "monthly": "monthly" }
+    },
+    "gemini": { "type": "placeholder" },
+    "codex":  { "type": "placeholder" }
+  },
+  "accounts": [
+    { "id": "default1", "label": "OpenCode Go #1", "provider": "opencode-go", "priority": 1, "keyRef": { "path": "secret/data/mcp/opencode-go", "field": "default1" } },
+    { "id": "default2", "label": "OpenCode Go #2", "provider": "opencode-go", "priority": 2, "keyRef": { "path": "secret/data/mcp/opencode-go", "field": "default2" } },
+    { "id": "default3", "label": "OpenCode Go #3", "provider": "opencode-go", "priority": 3, "keyRef": { "path": "secret/data/mcp/opencode-go", "field": "default3" } }
+  ]
+}
