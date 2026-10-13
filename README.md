@@ -135,11 +135,14 @@ Model-Verwaltung für das OpenCode-Fleet (Fast/Medium/Heavy der Model-Router-Tie
 - **One-Time-Setup** (GitHub-Secrets, Runner, OpenBao-AppRole):
   `hestia/ci/setup/README.md`
 - **Phase 5 / O6 (teilweise umgesetzt, 2026-10-13)**: Das Budget-System
-  (Anzeige je Abo, Auto-/Notify-Kontowechsel) ist **umgesetzt** — siehe
-  Budget/Abos und Auto-Kontowechsel oben. Offen bleiben: Feinschliff der
-  Abo-Rotation, CI-Issue bei Modellverlust sowie die Gemini/Codex-Adapter.
-  Offene Kleinigkeiten (O7): Preset-Name neutralisieren, OpenCode-Go-Konto zurück
-  auf `default1`, optional `OC_SUGGEST_TIMEOUT` erhöhen.
+  (Anzeige je Abo, Auto-/Notify-Kontowechsel, Ablauf-Bevorzugung), die
+  Hestia→Hermes-Steuerung und der Runner-Watchdog sind **umgesetzt**. Offen
+  bleiben bewusst: Feinschliff der Abo-Rotation, CI-Issue bei Modellverlust,
+  Cross-Provider-Fallback (braucht einen zweiten Provider-Key) sowie die
+  Gemini/Codex-Adapter.
+  Erledigte Kleinigkeiten: Preset-Name neutralisiert (`opencode-go` → `hestia`),
+  `tiers.json` entfernt, `OC_SUGGEST_TIMEOUT` auf 300 s, OpenCode-Go-Konto
+  zurück auf `default1`.
 
 ## Workspaces
 
