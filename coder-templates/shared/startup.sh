@@ -715,7 +715,13 @@ case "${1:-list}" in
     for n in default1 default2 default3; do
       v="OC_GO_${n^^}"; [ -n "${!v:-}" ] && echo "  - $n"
     done
-    echo "Aktiv: ${OC_GO_ACTIVE:-default2}"
+    # Aktiv ist die Single Source of Truth in OpenBao (secret/data/mcp/opencode-go).
+    ACT=""
+    if [ -s /etc/opencode.env ]; then . /etc/opencode.env 2>/dev/null; fi
+    if [ -n "${BAO_TOKEN:-}" ]; then
+      ACT=$(curl -s -m 8 -H "X-Vault-Token: $BAO_TOKEN" "${OPENBAO_ADDR:-https://openbao.mueller-nas.de}/v1/secret/data/mcp/opencode-go" | jq -r '.data.data.active // empty')
+    fi
+    echo "Aktiv (OpenBao): ${ACT:-unbekannt}"
     ;;
   use)
     NAME="${2:-}"

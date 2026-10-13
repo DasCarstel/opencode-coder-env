@@ -27,6 +27,7 @@ ACCOUNTS_PATH = os.environ.get("HESTIA_ACCOUNTS_PATH", ".opencode/hestia-account
 CACHE_TTL = int(os.environ.get("HESTIA_ACCOUNTS_CACHE", "60"))   # Sekunden für die Usage-Cache
 CONFIG_TTL = 300                                                 # Sekunden für die Config (SOT)
 HTTP_TIMEOUT = 10
+PROBE_MODEL = os.environ.get("HESTIA_PROBE_MODEL", "mimo-v2.6-flash")
 # Workflow, der den eigentlichen Konto-Wechsel ausführt (OpenBao + Container).
 SWITCH_WORKFLOW = os.environ.get("HESTIA_SWITCH_WORKFLOW", "switch-account.yml")
 DEFAULT_COOLDOWN = int(os.environ.get("HESTIA_SWITCH_COOLDOWN") or 1800)   # Sekunden
@@ -156,6 +157,73 @@ def _avg_used(account: dict, windows) -> float:
     return sum(vals) / len(vals) if vals else 0.0
 
 
+def _active_from_openbao() -> str:
+    """'active' live aus OpenBao lesen (Single Source of Truth)."""
+    addr = os.environ.get("OPENBAO_ADDR", "https://openbao.mueller-nas.de").rstrip("/")
+    tok = os.environ.get("BAO_TOKEN") or ""
+    if not tok and os.path.exists("/etc/opencode.env"):
+        # BAO_TOKEN liegt ggf. nur in der Container-Env-Datei (startup.sh), nicht im Prozess-Env
+        try:
+            for line in open("/etc/opencode.env", encoding="utf-8", errors="replace"):
+                line = line.strip()
+                if line.startswith("export "):
+                    line = line[7:].strip()
+                if line.startswith("BAO_TOKEN="):
+                    tok = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+    if not tok:
+        return ""
+    req = urllib.request.Request(f"{addr}/v1/secret/data/mcp/opencode-go",
+                                 headers={"X-Vault-Token": tok, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode()).get("data", {}).get("data") or {}
+        return str(data.get("active") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _probe(key: str, provider: dict) -> tuple:
+    """Mini-Modellaufruf, um ein Konto ohne Guthaben zu erkennen.
+
+    Der Usage-Endpoint antwortet auch bei leerem Guthaben mit 200 — der Fehler
+    ('Insufficient account funds') kommt erst beim eigentlichen Modell-Aufruf.
+    Rückgabe: (ok, detail).
+    """
+    base = (provider.get("url") or "").rstrip("/")
+    if not base or not key:
+        return False, "kein Key/URL"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Hestia/1.0 (opencode-model-panel)",
+        "x-opencode-session": "hestia-probe",
+    }
+    if (provider.get("auth") or "bearer").lower() == "bearer":
+        headers["Authorization"] = f"Bearer {key}"
+    body = json.dumps({"model": PROBE_MODEL,
+                       "messages": [{"role": "user", "content": "hi"}],
+                       "max_tokens": 1}).encode()
+    req = urllib.request.Request(base + "/chat/completions", data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            resp.read()
+        return True, ""
+    except urllib.error.HTTPError as e:
+        text = ""
+        try:
+            text = e.read().decode(errors="replace")[:200]
+        except Exception:  # noqa: BLE001
+            pass
+        if e.code in (401, 403) and "Insufficient" in text:
+            return False, "keine Guthaben"
+        return False, f"HTTP {e.code}: {text}".strip()
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)
+
+
 def _expiring(account: dict, windows, within_hours: float, min_remaining: float):
     """Fenster, das innerhalb von within_hours zurücksetzt und noch >= min_remaining % frei hat.
 
@@ -201,7 +269,7 @@ def evaluate(cfg: dict, accounts: list) -> dict:
     if policy.get("mode") == "off":
         out["reason"] = "Policy-Modus: off"
         return out
-    active_id = cfg.get("active") or os.environ.get("OC_GO_ACTIVE") or ""
+    active_id = _active_from_openbao() or cfg.get("active") or os.environ.get("OC_GO_ACTIVE") or ""
     active = next((a for a in accounts if a.get("id") == active_id), None)
     others = [a for a in accounts
               if a.get("id") != active_id and a.get("ok") and a.get("windows")]
@@ -270,15 +338,18 @@ def refresh(force: bool = False) -> dict:
         provider = providers.get(acc.get("provider")) or {}
         key = _key((acc.get("keyRef") or {}).get("field") or acc.get("id") or "")
         res = _fetch(acc, provider)
+        probe_ok, probe_detail = _probe(key, provider)
         results.append({
             "id": acc.get("id"),
             "label": acc.get("label") or acc.get("id"),
             "provider": acc.get("provider"),
             "priority": acc.get("priority"),
+            # 'ok' = Usage-Endpoint UND echtem Mini-Aufruf — ein Konto ohne
+            # Guthaben ist damit 'ok: False' und wird nie Wechsel-Ziel.
             "isActive": acc.get("id") == active_id,
             "hasKey": bool(key),
-            "ok": bool(res.get("ok")),
-            "error": res.get("error"),
+            "ok": bool(res.get("ok")) and probe_ok,
+            "error": (res.get("error") or probe_detail) or None,
             "windows": res.get("windows") or {},
         })
     results.sort(key=lambda a: (a.get("priority") is None, a.get("priority") or 0, a.get("id") or ""))
