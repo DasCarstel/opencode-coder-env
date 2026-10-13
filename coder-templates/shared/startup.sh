@@ -733,15 +733,21 @@ case "${1:-list}" in
     [ -z "$NAME" ] && { echo "Nutzung: oc-go default <default1|default2|default3>"; exit 1; }
     VAR="OC_GO_${NAME^^}"; KEY="${!VAR:-}"
     [ -z "$KEY" ] && { echo "Unbekannter Key: $NAME"; exit 1; }
-    # In OpenBao schreiben (damit startup.sh den neuen Standard liest)
+    # In OpenBao schreiben (damit startup.sh den neuen Standard liest).
+    # KV v2: ein POST ersetzt das ganze Objekt → erst lesen, nur "active" ändern, dann schreiben.
     if [ -n "${BAO_TOKEN:-}" ]; then
-      curl -sS --max-time 10 -X POST \
+      CUR="$(curl -sS --max-time 10 -H "X-Vault-Token: ${BAO_TOKEN}" \
+        "https://openbao.mueller-nas.de/v1/secret/data/mcp/opencode-go" 2>/dev/null)"
+      BODY="$(printf '%s' "$CUR" | python3 -c 'import sys,json;d=json.load(sys.stdin);f=(d.get("data",{}).get("data") or {});f["active"]=sys.argv[1];print(json.dumps({"data":f}))' "$NAME" 2>/dev/null)"
+      if [ -n "$BODY" ] && curl -sS --max-time 10 -X POST \
         -H "X-Vault-Token: ${BAO_TOKEN}" \
         -H "Content-Type: application/json" \
-        -d "{\"data\":{\"active\":\"${NAME}\"}}" \
-        "https://openbao.mueller-nas.de/v1/secret/data/mcp/opencode-go" >/dev/null 2>&1 \
-        && echo "✓ Standard-Key in OpenBao gesetzt: $NAME" \
-        || echo "⚠ OpenBao-Update fehlgeschlagen (Token abgelaufen?)"
+        -d "$BODY" \
+        "https://openbao.mueller-nas.de/v1/secret/data/mcp/opencode-go" >/dev/null 2>&1; then
+        echo "✓ Standard-Key in OpenBao gesetzt: $NAME"
+      else
+        echo "⚠ OpenBao-Update fehlgeschlagen (Token abgelaufen?)"
+      fi
     else
       echo "⚠ Kein OpenBao-Token verfügbar – nur .bashrc aktualisiert"
     fi

@@ -69,12 +69,18 @@ fi
 echo "→ Key gelesen (${#KEY} Zeichen, wird nicht ausgegeben)"
 
 # --- 3) "active" im OpenBao-Secret setzen -------------------------------------
-curl -sS -X POST \
+# KV v2: ein POST auf secret/data/<pfad> ERSETZT das ganze Objekt und würde die
+# Key-Felder (default1..3) löschen → deshalb PATCH (ändert nur 'active').
+curl -sS -X PATCH \
   -H "X-Vault-Token: $VAULT_TOKEN" \
-  -H 'Content-Type: application/json' \
+  -H 'Content-Type: application/merge-patch+json' \
   -d "{\"data\":{\"active\":\"$ACCOUNT\"}}" \
   "$OPENBAO_ADDR/v1/$SECRET_PATH" >/dev/null
-echo "✓ OpenBao: active=$ACCOUNT"
+# Sicherheitsnetz: die Key-Felder müssen erhalten bleiben.
+LEFT="$(curl -sS -H "X-Vault-Token: $VAULT_TOKEN" "$OPENBAO_ADDR/v1/$SECRET_PATH" \
+  | python3 -c 'import sys,json;f=(json.load(sys.stdin).get("data",{}).get("data") or {});print(",".join(sorted(k for k in f if k!="active")))')"
+if [ -z "$LEFT" ]; then echo "✗ Key-Felder fehlen nach dem Patch — Abbruch!" >&2; exit 1; fi
+echo "✓ OpenBao: active=$ACCOUNT (Keys unverändert: $LEFT)"
 
 # --- 4) Container ermitteln und umstellen --------------------------------------
 echo "→ Suche laufende OpenCode-Container (Muster: coder-* + HESTIA_TARGETS)"
