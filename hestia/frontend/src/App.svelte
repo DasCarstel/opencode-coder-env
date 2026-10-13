@@ -743,15 +743,27 @@ setInterval(loadHermes, 60000)
     </span>
   </div>
 
+  {#if accStatus?.policy?.expiring?.enabled}
+    <p class="muted" style="margin:6px 0 0">
+      Ablauf-Bevorzugung aktiv: Ein Abo wird bevorzugt leergefahren, sobald ein Fenster in
+      ≤ {accStatus.policy.expiring.withinHours} h zurücksetzt und noch ≥ {accStatus.policy.expiring.minRemainingPercent} % frei ist.
+    </p>
+  {/if}
+
   {#if accStatus?.error}
     <p class="muted" style="color:var(--err)">⚠ {accStatus.error}</p>
   {/if}
 
   {#if accStatus?.accounts?.length}
+    {@const expNow = accStatus.accounts.find(a => a.expiring && a.isActive)}
+    {#if expNow}
+      <p class="expiryNote">⚡ <strong>{expNow.label}</strong> wird jetzt bevorzugt leergefahren — Reset in
+        {Math.round(expNow.expiring.hoursLeft)} h ({WIN_LABELS[expNow.expiring.window]}), noch {Math.round(expNow.expiring.free)} % frei.</p>
+    {/if}
     {#each accStatus.accounts as acc (acc.id)}
       {@const deadWins = Object.entries(acc.windows || {}).filter(([, x]) => x.status === 'rate-limited').map(([k]) => WIN_LABELS[k])}
       {@const disp = accStatus?.display || {}}
-      <div class="subRow" style="margin-top:10px">
+      <div class="subRow {acc.expiring ? 'expiring' : ''}{acc.expiring && acc.isActive ? ' expiring-now' : ''}" style="margin-top:10px">
         <div class="row" style="margin-top:0">
           <strong>{acc.label}</strong>
           <span class="mono muted">{acc.id}</span>
@@ -759,7 +771,9 @@ setInterval(loadHermes, 60000)
           {#if !acc.hasKey}<span class="badge warn">kein Key</span>{/if}
           {#if acc.error}<span class="badge err">{acc.error}</span>{/if}
           {#if deadWins.length}<span class="badge err">erschöpft: {deadWins.join(', ')}</span>{/if}
-          {#if acc.expiring}<span class="badge warn">läuft ab in {Math.round(acc.expiring.hoursLeft)} h ({WIN_LABELS[acc.expiring.window]})</span>{/if}
+          {#if acc.expiring}
+            <span class="badge expiry">⚡ {acc.isActive ? 'wird jetzt leergefahren' : 'bald fällig'} · Reset in {Math.round(acc.expiring.hoursLeft)} h ({WIN_LABELS[acc.expiring.window]})</span>
+          {/if}
           {#if !acc.isActive && acc.ok}
             <button class="mini" onclick={() => runAccountsSwitch(acc.id)} disabled={accBusy}
               title="Konto wechseln (Service-Neustart)">⇄ wechseln</button>
@@ -856,4 +870,13 @@ setInterval(loadHermes, 60000)
   .budgetTrack { display: block; height: 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; }
   .budgetFill { display: block; height: 100%; border-radius: 999px; }
   .mini { padding: 1px 6px; font-size: .78rem; }
+  /* Abo läuft bald ab (policy.expiring): Konto hervorheben */
+  .subRow.expiring { border-left-color: var(--warn); background: var(--panel-2); border-radius: 0 8px 8px 0; }
+  .subRow.expiring-now { animation: expiryPulse 2.4s ease-in-out infinite; }
+  .badge.expiry { border-color: var(--warn); background: var(--warn); color: #1e1813; font-weight: 600; }
+  .expiryNote { margin: 8px 0 0; padding: 8px 10px; border: 1px solid var(--warn); border-radius: 8px; background: var(--panel-2); }
+  @keyframes expiryPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(217, 161, 58, 0); }
+    50% { box-shadow: 0 0 0 4px rgba(217, 161, 58, .22); }
+  }
 </style>
