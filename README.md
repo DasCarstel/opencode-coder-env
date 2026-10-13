@@ -27,6 +27,7 @@ opencode-coder-env/
 │   ├── hestia-primary-agents.json              # build/plan-Modelle
 │   ├── hestia-fallbacks.json                  # bezahlte Ausfall-Modelle
 │   ├── hestia-failover.jsonc                  # Ausfallschutz-Einstellungen
+│   ├── hestia-suggest.jsonc                   # KI-Vorschlag-Automatik
 │   └── hestia-hermes.jsonc                     # Hermes-Steuerung
 ├── docs/                      # diese Dokumentation
 ├── coder-templates/

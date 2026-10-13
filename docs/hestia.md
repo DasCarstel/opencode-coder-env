@@ -73,7 +73,7 @@ Schwellenwerte) steht als Klartext in `hestia/docker-compose.yml`.
 
 ## Single Sources of Truth
 
-Sechs Dateien unter `.opencode/` im Repo-Root, alle von Hestia verwaltet:
+Sieben Dateien unter `.opencode/` im Repo-Root, alle von Hestia verwaltet:
 
 | Datei | Inhalt | Wer liest sie |
 |-------|--------|---------------|
@@ -83,6 +83,7 @@ Sechs Dateien unter `.opencode/` im Repo-Root, alle von Hestia verwaltet:
 | `hestia-hermes.jsonc` | Hermes-Modell, Fallback-Kette, Pool-Regeln, Profil-Overrides | Hestia (`hermes.py`), Workflow `apply-hermes` |
 | `hestia-primary-agents.json` | Agent→Modell-Zuordnung für `build` und `plan` | Hestia (`/api/config`) |
 | `hestia-failover.jsonc` | **Ausfallschutz-Einstellungen**: `enabled`, `threshold`, `intervalSeconds`, `timeoutSeconds` | Hestia (`failover.py`) |
+| `hestia-suggest.jsonc` | **KI-Vorschlag-Automatik**: `enabled`, `checkIntervalSeconds`, `cooldownSeconds`, `analysisModel` | Hestia (`suggest.py`) |
 
 Das Overrides-File ist JSONC (Kommentare erlaubt) und wird vom Router-Plugin per
 **cwd-Suche nach oben** bis zur Repo-Root gefunden. Deshalb braucht kein Workspace
@@ -121,7 +122,7 @@ Autorisierung; ein GET auf einen POST-only-Endpunkt liefert 405 mit Klartext-Hin
 | `/api/config` | aktiver Preset, Tiers, effektive Primary-Agents, Fallbacks, verfügbare Modes, Git-SHA und HTML-URL der Overrides |
 | `/api/rollout/status` | letzter Lauf des Rollout-Workflows |
 | `/api/failover/status` | Auto-Failover-Zustand |
-| `/api/suggest/status` | KI-Vorschlag-Zustand (läuft gerade? welches Modell, welcher Versuch, Laufzeit) |
+| `/api/suggest/status` | KI-Vorschlag-Zustand (läuft gerade? welches Modell, welcher Versuch, Laufzeit) + `auto` (Automatik-Einstellungen, Fingerprint, nächste Prüfung) + `proposal` (letzter automatischer Vorschlag) |
 | `/api/accounts`, `/api/accounts/status` | Kontostand, Restbudget je Fenster, `isActive`, `expiring`, Modus |
 | `/api/hermes`, `/api/hermes/status` | aktuell an Hermes verteiltes Modell, Fallback-Kette, Pool |
 
@@ -131,6 +132,7 @@ Autorisierung; ein GET auf einen POST-only-Endpunkt liefert 405 mit Klartext-Hin
 |------|---------|
 | `/api/apply` | Tier-Konfiguration validieren + committen + Rollout auslösen |
 | `/api/suggest` | KI-Modellvorschlag starten (asynchron) |
+| `/api/suggest/settings` | KI-Vorschlag-Automatik speichern (SOT-Commit, wirkt sofort) |
 | `/api/failover/check` | Failover-Probe sofort ausführen |
 | `/api/failover/settings` | Ausfallschutz-Einstellungen speichern (SOT-Commit, wirkt sofort) |
 | `/api/accounts/check` | Budget aller Konten sofort neu abfragen |
@@ -306,6 +308,29 @@ Status über `/api/failover/status`, Sofort-Prüfung per `POST /api/failover/che
 `POST /api/suggest` dispatcht eine OpenCode-Session und lässt sie die Modellwahl
 analysieren. Kein Request-Block: Der Panel-Request kehrt sofort zurück, der Zustand
 wird über `/api/suggest/status` verfolgt (Modell, Versuch, Laufzeit).
+
+### Automatik (ereignisgesteuert, 2026-10-13)
+
+Der Vorschlag kann **automatisch** laufen — aber **nicht** nach Kalender, sondern nur
+bei einer **materiellen Katalogänderung**. Konfiguration in `.opencode/hestia-suggest.jsonc`
+(im Panel einstellbar, `POST /api/suggest/settings`):
+
+- **Prüfen (billig, lokal):** alle `checkIntervalSeconds` (Default 6 h) **ein** Abruf des
+  eigenen OpenCode-Server-Katalogs → Fingerprint über die **materiellen** Felder der
+  relevanten Provider: Modell-ID, Status, Varianten, Preise. Reine Namens-/Beschreibungs-
+  änderungen ändern ihn **nicht**.
+- **Analysieren (teuer, selten):** ein KI-Lauf startet nur, wenn sich der Fingerprint
+  geändert hat **und** der `cooldownSeconds` (Default 24 h) seit dem letzten Auto-Lauf
+  abgelaufen ist. Änderungen innerhalb des Cooldowns bleiben „anstehend" und laufen danach
+  nach — Obergrenze also **max. 1 Lauf je Cooldown**.
+- **Baseline-Regel:** ohne gespeicherten Fingerprint wird nur der Ist-Stand gemerkt —
+  **kein** KI-Lauf (sonst würde jeder Deploy/Neustart einen Lauf auslösen).
+- **Modell:** der Auto-Lauf nutzt `analysisModel` (Default ein **Gratis-Modell**), damit er
+  nie am erschöpften Abo-Budget scheitert; der manuelle Lauf bleibt `@heavy`.
+- **Zustand lokal:** Fingerprint + letzter Vorschlag liegen unter `/etc/hestia`
+  (Bind-Mount → `/app/data`, **nicht** im Repo committet) und überleben Deploys.
+- **Sichtbarkeit:** Das Panel zeigt den letzten automatischen Vorschlag, markiert
+  Abweichungen zur aktiven Konfiguration und kann ihn in den Tier-Editor übernehmen.
 
 - **Default:** `@heavy` aus den committeten Overrides, inklusive Effort-Variante.
   Im Panel frei wählbar — Editor-Auswahl oder jedes Katalog-Modell.
