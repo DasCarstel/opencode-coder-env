@@ -27,6 +27,17 @@ und wird von `startup.sh` in die OpenCode-Service-Umgebung injiziert.
 - Der MCP-Endpunkt liefert Tools, Prompts und Resources (Assist-API)
 - Assist-Exposition der Entitäten wird in HA unter "Sprachassistenten" konfiguriert
 
+## Rückfragen an den Nutzer
+
+- **Fragen an den Nutzer werden immer über das native OpenCode-Tool `question`
+  gestellt** — mit klickbaren Auswahlmöglichkeiten, **nie** als Freitext im Chat.
+- Gilt für jede Rückfrage (auch Ja/Nein- und Zwischenfragen), nicht erst am Ende
+  einer Antwort.
+- `question` ist ein **OpenCode-Built-in-Tool, kein MCP-Server** (der Name
+  „Fragen-MCP" ist irreführend).
+- Jede Option mit kurzer Beschreibung angeben; OpenCode ergänzt automatisch die
+  Möglichkeit einer eigenen Antwort.
+
 ## Skills
 `home-assistant`, `google-home-exposure`, `obsidian`,
 `docker-host-location` (Krefeld → `docker-host`),

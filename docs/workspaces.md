@@ -117,3 +117,15 @@ Lade-Matrix siehe [mcp-skills.md](mcp-skills.md#skills-architektur).
 
 Neben den Repo-Skills gibt es die **Built-in-Skills** von OpenCode (`opencode`,
 `report`), die immer verfügbar sind.
+
+## Agent-Konventionen (`AGENTS.md`)
+
+Jeder Workspace hat ein `AGENTS.md` in seinem Verzeichnis (General und minijob
+seit 2026-10-13 ergänzt); OpenCode lädt es beim Start als Projekt-Instruktion.
+Verbindliche Konvention in **allen** Workspaces:
+
+- **Rückfragen an den Nutzer werden immer über das native OpenCode-Tool `question`
+  gestellt** — mit klickbaren Auswahlmöglichkeiten, **nie** als Freitext am Ende
+  einer Antwort.
+- `question` ist ein **OpenCode-Built-in-Tool, kein MCP-Server**; in der
+  Konfiguration heißt es ebenfalls `question` (z. B. unter `permission`/`tools`).
