@@ -4,7 +4,7 @@
   // der CI-Workflow verteilt den Key daraus in die Container.
   // Das gleichnamige Feld "active" im OpenBao-Secret secret/data/mcp/opencode-go
   // wird NICHT mehr gelesen/geschrieben — es bleibt nur historisch bestehen.
-  "active": "default1",
+  "active": "default2",
 
   "checkIntervalSeconds": 300,          // Abfrageintervall der Quota (Sekunden)
 
