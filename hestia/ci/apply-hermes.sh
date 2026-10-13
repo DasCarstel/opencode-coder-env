@@ -50,7 +50,7 @@ if [[ ! -r "$SOT_PATH" ]]; then
   exit 1
 fi
 # Ein Helper für die ganze SOT:jq ist auf dem Runner nicht garantiert.
-read -r PRIMARY_PROVIDER PRIMARY_MODEL FALLBACKS_JSON POOL_FOLLOW RESTART ENABLED < <(
+IFS=$'\t' read -r PRIMARY_PROVIDER PRIMARY_MODEL FALLBACKS_JSON POOL_FOLLOW RESTART ENABLED < <(
   python3 - "$SOT_PATH" <<'PY'
 import json, sys
 try:
@@ -70,14 +70,14 @@ for f in (cfg.get("fallback") or []):
         continue
     if f.get("provider") and f.get("model"):
         fb.append({"provider": str(f["provider"]), "model": str(f["model"])})
-print(
+print("\t".join([
     str(p.get("provider") or ""),
     str(p.get("model") or ""),
-    json.dumps(fb),
+    json.dumps(fb, separators=(",", ":")),
     "true" if (cfg.get("pool") or {}).get("followActive") else "false",
     "false" if cfg.get("restart") is False else "true",
     "true" if cfg.get("enabled", True) else "false",
-)
+]))
 PY
 )
 
