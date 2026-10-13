@@ -93,6 +93,15 @@ Model-Verwaltung für das OpenCode-Fleet (Fast/Medium/Heavy der Model-Router-Tie
   (SSH vom Self-hosted Runner auf den Coder-Host: Container
   infrastructure/general/muellerconnect werden neu gestartet; deren entrypoint
   zieht frisches Repo) → Overrides aktiv.
+- **Automatischer Ausfallschutz** (2026-10-13): Setzt man `@fast`/`@medium` auf ein
+  **Gratis-Modell** (cost 0/0), hinterlegt das Panel automatisch das **bezahlte
+  Gegenstück** als Ausfall-Modell (`.opencode/hestia-fallbacks.json`). Bei
+  wiederholtem Fehlschlag wechselt der Auto-Failover (`HESTIA_AUTO_FAILOVER=1`,
+  Probe-Intervall 900 s, Schwelle 2) auf das bezahlte Modell. Aktuell:
+  `@fast=opencode/mimo-v2.6-flash-free` (Fallback `opencode-go/mimo-v2.6-flash`),
+  `@medium=opencode/space-bunny-free#high` (Fallback `opencode-go/claude-haiku-5-5#medium`),
+  `@heavy=opencode-go/gpt-6-luna#max`. Status: `/api/failover/status`,
+  Sofort-Prüfung: `POST /api/failover/check`.
 - **KI-Vorschlag**: `/api/suggest` dispatcht eine OpenCode-Session und lässt sie
   mit dem gewählten Modell analysieren — Default: **@heavy aus den committeten
   Overrides** (inkl. Effort-Variante), im Panel frei wählbar (Editor-Auswahl oder
@@ -105,8 +114,10 @@ Model-Verwaltung für das OpenCode-Fleet (Fast/Medium/Heavy der Model-Router-Tie
   kleve-Profil ist bewusst ausgeschlossen.
 - **One-Time-Setup** (GitHub-Secrets, Runner, OpenBao-AppRole):
   `hestia/ci/setup/README.md`
-- **Phase 5 (später)**: Accounts/Abo-Rotation (OpenBao default1–3), Auto-Failover
-  (Plugin-Evaluation), `/accounts`-Endpunkt.
+- **Phase 5 / O6 (später, nur auf Freigabe)**: Accounts/Abo-Rotation (OpenBao
+  default1–3, `/accounts`-Tab), CI-Issue bei Modellverlust, Failover-Plugin-Evaluation.
+  Offene Kleinigkeiten (O7): Preset-Name neutralisieren, OpenCode-Go-Konto zurück
+  auf `default1`, optional `OC_SUGGEST_TIMEOUT` erhöhen.
 
 ## Workspaces
 
