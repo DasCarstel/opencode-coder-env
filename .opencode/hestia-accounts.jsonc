@@ -18,6 +18,13 @@
       "windows": ["weekly", "monthly"],
       "maxSpreadPercentPoints": 25,    // aktives Konto > Ø der anderen + X Verbrauchs-pp
       "minHeadroomPercent": 30         // nur wechseln, wenn Zielkonto >= X % frei hat
+    },
+    // "use it or lose it": bald zurücksetzendes Abo bevorzugen und allein nutzen
+    "expiring": {
+      "enabled": true,
+      "withinHours": 24,               // "bald" = Reset in <= X Stunden
+      "windows": ["weekly", "monthly"], // welche Fenster zählen (NICHT rolling/5h)
+      "minRemainingPercent": 5          // nur bevorzugen, wenn noch X % frei sind
     }
   },
   "providers": {

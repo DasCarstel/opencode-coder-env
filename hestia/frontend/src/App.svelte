@@ -454,6 +454,73 @@ setInterval(loadHermes, 60000)
 </div>
 
 <div class="card">
+  <h2>
+    Hermes — Modell/Provider
+    <label class="muted" style="font-weight:400; margin-left:12px">
+      {#if hermesStatus?.reachable && hermesStatus?.health?.ok}
+        <span class="badge active">ok</span>
+      {:else if hermesStatus?.reachable}
+        <span class="badge warn">health: {hermesStatus?.health?.error || 'kein ok'}</span>
+      {:else}
+        <span class="badge err">nicht erreichbar</span>
+      {/if}
+      {#if hermesStatus?.health?.version}<span class="mono muted">v{hermesStatus.health.version}</span>{/if}
+      · SOT: <span class="mono">.opencode/hestia-hermes.jsonc</span>
+      · Workflow: <span class="mono">{hermesStatus?.workflow || '—'}</span>
+    </label>
+  </h2>
+
+  <div class="row" style="margin-top:0">
+    <label>Primary&nbsp;
+      <select bind:value={hermesSel} disabled={hermesBusy}>
+        <option value="" disabled>Modell wählen…</option>
+        {#each goModels as m}
+          <option value={m.ref}>{m.name} · {m.modelID} · {priceText(m.ref)}{isFree(m.ref) ? ' · gratis' : ''}</option>
+        {/each}
+      </select>
+    </label>
+  </div>
+  <div class="row">
+    <label>Fallback 1&nbsp;
+      <select bind:value={hermesFb1} disabled={hermesBusy}>
+        <option value="">— keiner —</option>
+        {#each goModels as m}
+          <option value={m.ref}>{m.name} · {m.modelID}</option>
+        {/each}
+      </select>
+    </label>
+    <label>Fallback 2&nbsp;
+      <select bind:value={hermesFb2} disabled={hermesBusy}>
+        <option value="">— keiner —</option>
+        {#each goModels as m}
+          <option value={m.ref}>{m.name} · {m.modelID}</option>
+        {/each}
+      </select>
+    </label>
+  </div>
+  <div class="row">
+    <label>
+      <input type="checkbox" bind:checked={hermesPool} disabled={hermesBusy} />
+      Abo folgt dem aktiven Konto
+    </label>
+    <span class="muted">
+      Restart: {hermesStatus?.config?.restart === false ? 'nein' : 'ja'} ·
+      Workflow {hermesStatus?.workflow || '—'} schreibt config.yaml/.env und startet Hermes neu
+    </span>
+  </div>
+  <div class="row">
+    <button class="primary" onclick={runHermesApply} disabled={hermesBusy || !hermesSel}>
+      {hermesBusy ? 'Wende an …' : 'Speichern & anwenden'}
+    </button>
+    {#if hermesStatus?.configError}<span class="muted" style="color:var(--err)">⚠ {hermesStatus.configError}</span>{/if}
+  </div>
+  <p class="muted" style="margin-top:8px">
+    Anwenden aktualisiert <span class="mono">/opt/data/config.yaml</span> und startet Hermes neu
+    (laufende Hermes-Sessions brechen ab). SOT: <span class="mono">.opencode/hestia-hermes.jsonc</span>.
+  </p>
+</div>
+
+<div class="card">
   <h2>KI-Vorschlag</h2>
   <p class="muted">
     OpenCode analysiert den Live-Katalog (alle OpenCode-Go-Modelle mit Preisen) und schlägt die
@@ -692,6 +759,7 @@ setInterval(loadHermes, 60000)
           {#if !acc.hasKey}<span class="badge warn">kein Key</span>{/if}
           {#if acc.error}<span class="badge err">{acc.error}</span>{/if}
           {#if deadWins.length}<span class="badge err">erschöpft: {deadWins.join(', ')}</span>{/if}
+          {#if acc.expiring}<span class="badge warn">läuft ab in {Math.round(acc.expiring.hoursLeft)} h ({WIN_LABELS[acc.expiring.window]})</span>{/if}
           {#if !acc.isActive && acc.ok}
             <button class="mini" onclick={() => runAccountsSwitch(acc.id)} disabled={accBusy}
               title="Konto wechseln (Service-Neustart)">⇄ wechseln</button>
@@ -729,72 +797,6 @@ setInterval(loadHermes, 60000)
   {/if}
 </div>
 
-<div class="card">
-  <h2>
-    Hermes — Modell/Provider
-    <label class="muted" style="font-weight:400; margin-left:12px">
-      {#if hermesStatus?.reachable && hermesStatus?.health?.ok}
-        <span class="badge active">ok</span>
-      {:else if hermesStatus?.reachable}
-        <span class="badge warn">health: {hermesStatus?.health?.error || 'kein ok'}</span>
-      {:else}
-        <span class="badge err">nicht erreichbar</span>
-      {/if}
-      {#if hermesStatus?.health?.version}<span class="mono muted">v{hermesStatus.health.version}</span>{/if}
-      · SOT: <span class="mono">.opencode/hestia-hermes.jsonc</span>
-      · Workflow: <span class="mono">{hermesStatus?.workflow || '—'}</span>
-    </label>
-  </h2>
-
-  <div class="row" style="margin-top:0">
-    <label>Primary&nbsp;
-      <select bind:value={hermesSel} disabled={hermesBusy}>
-        <option value="" disabled>Modell wählen…</option>
-        {#each goModels as m}
-          <option value={m.ref}>{m.name} · {m.modelID} · {priceText(m.ref)}{isFree(m.ref) ? ' · gratis' : ''}</option>
-        {/each}
-      </select>
-    </label>
-  </div>
-  <div class="row">
-    <label>Fallback 1&nbsp;
-      <select bind:value={hermesFb1} disabled={hermesBusy}>
-        <option value="">— keiner —</option>
-        {#each goModels as m}
-          <option value={m.ref}>{m.name} · {m.modelID}</option>
-        {/each}
-      </select>
-    </label>
-    <label>Fallback 2&nbsp;
-      <select bind:value={hermesFb2} disabled={hermesBusy}>
-        <option value="">— keiner —</option>
-        {#each goModels as m}
-          <option value={m.ref}>{m.name} · {m.modelID}</option>
-        {/each}
-      </select>
-    </label>
-  </div>
-  <div class="row">
-    <label>
-      <input type="checkbox" bind:checked={hermesPool} disabled={hermesBusy} />
-      Abo folgt dem aktiven Konto
-    </label>
-    <span class="muted">
-      Restart: {hermesStatus?.config?.restart === false ? 'nein' : 'ja'} ·
-      Workflow {hermesStatus?.workflow || '—'} schreibt config.yaml/.env und startet Hermes neu
-    </span>
-  </div>
-  <div class="row">
-    <button class="primary" onclick={runHermesApply} disabled={hermesBusy || !hermesSel}>
-      {hermesBusy ? 'Wende an …' : 'Speichern & anwenden'}
-    </button>
-    {#if hermesStatus?.configError}<span class="muted" style="color:var(--err)">⚠ {hermesStatus.configError}</span>{/if}
-  </div>
-  <p class="muted" style="margin-top:8px">
-    Anwenden aktualisiert <span class="mono">/opt/data/config.yaml</span> und startet Hermes neu
-    (laufende Hermes-Sessions brechen ab). SOT: <span class="mono">.opencode/hestia-hermes.jsonc</span>.
-  </p>
-</div>
 
 <div class="card">
   <h2>

@@ -18,6 +18,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 
 import github_api
 import hjsonc
@@ -155,10 +156,44 @@ def _avg_used(account: dict, windows) -> float:
     return sum(vals) / len(vals) if vals else 0.0
 
 
+def _expiring(account: dict, windows, within_hours: float, min_remaining: float):
+    """Fenster, das innerhalb von within_hours zurücksetzt und noch >= min_remaining % frei hat.
+
+    Rückgabe: {"window": <name>, "hoursLeft": float, "free": float} oder None.
+    """
+    best = None
+    for name in (windows or []):
+        w = (account.get("windows") or {}).get(name) or {}
+        try:
+            free = float(w.get("free") or 0)
+        except (TypeError, ValueError):
+            continue
+        # Nur zählen, wenn vom Fenster noch etwas übrig ist — ein leeres
+        # Abo bringt keinen Benefit, das tut schon die Erschöpft-Regel.
+        if free < min_remaining:
+            continue
+        iso = str(w.get("resetsAt") or "")
+        if not iso:
+            continue
+        try:
+            dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        hours = (dt - datetime.now(timezone.utc)).total_seconds() / 3600.0
+        # Vergangene/ungültige Zeitpunkte und zu weit entfernte Resets ignorieren.
+        if not (0 <= hours <= within_hours):
+            continue
+        if best is None or hours < best["hoursLeft"]:
+            best = {"window": name, "hoursLeft": hours, "free": free}
+    return best
+
+
 def evaluate(cfg: dict, accounts: list) -> dict:
     """Reine Funktion: Wechsel-Empfehlung aus Config + aktuellem Zustand.
 
-    Erschöpft-Regel hat Vorrang, danach das weiche Gleichgewicht.
+    Reihenfolge: bald ablaufend ("use it or lose it") → erschöpft → Gleichgewicht.
     """
     policy = cfg.get("policy") or {}
     bal = policy.get("balance") or {}
@@ -170,6 +205,22 @@ def evaluate(cfg: dict, accounts: list) -> dict:
     active = next((a for a in accounts if a.get("id") == active_id), None)
     others = [a for a in accounts
               if a.get("id") != active_id and a.get("ok") and a.get("windows")]
+
+    # --- Regel 0: bald ablaufendes Abo bevorzugen ("use it or lose it") ---
+    # Steht das bevorzugte Konto schon auf active, greifen die Regeln unten.
+    exp = policy.get("expiring") or {}
+    if exp.get("enabled") and active_id:
+        within = float(exp.get("withinHours") or 24)
+        min_rem = float(exp.get("minRemainingPercent") or 0)
+        ewin = exp.get("windows") or ["weekly", "monthly"]
+        soon = [(a, _expiring(a, ewin, within, min_rem)) for a in others]
+        soon = [(a, e) for a, e in soon if e]
+        if soon:
+            best_acc, best_exp = min(soon, key=lambda p: p[1]["hoursLeft"])
+            out.update({"switchRecommended": True, "target": best_acc["id"],
+                        "reason": (f"bald ablaufend ({best_exp['window']}-Reset in "
+                                   f"{best_exp['hoursLeft']:.1f} h, {best_exp['free']:.0f} % frei)")})
+            return out
 
     # --- Regel 1: aktives Konto erschöpft (0 % frei oder rate-limited) ---
     if policy.get("switchWhenExhausted", True) and active and active.get("ok"):
@@ -232,6 +283,17 @@ def refresh(force: bool = False) -> dict:
         })
     results.sort(key=lambda a: (a.get("priority") is None, a.get("priority") or 0, a.get("id") or ""))
     policy = cfg.get("policy") or {}
+    exp = policy.get("expiring") or {}
+    if exp.get("enabled"):
+        # Pro Konto das bald zurücksetzende Fenster markieren (Anzeige + Regel 0).
+        within = float(exp.get("withinHours") or 24)
+        min_rem = float(exp.get("minRemainingPercent") or 0)
+        ewin = exp.get("windows") or ["weekly", "monthly"]
+        for acc in results:
+            acc["expiring"] = _expiring(acc, ewin, within, min_rem)
+    else:
+        for acc in results:
+            acc["expiring"] = None
     rec = evaluate(cfg, results)
     with LOCK:
         STATE["ok"] = not cfg.get("_error") and all(a["ok"] for a in results) if results else False
