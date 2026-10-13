@@ -35,6 +35,6 @@ done
 
 echo "→ Kurz warten, dann Container-Status prüfen"
 sleep 15
-"${SSH[@]}" "docker ps --format '{{.Names}} {{.Status}}' | grep -E '^coder-.*(${HESTIA_TARGETS})\$' | sed 's/^/   /'"
+"${SSH[@]}" "docker ps --format '{{.Names}} {{.Status}}' | grep -E '^coder-.*(${HESTIA_TARGETS}) ' | sed 's/^/   /'"
 
 echo "ROLLOUT OK — Entrypoints haben das Repo gezogen (Overrides aktiv nach Setup-Lauf)."
