@@ -182,15 +182,22 @@ if [[ "$POOL_FOLLOW" == "true" ]]; then
     # Keys holen und direkt in eine Datei schreiben (nie ausgeben).
     # Reihenfolge: aktives Abo zuerst, dann die restlichen Keys alphabetisch.
     cat >"$WORK/pool.py" <<'PY'
-"""OpenBao-JSON (stdin) → JSON-Array der Keys in Pool-Reihenfolge."""
+"""OpenBao-JSON (stdin) → JSON-Array der Keys in Pool-Reihenfolge.
+
+Wichtig: "active" ist der NAME (default1..3); die eigentlichen Keys stehen in
+den Feldern default1..3. Wird der Name als Key missverstanden, landet er in
+OPENCODE_GO_API_KEY → 401 "Invalid credential".
+"""
 import json, sys
 try:
     d = (json.load(sys.stdin).get("data") or {}).get("data") or {}
 except Exception:
     d = {}
-keys = [str(d[k]).strip() for k in sorted(d) if k != "active" and str(d.get(k) or "").strip()]
+keys = {k: str(d[k]).strip() for k in sorted(d) if k != "active" and str(d.get(k) or "").strip()}
 active = str(d.get("active") or "").strip()
-sys.stdout.write(json.dumps([active] + [k for k in keys if k != active] if active else keys))
+active_key = keys.get(active, "")
+pool = ([active_key] if active_key else []) + [v for k, v in keys.items() if k != active]
+sys.stdout.write(json.dumps(pool))
 PY
     curl -sS -H "X-Vault-Token: $VAULT_TOKEN" "$OPENBAO_ADDR/v1/$SECRET_PATH" \
       | python3 "$WORK/pool.py" > "$WORK/pool.json"
@@ -206,14 +213,13 @@ mapping = dict(zip(names, keys))
 
 out, seen = [], set()
 for line in old:
-    m = re.match(r"^(OPENCODE_GO_API_KEY(_[23])?)\s*=", line)
+    m = re.match(r"^(OPENCODE_GO_API_KEY(_\d+)?)\s*=", line)
     if m:
         name = m.group(1)
         if name in mapping and name not in seen:
             seen.add(name)
             out.append(f"{name}={mapping[name]}")
-        elif name not in mapping:
-            out.append(f"{name}=")   # Key ohne Pool-Inhalt: leer, aber Struktur bleibt
+        # überzählige/veraltete Pool-Zeilen (z. B. _4) werden verworfen
         continue
     out.append(line)
 
