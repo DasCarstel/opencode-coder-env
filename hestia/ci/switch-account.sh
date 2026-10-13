@@ -105,3 +105,13 @@ for c in $NAMES; do
 done
 
 echo "✓ Konto $ACCOUNT aktiv (OpenBao + $COUNT Container)"
+# --- 5) Verifikation: greift der Wechsel in OpenCode wirklich? ---------------
+# Ein in opencode.db GESPEICHERTER 'OpenCode Go'-Account überstimmt die
+# ENV-Variable OPENCODE_API_KEY — dann wirkt dieser Wechsel nicht (Fehler vom
+# 2026-10-13). check-oc-credentials.sh schlägt in dem Fall fehl.
+if bash "$(dirname "$0")/check-oc-credentials.sh"; then
+  echo "✓ Wechsel verifiziert: OpenCode nutzt $ACCOUNT"
+else
+  echo "✗ Verifikation fehlgeschlagen — gespeicherter Go-Account oder Key nicht angekommen?" >&2
+  exit 1
+fi
