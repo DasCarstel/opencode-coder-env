@@ -73,3 +73,13 @@ bao kv put secret/mcp/hestia password=<GLEICHES Passwort wie GitHub-Secret HESTI
 rsync -a hestia/ root@10.0.10.17:/opt/docker-compose/hestia/
 ssh root@10.0.10.17 "cd /opt/docker-compose/hestia && docker compose up -d --build"
 ```
+
+## Runner-Watchdog (Broker-Ausfall)
+
+Der Self-hosted Runner verliert gelegentlich die Broker-Verbindung zu GitHub
+(`ERR BrokerServer` / `Back off 8,636 seconds`); Jobs bleiben dann stundenlang
+`queued`, obwohl der Runner `online`/`busy` meldet. `runner-watchdog.sh`
+erkennt das im neuesten `_diag/Runner_*.log` und startet den Service neu
+(Cooldown 30 min). Installation (systemd-Unit + Timer, alle 5 min) steht als
+Kommentar im Skriptkopf; auf dem Docker-Host liegt es unter
+`/opt/docker-compose/github-runner/watchdog.sh`.

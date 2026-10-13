@@ -47,7 +47,7 @@ STATIC_DIR = os.environ.get(
 )
 HESTIA_USER = os.environ.get("HESTIA_USER", "hestia")
 HESTIA_PASSWORD = os.environ.get("HESTIA_PASSWORD") or secrets.token_urlsafe(24)
-PRESET_PROVIDER = os.environ.get("HESTIA_PRESET_PROVIDER", "opencode-go")
+PRESET_PROVIDER = os.environ.get("HESTIA_PRESET_PROVIDER", "hestia")
 # Erlaubte Provider für Tier-/Agent-Auswahl (Komma-getrennt).
 # "opencode" = OpenCode Zen (enthält die kostenlosen Modelle, z. B. cat-jam-free).
 ALLOWED_PROVIDERS = [p.strip() for p in

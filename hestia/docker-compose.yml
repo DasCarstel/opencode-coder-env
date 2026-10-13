@@ -30,6 +30,9 @@ services:
       HESTIA_PROXY_SECRET: ${HESTIA_PROXY_SECRET:-}
       # Erlaubte Provider: opencode-go (Abo) + opencode (Zen, enthält Gratis-Modelle)
       HESTIA_PROVIDERS: ${HESTIA_PROVIDERS:-opencode-go,opencode}
+      # Name des aktiven Presets in .opencode/opencode-model-router.overrides.jsonc
+      # (neutral benannt — der Provider "opencode-go" bleibt davon unberührt)
+      HESTIA_PRESET_PROVIDER: ${HESTIA_PRESET_PROVIDER:-hestia}
       # Ausfallschutz: 0 = nur manuell (Panel-Button), 1 = automatisch beim Probe-Lauf
       HESTIA_AUTO_FAILOVER: ${HESTIA_AUTO_FAILOVER:-0}
       HESTIA_PROBE_INTERVAL: ${HESTIA_PROBE_INTERVAL:-900}

@@ -26,7 +26,7 @@ OC_SUGGEST_DIR = os.environ.get(
 # Analyse-Modell: standardmäßig das aktuelle @heavy-Modell aus den Overrides.
 # Override per OC_SUGGEST_MODEL ("provider/model#variant"); leer = Tier-Heavy.
 OC_SUGGEST_MODEL = os.environ.get("OC_SUGGEST_MODEL", "").strip()
-PRESET = os.environ.get("HESTIA_PRESET_PROVIDER", "opencode-go")
+PRESET = os.environ.get("HESTIA_PRESET_PROVIDER", "hestia")
 PROVIDERS = [p.strip() for p in
              os.environ.get("HESTIA_PROVIDERS", PRESET).split(",") if p.strip()]
 POLL_INTERVAL = 5.0
@@ -73,7 +73,7 @@ def _build_prompt() -> str:
     catalog = "\n".join(lines)
     from github_api import get_overrides
     try:
-        current = get_overrides()["config"].get("presets", {}).get("opencode-go", {})
+        current = get_overrides()["config"].get("presets", {}).get(PRESET, {})
         current_str = json.dumps(
             {k: current[k].get("model") for k in ("fast", "medium", "heavy") if k in current},
             ensure_ascii=False,

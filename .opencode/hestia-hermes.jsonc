@@ -12,6 +12,9 @@
     { "provider": "opencode-go", "model": "gpt-6-luna" },
     { "provider": "opencode-go", "model": "mimo-v2.6-flash" }
   ],
-  "pool": { "followActive": true },
+  // pool.followActive: Abo-Pool aus OpenBao neu setzen (aktiv zuerst)
+  // pool.onlyActiveWhenExpiring: wenn true, wird während eines leergefahrenen
+  // Abos nur DIESER Key in den Pool geschrieben (die _2/_3-Zeilen verschwinden).
+  "pool": { "followActive": true, "onlyActiveWhenExpiring": false },
   "restart": true
 }

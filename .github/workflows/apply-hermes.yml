@@ -8,6 +8,12 @@ name: apply-hermes
 # Läuft auf dem Self-hosted Runner auf dem Docker-Host — Setup: hestia/ci/setup/README.md.
 on:
   workflow_dispatch:
+    inputs:
+      single:
+        description: "Nur das aktive Abo in den Pool (OPENCODE_GO_API_KEY*_2/_3 entfernen)"
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   apply:
@@ -27,4 +33,6 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519_coderdeploy
           ssh-keyscan -H 10.0.10.17 >> ~/.ssh/known_hosts 2>/dev/null
       - name: Hermes-Konfiguration anwenden
+        env:
+          SINGLE: ${{ inputs.single }}
         run: bash hestia/ci/apply-hermes.sh

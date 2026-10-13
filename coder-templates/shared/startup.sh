@@ -600,7 +600,7 @@ echo "=== OpenCode V2 (immer latest) ==="
 mkdir -p ~/.config/opencode
 # Model-Router-Konfiguration liegt in .opencode/opencode-model-router.overrides.jsonc
 # am Repo-Root (das Plugin durchsucht von cwd aufwärts bis Repo-Root) —
-# kein Symlink/Cache-Eingriff mehr nötig. tiers.json bleibt Referenz/Historie.
+# kein Symlink/Cache-Eingriff mehr nötig. tiers.json entfernt (Historie in git).
 echo 'alias update-opencode-config="cd ~/opencode-coder-env && git pull --ff-only"' >> ~/.bashrc
 
 if command -v npm >/dev/null 2>&1; then

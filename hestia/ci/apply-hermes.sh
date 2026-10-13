@@ -23,6 +23,7 @@
 #   OPENBAO_TOKEN_FILE    Default /opt/docker-compose/github-runner/openbao-switch.token
 #   CODER_SSH_HOST        Default 10.0.10.17
 #   CODER_SSH_KEY         Default ~/.ssh/id_ed25519_coderdeploy
+#   SINGLE                true = nur das aktive Abo in den Pool (Default false)
 set -euo pipefail
 
 SOT_PATH="${SOT_PATH:-.opencode/hestia-hermes.jsonc}"
@@ -31,6 +32,9 @@ OPENBAO_ADDR="${OPENBAO_ADDR:-https://openbao.mueller-nas.de}"
 OPENBAO_TOKEN_FILE="${OPENBAO_TOKEN_FILE:-/opt/docker-compose/github-runner/openbao-switch.token}"
 CODER_SSH_HOST="${CODER_SSH_HOST:-10.0.10.17}"
 CODER_SSH_KEY="${CODER_SSH_KEY:-$HOME/.ssh/id_ed25519_coderdeploy}"
+# SINGLE=true → Pool besteht NUR aus dem Key des aktiven Abos (OPENCODE_GO_API_KEY).
+# Wird von accounts.py gesetzt, wenn das aktive Abo bald abläuft.
+SINGLE="${SINGLE:-false}"
 SECRET_PATH="secret/data/mcp/opencode-go"
 CONFIG_IN_CONTAINER="/opt/data/config.yaml"
 ENV_IN_CONTAINER="/opt/data/.env"
@@ -91,7 +95,7 @@ if [[ -z "$PRIMARY_PROVIDER" || -z "$PRIMARY_MODEL" ]]; then
 fi
 echo "→ Primary: $PRIMARY_PROVIDER/$PRIMARY_MODEL"
 echo "→ Fallbacks: $FALLBACKS_JSON"
-echo "→ Pool folgt aktivem Konto: $POOL_FOLLOW · Restart: $RESTART"
+echo "→ Pool folgt aktivem Konto: $POOL_FOLLOW · nur aktives Abo: $SINGLE · Restart: $RESTART"
 
 # Kurzer Health-Check: Container muss laufen, sonst ist alles sinnlos.
 if ! "${SSH[@]}" "docker inspect -f '{{.State.Running}}' '$HERMES_CONTAINER' 2>/dev/null" | grep -q true; then
@@ -187,6 +191,9 @@ if [[ "$POOL_FOLLOW" == "true" ]]; then
 Wichtig: "active" ist der NAME (default1..3); die eigentlichen Keys stehen in
 den Feldern default1..3. Wird der Name als Key missverstanden, landet er in
 OPENCODE_GO_API_KEY → 401 "Invalid credential".
+
+Aufruf: pool.py [single=true|false]
+  single=true → nur der Key des aktiven Abos (kein Fallback auf default2/3).
 """
 import json, sys
 try:
@@ -196,11 +203,16 @@ except Exception:
 keys = {k: str(d[k]).strip() for k in sorted(d) if k != "active" and str(d.get(k) or "").strip()}
 active = str(d.get("active") or "").strip()
 active_key = keys.get(active, "")
-pool = ([active_key] if active_key else []) + [v for k, v in keys.items() if k != active]
+single = len(sys.argv) > 1 and sys.argv[1] == "true"
+if single:
+    # Nur das aktive Abo — wenn dessen Key fehlt, ist der Pool bewusst leer.
+    pool = [active_key] if active_key else []
+else:
+    pool = ([active_key] if active_key else []) + [v for k, v in keys.items() if k != active]
 sys.stdout.write(json.dumps(pool))
 PY
     curl -sS -H "X-Vault-Token: $VAULT_TOKEN" "$OPENBAO_ADDR/v1/$SECRET_PATH" \
-      | python3 "$WORK/pool.py" > "$WORK/pool.json"
+      | python3 "$WORK/pool.py" "$SINGLE" > "$WORK/pool.json"
     # Aktuelle .env holen und die OPENCODE_GO_API_KEY-Zeilen ersetzen.
     "${SSH[@]}" "docker exec '$HERMES_CONTAINER' cat $ENV_IN_CONTAINER" > "$WORK/env.old" || true
     python3 - "$WORK/env.old" "$WORK/pool.json" > "$WORK/env.new" <<'PY'
@@ -208,6 +220,11 @@ import json, re, sys
 
 old = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
 keys = json.loads(open(sys.argv[2], encoding="utf-8").read())
+if not keys:
+    # Kein Key im OpenBao-Secret gefunden (oder single=true ohne aktives Abo) —
+    # dann dürfen die bestehenden Zeilen nicht entfernt werden.
+    sys.stderr.write("✗ OpenBao lieferte keinen API-Key — Pool bleibt unverändert\n")
+    sys.exit(3)
 names = ["OPENCODE_GO_API_KEY"] + [f"OPENCODE_GO_API_KEY_{i}" for i in range(2, len(keys) + 1)]
 mapping = dict(zip(names, keys))
 
@@ -234,9 +251,30 @@ sys.stderr.write(
 )
 sys.stdout.write("\n".join(out) + "\n")
 PY
+    # Sicherheitsnetz: jeder gesetzte OPENCODE_GO_API_KEY*-Wert muss ein echter
+    # Key sein (>= 20 Zeichen). Sonst bricht der Lauf ab, BEVOR die .env
+    # überschrieben wird — verhindert den "Name statt Key"-Fehler (401).
+    if ! python3 - "$WORK/env.new" <<'PY'
+import re, sys
+bad = []
+for line in open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines():
+    m = re.match(r"^(OPENCODE_GO_API_KEY(?:_\d+)?)\s*=\s*(.*)$", line)
+    if m and len(m.group(2).strip()) < 20:
+        bad.append(f"{m.group(1)} ({len(m.group(2).strip())} Zeichen)")
+if bad:
+    sys.stderr.write("✗ Pool-Werte zu kurz, vermutlich Name statt Key: " + ", ".join(bad) + "\n")
+    sys.exit(1)
+PY
+    then
+      echo "✗ Pool nicht geschrieben — bestehende .env bleibt unverändert (Backup/Review nötig)" >&2
+      exit 1
+    fi
     # In-place überschreiben (ein mv auf /opt/data scheitert im Volume).
     "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > $ENV_IN_CONTAINER && chown hermes:hermes $ENV_IN_CONTAINER && chmod 600 $ENV_IN_CONTAINER'" <"$WORK/env.new"
     echo "✓ Pool aus OpenBao übernommen (aktives Abo zuerst)"
+    if [[ "$SINGLE" == "true" ]]; then
+      echo "  → Modus SINGLE: Pool enthält NUR das aktive Abo (OPENCODE_GO_API_KEY_2/_3 entfernt)"
+    fi
   fi
 else
   echo "→ Pool bleibt unverändert (pool.followActive=false)"
@@ -271,4 +309,4 @@ if [[ "$RESTART" == "true" ]]; then
 fi
 
 # --- 8) Zusammenfassung ------------------------------------------------------
-echo "✓ Hermes angewendet: primary=$PRIMARY_PROVIDER/$PRIMARY_MODEL · fallbacks=$FALLBACKS_JSON · pool=$POOL_FOLLOW · restart=$RESTART"
+echo "✓ Hermes angewendet: primary=$PRIMARY_PROVIDER/$PRIMARY_MODEL · fallbacks=$FALLBACKS_JSON · pool=$POOL_FOLLOW · single=$SINGLE · restart=$RESTART"

@@ -91,7 +91,7 @@ def probe(model_ref: str, variant: str = "") -> dict:
 def run_probes(apply_backup: bool = False) -> dict:
     """Alle Tier-Modelle prüfen; optional beim Ausfall auf das Backup wechseln."""
     cfg = github_api.get_overrides()["config"]
-    preset = (cfg.get("presets") or {}).get(os.environ.get("HESTIA_PRESET_PROVIDER", "opencode-go"), {})
+    preset = (cfg.get("presets") or {}).get(os.environ.get("HESTIA_PRESET_PROVIDER", "hestia"), {})
     fallbacks = read_fallbacks()
     results, swaps, state_updates = {}, {}, {}
     for tier in TIERS:
@@ -132,7 +132,7 @@ def _swap_tier(tier: str, backup: dict):
     """Ausfall-Modell als Tier-Modell schreiben (Commit + Rollout)."""
     # aktuelle Werte frisch lesen und nur das betroffene Tier ersetzen
     cfg = github_api.get_overrides()["config"]
-    preset = (cfg.get("presets") or {}).get(os.environ.get("HESTIA_PRESET_PROVIDER", "opencode-go"), {})
+    preset = (cfg.get("presets") or {}).get(os.environ.get("HESTIA_PRESET_PROVIDER", "hestia"), {})
     new_preset = dict(preset)
     entry = dict(new_preset.get(tier) or {})
     entry["model"] = backup["model"]
@@ -143,7 +143,7 @@ def _swap_tier(tier: str, backup: dict):
     new_preset[tier] = entry
     cfg = dict(cfg)
     cfg["presets"] = dict(cfg.get("presets") or {})
-    cfg["presets"][os.environ.get("HESTIA_PRESET_PROVIDER", "opencode-go")] = new_preset
+    cfg["presets"][os.environ.get("HESTIA_PRESET_PROVIDER", "hestia")] = new_preset
 
     import hjsonc
     jsonc = hjsonc.serialize(cfg)

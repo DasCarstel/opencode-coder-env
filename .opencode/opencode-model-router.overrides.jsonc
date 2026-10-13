@@ -9,9 +9,9 @@
 //   POST /api/apply  → schreibe dieses File → git push → CI/CD-Rollout
 // Manuelle Edits sind weiterhin möglich (JSONC: // und /* */ erlaubt).
 {
-  "activePreset": "opencode-go",
+  "activePreset": "hestia",
   "presets": {
-    "opencode-go": {
+    "hestia": {
       "fast": {
         "model": "opencode/mimo-v2.6-flash-free",
         "costRatio": 1,

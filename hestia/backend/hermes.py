@@ -38,7 +38,7 @@ def _default_config() -> dict:
         "enabled": True,
         "primary": {"provider": "", "model": ""},
         "fallback": [],
-        "pool": {"followActive": False},
+        "pool": {"followActive": False, "onlyActiveWhenExpiring": False},
         "restart": True,
     }
 
@@ -70,7 +70,9 @@ def _public(cfg: dict) -> dict:
         "enabled": bool(cfg.get("enabled", True)),
         "primary": cfg.get("primary") or {},
         "fallback": cfg.get("fallback") or [],
-        "pool": {"followActive": bool((cfg.get("pool") or {}).get("followActive"))},
+        "pool": {"followActive": bool((cfg.get("pool") or {}).get("followActive")),
+                 "onlyActiveWhenExpiring": bool(
+                     (cfg.get("pool") or {}).get("onlyActiveWhenExpiring"))},
         "restart": bool(cfg.get("restart", True)),
     }
 
@@ -148,16 +150,22 @@ def apply(payload: dict) -> dict:
         fb_out.append(_validate(f, f"fallback[{i}]"))
 
     pool_in = payload.get("pool") or {}
+    current_pool = (config(force=True).get("pool") or {})
     new_cfg = {
         "enabled": bool(payload.get("enabled", True)),
         "primary": primary,
         "fallback": fb_out,
-        "pool": {"followActive": bool(pool_in.get("followActive"))},
+        # onlyActiveWhenExpiring aus der aktuellen SOT übernehmen (das Panel
+        # schickt es noch nicht mit) — sonst würde ein apply() den Schalter löschen.
+        "pool": {"followActive": bool(pool_in.get("followActive")),
+                 "onlyActiveWhenExpiring": bool(pool_in.get(
+                     "onlyActiveWhenExpiring",
+                     (current_pool or {}).get("onlyActiveWhenExpiring")))},
         "restart": bool(payload.get("restart", True)),
     }
     new_text = json.dumps(new_cfg, indent=2, ensure_ascii=False) + "\n"
 
-    current = config(force=True)
+    current = config()   # gerade frisch gelesen (Cache)
     changed = _public(current) != new_cfg
     commit = None
     if changed:
@@ -171,7 +179,11 @@ def apply(payload: dict) -> dict:
         _log(f"Hermes-SOT aktualisiert: {primary['provider']}/{primary['model']} | fallback={desc}")
 
     try:
-        dispatched = github_api.dispatch_workflow(WORKFLOW)
+        dispatched = github_api.dispatch_workflow(WORKFLOW, inputs={
+            # single=true → apply-hermes.sh schreibt NUR den Key des aktiven
+            # Abos in den Pool (die _2/_3-Zeilen verschwinden).
+            "single": "true" if (new_cfg["pool"].get("onlyActiveWhenExpiring")) else "false",
+        })
     except Exception as e:  # noqa: BLE001
         _log(f"Hermes-Dispatch fehlgeschlagen: {e}")
         dispatched = {"dispatched": False, "error": str(e)}

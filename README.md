@@ -6,7 +6,6 @@ Konfigurations-Repository für OpenCode in Coder Workspaces.
 
 ```
 opencode-coder-env/
-├── tiers.json                                # Model-Router Konfiguration (Referenz)
 ├── .opencode/
 │   └── opencode-model-router.overrides.jsonc # ← SOT der Tier-Anbindung (Hestia-managed)
 ├── hestia/                                   # Hestia — OpenCode Model Panel
