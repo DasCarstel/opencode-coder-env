@@ -17,6 +17,8 @@ Endpoints (alle unter Basic Auth):
   GET  /api/accounts          Budget-Status aller Provider-Konten (inkl. Empfehlung)
   POST /api/accounts/check    Konten sofort neu abfragen (kein Wechsel)
   POST /api/accounts/switch   Konto-Wechsel anstoßen (id optional = Empfehlung)
+  GET  /api/hermes            Hermes-Zustand (SOT + Health + Workflow)
+  POST /api/hermes/apply      Hermes Primary/Fallback/Pool setzen (SOT-Commit + CI)
   GET  /*                     statisches Frontend (dist/)
 """
 import base64
@@ -38,6 +40,7 @@ import hjsonc  # noqa: E402
 import suggest as suggest_mod  # noqa: E402
 import failover as failover_mod  # noqa: E402
 import accounts as accounts_mod  # noqa: E402
+import hermes as hermes_mod  # noqa: E402
 
 STATIC_DIR = os.environ.get(
     "HESTIA_STATIC", os.path.join(os.path.dirname(BASE_DIR), "frontend", "dist")
@@ -355,8 +358,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(state)
         if path in ("/api/accounts", "/api/accounts/status"):
             return self._json(accounts_mod.state())
+        if path in ("/api/hermes", "/api/hermes/status"):
+            return self._json(hermes_mod.state())
         if path in ("/api/apply", "/api/suggest", "/api/rollout",
-                    "/api/accounts/check", "/api/accounts/switch"):
+                    "/api/accounts/check", "/api/accounts/switch",
+                    "/api/hermes/apply"):
             return self._json(
                 {"error": f"{path} ist POST-only (der Aufruf kam als GET an)"}, 405
             )
@@ -560,6 +566,19 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 _log(f"accounts switch error: {e}")
                 return self._json({"error": str(e)}, 500)
+        if path == "/api/hermes/apply":
+            try:
+                payload = self._body()
+                res = hermes_mod.apply(payload)
+                return self._json(res)
+            except hermes_mod.ApplyError as e:
+                return self._json({"error": str(e)}, 400)
+            except ConfigError as e:
+                return self._json({"error": str(e)}, 502)
+            except Exception as e:
+                _log(f"hermes apply error: {e}")
+                return self._json({"error": str(e)}, 500)
+
         if path == "/api/rollout":
             try:
                 payload = self._body()

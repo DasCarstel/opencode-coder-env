@@ -1,0 +1,17 @@
+// hestia-hermes.jsonc — Single Source of Truth für den Hermes-Agenten (Nous Research).
+// Wird von hestia/backend/hermes.py gelesen/geschrieben und über
+// .github/workflows/apply-hermes.yml per SSH in den Container "hermes" verteilt:
+//   Primary   → hermes config set model.provider / model.default
+//   Fallback  → YAML-Liste fallback_providers in /opt/data/config.yaml
+//   Pool      → OPENCODE_GO_API_KEY* in /opt/data/.env (Reihenfolge = aktives Abo zuerst)
+//   Restart   → docker restart hermes (laufende Sessions brechen ab)
+{
+  "enabled": true,
+  "primary": { "provider": "opencode-go", "model": "deepseek-v4.1-flash" },
+  "fallback": [
+    { "provider": "opencode-go", "model": "gpt-6-luna" },
+    { "provider": "opencode-go", "model": "mimo-v2.6-flash" }
+  ],
+  "pool": { "followActive": true },
+  "restart": true
+}

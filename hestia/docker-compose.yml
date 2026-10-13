@@ -42,6 +42,10 @@ services:
       # Konto-Wechsel (P2): Mindestabstand zwischen zwei Dispatches + Ziel-Workflow
       HESTIA_SWITCH_COOLDOWN: ${HESTIA_SWITCH_COOLDOWN:-1800}
       HESTIA_SWITCH_WORKFLOW: ${HESTIA_SWITCH_WORKFLOW:-switch-account.yml}
+      # Hermes-Steuerung: Health-URL (Container "hermes" im Netz coder-infra)
+      # + Workflow, der die SOT .opencode/hestia-hermes.jsonc anwendet.
+      HERMES_HEALTH_URL: ${HERMES_HEALTH_URL:-http://hermes:9119/api/health}
+      HESTIA_HERMES_WORKFLOW: ${HESTIA_HERMES_WORKFLOW:-apply-hermes.yml}
       # Optional: überschreibt alles (sonst aus OpenBao)
       # HESTIA_PASSWORD: ""
       # OC_SERVER_PASSWORD: ""

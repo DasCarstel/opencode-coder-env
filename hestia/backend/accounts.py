@@ -353,7 +353,31 @@ def switch_account(target: str, reason: str = "", force: bool = False, by: str =
         STATE["lastSwitch"] = time.time()
     _event(type="switch", target=target, reason=reason or "hestia", by=by)
     _log(f"Wechsel angestoßen: {target} (via {by}, {SWITCH_WORKFLOW})")
-    return {"switched": True, "target": target, "by": by, "dispatched": disp}
+    res = {"switched": True, "target": target, "by": by, "dispatched": disp}
+    res["hermesSync"] = _sync_hermes_pool(target)
+    return res
+
+
+def _sync_hermes_pool(account: str) -> bool:
+    """Hermes-Pool nachziehen, wenn die SOT pool.followActive = true hat.
+
+    Bewusst NUR ein Workflow-Dispatch: die SOT bleibt wie sie ist, der
+    apply-hermes-Workflow liest sie neu und setzt die Keys in der Reihenfolge
+    "aktives Abo zuerst". Ein erneuter apply()-Aufruf würde nur einen leeren
+    Commit erzeugen. Best-Effort: ein Fehler darf den Konto-Wechsel nie
+    zurückrollen.
+    """
+    try:
+        import hermes  # lokaler Import: hermes.py importiert accounts nicht,
+                       # aber so bleibt die Modul-Reihenfolge in server.py sicher
+        if not (hermes.config().get("pool") or {}).get("followActive"):
+            return False
+        github_api.dispatch_workflow(hermes.WORKFLOW)
+        _log(f"Hermes-Pool nachgezogen (aktiv={account}, via {hermes.WORKFLOW})")
+        return True
+    except Exception as e:  # noqa: BLE001
+        _log(f"Hermes-Pool-Sync übersprungen: {e}")
+        return False
 
 
 def _apply_policy() -> None:

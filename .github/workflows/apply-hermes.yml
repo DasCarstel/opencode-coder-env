@@ -1,0 +1,30 @@
+name: apply-hermes
+
+# Hermes-Steuerung anwenden: liest die SOT .opencode/hestia-hermes.jsonc aus dem
+# Checkout und spielt sie per SSH-Deploy-Key in den Container "hermes" auf dem
+# Coder-Host ein (Config /opt/data/config.yaml, Env /opt/data/.env).
+# Ausgelöst wird der Workflow von hestia/backend/hermes.py (Panel) oder von
+# accounts.py nach einem erfolgreichen Konto-Wechsel (pool.followActive).
+# Läuft auf dem Self-hosted Runner auf dem Docker-Host — Setup: hestia/ci/setup/README.md.
+on:
+  workflow_dispatch:
+
+jobs:
+  apply:
+    runs-on: [self-hosted, docker-host]
+    env:
+      CODER_DEPLOY_KEY: ${{ secrets.CODER_DEPLOY_KEY }}
+      OPENBAO_ADDR: https://openbao.mueller-nas.de
+      OPENBAO_TOKEN_FILE: /opt/docker-compose/github-runner/openbao-switch.token
+      CODER_SSH_HOST: 10.0.10.17
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy-Key hinterlegen
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.CODER_DEPLOY_KEY }}" > ~/.ssh/id_ed25519_coderdeploy
+          sed -i 's/\r$//' ~/.ssh/id_ed25519_coderdeploy
+          chmod 600 ~/.ssh/id_ed25519_coderdeploy
+          ssh-keyscan -H 10.0.10.17 >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Hermes-Konfiguration anwenden
+        run: bash hestia/ci/apply-hermes.sh

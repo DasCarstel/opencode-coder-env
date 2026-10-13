@@ -20,6 +20,14 @@ let foBusy = $state(false)
 let accStatus = $state(null)
 let accBusy = $state(false)
 
+// Hermes-Agent (Nous Research): primäres Modell + Fallback-Kette aus der SOT
+let hermesStatus = $state(null)
+let hermesBusy = $state(false)
+let hermesSel = $state('')
+let hermesFb1 = $state('')
+let hermesFb2 = $state('')
+let hermesPool = $state(false)
+
 const VARIANT_RANK = { minimal: 1, none: 2, low: 3, medium: 4, thinking: 4, high: 5, xhigh: 6, max: 7 }
 function highestVariantOf(ref) {
   const m = modelOf(ref)
@@ -327,11 +335,52 @@ function fmtTime(ts) {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })
 }
 
+// Hermes-Steuerung: SOT (.opencode/hestia-hermes.jsonc) + Health des Containers
+function hermesRef(entry) {
+  if (!entry) return ''
+  return entry.provider && entry.model ? `${entry.provider}/${entry.model}` : (entry.model || '')
+}
+async function loadHermes() {
+  try {
+    const st = await api('/api/hermes')
+    hermesStatus = st
+    const cfg = st?.config || {}
+    hermesSel = hermesRef(cfg.primary) || hermesSel
+    const fb = cfg.fallback || []
+    hermesFb1 = hermesRef(fb[0]) || hermesFb1
+    hermesFb2 = hermesRef(fb[1]) || hermesFb2
+    hermesPool = !!cfg?.pool?.followActive
+  } catch { /* ignore */ }
+}
+
+async function runHermesApply() {
+  if (!hermesSel) { error = 'Hermes: kein Primary-Modell gewählt'; return }
+  if (!confirm(`Hermes auf "${hermesSel}" umstellen?\n\nAnwenden aktualisiert /opt/data/config.yaml und startet Hermes neu — laufende Hermes-Sessions brechen dabei ab.`)) return
+  hermesBusy = true
+  error = null
+  try {
+    const toEntry = (ref) => ref ? { provider: ref.split('/', 1)[0], model: ref.slice(ref.indexOf('/') + 1) } : null
+    const fallback = [hermesFb1, hermesFb2].filter(Boolean).map(toEntry)
+    const res = await api('/api/hermes/apply', {
+      method: 'POST',
+      body: { primary: toEntry(hermesSel), fallback, pool: { followActive: hermesPool } },
+    })
+    hermesStatus = { ...(hermesStatus || {}), config: res.config || hermesStatus?.config }
+    await loadHermes()
+  } catch (e) {
+    error = 'Hermes: ' + e.message
+  } finally {
+    hermesBusy = false
+  }
+}
+
 load()
 loadRolloutStatus()
 loadFailover()
 loadAccounts()
+loadHermes()
 setInterval(loadAccounts, 60000)
+setInterval(loadHermes, 60000)
 </script>
 
 <header>
@@ -678,6 +727,73 @@ setInterval(loadAccounts, 60000)
       <button class="mini" onclick={() => runAccountsSwitch(accStatus.recommendation.target)} disabled={accBusy}>⇄ jetzt wechseln</button>
     </p>
   {/if}
+</div>
+
+<div class="card">
+  <h2>
+    Hermes — Modell/Provider
+    <label class="muted" style="font-weight:400; margin-left:12px">
+      {#if hermesStatus?.reachable && hermesStatus?.health?.ok}
+        <span class="badge active">ok</span>
+      {:else if hermesStatus?.reachable}
+        <span class="badge warn">health: {hermesStatus?.health?.error || 'kein ok'}</span>
+      {:else}
+        <span class="badge err">nicht erreichbar</span>
+      {/if}
+      {#if hermesStatus?.health?.version}<span class="mono muted">v{hermesStatus.health.version}</span>{/if}
+      · SOT: <span class="mono">.opencode/hestia-hermes.jsonc</span>
+      · Workflow: <span class="mono">{hermesStatus?.workflow || '—'}</span>
+    </label>
+  </h2>
+
+  <div class="row" style="margin-top:0">
+    <label>Primary&nbsp;
+      <select bind:value={hermesSel} disabled={hermesBusy}>
+        <option value="" disabled>Modell wählen…</option>
+        {#each goModels as m}
+          <option value={m.ref}>{m.name} · {m.modelID} · {priceText(m.ref)}{isFree(m.ref) ? ' · gratis' : ''}</option>
+        {/each}
+      </select>
+    </label>
+  </div>
+  <div class="row">
+    <label>Fallback 1&nbsp;
+      <select bind:value={hermesFb1} disabled={hermesBusy}>
+        <option value="">— keiner —</option>
+        {#each goModels as m}
+          <option value={m.ref}>{m.name} · {m.modelID}</option>
+        {/each}
+      </select>
+    </label>
+    <label>Fallback 2&nbsp;
+      <select bind:value={hermesFb2} disabled={hermesBusy}>
+        <option value="">— keiner —</option>
+        {#each goModels as m}
+          <option value={m.ref}>{m.name} · {m.modelID}</option>
+        {/each}
+      </select>
+    </label>
+  </div>
+  <div class="row">
+    <label>
+      <input type="checkbox" bind:checked={hermesPool} disabled={hermesBusy} />
+      Abo folgt dem aktiven Konto
+    </label>
+    <span class="muted">
+      Restart: {hermesStatus?.config?.restart === false ? 'nein' : 'ja'} ·
+      Workflow {hermesStatus?.workflow || '—'} schreibt config.yaml/.env und startet Hermes neu
+    </span>
+  </div>
+  <div class="row">
+    <button class="primary" onclick={runHermesApply} disabled={hermesBusy || !hermesSel}>
+      {hermesBusy ? 'Wende an …' : 'Speichern & anwenden'}
+    </button>
+    {#if hermesStatus?.configError}<span class="muted" style="color:var(--err)">⚠ {hermesStatus.configError}</span>{/if}
+  </div>
+  <p class="muted" style="margin-top:8px">
+    Anwenden aktualisiert <span class="mono">/opt/data/config.yaml</span> und startet Hermes neu
+    (laufende Hermes-Sessions brechen ab). SOT: <span class="mono">.opencode/hestia-hermes.jsonc</span>.
+  </p>
 </div>
 
 <div class="card">
