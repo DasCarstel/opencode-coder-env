@@ -345,12 +345,14 @@ def refresh(force: bool = False) -> dict:
             "label": acc.get("label") or acc.get("id"),
             "provider": acc.get("provider"),
             "priority": acc.get("priority"),
-            # 'ok' = Usage-Endpoint UND echtem Mini-Aufruf — ein Konto ohne
-            # Guthaben ist damit 'ok: False' und wird nie Wechsel-Ziel.
+            # 'ok' = Usage-Endpoint. Die Mini-Probe ist NUR informativ: Cloudflare
+            # blockt Python-urllib per TLS-Fingerprint (curl im CI-Check klappt), sie
+            # darf den Kontowechsel daher nicht verhindern.
             "isActive": acc.get("id") == active_id,
             "hasKey": bool(key),
-            "ok": bool(res.get("ok")) and probe_ok,
-            "error": (res.get("error") or probe_detail) or None,
+            "ok": bool(res.get("ok")),
+            "error": res.get("error"),
+            "probe": {"ok": probe_ok, "detail": probe_detail or None},
             "windows": res.get("windows") or {},
         })
     results.sort(key=lambda a: (a.get("priority") is None, a.get("priority") or 0, a.get("id") or ""))
