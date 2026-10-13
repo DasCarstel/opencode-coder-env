@@ -664,6 +664,16 @@ if [ "$PROFILE" = "infrastructure" ]; then
   fi
 fi
 
+# ── Model-Router: Overrides GLOBAL ablegen (vor dem Service-Start!) ─────────
+# Sessions/Services mit cwd außerhalb des Repos (z. B. /root) finden die
+# Tier-Konfiguration nur, wenn sie auch global liegt.
+OVERRIDES_SRC="$REPO_DIR/.opencode/opencode-model-router.overrides.jsonc"
+if [ -f "$OVERRIDES_SRC" ]; then
+  install -m 600 "$OVERRIDES_SRC" /root/.config/opencode/opencode-model-router.overrides.jsonc \
+    && echo "  ✓ Overrides global verfügbar (Service-Kontexte)" \
+    || echo "  ⚠ Overrides konnten nicht global abgelegt werden"
+fi
+
 # ── OpenCode Go (mehrere Keys aus OpenBao) ──────────────────────────────────
 OC_GO_ACTIVE="${OC_GO_ACTIVE:-default2}"
 ACTIVE_VAR="OC_GO_${OC_GO_ACTIVE^^}"
@@ -677,6 +687,16 @@ if [ -n "$OPENCODE_API_KEY" ]; then
   echo "  ✓ OpenCode Go aktiv: $OC_GO_ACTIVE"
 else
   echo "  ⚠ Kein OpenCode Go Key gefunden"
+fi
+
+# ── Primary-Agents (build/plan) aus @medium ableiten ───────────────────────
+# build = @medium (Standardvariante), plan = @medium mit höchster Variante.
+# Nutzt den laufenden OpenCode-Server für die Varianten-Liste.
+echo ""
+echo "=== Primary-Agents (build/plan) ==="
+if [ -f "$OVERRIDES_SRC" ]; then
+  REPO_DIR="$REPO_DIR" python3 "$REPO_DIR/coder-templates/shared/derive-agents.py" \
+    || echo "  ⚠ Primary-Agents konnten nicht abgeleitet werden"
 fi
 
 # Helper zum Umschalten zwischen den OpenCode-Go-Keys
