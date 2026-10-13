@@ -285,6 +285,21 @@ loadFailover()
             <td class="muted">{config.tiers?.[tier]?.variant || '—'}</td>
             <td>{priceText(config.tiers?.[tier]?.model || '')}</td>
           </tr>
+          {#if tier === 'medium' && config.primaryAgents}
+            {#each ['build', 'plan'] as agent}
+              {@const pa = config.primaryAgents[agent]}
+              {#if pa?.model}
+                <tr>
+                  <td class="subLabel">↳ {agent === 'build' ? 'Build' : 'Plan'}
+                    <span class="badge">{pa.manual ? 'manuell' : 'hergeleitet'}</span>
+                  </td>
+                  <td class="mono">{pa.model}</td>
+                  <td class="muted">{pa.variant || '—'}</td>
+                  <td>{priceText(pa.model)}</td>
+                </tr>
+              {/if}
+            {/each}
+          {/if}
         {/each}
       </tbody>
     </table>
@@ -527,6 +542,7 @@ loadFailover()
   .suggest { margin-top: 14px; }
   .errbox { border-color: var(--err); }
   .tierCell { vertical-align: top; white-space: nowrap; }
+  .subLabel { padding-left: 18px; border-left: 2px solid var(--line); }
   .chip {
     padding: 3px 11px; border-radius: 999px; border: 1px solid var(--line);
     background: var(--panel-2); color: var(--muted); font-size: .72rem;
