@@ -7,13 +7,16 @@ keyRef auf ein Feld im OpenBao-Pfad secret/data/mcp/opencode-go; der
 bootstrap.py lädt diese Felder als OC_GO_DEFAULT1..3 nach Env.
 
 P1 macht bewusst NUR Abfrage + Anzeige. P2 kommt dazu: switch_account()
-dispatcht den Workflow switch-account.yml, der auf dem Coder-Host OpenBao
-(secret/data/mcp/opencode-go, Feld "active") umschreibt und die
-OpenCode-Container mit dem neuen Key neu startet. Der Wechsel passiert also
-asynchron im CI, nicht im Panel-Prozess — der Key wird hier nie berührt.
+schreibt zuerst das Feld "active" in die SOT (diese Datei) zurück und
+dispatcht danach den Workflow switch-account.yml, der den Key des Zielkontos
+aus OpenBao (secret/data/mcp/opencode-go) liest und in die OpenCode-Container
+setzt. Hestia ist damit die EINZIGE Stelle, die den aktiven Account bestimmt —
+das gleichnamige Feld "active" im OpenBao-Secret wird nicht mehr benutzt.
+Der Wechsel passiert asynchron im CI; der Key wird im Panel-Prozess nie berührt.
 """
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -157,34 +160,6 @@ def _avg_used(account: dict, windows) -> float:
     return sum(vals) / len(vals) if vals else 0.0
 
 
-def _active_from_openbao() -> str:
-    """'active' live aus OpenBao lesen (Single Source of Truth)."""
-    addr = os.environ.get("OPENBAO_ADDR", "https://openbao.mueller-nas.de").rstrip("/")
-    tok = os.environ.get("BAO_TOKEN") or ""
-    if not tok and os.path.exists("/etc/opencode.env"):
-        # BAO_TOKEN liegt ggf. nur in der Container-Env-Datei (startup.sh), nicht im Prozess-Env
-        try:
-            for line in open("/etc/opencode.env", encoding="utf-8", errors="replace"):
-                line = line.strip()
-                if line.startswith("export "):
-                    line = line[7:].strip()
-                if line.startswith("BAO_TOKEN="):
-                    tok = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    break
-        except Exception:  # noqa: BLE001
-            pass
-    if not tok:
-        return ""
-    req = urllib.request.Request(f"{addr}/v1/secret/data/mcp/opencode-go",
-                                 headers={"X-Vault-Token": tok, "Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode()).get("data", {}).get("data") or {}
-        return str(data.get("active") or "")
-    except Exception:  # noqa: BLE001
-        return ""
-
-
 def _probe(key: str, provider: dict) -> tuple:
     """Mini-Modellaufruf, um ein Konto ohne Guthaben zu erkennen.
 
@@ -270,7 +245,7 @@ def evaluate(cfg: dict, accounts: list) -> dict:
     if policy.get("mode") == "off":
         out["reason"] = "Policy-Modus: off"
         return out
-    active_id = _active_from_openbao() or cfg.get("active") or os.environ.get("OC_GO_ACTIVE") or ""
+    active_id = str(cfg.get("active") or "")   # SOT (diese Datei) ist die einzige Quelle
     active = next((a for a in accounts if a.get("id") == active_id), None)
     others = [a for a in accounts
               if a.get("id") != active_id and a.get("ok") and a.get("windows")]
@@ -333,7 +308,7 @@ def refresh(force: bool = False) -> dict:
 
     cfg = _config(force=force)
     providers = cfg.get("providers") or {}
-    active_id = cfg.get("active") or os.environ.get("OC_GO_ACTIVE") or ""
+    active_id = str(cfg.get("active") or "")   # SOT (diese Datei) ist die einzige Quelle
     results = []
     for acc in (cfg.get("accounts") or []):
         provider = providers.get(acc.get("provider")) or {}
@@ -434,13 +409,52 @@ def _notify(target: str, reason: str) -> bool:
     return True
 
 
-def switch_account(target: str, reason: str = "", force: bool = False, by: str = "manual") -> dict:
-    """Konto-Wechsel anstoßen: Workflow-Dispatch (OpenBao + Container).
+def _set_sot_active(target: str, reason: str) -> str:
+    """'active' in der SOT (JSONC) setzen und atomar zurückschreiben.
 
-    Der Key wird hier NICHT gelesen oder angefasst — das macht der Workflow
-    auf dem Runner (dort liegt der OpenBao-Token). Rückgabe ist immer ein Dict;
-    Fehler kommen als {"switched": False, "error": ...} zurück, damit der
-    Panel-Check und die loop() nicht werfen müssen.
+    Bewusst per Regex auf dem Rohtext statt per json.dumps: so überleben die
+    Kommentare in hestia-accounts.jsonc. Gibt die Commit-SHA zurück ("" wenn
+    die API keine meldet).
+    """
+    raw = github_api.get_file(ACCOUNTS_PATH)
+    if not raw:
+        raise RuntimeError(f"{ACCOUNTS_PATH} nicht lesbar")
+    pat = re.compile(r'^[ \t]*"active"[ \t]*:[ \t]*"[^"]*"[ \t]*,?[ \t]*$', re.M)
+    if pat.search(raw):
+        # Kommentarzeilen, die an das active-Feld angehängt sind, bleiben stehen.
+        new_raw = pat.sub(f'  "active": "{target}",', raw, count=1)
+    else:
+        # Feld fehlt: direkt nach der öffnenden Klammer einfügen
+        i = raw.find("{")
+        if i < 0:
+            raise RuntimeError(f"{ACCOUNTS_PATH}: keine öffnende Klammer gefunden")
+        new_raw = raw[:i + 1] + f'\n  "active": "{target}",' + raw[i + 1:]
+    # Kontrolle: muss wieder parsbar sein und target enthalten
+    check = hjsonc.parse(new_raw) or {}
+    if str(check.get("active") or "") != target:
+        raise RuntimeError(f"active={target} nicht in die SOT geschrieben")
+    msg = f"hestia: active OpenCode-Go-Account -> {target} ({reason})"
+    res = github_api.put_files({ACCOUNTS_PATH: new_raw}, msg)
+    commit = ""
+    if isinstance(res, dict):
+        commit = str(res.get("commit") or res.get("sha") or "")
+    elif isinstance(res, list) and res:
+        first = res[0]
+        if isinstance(first, dict):
+            commit = str(first.get("commit") or first.get("sha") or "")
+    _log(f"SOT aktualisiert: active={target} ({ACCOUNTS_PATH}, commit {commit or 'n/a'})")
+    return commit
+
+
+def switch_account(target: str, reason: str = "", force: bool = False, by: str = "manual") -> dict:
+    """Konto-Wechsel: SOT 'active' setzen, dann Workflow-Dispatch (Container).
+
+    Reihenfolge ist bewusst SOT zuerst: der Workflow bekommt das Zielkonto als
+    Input, und ein CI-Container liest die SOT als Wahrheit. Der Key wird hier
+    NICHT gelesen oder angefasst — das macht der Workflow auf dem Runner
+    (dort liegt der OpenBao-Token). Rückgabe ist immer ein Dict; Fehler kommen
+    als {"switched": False, "error": ...} zurück, damit der Panel-Check und
+    die loop() nicht werfen müssen.
     """
     target = str(target or "").strip()
     if not target:
@@ -475,6 +489,15 @@ def switch_account(target: str, reason: str = "", force: bool = False, by: str =
             return {"switched": False, "error": "Wechsel läuft bereits", "target": target}
         STATE["switching"] = True
     try:
+        # 1) SOT zuerst: 'active' ist die einzige Stelle, die den aktiven Account bestimmt.
+        commit = _set_sot_active(target, reason or by)
+    except Exception as e:  # noqa: BLE001
+        with LOCK:
+            STATE["switching"] = False
+        _event(type="switch-error", target=target, reason=f"SOT: {e}", by=by)
+        return {"switched": False, "error": f"SOT nicht geschrieben: {e}"}
+    try:
+        # 2) Danach der Workflow: Key aus OpenBao lesen und in die Container setzen.
         disp = github_api.dispatch_workflow(
             SWITCH_WORKFLOW,
             inputs={"account": target, "reason": reason or "hestia"},
@@ -482,14 +505,18 @@ def switch_account(target: str, reason: str = "", force: bool = False, by: str =
     except Exception as e:  # noqa: BLE001
         with LOCK:
             STATE["switching"] = False
+        STATE["active"] = target          # SOT steht schon auf dem neuen Konto
         _event(type="switch-error", target=target, reason=str(e), by=by)
-        return {"switched": False, "error": str(e)}
+        return {"switched": False, "error": str(e), "commit": commit, "sotWritten": True}
     with LOCK:
         STATE["switching"] = False
         STATE["lastSwitch"] = time.time()
+        STATE["active"] = target
+        _CONFIG_CACHE["at"] = 0.0         # nächster _config() liest die neue SOT
     _event(type="switch", target=target, reason=reason or "hestia", by=by)
     _log(f"Wechsel angestoßen: {target} (via {by}, {SWITCH_WORKFLOW})")
-    res = {"switched": True, "target": target, "by": by, "dispatched": disp}
+    res = {"switched": True, "target": target, "by": by, "dispatched": disp,
+           "commit": commit, "sotWritten": True}
     res["hermesSync"] = _sync_hermes_pool(target, reason)
     return res
 

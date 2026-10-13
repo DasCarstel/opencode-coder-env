@@ -1,4 +1,11 @@
 {
+  // Single Source of Truth für den aktiven Account. Hestia pflegt dieses Feld
+  // (accounts.py → switch_account schreibt es atomar via GitHub Contents API),
+  // der CI-Workflow verteilt den Key daraus in die Container.
+  // Das gleichnamige Feld "active" im OpenBao-Secret secret/data/mcp/opencode-go
+  // wird NICHT mehr gelesen/geschrieben — es bleibt nur historisch bestehen.
+  "active": "default1",
+
   "checkIntervalSeconds": 300,          // Abfrageintervall der Quota (Sekunden)
 
   // Anzeige-Schwellen für die Panel-Karte "OpenCode Go — Budget"

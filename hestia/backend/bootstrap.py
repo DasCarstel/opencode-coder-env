@@ -8,7 +8,10 @@ Secrets (AppRole-Policy muss covered paths freigeben):
   secret/data/mcp/github                    → GITHUB_TOKEN (api_key)
   secret/data/mcp/hermes-opencode-service   → OC_SERVER_PASSWORD (password)
   secret/data/mcp/hestia                    → HESTIA_PASSWORD (password) [optional]
-  secret/data/mcp/opencode-go               → OC_GO_DEFAULT1..3 + OC_GO_ACTIVE (je ein Feld)
+  secret/data/mcp/opencode-go               → OC_GO_DEFAULT1..3 (je ein Feld)
+                                          ('active' wird NICHT mehr geladen — die
+                                           SOT .opencode/hestia-accounts.jsonc
+                                           bestimmt den aktiven Account)
 """
 import json
 import os
@@ -27,10 +30,12 @@ SOURCES = [
 
 # OpenCode-Go-Konten: alle Felder liegen in EINEM Secret → ein Request.
 GO_ACCOUNTS_PATH = "secret/data/mcp/opencode-go"
+# Das Feld "active" wird bewusst NICHT geladen: Hestia (accounts.py) pflegt das
+# Feld "active" in der SOT .opencode/hestia-accounts.jsonc. Der historische Wert
+# im OpenBao-Secret bleibt zwar bestehen, hat aber keine Wirkung mehr.
 GO_FIELDS = [("default1", "OC_GO_DEFAULT1"),
              ("default2", "OC_GO_DEFAULT2"),
-             ("default3", "OC_GO_DEFAULT3"),
-             ("active", "OC_GO_ACTIVE")]
+             ("default3", "OC_GO_DEFAULT3")]
 
 
 def log(msg):
@@ -65,7 +70,7 @@ def _load_go_accounts(token):
             log(f"  ⚠ {envname}: Key '{field}' leer in {GO_ACCOUNTS_PATH}")
     if loaded:
         log(f"  ✓ OpenCode-Go: {len(loaded)}/{len(GO_FIELDS)} Felder geladen "
-            f"(aktiv: {os.environ.get('OC_GO_ACTIVE', '—')})")
+            f"(aktiv bestimmt Hestia über die SOT)")
 
 
 def main():

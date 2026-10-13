@@ -3,9 +3,15 @@
 # (läuft auf dem Self-hosted Runner auf dem Docker-Host, angestoßen von
 # hestia/backend/accounts.py via workflow_dispatch).
 #
-# 1. Key aus OpenBao secret/data/mcp/opencode-go lesen (Policy hestia-switch)
-# 2. Feld "active" im selben Secret setzen (bootstrap.py lädt es als OC_GO_ACTIVE)
-# 3. Key pro Container übertragen und OPENCODE_API_KEY neu setzen + Neustart
+# 1. Key des Zielkontos aus OpenBao secret/data/mcp/opencode-go lesen
+# 2. Key pro Container übertragen und OPENCODE_API_KEY neu setzen
+#    (.bashrc: deduppen — genau eine Zeile —, Service-Env setzen, Neustart)
+#
+# WICHTIG: Das Zielkonto kommt als Workflow-Input ACCOUNT. Hestia hat das Feld
+# "active" vorher schon in .opencode/hestia-accounts.jsonc (SOT) geschrieben —
+# dieses Skript schreibt NICHTS mehr nach OpenBao. Das dort historisch
+# vorhandene Feld "active" bleibt bewusst unangetastet und wird nicht gelesen;
+# die SOT ist die einzige Quelle der Wahrheit.
 #
 # Sicherheit: der Key steht nie im Log, nie in einer Kommandozeile und nie im
 # Workflow-Log — er wandert über stdin auf den Coder-Host und wird dort
@@ -68,27 +74,16 @@ if [[ -z "$KEY" ]]; then
 fi
 echo "→ Key gelesen (${#KEY} Zeichen, wird nicht ausgegeben)"
 
-# --- 3) "active" im OpenBao-Secret setzen -------------------------------------
-# KV v2: ein POST auf secret/data/<pfad> ERSETZT das ganze Objekt und würde die
-# Key-Felder (default1..3) löschen → deshalb PATCH (ändert nur 'active').
-curl -sS -X PATCH \
-  -H "X-Vault-Token: $VAULT_TOKEN" \
-  -H 'Content-Type: application/merge-patch+json' \
-  -d "{\"data\":{\"active\":\"$ACCOUNT\"}}" \
-  "$OPENBAO_ADDR/v1/$SECRET_PATH" >/dev/null
-# Sicherheitsnetz: die Key-Felder müssen erhalten bleiben.
-LEFT="$(curl -sS -H "X-Vault-Token: $VAULT_TOKEN" "$OPENBAO_ADDR/v1/$SECRET_PATH" \
-  | python3 -c 'import sys,json;f=(json.load(sys.stdin).get("data",{}).get("data") or {});print(",".join(sorted(k for k in f if k!="active")))')"
-if [ -z "$LEFT" ]; then echo "✗ Key-Felder fehlen nach dem Patch — Abbruch!" >&2; exit 1; fi
-echo "✓ OpenBao: active=$ACCOUNT (Keys unverändert: $LEFT)"
-
-# --- 4) Container ermitteln und umstellen --------------------------------------
+# --- 3) Container ermitteln und umstellen --------------------------------------
+# Kein OpenBao-Schreibzugriff: die SOT (.opencode/hestia-accounts.jsonc) hat das
+# Feld "active" bereits atomar auf ACCOUNT gesetzt. Dieses Skript verteilt nur
+# den Key in die Container.
 echo "→ Suche laufende OpenCode-Container (Muster: coder-* + HESTIA_TARGETS)"
 # Remote-Kommando als literales Heredoc: keine verschachtelten Quotes im Aufruf.
 REMOTE_PS="docker ps --format '{{.Names}}' | grep -E '^coder-.*(${HESTIA_TARGETS})\$'"
 NAMES="$("${SSH[@]}" "$REMOTE_PS" || true)"
 if [[ -z "$NAMES" ]]; then
-  echo "⚠ Keine passenden laufenden Container gefunden — OpenBao ist trotzdem gesetzt."
+  echo "⚠ Keine passenden laufenden Container gefunden — SOT steht auf $ACCOUNT."
   exit 0
 fi
 echo "$NAMES" | sed 's/^/   - /'
@@ -99,17 +94,22 @@ for c in $NAMES; do
   # Key per stdin auf den Host: nie als Argument, nie im SSH-Log.
   printf '%s' "$KEY" | "${SSH[@]}" "umask 077; cat > '$KEY_PATH_REMOTE'"
   "${SSH[@]}" "docker cp '$KEY_PATH_REMOTE' '$c:$KEY_PATH_REMOTE'"
-  "${SSH[@]}" "docker exec '$c' sh -lc 'K=\$(cat $KEY_PATH_REMOTE); opencode service set env OPENCODE_API_KEY \"\$K\"; opencode service restart >/dev/null 2>&1 || true; rm -f $KEY_PATH_REMOTE'"
+  # .bashrc IMMER erst deduppen (sed -i) und danach genau EINE Zeile anhängen —
+  # kein blindes '>>', sonst sammeln sich über die Wechsel Duplikate an.
+  # service.json (/root/.config/opencode/service.json) ist ephemer → nach jedem
+  # Container-Neustart wird der Key hier neu gesetzt.
+  "${SSH[@]}" "docker exec '$c' sh -lc 'K=\$(cat $KEY_PATH_REMOTE); opencode service set env OPENCODE_API_KEY \"\$K\"; sed -i \"/^export OPENCODE_API_KEY=/d\" /root/.bashrc; printf \"export OPENCODE_API_KEY=%s\n\" \"\$K\" >> /root/.bashrc; opencode service restart >/dev/null 2>&1 || true; rm -f $KEY_PATH_REMOTE'"
   "${SSH[@]}" "rm -f '$KEY_PATH_REMOTE'"
   COUNT=$((COUNT + 1))
 done
 
-echo "✓ Konto $ACCOUNT aktiv (OpenBao + $COUNT Container)"
-# --- 5) Verifikation: greift der Wechsel in OpenCode wirklich? ---------------
+echo "✓ Konto $ACCOUNT aktiv (SOT + $COUNT Container)"
+# --- 4) Verifikation: greift der Wechsel in OpenCode wirklich? ---------------
 # Ein in opencode.db GESPEICHERTER 'OpenCode Go'-Account überstimmt die
 # ENV-Variable OPENCODE_API_KEY — dann wirkt dieser Wechsel nicht (Fehler vom
-# 2026-10-13). check-oc-credentials.sh schlägt in dem Fall fehl.
-if bash "$(dirname "$0")/check-oc-credentials.sh"; then
+# 2026-10-13). check-oc-credentials.sh schlägt in dem Fall fehl; mit --fix wird
+# zusätzlich der Key in Service-Env und .bashrc nachgezogen.
+if bash "$(dirname "$0")/check-oc-credentials.sh" --fix; then
   echo "✓ Wechsel verifiziert: OpenCode nutzt $ACCOUNT"
 else
   echo "✗ Verifikation fehlgeschlagen — gespeicherter Go-Account oder Key nicht angekommen?" >&2

@@ -120,7 +120,8 @@ esac
 read_secret "secret/data/mcp/opencode-go" "default1" "OC_GO_DEFAULT1"
 read_secret "secret/data/mcp/opencode-go" "default2" "OC_GO_DEFAULT2"
 read_secret "secret/data/mcp/opencode-go" "default3" "OC_GO_DEFAULT3"
-read_secret "secret/data/mcp/opencode-go" "active"   "OC_GO_ACTIVE"
+# KEIN read_secret mehr auf "active": der aktive Account wird allein von Hestia
+# über die SOT .opencode/hestia-accounts.jsonc bestimmt (siehe unten).
 # OpenCode-Server-Password (Fleet-Zugriff: Hestia + Hermes space-matrix)
 read_secret "secret/data/mcp/hermes-opencode-service" "password" "OPENCODE_SERVER_PASSWORD"
 
@@ -675,16 +676,38 @@ if [ -f "$OVERRIDES_SRC" ]; then
 fi
 
 # ── OpenCode Go (mehrere Keys aus OpenBao) ──────────────────────────────────
-OC_GO_ACTIVE="${OC_GO_ACTIVE:-default2}"
+# Der aktive Account kommt aus der SOT .opencode/hestia-accounts.jsonc (von
+# Hestia gepflegt) — nicht aus dem OpenBao-Feld "active" (das wird nicht mehr
+# gelesen/geschrieben). Ohne SOT (kein Repo-Checkout) greift der Default.
+OC_GO_ACTIVE=""
+SOT_OC_GO="${OVERRIDES_SRC%/opencode-model-router.overrides.jsonc}/hestia-accounts.jsonc"
+if [ -r "$SOT_OC_GO" ]; then
+  OC_GO_ACTIVE="$(python3 -c '
+import json, re, sys
+raw = open(sys.argv[1], encoding="utf-8").read()
+try:
+    import hjsonc
+    cfg = hjsonc.parse(raw) or {}
+except Exception:
+    raw = re.sub(r"^[ \t]*//.*$|[ \t]+//.*$", "", raw, flags=re.M)
+    cfg = json.loads(re.sub(r",(\s*[}\]])", r"\1", raw))
+print(str(cfg.get("active") or ""))
+' "$SOT_OC_GO" 2>/dev/null)"
+fi
+[ -z "$OC_GO_ACTIVE" ] && OC_GO_ACTIVE="${OC_GO_ACTIVE:-default1}"
 ACTIVE_VAR="OC_GO_${OC_GO_ACTIVE^^}"
 OPENCODE_API_KEY="${!ACTIVE_VAR:-}"
 
 if [ -n "$OPENCODE_API_KEY" ]; then
   export OPENCODE_API_KEY
+  # .bashrc IMMER erst deduppen, dann genau EINE Zeile anhängen (kein blindes >>).
   sed -i '/^export OPENCODE_API_KEY=/d' /root/.bashrc 2>/dev/null || true
   printf 'export OPENCODE_API_KEY="%s"\n' "$OPENCODE_API_KEY" >> /root/.bashrc
+  # /root/.config/opencode/service.json ist EPHEMER → nach jedem Container-
+  # Neustart hier den Key des aktiven Kontos neu ins Service-Env setzen.
+  # Der eigentliche Service-Start passiert später; Fehler sind tolerierbar.
   opencode service set env OPENCODE_API_KEY "$OPENCODE_API_KEY" >/dev/null 2>&1 || true
-  echo "  ✓ OpenCode Go aktiv: $OC_GO_ACTIVE"
+  echo "  ✓ OpenCode Go aktiv: $OC_GO_ACTIVE (SOT)"
 else
   echo "  ⚠ Kein OpenCode Go Key gefunden"
 fi
@@ -705,9 +728,10 @@ fi
 cat > /usr/local/bin/oc-go << 'OCGO'
 #!/bin/bash
 # OpenCode Go Key verwalten:
-#   oc-go list              → verfügbare Keys + aktiver Key
-#   oc-go use <name>        → Key wechseln (Session, Service-Restart)
-#   oc-go default <name>    → Standard-Key dauerhaft setzen (OpenBao + .bashrc)
+#   oc-go list              → lokal gesetzter Key/Account (verwaltet von Hestia)
+#   oc-go use <name>        → Key lokal wechseln (.bashrc + Service-Env, kein OpenBao-Schreibzugriff)
+# Hinweis: es gibt bewusst KEIN 'oc-go default' mehr. Welcher Account aktiv ist,
+# entscheidet allein Hestia über .opencode/hestia-accounts.jsonc.
 source /etc/opencode.env 2>/dev/null
 case "${1:-list}" in
   list)
@@ -715,54 +739,45 @@ case "${1:-list}" in
     for n in default1 default2 default3; do
       v="OC_GO_${n^^}"; [ -n "${!v:-}" ] && echo "  - $n"
     done
-    # Aktiv ist die Single Source of Truth in OpenBao (secret/data/mcp/opencode-go).
-    ACT=""
-    if [ -s /etc/opencode.env ]; then . /etc/opencode.env 2>/dev/null; fi
-    if [ -n "${BAO_TOKEN:-}" ]; then
-      ACT=$(curl -s -m 8 -H "X-Vault-Token: $BAO_TOKEN" "${OPENBAO_ADDR:-https://openbao.mueller-nas.de}/v1/secret/data/mcp/opencode-go" | jq -r '.data.data.active // empty')
+    # Aktiv ist der LOKAL gesetzte Key (nicht mehr OpenBao). Quelle der Wahrheit
+    # für die Auswahl bleibt Hestia; hier nur anzeigen, was tatsächlich gesetzt ist.
+    ACT_KEY=""
+    if [ -r /root/.bashrc ]; then
+      ACT_KEY="$(grep -m1 '^export OPENCODE_API_KEY=' /root/.bashrc 2>/dev/null | cut -d= -f2- | tr -d "\"'")"
     fi
-    echo "Aktiv (OpenBao): ${ACT:-unbekannt}"
+    [ -z "$ACT_KEY" ] && ACT_KEY="${OPENCODE_API_KEY:-}"
+    ACT="unbekannt"
+    if [ -n "$ACT_KEY" ]; then
+      for n in default1 default2 default3; do
+        v="OC_GO_${n^^}"
+        [ -n "${!v:-}" ] && [ "$v" = "$ACT_KEY" ] && ACT="$n"
+      done
+    fi
+    echo "Aktiv (lokal gesetzt): ${ACT}"
+    echo "  Key: ${ACT_KEY:+gesetzt (${#ACT_KEY} Zeichen)}${ACT_KEY:-NICHT gesetzt}"
+    echo "  Hinweis: Konto-Auswahl wird ausschließlich von Hestia (Panel) verwaltet —"
+    echo "           SOT: .opencode/hestia-accounts.jsonc (Feld \"active\")."
     ;;
   use)
     NAME="${2:-}"
     [ -z "$NAME" ] && { echo "Nutzung: oc-go use <default1|default2|default3>"; exit 1; }
     VAR="OC_GO_${NAME^^}"; KEY="${!VAR:-}"
     [ -z "$KEY" ] && { echo "Unbekannter Key: $NAME"; exit 1; }
+    # .bashrc erst deduppen, dann genau EINE Zeile anhängen (kein blindes >>).
     sed -i '/^export OPENCODE_API_KEY=/d' /root/.bashrc 2>/dev/null || true
     printf 'export OPENCODE_API_KEY="%s"\n' "$KEY" >> /root/.bashrc
     export OPENCODE_API_KEY="$KEY"
     opencode service set env OPENCODE_API_KEY "$KEY" >/dev/null 2>&1 || true
-    echo "✓ Aktiv: $NAME (OpenCode-Service neu gestartet)"
+    echo "✓ Lokal aktiv: $NAME (nur dieser Container — dauerhaft umschalten: Hestia-Panel)"
     ;;
   default)
-    NAME="${2:-}"
-    [ -z "$NAME" ] && { echo "Nutzung: oc-go default <default1|default2|default3>"; exit 1; }
-    VAR="OC_GO_${NAME^^}"; KEY="${!VAR:-}"
-    [ -z "$KEY" ] && { echo "Unbekannter Key: $NAME"; exit 1; }
-    # In OpenBao schreiben (damit startup.sh den neuen Standard liest).
-    # KV v2: ein POST ersetzt das ganze Objekt → erst lesen, nur "active" ändern, dann schreiben.
-    if [ -n "${BAO_TOKEN:-}" ]; then
-      CUR="$(curl -sS --max-time 10 -H "X-Vault-Token: ${BAO_TOKEN}" \
-        "https://openbao.mueller-nas.de/v1/secret/data/mcp/opencode-go" 2>/dev/null)"
-      BODY="$(printf '%s' "$CUR" | python3 -c 'import sys,json;d=json.load(sys.stdin);f=(d.get("data",{}).get("data") or {});f["active"]=sys.argv[1];print(json.dumps({"data":f}))' "$NAME" 2>/dev/null)"
-      if [ -n "$BODY" ] && curl -sS --max-time 10 -X POST \
-        -H "X-Vault-Token: ${BAO_TOKEN}" \
-        -H "Content-Type: application/json" \
-        -d "$BODY" \
-        "https://openbao.mueller-nas.de/v1/secret/data/mcp/opencode-go" >/dev/null 2>&1; then
-        echo "✓ Standard-Key in OpenBao gesetzt: $NAME"
-      else
-        echo "⚠ OpenBao-Update fehlgeschlagen (Token abgelaufen?)"
-      fi
-    else
-      echo "⚠ Kein OpenBao-Token verfügbar – nur .bashrc aktualisiert"
-    fi
-    # .bashrc aktualisieren
-    sed -i '/^export OC_GO_ACTIVE=/d' /root/.bashrc 2>/dev/null || true
-    printf 'export OC_GO_ACTIVE="%s"\n' "$NAME" >> /root/.bashrc
-    echo "✓ Standard-Key: $NAME"
+    echo "✗ 'oc-go default' ist entfernt."
+    echo "  Der aktive OpenCode-Go-Account wird ausschließlich von Hestia (Panel)"
+    echo "  über die SOT .opencode/hestia-accounts.jsonc (Feld \"active\") bestimmt."
+    echo "  Für einen lokalen Test: oc-go use <default1|default2|default3>"
+    exit 1
     ;;
-  *) echo "Nutzung: oc-go [list | use <name> | default <name>]";;
+  *) echo "Nutzung: oc-go [list | use <name>]";;
 esac
 OCGO
 chmod +x /usr/local/bin/oc-go

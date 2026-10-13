@@ -109,8 +109,18 @@ Model-Verwaltung für das OpenCode-Fleet (Fast/Medium/Heavy der Model-Router-Tie
   automatisch (`mode: auto`) bzw. nach Bestätigung (`notify`) auf das Konto mit dem
   meisten Restbudget; zusätzlich weiches Gleichgewicht für Woche/Monat. Mechanik:
   `.github/workflows/switch-account.yml` → `hestia/ci/switch-account.sh`
-  (OpenBao `active` + `opencode service set env` je Container, **kein**
+  (Key aus OpenBao + `opencode service set env` je Container, **kein**
   Container-Neustart).
+- **Aktiver Account — eine einzige Quelle**: Hestia schreibt den aktiven Account
+  als Feld `active` in `.opencode/hestia-accounts.jsonc` (SOT) und dispatcht danach
+  den Workflow. OpenBao hält nur noch die **Keys** (`default1..3`); das dort
+  historische Feld `active` wird weder gelesen noch geschrieben.
+- **Selbstheilung alle 30 Minuten**: `verify-oc-credentials.yml` ruft
+  `hestia/ci/check-oc-credentials.sh --fix` auf — ein fehlender/abweichender Key
+  wird im Service-Env (`service.json`) und in `/root/.bashrc` (deduppt) nachgezogen.
+- **Service-Env bei jedem Start**: `/root/.config/opencode/service.json` ist ephemer,
+  deshalb setzt `coder-templates/shared/startup.sh` den Key des aktiven Kontos bei
+  jedem Container-Start neu (`opencode service set env OPENCODE_API_KEY`).
 - **Anzeige/Schwellen konfigurierbar**: Die Budget-Karte zeigt **Verbrauch**
   (Balken) plus „x % verbraucht · y % frei", markiert erschöpfte Fenster/Konten
   und hat manuelle Wechsel-Buttons. Farbschwellen stehen in
