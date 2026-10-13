@@ -33,6 +33,13 @@ Beides liegt **außerhalb** dieses Repos:
 - `.env` ist eine einzelne, von Hestia geschriebene Datei direkt im
   Deploy-Verzeichnis auf dem Coder-Host.
 
+> **Nicht löschen:** Im Volume `/etc/docker/hermes/data` liegt eine **0-Byte**-Datei
+> `.env`. Das ist **Dockers Mount-Ziel-Platzhalter** für den Datei-Bind-Mount
+> (`/opt/docker-compose/hermes/.env` → `/opt/data/.env`) — kein Rest. Wird er im
+> laufenden Betrieb entfernt, sieht der Container sein `.env` nicht mehr; Fix:
+> `docker compose up -d --force-recreate` (Docker legt den Platzhalter neu an).
+> Echte Reste (löschbar) sind dagegen `.env.new`, `.env.lock` und `.env.legacy-*`.
+
 ## Keine Secrets im Repo
 
 Weder `Dockerfile` noch `docker-compose.yml` enthalten Zugangsdaten. Die früheren
