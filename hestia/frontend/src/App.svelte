@@ -13,6 +13,10 @@ let analysisVariant = $state('(keine)')
 let buildSel = $state({ model: '', variant: '(keine)' })
 let planSel = $state({ model: '', variant: '(keine)' })
 let primary = $state(null)
+let useFree = $state({ fast: false, medium: false })
+let fallbacks = $state({ fast: null, medium: null })
+let foStatus = $state(null)
+let foBusy = $state(false)
 
 const VARIANT_RANK = { minimal: 1, none: 2, low: 3, medium: 4, thinking: 4, high: 5, xhigh: 6, max: 7 }
 function highestVariantOf(ref) {
@@ -162,9 +166,18 @@ function acceptSuggestion() {
   for (const tier of ['fast', 'medium', 'heavy']) {
     const d = suggestResult?.[tier]
     if (!d) continue
+    const chosen = (useFree[tier] && d.free) ? d.free : d.paid
+    const other = (useFree[tier] && d.free) ? d.paid : d.free
+    if (!chosen) continue
     const src = { fast, medium, heavy }[tier]
-    src.model = d.model
-    src.variant = d.variant || '(keine)'
+    src.model = chosen.model
+    src.variant = chosen.variant || '(keine)'
+    // die nicht gewählte Variante als Ausfall-Modell hinterlegen (fast/medium)
+    if (tier !== 'heavy' && other?.model) {
+      fallbacks[tier] = { model: other.model, variant: other.variant || '' }
+    } else {
+      fallbacks[tier] = null
+    }
   }
 }
 
@@ -178,6 +191,10 @@ async function runApply() {
       primaryAgents: {
         build: { model: buildSel.model, variant: buildSel.variant === '(keine)' ? '' : buildSel.variant },
         plan: { model: planSel.model, variant: planSel.variant === '(keine)' ? '' : planSel.variant },
+      },
+      fallbacks: {
+        fast: fallbacks.fast || null,
+        medium: fallbacks.medium || null,
       },
     }
     applyResult = await api('/api/apply', { body })
@@ -204,8 +221,26 @@ async function loadRolloutStatus() {
   try { rolloutStatus = await api('/api/rollout/status') } catch { /* ignore */ }
 }
 
+async function loadFailover() {
+  try { foStatus = await api('/api/failover/status') } catch { /* ignore */ }
+}
+
+async function runFailoverCheck() {
+  foBusy = true
+  error = null
+  try {
+    foStatus = { ...(foStatus || {}), ...(await api('/api/failover/check', { body: {}, method: 'POST' })) }
+    await loadFailover()
+  } catch (e) {
+    error = 'Ausfallschutz: ' + e.message
+  } finally {
+    foBusy = false
+  }
+}
+
 load()
 loadRolloutStatus()
+loadFailover()
 </script>
 
 <header>
@@ -312,16 +347,30 @@ loadRolloutStatus()
         {#if analyzeInfo.note}· {analyzeInfo.note}{/if}</p>{/if}
       <p class="muted">{suggestResult.reasoning}</p>
       <table>
-        <thead><tr><th>Tier</th><th>Vorschlag</th><th>Preis in/out $/M</th><th>Variante</th><th>Begründung</th></tr></thead>
+        <thead><tr><th>Tier</th><th>Wahl</th><th>Modell</th><th>Preis in/out $/M</th><th>Variante</th><th>Begründung</th></tr></thead>
         <tbody>
           {#each ['fast', 'medium', 'heavy'] as tier}
+            {@const paid = suggestResult[tier]?.paid}
+            {@const free = suggestResult[tier]?.free}
             <tr>
-              <td>{TIER_INFO[tier].title}</td>
-              <td class="mono">{suggestResult[tier]?.model}</td>
-              <td>{priceText(suggestResult[tier]?.model || '')}</td>
-              <td class="muted">{suggestResult[tier]?.variant || '—'}</td>
-              <td class="muted">{suggestResult[tier]?.reason}</td>
+              <td rowspan={free ? 2 : 1}>{TIER_INFO[tier].title}</td>
+              <td><input type="radio" name={'pick-' + tier} checked={!useFree[tier]}
+                    onchange={() => (useFree[tier] = false)} /> bezahlt</td>
+              <td class="mono">{paid?.model}</td>
+              <td>{priceText(paid?.model || '')}</td>
+              <td class="muted">{paid?.variant || '—'}</td>
+              <td class="muted">{paid?.reason}</td>
             </tr>
+            {#if free}
+              <tr>
+                <td><input type="radio" name={'pick-' + tier} checked={useFree[tier]}
+                      onchange={() => (useFree[tier] = true)} /> gratis</td>
+                <td class="mono">{free.model}</td>
+                <td>{priceText(free.model)}</td>
+                <td class="muted">{free.variant || '—'}</td>
+                <td class="muted">{free.reason}</td>
+              </tr>
+            {/if}
           {/each}
         </tbody>
       </table>
@@ -402,6 +451,32 @@ loadRolloutStatus()
     gespeicherten Stand ziehen.<br />
     Neustart ~30–60 s; offene Sessions verbinden sich danach automatisch neu.
   </p>
+  <div class="row" style="margin-top:6px">
+    <button onclick={runFailoverCheck} disabled={foBusy}>
+      {foBusy ? 'Prüfe Modelle …' : '🛡 Ausfallschutz prüfen'}
+    </button>
+    {#if foStatus}
+      <span class="muted">
+        Auto-Failover: {foStatus.autoFailover ? 'an' : 'aus'} · Schwelle {foStatus.threshold}
+        {#if foStatus.lastRun}· letzte Prüfung vor {Math.round((Date.now() / 1000) - foStatus.lastRun)}s{/if}
+      </span>
+    {/if}
+  </div>
+  {#if foStatus?.fallbacks && (foStatus.fallbacks.fast || foStatus.fallbacks.medium)}
+    <p class="muted" style="margin-top:4px">
+      Ausfall-Modelle:
+      {#if foStatus.fallbacks.fast}fast → <span class="mono">{foStatus.fallbacks.fast.model}{foStatus.fallbacks.fast.variant ? '#' + foStatus.fallbacks.fast.variant : ''}</span>{/if}
+      {#if foStatus.fallbacks.medium} · medium → <span class="mono">{foStatus.fallbacks.medium.model}{foStatus.fallbacks.medium.variant ? '#' + foStatus.fallbacks.medium.variant : ''}</span>{/if}
+    </p>
+  {/if}
+  {#if foStatus?.lastResults}
+    <p class="muted" style="margin-top:2px">
+      Zustand:
+      {#each Object.entries(foStatus.lastResults) as [tier, r]}
+        <span class="badge {r.ok ? 'active' : 'err'}">{tier} {r.ok ? 'ok' : 'AUSFALL'}</span>
+      {/each}
+    </p>
+  {/if}
 </div>
 
 <div class="card">

@@ -30,6 +30,10 @@ services:
       HESTIA_PROXY_SECRET: ${HESTIA_PROXY_SECRET:-}
       # Erlaubte Provider: opencode-go (Abo) + opencode (Zen, enthält Gratis-Modelle)
       HESTIA_PROVIDERS: ${HESTIA_PROVIDERS:-opencode-go,opencode}
+      # Ausfallschutz: 0 = nur manuell (Panel-Button), 1 = automatisch beim Probe-Lauf
+      HESTIA_AUTO_FAILOVER: ${HESTIA_AUTO_FAILOVER:-0}
+      HESTIA_PROBE_INTERVAL: ${HESTIA_PROBE_INTERVAL:-900}
+      HESTIA_FAIL_THRESHOLD: ${HESTIA_FAIL_THRESHOLD:-2}
       # Optional: überschreibt alles (sonst aus OpenBao)
       # HESTIA_PASSWORD: ""
       # OC_SERVER_PASSWORD: ""

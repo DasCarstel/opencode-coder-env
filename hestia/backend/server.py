@@ -33,6 +33,7 @@ import github_api  # noqa: E402
 from github_api import ConfigError  # noqa: E402
 import hjsonc  # noqa: E402
 import suggest as suggest_mod  # noqa: E402
+import failover as failover_mod  # noqa: E402
 
 STATIC_DIR = os.environ.get(
     "HESTIA_STATIC", os.path.join(os.path.dirname(BASE_DIR), "frontend", "dist")
@@ -67,6 +68,7 @@ TIER_DEFS = ("fast", "medium", "heavy")
 # Primary-Agents: abgeleitet aus @medium, im Panel manuell überschreibbar
 PRIMARY_AGENTS = ("build", "plan")
 AGENTS_PATH = os.environ.get("HESTIA_AGENTS_PATH", ".opencode/hestia-primary-agents.json")
+FALLBACKS_PATH = os.environ.get("HESTIA_FALLBACKS_PATH", ".opencode/hestia-fallbacks.json")
 VARIANT_RANK = {"minimal": 1, "none": 2, "low": 3, "medium": 4, "thinking": 4,
                 "high": 5, "xhigh": 6, "max": 7}
 
@@ -318,6 +320,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": str(e)}, 502)
             except Exception as e:
                 return self._json({"error": str(e)}, 500)
+        if path == "/api/failover/status":
+            with failover_mod.LOCK:
+                st = dict(failover_mod.STATE)
+            return self._json(st)
         if path == "/api/suggest/status":
             with SUGGEST_LOCK:
                 state = dict(SUGGEST_STATE)
@@ -386,10 +392,31 @@ class Handler(BaseHTTPRequestHandler):
                 eff = effective_agents(preset, overrides)
                 agents_json = json.dumps(agents_to_display(eff), indent=2, ensure_ascii=False) + "\n"
 
+                # Ausfall-Modelle (bezahlte Alternative je Tier, optional)
+                fb_in = payload.get("fallbacks") or {}
+                fb_out = {}
+                for tier in ("fast", "medium"):
+                    fb = fb_in.get(tier) or {}
+                    ref = (fb.get("model") or "").strip()
+                    if not ref:
+                        continue
+                    ok, res2 = catalog.usable(ref)
+                    if not ok:
+                        raise ApplyError(f"Ausfall-Modell {tier}: {res2}")
+                    var = (fb.get("variant") or "").strip()
+                    if var and var not in (res2["variants"] or []):
+                        raise ApplyError(f"Ausfall-Modell {tier}: Variante '{var}' nicht verfügbar")
+                    fb_out[tier] = {"model": ref, "variant": var}
+                fb_json = json.dumps(fb_out, indent=2, ensure_ascii=False) + "\n"
+                fb_current = github_api.get_file(FALLBACKS_PATH) or ""
+                fb_desc = {t: (fb_out[t]["model"] + (f"#{fb_out[t]['variant']}" if fb_out[t]["variant"] else "")) for t in fb_out}
+
                 agents_current = github_api.get_file(AGENTS_PATH) or ""
                 agents_desc = {a: (eff[a]["model"] + (f"#{eff[a]['variant']}" if eff[a]["variant"] else "")) for a in PRIMARY_AGENTS}
 
-                if new_jsonc.strip() == (r["content"] or "").strip() and agents_json.strip() == agents_current.strip():
+                if (new_jsonc.strip() == (r["content"] or "").strip()
+                        and agents_json.strip() == agents_current.strip()
+                        and fb_json.strip() == fb_current.strip()):
                     wf = os.environ.get("ROLLOUT_WORKFLOW", "rollout.yml")
                     try:
                         github_api.dispatch_workflow(wf)
@@ -408,6 +435,7 @@ class Handler(BaseHTTPRequestHandler):
                 res = github_api.put_files({
                     github_api.OVERRIDES_PATH: new_jsonc,
                     AGENTS_PATH: agents_json,
+                    FALLBACKS_PATH: fb_json,
                 }, msg)
                 _log(f"apply ok: {models_desc} | agents {agents_desc}")
                 return self._json({
@@ -415,6 +443,7 @@ class Handler(BaseHTTPRequestHandler):
                     "unchanged": False,
                     "tiers": models_desc,
                     "primaryAgents": agents_desc,
+                    "fallbacks": fb_desc,
                     "commit": res,
                     "rollout": "CI/CD läuft (validate + Container-Restart)",
                 })
@@ -464,6 +493,14 @@ class Handler(BaseHTTPRequestHandler):
                 _log(f"suggest error: {e}")
                 return self._json({"error": str(e)}, 500)
 
+        if path == "/api/failover/check":
+            try:
+                payload = self._body()
+                res = failover_mod.run_probes(apply_backup=bool(payload.get("apply")))
+                return self._json(res)
+            except Exception as e:
+                _log(f"failover check error: {e}")
+                return self._json({"error": str(e)}, 500)
         if path == "/api/rollout":
             try:
                 payload = self._body()
@@ -479,6 +516,10 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     port = int(os.environ.get("HESTIA_PORT", "8000"))
+    try:
+        failover_mod.start()
+    except Exception as e:  # noqa: BLE001
+        _log(f"Failover-Start fehlgeschlagen: {e}")
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     _log(f"Hestia backend listening on :{port} (user={HESTIA_USER}; static={STATIC_DIR})")
     if not os.environ.get("HESTIA_PASSWORD"):

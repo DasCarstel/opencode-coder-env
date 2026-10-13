@@ -120,9 +120,16 @@ Variante) wirklich abdeckt; @heavy nie auf ein volatiles Gratis-Modell legen.
 
 ANTWORTE NUR MIT folgendem JSON (keine weiteren Worte, keine Backticks):
 {{"reasoning": "ein Satz Gesamtbegründung",
-  "fast": {{"model": "opencode-go/<modelID>", "variant": "<variant|leer>", "reason": "<1 Satz>"}},
-  "medium": {{"model": "opencode-go/<modelID>", "variant": "<variant|leer>", "reason": "<1 Satz>"}},
-  "heavy": {{"model": "opencode-go/<modelID>", "variant": "<variant|leer>", "reason": "<1 Satz>"}}}}"""
+  "fast":   {{"paid": {{"model": "<provider>/<modelID>", "variant": "<variant|leer>", "reason": "<1 Satz>"}},
+             "free": {{"model": "opencode/<modelID>", "variant": "<variant|leer>", "reason": "<1 Satz>"}}}},
+  "medium": {{"paid": {{"model": "<provider>/<modelID>", "variant": "<variant|leer>", "reason": "<1 Satz>"}},
+             "free": {{"model": "opencode/<modelID>", "variant": "<variant|leer>", "reason": "<1 Satz>"}}}},
+  "heavy":  {{"paid": {{"model": "<provider>/<modelID>", "variant": "<variant|leer>", "reason": "<1 Satz>"}},
+             "free": null}}}}
+
+Für @fast und @medium IMMER beide Varianten angeben: "paid" (stabil, kostenpflichtig) und "free"
+(ein KOSTENLOS-Modell aus der Liste, das die Rolle noch vertretbar erfüllt). Für @heavy nur "paid"
+(free: null).  Ausfallschutz: das bezahlte Modell ist der Standard, das kostenlose die Option."""
 
 
 def _resolve_tier_model(tier: str, override_ref: str = "", override_variant: str = "") -> tuple:
