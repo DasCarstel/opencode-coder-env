@@ -8,7 +8,8 @@ MCP- und Skill-Konfiguration, Hestia-SOT-Dateien und die Betriebs-Dokumentation.
 | Datei | Inhalt |
 |-------|--------|
 | [`docs/architecture.md`](docs/architecture.md) | Systemüberblick: Coder-Host, Netzwerke, Herdr, Secret-Flow, Persistenz, Update-Verhalten |
-| [`docs/coder-templates.md`](docs/coder-templates.md) | Die vier Coder-Templates, Aufrufkette und der Ablauf von `shared/startup.sh` |
+| [`docs/coder-templates.md`](docs/coder-templates.md) | Die drei Coder-Templates, Aufrufkette und der Ablauf von `shared/startup.sh` |
+| [`docs/hermes.md`](docs/hermes.md) | Hermes-Agent als Host-Deployment: Compose, Bind-Mounts, Laufzeit-Zustand, Deploy |
 | [`docs/workspaces.md`](docs/workspaces.md) | Workspaces mit MCP-Servern, Skills und Projekt-Configs |
 | [`docs/mcp-skills.md`](docs/mcp-skills.md) | MCP-Server im Detail (ssh-mcp, authentik, oCIS …) und die Skills-Architektur |
 | [`docs/secrets.md`](docs/secrets.md) | Secret-Fluss OpenBao → Container, Pfadliste, `oc-go`-Helper |
@@ -36,7 +37,8 @@ opencode-coder-env/
 │   ├── infrastructure/        # HA, Server-Management, Svelte, Cleve (coder-infra)
 │   ├── general/               # isoliert (coder-gen)
 │   ├── muellerconnect/        # isoliert (coder-mc)
-│   └── hermes/                # eigenständiges Referenz-Template
+│   └── (kein hermes-Template — der Hermes-Agent ist ein Host-Deployment)
+├── hermes/                    # Host-Compose des Hermes-Agenten (Coder-Host 10.0.10.17)
 ├── workspaces/
 │   ├── infrastructure/{homeassistant,server-management,svelte,cleve}/
 │   ├── general/
@@ -79,10 +81,15 @@ opencode-coder-env/
    coder templates push <name> --directory coder-templates/<name> --yes --org=coder
    ```
 
-   `<name>` ist `infrastructure`, `general`, `muellerconnect` oder `hermes`.
+   `<name>` ist `infrastructure`, `general` oder `muellerconnect`.
 3. **Workspace starten** — der Container klont das Repo, holt die Secrets aus
    OpenBao und startet Herdr mit den Workspaces des Profils.
    Details: [`docs/coder-templates.md`](docs/coder-templates.md).
+
+> Der **Hermes-Agent** ist kein Template, sondern ein Host-Deployment unter
+> [`hermes/`](hermes/) auf dem Coder-Host; er wird über
+> `.github/workflows/deploy-hermes.yml` ausgerollt und von Hestia konfiguriert.
+> Details: [`docs/hermes.md`](docs/hermes.md).
 
 ## Weitere Doku
 

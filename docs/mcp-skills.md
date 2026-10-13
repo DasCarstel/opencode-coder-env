@@ -201,9 +201,10 @@ Das `unset` ist der eigentliche Schutz. Ein Workspace, der das falsche Paar
 referenziert, bekommt nicht irgendein anderes gültiges Token, sondern gar keins —
 der Aufruf schlägt sichtbar fehl, statt still in den falschen Space zu greifen.
 
-**Ausnahme:** das Hermes-Template (`coder-templates/hermes/entrypoint.sh`) injiziert
-bewusst **beide** Paare in denselben Container und definiert daraus zwei getrennte
-MCP-Server (`ocis-private`, `ocis-muellerconnect`). Es ist der einzige Ort, an dem
+**Ausnahme:** der **Hermes-Agent** — ein Host-Deployment auf dem Coder-Host, kein
+Coder-Template (siehe [`hermes.md`](hermes.md)) — bekommt bewusst **beide** Paare
+über seine vom Hestia-Panel gepflegte `.env` und definiert daraus zwei getrennte
+MCP-Server (`ocis-private`, `ocis-muellerconnect`). Er ist der einzige Ort, an dem
 beide Identitäten gleichzeitig ankommen — der OpenCode-Guardrail greift dort nicht.
 
 ## Skills-Architektur

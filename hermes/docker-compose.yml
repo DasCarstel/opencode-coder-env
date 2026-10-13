@@ -1,0 +1,26 @@
+services:
+  hermes:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hermes-custom:latest
+    container_name: hermes
+    restart: unless-stopped
+    tty: true
+    stdin_open: true
+    networks:
+      - coder-infra
+    ports:
+      - "9119:9119"
+    volumes:
+      # Laufzeit-Zustand (config.yaml) und die von Hestia gepflegte .env liegen
+      # AUSSERHALB des Repos und bleiben beim Deploy erhalten.
+      - /etc/docker/hermes/data:/opt/data
+      - /opt/docker-compose/hermes/.env:/opt/data/.env
+    environment:
+      HERMES_DASHBOARD: "1"
+    command: ["hermes"]
+
+networks:
+  coder-infra:
+    external: true

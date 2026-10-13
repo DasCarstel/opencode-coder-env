@@ -1,0 +1,70 @@
+name: deploy-hermes
+
+# Deployt den Hermes-Agent-Container auf dem Coder-Host (10.0.10.17):
+# hermes/ synchronisieren → docker compose build + up -d.
+#
+# Voraussetzungen: identisch zu deploy-hestia
+#   1. Self-hosted GitHub-Runner mit Label `docker-host` auf dem Docker-Host (CT 100)
+#   2. GitHub-Secret CODER_DEPLOY_KEY (privater Deploy-Key, pubkey liegt im
+#      authorized_keys des Coder-Hosts)
+on:
+  push:
+    branches: [master]
+    paths:
+      - "hermes/**"
+      - ".github/workflows/deploy-hermes.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, docker-host]
+    env:
+      CODER_DEPLOY_KEY: ${{ secrets.CODER_DEPLOY_KEY }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Deploy-Key hinterlegen
+        run: |
+          mkdir -p ~/.ssh
+          echo "$CODER_DEPLOY_KEY" > ~/.ssh/id_ed25519_coderdeploy
+          sed -i 's/\r$//' ~/.ssh/id_ed25519_coderdeploy
+          chmod 600 ~/.ssh/id_ed25519_coderdeploy
+          ssh-keyscan -H 10.0.10.17 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: hermes/ synchronisieren
+        # `.env` MUSS ausgeschlossen sein: es enthält Secrets (OpenBao-Pool,
+        # Provider-Keys) und ist zugleich Bind-Mount-Ziel des Containers
+        # (/opt/docker-compose/hermes/.env → /opt/data/.env). Ohne --exclude
+        # würde der Deploy die von Hestia geschriebene Datei löschen (--delete).
+        run: |
+          rsync -a --delete -e "ssh -i ~/.ssh/id_ed25519_coderdeploy -o IdentitiesOnly=yes" \
+            --exclude '.env' \
+            --exclude '*.bak*' \
+            "$(pwd)/hermes/" root@10.0.10.17:/opt/docker-compose/hermes/
+
+      - name: docker compose build + up -d (auf Coder-Host)
+        # Bewusst OHNE --pull: das Basis-Image `nousresearch/hermes-agent:latest`
+        # ist ein floating Tag. Ein --pull würde es bei jedem Deploy unangekündigt
+        # austauschen (inkl. möglicher Breaking Changes der Hermes-CLI). Ein
+        # bewusstes Image-Update erfolgt durch Anheben des Tags bzw. Prune von Hand.
+        run: |
+          ssh -i ~/.ssh/id_ed25519_coderdeploy -o IdentitiesOnly=yes root@10.0.10.17 \
+            "cd /opt/docker-compose/hermes && docker compose build && docker compose up -d"
+
+      - name: Healthcheck
+        # Kurz-Retry: `up -d` kehrt zurück, bevor der Container voll hoch ist.
+        run: |
+          ssh -i ~/.ssh/id_ed25519_coderdeploy -o IdentitiesOnly=yes root@10.0.10.17 \
+            'for i in $(seq 1 12); do
+               if [ "$(docker inspect -f "{{.State.Running}}" hermes 2>/dev/null)" = "true" ]; then
+                 echo "hermes läuft"; exit 0
+               fi
+               sleep 5
+             done
+             echo "hermes läuft nach 60s nicht" >&2; docker ps -a --filter name=hermes >&2; exit 1'
+
+      - name: Dashboard erreichbar? (nur informativ)
+        # Port 9119 ist das Hermes-Dashboard. Kein harter Fail — der Agent
+        # arbeitet auch ohne erreichbares Dashboard weiter.
+        run: |
+          curl -fsS -m 5 -o /dev/null -w 'HTTP %{http_code}\n' http://10.0.10.17:9119/ \
+            || echo "Dashboard nicht erreichbar (informativ, kein Fehler)"

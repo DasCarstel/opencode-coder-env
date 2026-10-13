@@ -1,17 +1,19 @@
 # Coder-Templates
 
-Vier Templates, ein gemeinsames Setup-Skript. Jeder Container startet über
+Drei Templates, ein gemeinsames Setup-Skript. Jeder Container startet über
 `entrypoint.sh`, das `coder-templates/shared/startup.sh <profil>` im Hintergrund
 startet und danach den Coder-Agent-Bootstrap per `exec "$@"` ausführt.
 
-## Die vier Templates
+> Der **Hermes-Agent** ist kein Coder-Template, sondern ein Host-Deployment auf
+> dem Coder-Host — siehe [`hermes.md`](hermes.md).
+
+## Die drei Templates
 
 | Template | Netz | Image / Container | `startup.sh`-Profil |
 |----------|------|-------------------|---------------------|
 | `infrastructure` | `coder-infra` | `workspace-infrastructure:v2` | `infrastructure` |
 | `general` | `coder-gen` | `workspace-general:v2` | `general` |
 | `muellerconnect` | `coder-mc` | `workspace-muellerconnect:v2` | `muellerconnect` |
-| `hermes` | `coder-infra` | `hermes-cli:latest` | — (eigenes `entrypoint.sh`) |
 
 ### `infrastructure`
 HA-, Server-Management-, Svelte- und Cleve-Workspaces. `main.tf`-Besonderheiten:
@@ -27,18 +29,6 @@ Netzwerk `coder-gen` (kein internes VLAN), eigener Session-Pfad
 ### `muellerconnect`
 Wie `general`, aber Arbeits-Vault: Netzwerk `coder-mc`, eigener Session-Pfad
 `/etc/opencode-data/<user>-mc`. Coder-App „MuellerConnect Workspace".
-
-### `hermes`
-**Eigenständiges Referenz-Template ohne Repo-Automatismus.** Es klont das Repo
-nicht, ruft `shared/startup.sh` nicht auf und bringt einen eigenen
-`entrypoint.sh` mit: AppRole-Login, Secrets aus OpenBao, dann `.env` +
-`config.yaml` unter `/root/.hermes` und Start der Hermes-CLI. Persistenz über
-das Volume `hermes_state` (u. a. OAuth-Tokens der MCP-Logins). Keine SSH-Keys,
-kein Tailscale, kein `docker.sock`, keine Host-Ports.
-
-> `hermes` ist bewusst aus dem Rollout-/Versions-Pins-Mechanismus herausgehalten
-> und wird manuell gepflegt. Änderungen an `shared/startup.sh` wirken sich nicht
-> auf dieses Template aus.
 
 ## Aufrufkette
 
@@ -174,6 +164,6 @@ coder login --url https://coder.mueller-nas.de --token <token>
 coder templates push <name> --directory coder-templates/<name> --yes --org=coder
 ```
 
-`<name>` = `infrastructure` | `general` | `muellerconnect` | `hermes`.
+`<name>` = `infrastructure` | `general` | `muellerconnect`.
 Das Image wird lokal aus dem jeweiligen `Dockerfile` gebaut; der `CACHE_DATE`
 Build-Arg erzwingt den Rebuild beim Push.

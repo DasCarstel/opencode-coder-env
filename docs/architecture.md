@@ -22,9 +22,13 @@ Server verwaltet.
 
 | Netz | Container | Charakter |
 |------|-----------|-----------|
-| `coder-infra` | `infrastructure`, `hermes` | Zugriff auf das interne VLAN |
+| `coder-infra` | `infrastructure`, `hermes`¹ | Zugriff auf das interne VLAN |
 | `coder-gen` | `general` | isoliert, kein internes VLAN |
 | `coder-mc` | `muellerconnect` | isoliert, kein internes VLAN |
+
+¹ `hermes` ist kein Coder-Template, sondern der Hermes-Agent als Host-Deployment
+([`hermes.md`](hermes.md)) — er hängt als einziger Nicht-Template-Container in
+`coder-infra`.
 
 Die Trennung ist hart: `general` und `muellerconnect` hängen **nicht** in
 `coder-infra` und bekommen weder `ssh-mcp` noch SSH-Keys — nur den oCIS-MCP.
@@ -115,6 +119,7 @@ ein Subnet-Router-Container auf Docker-Kleve (Tag `tag:kleve`) annonciert
 Geräten. Kein Port-Forwarding, kein NAT. Auth-Key: `secret/data/mcp/tailscale`.
 Nur das Template `infrastructure` startet Tailscale.
 
-Container **ohne** Tailscale (z. B. `hermes`) erreichen Home Assistant Kleve über
-das TCP-Relay `ha-forward.py` (`127.0.0.1:18123` → HA Kleve) — siehe
+Container **ohne** Tailscale (der Hermes-Agent `hermes`, siehe
+[`hermes.md`](hermes.md)) erreichen Home Assistant Kleve über das TCP-Relay
+`ha-forward.py` (`127.0.0.1:18123` → HA Kleve) — siehe
 [`coder-templates.md`](coder-templates.md).
