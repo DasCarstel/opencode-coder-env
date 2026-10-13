@@ -105,6 +105,7 @@ Model-Verwaltung für das OpenCode-Fleet (Fast/Medium/Heavy der Model-Router-Tie
 - **Budget/Abos**: `GET /api/accounts` zeigt je OpenCode-Go-Abo das Restbudget
   (5 h/Woche/Monat, Quelle `opencode.ai/zen/go/v1/usage`). Konfiguration modular in
   `.opencode/hestia-accounts.jsonc` (Provider-Adapter + Konten + Policy).
+- **Ablauf-Bevorzugung**: Setzt ein Abo-Fenster (Woche/Monat) innerhalb der konfigurierten Zeitspanne zurück und hat noch Restbudget, bevorzugt Hestia dieses Konto („use it or lose it"). Stellschrauben: `policy.expiring` (enabled, withinHours, windows, minRemainingPercent) in `.opencode/hestia-accounts.jsonc`.
 - **Auto-Kontowechsel**: Bei erschöpftem Abo (0 % frei) wechselt Hestia
   automatisch (`mode: auto`) bzw. nach Bestätigung (`notify`) auf das Konto mit dem
   meisten Restbudget; zusätzlich weiches Gleichgewicht für Woche/Monat. Mechanik:
