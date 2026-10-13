@@ -263,7 +263,7 @@ load()
       {#each tableModels.slice(0, 40) as m}
         <tr>
           <td>{m.name}</td>
-          <td class="mono">{m.ref.replace(PRESET_REF_TRIM, '')}</td>
+          <td class="mono">{m.modelID}</td>
           <td><span class="badge {m.status === 'active' ? 'active' : 'warn'}">{m.status}</span></td>
           <td>{m.cost.input ?? 0}</td>
           <td>{m.cost.output ?? 0}</td>
