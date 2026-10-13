@@ -34,6 +34,9 @@ services:
       HESTIA_AUTO_FAILOVER: ${HESTIA_AUTO_FAILOVER:-0}
       HESTIA_PROBE_INTERVAL: ${HESTIA_PROBE_INTERVAL:-900}
       HESTIA_FAIL_THRESHOLD: ${HESTIA_FAIL_THRESHOLD:-2}
+      # Konto-Wechsel (P2): Mindestabstand zwischen zwei Dispatches + Ziel-Workflow
+      HESTIA_SWITCH_COOLDOWN: ${HESTIA_SWITCH_COOLDOWN:-1800}
+      HESTIA_SWITCH_WORKFLOW: ${HESTIA_SWITCH_WORKFLOW:-switch-account.yml}
       # Optional: überschreibt alles (sonst aus OpenBao)
       # HESTIA_PASSWORD: ""
       # OC_SERVER_PASSWORD: ""

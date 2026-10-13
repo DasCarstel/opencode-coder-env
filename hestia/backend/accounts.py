@@ -6,9 +6,11 @@ Fallbacks-Datei via GitHub Contents API gelesen). Jedes Konto hat einen
 keyRef auf ein Feld im OpenBao-Pfad secret/data/mcp/opencode-go; der
 bootstrap.py lädt diese Felder als OC_GO_DEFAULT1..3 nach Env.
 
-P1 macht bewusst NUR Abfrage + Anzeige: es wird nichts automatisch
-umgeschaltet. refresh() baut den Zustand neu auf, evaluate() liefert eine
-Wechsel-Empfehlung, die das Panel anzeigt.
+P1 macht bewusst NUR Abfrage + Anzeige. P2 kommt dazu: switch_account()
+dispatcht den Workflow switch-account.yml, der auf dem Coder-Host OpenBao
+(secret/data/mcp/opencode-go, Feld "active") umschreibt und die
+OpenCode-Container mit dem neuen Key neu startet. Der Wechsel passiert also
+asynchron im CI, nicht im Panel-Prozess — der Key wird hier nie berührt.
 """
 import json
 import os
@@ -24,6 +26,9 @@ ACCOUNTS_PATH = os.environ.get("HESTIA_ACCOUNTS_PATH", ".opencode/hestia-account
 CACHE_TTL = int(os.environ.get("HESTIA_ACCOUNTS_CACHE", "60"))   # Sekunden für die Usage-Cache
 CONFIG_TTL = 300                                                 # Sekunden für die Config (SOT)
 HTTP_TIMEOUT = 10
+# Workflow, der den eigentlichen Konto-Wechsel ausführt (OpenBao + Container).
+SWITCH_WORKFLOW = os.environ.get("HESTIA_SWITCH_WORKFLOW", "switch-account.yml")
+DEFAULT_COOLDOWN = int(os.environ.get("HESTIA_SWITCH_COOLDOWN") or 1800)   # Sekunden
 
 LOCK = threading.Lock()
 _CONFIG_CACHE = {"at": 0.0, "cfg": None}
@@ -39,6 +44,10 @@ STATE = {
     "events": [],
     "error": None,
     "recommendation": {"switchRecommended": False, "target": None, "reason": ""},
+    # --- P2: Wechsel ---
+    "lastSwitch": None,     # Unix-Zeitpunkt des letzten erfolgreichen Dispatches
+    "switching": False,     # gerade ein Wechsel in Arbeit (Cooldown/Anzeige)
+    "switchWorkflow": SWITCH_WORKFLOW,
 }
 
 
@@ -253,6 +262,116 @@ def run_check() -> dict:
     return refresh(force=True)
 
 
+def _cooldown() -> int:
+    """Mindestabstand zwischen zwei Wechseln: policy.cooldownSeconds > Env > 1800."""
+    policy = _config().get("policy") or {}
+    try:
+        return int(policy.get("cooldownSeconds") or os.environ.get("HESTIA_SWITCH_COOLDOWN") or 1800)
+    except (TypeError, ValueError):
+        return DEFAULT_COOLDOWN
+
+
+def _event(**fields) -> dict:
+    """Ereignis an dieSTATE anhängen (Ringpuffer, älteste zuerst raus)."""
+    ev = {"at": time.time(), **fields}
+    with LOCK:
+        events = STATE.setdefault("events", [])
+        events.append(ev)
+        del events[:-200]
+    return ev
+
+
+def _notify(target: str, reason: str) -> bool:
+    """Empfehlungs-Event nur einmal pro Ziel+Intervall (notify-Modus, P2)."""
+    now = time.time()
+    with LOCK:
+        events = STATE.setdefault("events", [])
+        # gleiches Ziel, gleiche Begründung und innerhalb des Intervalls → nichts Neues
+        for ev in events:
+            if ev.get("type") != "recommendation" or ev.get("target") != target:
+                continue
+            if now - float(ev.get("at") or 0) < int(STATE.get("interval") or 300):
+                return False
+    _event(type="recommendation", target=target, reason=reason)
+    return True
+
+
+def switch_account(target: str, reason: str = "", force: bool = False, by: str = "manual") -> dict:
+    """Konto-Wechsel anstoßen: Workflow-Dispatch (OpenBao + Container).
+
+    Der Key wird hier NICHT gelesen oder angefasst — das macht der Workflow
+    auf dem Runner (dort liegt der OpenBao-Token). Rückgabe ist immer ein Dict;
+    Fehler kommen als {"switched": False, "error": ...} zurück, damit der
+    Panel-Check und die loop() nicht werfen müssen.
+    """
+    target = str(target or "").strip()
+    if not target:
+        return {"switched": False, "error": "kein Zielkonto"}
+
+    # Zustand ggf. frisch holen, damit hasKey/ok aus dem aktuellen Lauf stammen
+    if not STATE.get("accounts"):
+        try:
+            refresh(force=True)
+        except Exception as e:  # noqa: BLE001
+            return {"switched": False, "error": f"Konten nicht lesbar: {e}"}
+
+    acc = next((a for a in STATE.get("accounts") or [] if a.get("id") == target), None)
+    if acc is None:
+        return {"switched": False, "error": f"unbekanntes Konto: {target}"}
+    if not acc.get("hasKey"):
+        return {"switched": False, "error": f"kein Key im Env für {target}"}
+    if not acc.get("ok"):
+        return {"switched": False,
+                "error": f"{target} nicht abfragbar: {acc.get('error') or 'unbekannt'}"}
+
+    cooldown = _cooldown()
+    last = STATE.get("lastSwitch")
+    if last and not force:
+        remaining = cooldown - (time.time() - float(last))
+        if remaining > 0:
+            _event(type="switch-skipped", target=target, reason="Cooldown aktiv", by=by)
+            return {"switched": False, "error": "Cooldown aktiv", "cooldownRemaining": int(remaining)}
+
+    with LOCK:
+        if STATE.get("switching"):
+            return {"switched": False, "error": "Wechsel läuft bereits", "target": target}
+        STATE["switching"] = True
+    try:
+        disp = github_api.dispatch_workflow(
+            SWITCH_WORKFLOW,
+            inputs={"account": target, "reason": reason or "hestia"},
+        )
+    except Exception as e:  # noqa: BLE001
+        with LOCK:
+            STATE["switching"] = False
+        _event(type="switch-error", target=target, reason=str(e), by=by)
+        return {"switched": False, "error": str(e)}
+    with LOCK:
+        STATE["switching"] = False
+        STATE["lastSwitch"] = time.time()
+    _event(type="switch", target=target, reason=reason or "hestia", by=by)
+    _log(f"Wechsel angestoßen: {target} (via {by}, {SWITCH_WORKFLOW})")
+    return {"switched": True, "target": target, "by": by, "dispatched": disp}
+
+
+def _apply_policy() -> None:
+    """Empfehlung aus dem frischen Lauf umsetzen (mode: auto|notify|off)."""
+    rec = STATE.get("recommendation") or {}
+    mode = STATE.get("mode") or "off"
+    if not rec.get("switchRecommended") or not rec.get("target"):
+        return
+    target, reason = rec["target"], rec.get("reason") or ""
+    if mode == "auto":
+        # Cooldown in switch_account verhindert Ping-Pong zwischen zwei Konten.
+        res = switch_account(target, reason, force=False, by="auto")
+        if not res.get("switched"):
+            _log(f"automatischer Wechsel nicht ausgeführt: {res.get('error')}")
+    elif mode == "notify":
+        if _notify(target, reason):
+            _log(f"Empfehlung: Wechsel zu {target} ({reason}) — Modus notify, kein Auto-Wechsel")
+    # mode == "off": bewusst nichts tun.
+
+
 def loop():
     while True:
         try:
@@ -260,10 +379,15 @@ def loop():
         except Exception as e:  # noqa: BLE001
             _log(f"Konten-Abfrage fehlgeschlagen: {e}")
             interval = 300
+        # Policy erst NACH dem frischen Refresh — die Empfehlung muss aktuell sein.
+        try:
+            _apply_policy()
+        except Exception as e:  # noqa: BLE001
+            _log(f"Policy-Ausführung fehlgeschlagen: {e}")
         _log(f"nächste Prüfung in {interval}s")
         time.sleep(max(30, interval))
 
 
 def start():
-    """Hintergrund-Thread (P1: nur Abfrage, kein automatischer Wechsel)."""
+    """Hintergrund-Thread: fragt ab und setzt die Policy um (P2)."""
     threading.Thread(target=loop, daemon=True).start()

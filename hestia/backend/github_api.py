@@ -96,13 +96,21 @@ def put_overrides(new_jsonc: str, message: str) -> dict:
     }
 
 
-def dispatch_workflow(workflow: str, ref: str | None = None) -> dict:
-    """GitHub Actions Workflow dispatchen (manueller Force-Rollout)."""
+def dispatch_workflow(workflow: str, ref: str | None = None, inputs: dict | None = None) -> dict:
+    """GitHub Actions Workflow dispatchen (manueller Force-Rollout).
+
+    inputs: Optionale workflow_dispatch-Inputs (nur senden, wenn gesetzt —
+    GitHub lehnt einen leeren/leer-typisierten inputs-Block nicht ab, aber
+    üblich ist es, ihn dann komplett weizulassen).
+    """
     ref = ref or GITHUB_REF
+    body: dict = {"ref": ref}
+    if inputs:
+        body["inputs"] = inputs
     status, d = _req(
         "POST",
         f"{GITHUB_API}/repos/{GITHUB_REPO}/actions/workflows/{workflow}/dispatches",
-        {"ref": ref},
+        body,
     )
     if status == 204:
         return {"dispatched": True, "workflow": workflow, "ref": ref}

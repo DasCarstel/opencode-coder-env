@@ -1,0 +1,44 @@
+name: switch-account
+
+# Konto-Wechsel für OpenCode Go (P2). Wird von hestia/backend/accounts.py per
+# workflow_dispatch angestoßen (manuell über das Panel oder automatisch bei
+# mode=auto), schreibt das Skript "active" in OpenBao
+# (secret/data/mcp/opencode-go) und startet die OpenCode-Container auf dem
+# Coder-Host mit dem neuen Key neu.
+# Der Key wird nie im Log ausgegeben: er kommt aus dem periodischen Token in
+# /opt/docker-compose/github-runner/openbao-switch.token und wandert per
+# stdin auf den Host — OpenBao-Policy "hestia-switch" (read+update auf
+# secret/data/mcp/opencode-go).
+on:
+  workflow_dispatch:
+    inputs:
+      account:
+        description: "Konto-ID (Feld in secret/data/mcp/opencode-go)"
+        required: true
+        type: string
+      reason:
+        description: "Begründung (nur fürs Log)"
+        required: false
+        type: string
+
+jobs:
+  switch:
+    runs-on: [self-hosted, docker-host]
+    env:
+      CODER_DEPLOY_KEY: ${{ secrets.CODER_DEPLOY_KEY }}
+      ACCOUNT: ${{ inputs.account }}
+      REASON: ${{ inputs.reason }}
+      OPENBAO_ADDR: https://openbao.mueller-nas.de
+      OPENBAO_TOKEN_FILE: /opt/docker-compose/github-runner/openbao-switch.token
+      CODER_SSH_HOST: 10.0.10.17
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy-Key hinterlegen
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.CODER_DEPLOY_KEY }}" > ~/.ssh/id_ed25519_coderdeploy
+          sed -i 's/\r$//' ~/.ssh/id_ed25519_coderdeploy
+          chmod 600 ~/.ssh/id_ed25519_coderdeploy
+          ssh-keyscan -H 10.0.10.17 >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Konto umschalten (OpenBao + Container-Restart)
+        run: bash hestia/ci/switch-account.sh

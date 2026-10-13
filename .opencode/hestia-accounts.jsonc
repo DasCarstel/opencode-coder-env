@@ -4,6 +4,7 @@
     "mode": "auto",                    // auto | notify | off
     "switchWhenExhausted": true,       // 0 % frei / status "rate-limited" in irgendeinem Fenster
     "select": "most_headroom",
+    "cooldownSeconds": 1800,               // Mindestabstand zwischen zwei Wechseln
     "balance": {
       "enabled": true,
       "windows": ["weekly", "monthly"],

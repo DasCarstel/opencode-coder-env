@@ -15,7 +15,8 @@ Endpoints (alle unter Basic Auth):
   POST /api/suggest           KI-Analyse → 3-Tier-Vorschlag (JSON)
   POST /api/rollout           Force-Rollout (Workflow-Dispatch)
   GET  /api/accounts          Budget-Status aller Provider-Konten (inkl. Empfehlung)
-  POST /api/accounts/check    Konten sofort neu abfragen (kein Wechsel in P1)
+  POST /api/accounts/check    Konten sofort neu abfragen (kein Wechsel)
+  POST /api/accounts/switch   Konto-Wechsel anstoßen (id optional = Empfehlung)
   GET  /*                     statisches Frontend (dist/)
 """
 import base64
@@ -354,7 +355,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(state)
         if path in ("/api/accounts", "/api/accounts/status"):
             return self._json(accounts_mod.state())
-        if path in ("/api/apply", "/api/suggest", "/api/rollout", "/api/accounts/check"):
+        if path in ("/api/apply", "/api/suggest", "/api/rollout",
+                    "/api/accounts/check", "/api/accounts/switch"):
             return self._json(
                 {"error": f"{path} ist POST-only (der Aufruf kam als GET an)"}, 405
             )
@@ -538,6 +540,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(accounts_mod.run_check())
             except Exception as e:
                 _log(f"accounts check error: {e}")
+                return self._json({"error": str(e)}, 500)
+        if path == "/api/accounts/switch":
+            try:
+                payload = self._body()
+                # Ohne explizite id wird die aktuelle Empfehlung übernommen.
+                target = str(payload.get("id") or "").strip()
+                if not target:
+                    target = str((accounts_mod.STATE.get("recommendation") or {}).get("target") or "")
+                if not target:
+                    return self._json({"error": "kein Zielkonto"}, 400)
+                res = accounts_mod.switch_account(
+                    target,
+                    str(payload.get("reason") or ""),
+                    bool(payload.get("force")),
+                    by="manual",
+                )
+                return self._json(res, 200 if res.get("switched") else 409)
+            except Exception as e:
+                _log(f"accounts switch error: {e}")
                 return self._json({"error": str(e)}, 500)
         if path == "/api/rollout":
             try:
