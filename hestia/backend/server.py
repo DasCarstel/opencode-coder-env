@@ -241,6 +241,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": str(e)}, 404)
             except Exception as e:
                 return self._json({"error": str(e)}, 500)
+        if path == "/api/rollout/status":
+            try:
+                wf = os.environ.get("ROLLOUT_WORKFLOW", "rollout.yml")
+                return self._json(github_api.latest_run(wf))
+            except ConfigError as e:
+                return self._json({"error": str(e)}, 502)
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
         if path == "/api/suggest/status":
             with SUGGEST_LOCK:
                 state = dict(SUGGEST_STATE)
@@ -288,6 +296,18 @@ class Handler(BaseHTTPRequestHandler):
                 cfg = build_config(r["config"], tiers)
                 new_jsonc = hjsonc.serialize(cfg)
                 models_desc = {t: (tiers[t]["model"] + (f"#{tiers[t]['variant']}" if tiers[t]["variant"] else "")) for t in TIER_DEFS}
+                if new_jsonc.strip() == (r["content"] or "").strip():
+                    # Keine inhaltliche Änderung → GitHub erzeugt kein Push-Event,
+                    # also würde keine Pipeline laufen. Stattdessen direkt ausrollen.
+                    wf = os.environ.get("ROLLOUT_WORKFLOW", "rollout.yml")
+                    try:
+                        github_api.dispatch_workflow(wf)
+                        note = f"unverändert — Rollout ({wf}) direkt gestartet"
+                    except ConfigError as e:
+                        note = f"unverändert — KEIN Rollout gestartet: {e}"
+                    _log(f"apply unchanged: {models_desc}")
+                    return self._json({"applied": True, "unchanged": True, "tiers": models_desc,
+                                       "rollout": note})
                 msg = (
                     "hestia: Tier-Update\n\n"
                     f"fast={models_desc['fast']}\nmedium={models_desc['medium']}\nheavy={models_desc['heavy']}"
@@ -296,9 +316,10 @@ class Handler(BaseHTTPRequestHandler):
                 _log(f"apply ok: {models_desc}")
                 return self._json({
                     "applied": True,
+                    "unchanged": False,
                     "tiers": models_desc,
                     "commit": res,
-                    "rollout": "CI/CD läuft (validate + Coder-Restart der Workspaces)",
+                    "rollout": "CI/CD läuft (validate + Container-Restart)",
                 })
             except ApplyError as e:
                 return self._json({"error": str(e)}, 400)

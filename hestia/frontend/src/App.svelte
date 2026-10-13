@@ -14,6 +14,7 @@ let suggestBusy = $state(false)
 let applyBusy = $state(false)
 let applyResult = $state(null)
 let rolloutResult = $state(null)
+let rolloutStatus = $state(null)
 let error = $state(null)
 let pwOpen = $state(false)
 let pwInput = $state(getPassword())
@@ -140,6 +141,7 @@ async function runApply() {
     }
     applyResult = await api('/api/apply', { body })
     await load()
+    await loadRolloutStatus()
   } catch (e) {
     error = 'Anwenden: ' + e.message
   } finally {
@@ -151,12 +153,18 @@ async function runRollout() {
   rolloutResult = null
   try {
     rolloutResult = await api('/api/rollout', { body: {} })
+    setTimeout(loadRolloutStatus, 8000)
   } catch (e) {
     error = 'Rollout: ' + e.message
   }
 }
 
+async function loadRolloutStatus() {
+  try { rolloutStatus = await api('/api/rollout/status') } catch { /* ignore */ }
+}
+
 load()
+loadRolloutStatus()
 </script>
 
 <header>
@@ -308,8 +316,16 @@ load()
         Commit <a href={applyResult.commit.html_url} target="_blank" rel="noreferrer">{applyResult.commit.sha?.slice(0, 8)}</a>
         — {applyResult.rollout}
       </span>
+    {:else if applyResult?.unchanged}
+      <span class="muted">Keine Änderung — {applyResult.rollout}</span>
     {/if}
     {#if rolloutResult?.dispatched}<span class="muted">Rollout-Workflow gestartet.</span>{/if}
+    {#if rolloutStatus?.run_number}
+      <span class="badge {rolloutStatus.conclusion === 'success' ? 'active' : (rolloutStatus.conclusion === 'failure' ? 'err' : 'warn')}">
+        Letzter Rollout #{rolloutStatus.run_number}: {rolloutStatus.conclusion || rolloutStatus.status}
+      </span>
+      {#if rolloutStatus.html_url}<a class="muted" href={rolloutStatus.html_url} target="_blank" rel="noreferrer">Log</a>{/if}
+    {/if}
   </div>
   <p class="muted" style="margin-top:10px; border-top:1px solid var(--line); padding-top:10px">
     <strong>✔ Anwenden</strong> — speichert deine Auswahl im Repo (Commit) und rollt sie automatisch auf alle

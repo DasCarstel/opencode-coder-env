@@ -108,5 +108,28 @@ def dispatch_workflow(workflow: str, ref: str | None = None) -> dict:
         return {"dispatched": True, "workflow": workflow, "ref": ref}
     raise ConfigError(
         f"Workflow-Dispatch fehlgeschlagen ({status}): {d.get('message', '')} — "
-        "PRÜFE: PAT braucht 'workflow'-Scope; Workflow-Datei muss auf dem Default-Branch liegen."
+        "Hinweis: PAT braucht 'workflow'-Scope; Workflow-Datei muss auf dem Default-Branch liegen."
     )
+
+
+def latest_run(workflow: str) -> dict:
+    """Letzten Lauf eines Workflows auslesen (Status-Anzeige im Panel)."""
+    status, d = _req(
+        "GET",
+        f"{GITHUB_API}/repos/{GITHUB_REPO}/actions/workflows/{workflow}/runs?per_page=1",
+    )
+    if status != 200:
+        raise ConfigError(f"Workflow-Läufe nicht lesbar ({status}): {d.get('message', '')}")
+    runs = d.get("workflow_runs") or []
+    if not runs:
+        return {"none": True, "workflow": workflow}
+    r = runs[0]
+    return {
+        "workflow": workflow,
+        "run_number": r.get("run_number"),
+        "status": r.get("status"),
+        "conclusion": r.get("conclusion"),
+        "event": r.get("event"),
+        "html_url": r.get("html_url"),
+        "created_at": r.get("created_at"),
+    }
