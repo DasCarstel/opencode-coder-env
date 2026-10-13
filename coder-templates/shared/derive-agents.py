@@ -37,7 +37,7 @@ def log(msg):
     print(f"  {msg}", flush=True)
 
 
-def variants_of(ref, retries=5):
+def variants_of(ref, retries=12, pause=4):
     """Varianten-Liste des Modells vom lokalen OpenCode-Server holen."""
     if not PASSWORD:
         return []
@@ -57,7 +57,7 @@ def variants_of(ref, retries=5):
             return []
         except Exception:
             if attempt < retries - 1:
-                time.sleep(3)
+                time.sleep(pause)
     return []
 
 

@@ -695,6 +695,8 @@ fi
 echo ""
 echo "=== Primary-Agents (build/plan) ==="
 if [ -f "$OVERRIDES_SRC" ]; then
+  # OpenCode-Server sicherstellen — die Varianten-Liste kommt von /api/model
+  opencode service start >/dev/null 2>&1 || true
   REPO_DIR="$REPO_DIR" python3 "$REPO_DIR/coder-templates/shared/derive-agents.py" \
     || echo "  ⚠ Primary-Agents konnten nicht abgeleitet werden"
 fi
