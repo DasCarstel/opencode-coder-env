@@ -312,17 +312,11 @@ load()
     {#if rolloutResult?.dispatched}<span class="muted">Rollout-Workflow gestartet.</span>{/if}
   </div>
   <p class="muted" style="margin-top:10px; border-top:1px solid var(--line); padding-top:10px">
-    <strong>✔ Anwenden</strong> schreibt deine Auswahl in die Repo-Config
-    (<span class="mono">.opencode/opencode-model-router.overrides.jsonc</span>), validiert sie gegen den
-    Live-Katalog und committet sie — der Push startet automatisch die CI/CD-Kette
-    (Validierung → Neustart der drei Container, die dann das frische Repo ziehen).<br />
-    <strong>⏩ Force-Rollout</strong> ändert <em>nichts</em> und committet nichts — es startet nur die drei
-    Container (infrastructure, general, muellerconnect) neu, damit sie den <em>bereits committeten</em> Stand
-    übernehmen. Sinnvoll, wenn ein Rollout übersprungen/fehlgeschlagen ist, du die Overrides direkt auf
-    GitHub bearbeitet hast oder andere Repo-Inhalte (AGENTS.md, MCP-Configs, Skills) nachziehen willst.<br />
-    Beide lesen im Panel sofort von GitHub — der KI-Vorschlag nutzt neue Werte daher sofort; die Container
-    brauchen den Neustart, damit auch ihr Router die neuen Tiers verwendet (~30–60 s, offene Sessions
-    verbinden sich danach automatisch neu).
+    <strong>✔ Anwenden</strong> — speichert deine Auswahl im Repo (Commit) und rollt sie automatisch auf alle
+    Container aus.<br />
+    <strong>⏩ Force-Rollout</strong> — ändert nichts; startet nur die Container neu, damit sie den bereits
+    gespeicherten Stand ziehen.<br />
+    Neustart ~30–60 s; offene Sessions verbinden sich danach automatisch neu.
   </p>
 </div>
 
