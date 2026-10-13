@@ -40,6 +40,10 @@ STATIC_DIR = os.environ.get(
 HESTIA_USER = os.environ.get("HESTIA_USER", "hestia")
 HESTIA_PASSWORD = os.environ.get("HESTIA_PASSWORD") or secrets.token_urlsafe(24)
 PRESET_PROVIDER = os.environ.get("HESTIA_PRESET_PROVIDER", "opencode-go")
+# Erlaubte Provider für Tier-/Agent-Auswahl (Komma-getrennt).
+# "opencode" = OpenCode Zen (enthält die kostenlosen Modelle, z. B. cat-jam-free).
+ALLOWED_PROVIDERS = [p.strip() for p in
+                     os.environ.get("HESTIA_PROVIDERS", PRESET_PROVIDER).split(",") if p.strip()]
 # Traefik-SSO: forwardAuth (authentik@file) setzt X-authentik-*; zusätzlich malgré
 # ein Proxy-Secret-Header (customRequestHeaders-Middleware), damit direkte
 # Zugriffe auf 10.0.10.17:49400 die Header nicht fälschen können.
@@ -89,9 +93,10 @@ def validate_payload(payload: dict) -> dict:
         if not ok:
             raise ApplyError(res)
         m = res
-        if not model_ref.startswith(f"{PRESET_PROVIDER}/"):
+        if model_ref.split("/", 1)[0] not in ALLOWED_PROVIDERS:
             raise ApplyError(
-                f"Tier '{tier}': Modell muss aus Provider '{PRESET_PROVIDER}' kommen"
+                f"Tier '{tier}': Provider '{model_ref.split('/', 1)[0]}' nicht erlaubt "
+                f"(erlaubt: {', '.join(ALLOWED_PROVIDERS)})"
             )
         if variant and variant not in (m["variants"] or []):
             raise ApplyError(
@@ -280,7 +285,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 models = catalog.fetch_models()
                 provider_filter = PRESET_PROVIDER
-                return self._json({"models": models, "presetProvider": provider_filter})
+                return self._json({"models": models, "providers": ALLOWED_PROVIDERS,
+                                   "presetProvider": PRESET_PROVIDER})
             except Exception as e:
                 return self._json({"error": str(e)}, 502)
         if path == "/api/config":

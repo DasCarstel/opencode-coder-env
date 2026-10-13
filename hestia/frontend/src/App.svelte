@@ -56,8 +56,10 @@ const TIER_INFO = {
   heavy: { title: '@heavy', role: 'Architektur, Debugging (nach Fehlschlägen), Security-Review' },
 }
 
-const goModels = $derived(catalog.models.filter(m => m.providerID === 'opencode-go' && m.status === 'active'))
+const allowed = $derived(catalog.providers || ['opencode-go'])
+const goModels = $derived(catalog.models.filter(m => allowed.includes(m.providerID) && m.status === 'active'))
 const tableModels = $derived(catFilterOpenGoOnly ? goModels : catalog.models.filter(m => m.status === 'active'))
+function isFree(ref) { const m = modelOf(ref); return !!m && !m.cost.input && !m.cost.output }
 
 async function load() {
   error = null
@@ -342,7 +344,7 @@ loadRolloutStatus()
       <select bind:value={src.model} onchange={() => (src.variant = src.variant || '(keine)')}>
         <option value="" disabled>Modell wählen…</option>
         {#each goModels as m}
-          <option value={m.ref}>{m.name} · {m.ref.replace('opencode-go/', '')} · {priceText(m.ref)}</option>
+          <option value={m.ref}>{m.name} · {m.modelID} · {priceText(m.ref)}{isFree(m.ref) ? ' · gratis' : ''}</option>
         {/each}
       </select>
       <select bind:value={src.variant}>
@@ -362,7 +364,7 @@ loadRolloutStatus()
           <select bind:value={ag.sel.model}>
             <option value="">hergeleitet von @medium</option>
             {#each goModels as m}
-              <option value={m.ref}>{m.name} · {m.modelID} · {priceText(m.ref)}</option>
+              <option value={m.ref}>{m.name} · {m.modelID} · {priceText(m.ref)}{isFree(m.ref) ? ' · gratis' : ''}</option>
             {/each}
           </select>
           <select bind:value={ag.sel.variant} disabled={!ag.sel.model}>
@@ -406,7 +408,7 @@ loadRolloutStatus()
   <h2>
     Preisübersicht
     <label class="muted" style="font-weight:400; margin-left:12px">
-      <input type="checkbox" bind:checked={catFilterOpenGoOnly} /> nur OpenCode-Go
+      <input type="checkbox" bind:checked={catFilterOpenGoOnly} /> nur erlaubte Provider ({allowed.join(", ")})
     </label>
   </h2>
   <table>
@@ -418,7 +420,8 @@ loadRolloutStatus()
         <tr>
           <td>{m.name}</td>
           <td class="mono">{m.modelID}</td>
-          <td><span class="badge {m.status === 'active' ? 'active' : 'warn'}">{m.status}</span></td>
+          <td><span class="badge {m.status === 'active' ? 'active' : 'warn'}">{m.status}</span>
+            {#if !m.cost.input && !m.cost.output}<span class="badge active">gratis</span>{/if}</td>
           <td>{m.cost.input ?? 0}</td>
           <td>{m.cost.output ?? 0}</td>
           <td>{m.cost.cacheRead ?? 0} / {m.cost.cacheWrite ?? 0}</td>

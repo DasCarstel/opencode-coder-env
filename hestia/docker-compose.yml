@@ -28,6 +28,8 @@ services:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       HESTIA_PASSWORD: ${HESTIA_PASSWORD:-}
       HESTIA_PROXY_SECRET: ${HESTIA_PROXY_SECRET:-}
+      # Erlaubte Provider: opencode-go (Abo) + opencode (Zen, enthält Gratis-Modelle)
+      HESTIA_PROVIDERS: ${HESTIA_PROVIDERS:-opencode-go,opencode}
       # Optional: überschreibt alles (sonst aus OpenBao)
       # HESTIA_PASSWORD: ""
       # OC_SERVER_PASSWORD: ""

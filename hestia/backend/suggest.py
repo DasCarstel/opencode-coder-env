@@ -27,6 +27,8 @@ OC_SUGGEST_DIR = os.environ.get(
 # Override per OC_SUGGEST_MODEL ("provider/model#variant"); leer = Tier-Heavy.
 OC_SUGGEST_MODEL = os.environ.get("OC_SUGGEST_MODEL", "").strip()
 PRESET = os.environ.get("HESTIA_PRESET_PROVIDER", "opencode-go")
+PROVIDERS = [p.strip() for p in
+             os.environ.get("HESTIA_PROVIDERS", PRESET).split(",") if p.strip()]
 POLL_INTERVAL = 5.0
 POLL_TIMEOUT = float(os.environ.get("OC_SUGGEST_TIMEOUT", "150"))
 STALL_TIMEOUT = float(os.environ.get("OC_SUGGEST_STALL_TIMEOUT", "45"))
@@ -55,15 +57,18 @@ def _req(method: str, url: str, body: dict | None = None, timeout: int = 30):
 
 
 def _build_prompt() -> str:
-    models = [m for m in fetch_models() if m["providerID"] == "opencode-go" and m["status"] == "active"]
+    models = [m for m in fetch_models()
+              if m["providerID"] in PROVIDERS and m["status"] == "active"]
     lines = []
     for m in models:
         c = m["cost"]
         v = ",".join(v for v in m["variants"] if v) or "-"
         lim = m.get("limit") or {}
+        is_free = not c.get("input") and not c.get("output")
         lines.append(
-            f"- {m['modelID']} | {m['name']} | in ${c.get('input')}/M, out ${c.get('output')}/M"
-            f" | cache r ${c.get('cacheRead')}/w ${c.get('cacheWrite')} | ctx {lim.get('context', '?')} | variants [{v}]"
+            f"- {m['ref']} | {m['name']}"
+            + (" | KOSTENLOS" if is_free else f" | in ${c.get('input')}/M, out ${c.get('output')}/M")
+            + f" | cache r ${c.get('cacheRead')}/w ${c.get('cacheWrite')} | ctx {lim.get('context', '?')} | variants [{v}]"
         )
     catalog = "\n".join(lines)
     from github_api import get_overrides
@@ -77,7 +82,8 @@ def _build_prompt() -> str:
         current_str = "unbekannt"
     return f"""Du bist Modell-Stratege für ein Homelab (Coder-Workspaces, OpenCode Agenten-Fleet).
 Wähle aus dem Live-Katalog unten die beste 3-Tier-Anordnung für das Router-Plugin
-(opencode-go-Preset, alle drei Tier müssen Models DIESER Liste sein):
+(alle drei Tier müssen Models DIESER Liste sein; erlaubte Provider: {", ".join(PROVIDERS)}):
+Kostenlose Modelle (mit "KOSTENLOS" markiert) sind ausdrücklich zugelassen.
 
 ROLLEN (Task-Taxonomie des Routers):
 - @fast (costRatio 1): nur-lesende Exploration, Suche, grep — sehr viele kleine Dispatches, Kostentreiber #1.
@@ -97,7 +103,7 @@ OPENCODE-KONTEXT — so werden die Modelle tatsächlich eingesetzt:
 
 AKTUELLE WERTE: {current_str}
 
-MODELL-KATALOG (opencode-go, alle active; Preis = USD pro Mio Tokens):
+MODELL-KATALOG (nur erlaubte Provider, alle active; Preis = USD pro Mio Tokens):
 {catalog}
 
 AUFGABE: Wähle je Tier das kosten-günstigste Modell, das die Rolle zuverlässig bewältigt
@@ -106,6 +112,11 @@ AUFGABE: Wähle je Tier das kosten-günstigste Modell, das die Rolle zuverlässi
 wähle Varianten aus der Liste. Wenn sich zwischen zwei Modellen der Preis kaum
 unterscheidet, nimm das neuere/stärkere. Für @medium gilt zusätzlich die Doppelrolle
 (build/plan interaktiv) aus dem OpenCode-Kontext — träge Standardvarianten abwerten.
+ZU KOSTENLOSEN Modellen ("KOSTENLOS" in der Liste): sehr attraktiv für @fast (viele kleine
+Lesedispatches) und zum Ausprobieren — aber sie sind volatil (Preview/Community, können
+verschwinden oder gedrosselt werden) und oft ohne Varianten-Stufung. Deshalb: kostenlos bevorzugt
+für @fast; für @medium nur, wenn es die build-Rolle (interaktiv, zuverlässig) UND plan (höchste
+Variante) wirklich abdeckt; @heavy nie auf ein volatiles Gratis-Modell legen.
 
 ANTWORTE NUR MIT folgendem JSON (keine weiteren Worte, keine Backticks):
 {{"reasoning": "ein Satz Gesamtbegründung",
