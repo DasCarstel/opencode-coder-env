@@ -80,6 +80,26 @@ def _build_prompt() -> str:
         )
     except Exception:
         current_str = "unbekannt"
+    # Budget-Lage der OpenCode-Go-Konten (P3): das AKTIVE Abo trägt alle opencode-go-Aufrufe.
+    try:
+        import accounts as accounts_mod
+        acc = accounts_mod.state()
+        blines = []
+        for a in (acc.get("accounts") or []):
+            label = a.get("label") or a.get("id")
+            if not a.get("ok"):
+                blines.append(f"- {label}: {a.get('error') or 'unbekannt'}")
+                continue
+            wins = ", ".join(
+                f"{k} {v.get('free')}% frei" for k, v in (a.get("windows") or {}).items()
+            )
+            blines.append(
+                f"- {label}{' (AKTIV)' if a.get('isActive') else ''}"
+                f" [Prio {a.get('priority')}]: {wins}"
+            )
+        budget = "\n".join(blines) or "- unbekannt"
+    except Exception:
+        budget = "- unbekannt"
     return f"""Du bist Modell-Stratege für ein Homelab (Coder-Workspaces, OpenCode Agenten-Fleet).
 Wähle aus dem Live-Katalog unten die beste 3-Tier-Anordnung für das Router-Plugin
 (alle drei Tier müssen Models DIESER Liste sein; erlaubte Provider: {", ".join(PROVIDERS)}):
@@ -103,6 +123,10 @@ OPENCODE-KONTEXT — so werden die Modelle tatsächlich eingesetzt:
 
 AKTUELLE WERTE: {current_str}
 
+BUDGET-STATUS der OpenCode-Go-Konten (je Fenster "% frei"; das AKTIVE Konto trägt alle
+opencode-go-Aufrufe — @fast/@medium/@heavy laufen über dieses Abo):
+{budget}
+
 MODELL-KATALOG (nur erlaubte Provider, alle active; Preis = USD pro Mio Tokens):
 {catalog}
 
@@ -117,6 +141,10 @@ Lesedispatches) und zum Ausprobieren — aber sie sind volatil (Preview/Communit
 verschwinden oder gedrosselt werden) und oft ohne Varianten-Stufung. Deshalb: kostenlos bevorzugt
 für @fast; für @medium nur, wenn es die build-Rolle (interaktiv, zuverlässig) UND plan (höchste
 Variante) wirklich abdeckt; @heavy nie auf ein volatiles Gratis-Modell legen.
+
+BUDGET-REGEL: Wird beim aktiven Abo ein Fenster knapp (<25 % frei) oder ist ein Fenster
+erschöpft, empfiehl günstigere Modelle, weiche bevorzugt auf die "free"-Varianten aus und
+erwähne die Budget-Lage kurz im "reasoning"-Satz.
 
 ANTWORTE NUR MIT folgendem JSON (keine weiteren Worte, keine Backticks):
 {{"reasoning": "ein Satz Gesamtbegründung",
