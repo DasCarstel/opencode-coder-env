@@ -1,0 +1,120 @@
+# Architektur
+
+Systemüberblick über die OpenCode-Fleet: Coder-Host, Workspace-Container, Netzwerke,
+Herdr als Einstiegspunkt, Secret-Flow, Persistenz und Update-Verhalten.
+
+## Bausteine
+
+| Baustein | Ort | Aufgabe |
+|----------|-----|---------|
+| **Coder** | `10.0.10.17` (CT 120) | provisioniert die Workspace-Container per Docker-Provider |
+| **Workspace-Container** | Docker auf dem Coder-Host | betreiben OpenCode, MCP-Server, Herdr |
+| **Herdr** | `/opt/opencode-bin/herdr` (Bind-Mount) | Einstiegspunkt der Coder-App; verwaltet die Workspaces/Panes |
+| **OpenBao** | `openbao.mueller-nas.de` | Secret-Quelle (KV v2) + SSH-CA |
+| **Hestia** | Compose-Stack auf dem Coder-Host | Model-Panel, SOT-Verwaltung, Rollout (siehe [`hestia.md`](hestia.md)) |
+
+Ein Workspace ist ein einzelner Docker-Container. Der Coder-Agent verbindet sich
+direkt mit diesem Container; die eigentliche Arbeitsfläche ist Herdr, das im
+Container mehrere OpenCode-Instanzen (je ein Workspace) in einem persistenten
+Server verwaltet.
+
+## Netzwerke
+
+| Netz | Container | Charakter |
+|------|-----------|-----------|
+| `coder-infra` | `infrastructure`, `hermes` | Zugriff auf das interne VLAN |
+| `coder-gen` | `general` | isoliert, kein internes VLAN |
+| `coder-mc` | `muellerconnect` | isoliert, kein internes VLAN |
+
+Die Trennung ist hart: `general` und `muellerconnect` hängen **nicht** in
+`coder-infra` und bekommen weder `ssh-mcp` noch SSH-Keys — nur den oCIS-MCP.
+
+## Herdr als Einstieg
+
+- Das Binary liegt auf dem Coder-Host unter `/opt/opencode-bin/herdr` und wird
+  **read-only** in den Container gemountet.
+- `startup.sh` installiert daraus (bzw. per Download von `herdr.dev`, siehe
+  [`coder-templates.md`](coder-templates.md)) `/usr/local/bin/herdr`, startet
+  `herdr server` und legt die Workspaces des Profils an.
+- Die Coder-App (`coder_app` in `main.tf`, slug `herdr`) startet `/usr/local/bin/herdr`
+  als Terminal-Session.
+
+## Secret-Flow
+
+```
+Coder-Parameter openbao_approle_secret_id
+  → Env OPENBAO_APPROLE_SECRET_ID im Container
+  → startup.sh: AppRole-Login (role mcp-server) → kurzlebiger Token
+  → OpenBao KV v2 secret/data/mcp/*
+  → /etc/opencode.env, /root/.ssh/*, opencode service set env
+  → MCP-Server lesen die Werte per {env:VARIABLE}
+```
+
+Details und Pfadliste: [`secrets.md`](secrets.md).
+
+## Persistenz
+
+| Was | Host-Pfad | Container-Pfad |
+|-----|-----------|----------------|
+| Workspace (Repo, Dateien) | Docker-Volume `coder-<user>-<ws>-data` | `~/opencode-coder-env` |
+| OpenCode-Sessions | `/etc/opencode-data/<user>` | `~/.local/share/opencode` |
+| Tailscale-Node-Identität | Docker-Volume `coder-<user>-<ws>-tailscale` | `/var/lib/tailscale` |
+
+Die OpenCode-Chats liegen in `~/.local/share/opencode/opencode.db` (SQLite).
+Der Host-Pfad `/etc/opencode-data/<user>` hält sie über
+Container-Neuerstellungen hinweg. `general` (`…-<user>-general`) und
+`muellerconnect` (`…-<user>-mc`) nutzen bewusst je einen eigenen, nicht geteilten
+Pfad.
+
+## Update-Verhalten
+
+Zwei Ebenen, bewusst getrennt:
+
+1. **Versions-Pins (`coder-templates/versions.env`)** — Hybrid: `ssh-mcp`,
+   `ocis-mcp-server` und `herdr` sind gepinnt; die **OpenCode-CLI ist bewusst
+   ungepinnt** und wird bei jedem Start gegen npm-latest geprüft und ggf.
+   aktualisiert. Fehlt `versions.env`, warnen die Blöcke und die installierte
+   Version bleibt unverändert. Anzeige veralteter Pins: `scripts/check-updates.sh`.
+2. **Repo-Inhalt** — der `entrypoint.sh` führt bei **jedem** Container-Start
+   `git fetch --depth 1 origin master` + `git -c core.fileMode=false reset --hard FETCH_HEAD`
+   aus (bzw. klont beim Erststart). Lokale Abweichungen im Arbeitsbaum werden
+   dadurch verworfen; `workspaces/` wird zusätzlich `git clean`-ed.
+
+Ein Rollout der SOT-Änderungen (Hestia → Container) läuft über
+`.github/workflows/rollout.yml`; der Container-Start zieht ohnehin frisch nach.
+
+## SSH: interaktiv vs. ssh-mcp
+
+Zwei Wege, zwei Auth-Verfahren:
+
+- **Interaktives `ssh`** (`~/.ssh/config`, nur Profil `infrastructure`):
+  `startup.sh` erzeugt bei jedem Start einen ed25519-Key und lässt ihn von der
+  OpenBao-SSH-CA über `ssh/sign/host-access` signieren (Principal `root`, TTL 24h).
+  Die Zielhosts vertrauen der CA (`TrustedUserCAKeys`).
+- **ssh-mcp** (MCP-Zugriff des Agenten): statischer ed25519-Key aus OpenBao
+  (`secret/data/mcp/ssh-mcp`) → `/root/.ssh/id_ed25519_mcp`, dessen Public-Key
+  in `authorized_keys` der Zielhosts liegt.
+
+> **Grund für den Unterschied:** ssh-mcp nutzt die `ssh2`-Library, die keine
+> OpenSSH-CA-Zertifikate unterstützt (`cert = true` schlägt fehl). Deshalb ein
+> dauerhafter Key für den MCP-Pfad, kurzlebige Zertifikate für `ssh` von Hand.
+
+Einmalig pro Host (Policy `host-access`, CA-Key verteilen):
+
+```bash
+export OPENBAO_ROOT_TOKEN=<root-token>
+bash scripts/bootstrap-hosts.sh
+```
+
+## Kleve via Tailscale
+
+Kleve (192.168.178.50/51/52) liegt hinter dem internen VLAN und wird über ein
+eigenes Tailnet angebunden: Der Workspace ist Tailscale-Node mit Tag `tag:coder`,
+ein Subnet-Router-Container auf Docker-Kleve (Tag `tag:kleve`) annonciert
+`192.168.178.0/24`; ACLs trennen Workspace und Cleve-Hosts von den privaten
+Geräten. Kein Port-Forwarding, kein NAT. Auth-Key: `secret/data/mcp/tailscale`.
+Nur das Template `infrastructure` startet Tailscale.
+
+Container **ohne** Tailscale (z. B. `hermes`) erreichen Home Assistant Kleve über
+das TCP-Relay `ha-forward.py` (`127.0.0.1:18123` → HA Kleve) — siehe
+[`coder-templates.md`](coder-templates.md).

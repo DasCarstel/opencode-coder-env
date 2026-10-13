@@ -25,22 +25,26 @@ fi
 
 # Secrets lesen
 HA_TOKEN=$(curl -s -H "X-Vault-Token: $BAO_TOKEN" "$OPENBAO_ADDR/v1/secret/data/mcp/homeassistant" | jq -r '.data.data.api_key')
-OC_GO_ACTIVE=$(curl -s -H "X-Vault-Token: $BAO_TOKEN" "$OPENBAO_ADDR/v1/secret/data/mcp/opencode-go" | jq -r '.data.data.active')
+# Das OpenBao-Feld "active" wird bewusst NICHT mehr gelesen (existiert nicht mehr):
+# der aktive opencode-go-Account steht in der SOT .opencode/hestia-accounts.jsonc.
 OC_GO_DEFAULT1=$(curl -s -H "X-Vault-Token: $BAO_TOKEN" "$OPENBAO_ADDR/v1/secret/data/mcp/opencode-go" | jq -r '.data.data.default1')
 OC_GO_DEFAULT2=$(curl -s -H "X-Vault-Token: $BAO_TOKEN" "$OPENBAO_ADDR/v1/secret/data/mcp/opencode-go" | jq -r '.data.data.default2')
 OC_GO_DEFAULT3=$(curl -s -H "X-Vault-Token: $BAO_TOKEN" "$OPENBAO_ADDR/v1/secret/data/mcp/opencode-go" | jq -r '.data.data.default3')
-OC_PRIVATE_USER=$(curl -s -H "X-Vault-Token: $BAO_TOKEN" "$OPENBAO_ADDR/v1/secret/data/mcp/opencloud-ocis" | jq -r '.data.data.private_user')
-OC_PRIVATE_TOKEN=$(curl -s -H "X-Vault-Token: $BAO_TOKEN" "$OPENBAO_ADDR/v1/secret/data/mcp/opencloud-ocis" | jq -r '.data.data.private_token')
-OC_MC_USER=$(curl -s -H "X-Vault-Token: $BAO_TOKEN" "$OPENBAO_ADDR/v1/secret/data/mcp/opencloud-ocis" | jq -r '.data.data.muellerconnect_user')
-OC_MC_TOKEN=$(curl -s -H "X-Vault-Token: $BAO_TOKEN" "$OPENBAO_ADDR/v1/secret/data/mcp/opencloud-ocis" | jq -r '.data.data.muellerconnect_token')
+OC_PRIVATE_USER=$(curl -s -H "X-Vault-Token: $BAO_TOKEN" "$OPENBAO_ADDR/v1/secret/data/mcp/opencloud-ocis" | jq -r '.data.data.obsidian_private_user')
+OC_PRIVATE_TOKEN=$(curl -s -H "X-Vault-Token: $BAO_TOKEN" "$OPENBAO_ADDR/v1/secret/data/mcp/opencloud-ocis" | jq -r '.data.data.obsidian_private_token')
+OC_MC_USER=$(curl -s -H "X-Vault-Token: $BAO_TOKEN" "$OPENBAO_ADDR/v1/secret/data/mcp/opencloud-ocis" | jq -r '.data.data.obsidian_muellerconnect_user')
+OC_MC_TOKEN=$(curl -s -H "X-Vault-Token: $BAO_TOKEN" "$OPENBAO_ADDR/v1/secret/data/mcp/opencloud-ocis" | jq -r '.data.data.obsidian_muellerconnect_token')
 OC_PASSWORD=$(curl -s -H "X-Vault-Token: $BAO_TOKEN" "$OPENBAO_ADDR/v1/secret/data/mcp/hermes-opencode-service" | jq -r '.data.data.password')
 
 # OpenBao Token nicht weitergeben
 unset BAO_TOKEN
 
-# Aktives Abo ist ein NAME (default1..3) → den passenden KEY auflösen und die
-# beiden übrigen als Pool-Einträge mitgeben. (Bugfix 2026-10-13: vorher stand
-# hier der Name in OPENCODE_GO_API_KEY → 401 "Invalid credential".)
+# Boot-Default (Erststart ohne Repo-Checkout): aktives Abo = default1, lokal per
+# Env OC_GO_ACTIVE überschreibbar. Die verbindliche Wahl trifft Hestia über
+# apply-hermes.sh (SOT .opencode/hestia-accounts.jsonc) und schreibt
+# OPENCODE_GO_API_KEY* direkt in die .env.
+# Der Name des aktiven Abos (default1..3) ist kein API-Key — der passende KEY
+# muss aufgelöst werden (sonst 401 "Invalid credential").
 case "${OC_GO_ACTIVE:-default1}" in
     default2) ACTIVE_KEY="$OC_GO_DEFAULT2"; POOL_A="$OC_GO_DEFAULT1"; POOL_B="$OC_GO_DEFAULT3" ;;
     default3) ACTIVE_KEY="$OC_GO_DEFAULT3"; POOL_A="$OC_GO_DEFAULT1"; POOL_B="$OC_GO_DEFAULT2" ;;

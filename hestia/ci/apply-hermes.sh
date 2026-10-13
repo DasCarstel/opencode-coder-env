@@ -20,6 +20,8 @@
 #
 # Env:
 #   SOT_PATH              Default .opencode/hestia-hermes.jsonc
+#   HESTIA_ACCOUNTS_PATH  Default <Verzeichnis von SOT_PATH>/hestia-accounts.jsonc
+#                         Quelle des aktiven opencode-go-Abos (Feld "active")
 #   HERMES_CONTAINER      Default hermes
 #   OPENBAO_ADDR          Default https://openbao.mueller-nas.de
 #   OPENBAO_TOKEN_FILE    Default /opt/docker-compose/github-runner/openbao-switch.token
@@ -38,6 +40,8 @@ CODER_SSH_KEY="${CODER_SSH_KEY:-$HOME/.ssh/id_ed25519_coderdeploy}"
 # Wird von accounts.py gesetzt, wenn das aktive Abo bald abläuft.
 SINGLE="${SINGLE:-false}"
 SECRET_PATH="secret/data/mcp/opencode-go"
+# SOT der Konten — dort steht der Name des aktiven opencode-go-Abos (default1..3).
+HESTIA_ACCOUNTS_PATH="${HESTIA_ACCOUNTS_PATH:-${SOT_PATH%/*}/hestia-accounts.jsonc}"
 CONFIG_IN_CONTAINER="/opt/data/config.yaml"
 ENV_IN_CONTAINER="/opt/data/.env"
 HERMES_BIN="/opt/hermes/bin/hermes"
@@ -226,6 +230,9 @@ echo "→ Fallback-Kette laut Hermes:"
 "${SSH[@]}" "docker exec -u 0 '$HERMES_CONTAINER' sh -lc 'HOME=/opt/data $HERMES_BIN fallback list'" | sed 's/^/   /'
 
 # --- 5) Abo-Pool aus OpenBao -------------------------------------------------
+# Die KEYS (default1..3) kommen aus OpenBao; welches Abo zuerst steht, wird NICHT
+# aus dem OpenBao-Feld "active" gelesen (das existiert nicht mehr), sondern aus der
+# SOT .opencode/hestia-accounts.jsonc (Feld "active", von Hestia gepflegt).
 # Reihenfolge = aktives Abo zuerst, dann die übrigen; die Nummern-Suffixe
 # (_2/_3) stehen für die Priorität im Pool (fill_first).
 # Wird für das Default-Profil und jedes SOT-Profil mit pool.followActive=true
@@ -244,11 +251,15 @@ apply_pool() {
     cat >"$WORK/pool.py" <<'PY'
 """OpenBao-JSON (stdin) → JSON-Array der Keys in Pool-Reihenfolge.
 
-Wichtig: "active" ist der NAME (default1..3); die eigentlichen Keys stehen in
-den Feldern default1..3. Wird der Name als Key missverstanden, landet er in
-OPENCODE_GO_API_KEY → 401 "Invalid credential".
+Quelle der KEYS: das OpenBao-Secret (Felder default1..3).
+Quelle des aktiven Abos: die SOT .opencode/hestia-accounts.jsonc, Feld "active"
+(als 2. Argument übergeben) — NICHT das OpenBao-Feld "active", das es nicht mehr
+gibt.
 
-Aufruf: pool.py [single=true|false]
+Wichtig: der Name des aktiven Abos (default1..3) ist kein API-Key. Wird er als
+Key missverstanden, landet er in OPENCODE_GO_API_KEY → 401 "Invalid credential".
+
+Aufruf: pool.py [single=true|false] [active=default1|default2|default3]
   single=true → nur der Key des aktiven Abos (kein Fallback auf default2/3).
 """
 import json, sys
@@ -256,8 +267,8 @@ try:
     d = (json.load(sys.stdin).get("data") or {}).get("data") or {}
 except Exception:
     d = {}
-keys = {k: str(d[k]).strip() for k in sorted(d) if k != "active" and str(d.get(k) or "").strip()}
-active = str(d.get("active") or "").strip()
+keys = {k: str(d[k]).strip() for k in sorted(d) if str(d.get(k) or "").strip()}
+active = (sys.argv[2].split("=", 1)[1] if len(sys.argv) > 2 and "=" in sys.argv[2] else "").strip()
 active_key = keys.get(active, "")
 single = len(sys.argv) > 1 and sys.argv[1] == "true"
 if single:
@@ -271,7 +282,7 @@ PY
   # Eigene Arbeitsdateien je Profil, damit parallele Pfade sich nicht mischen.
   tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '_')"
   curl -sS -H "X-Vault-Token: $vault_token" "$OPENBAO_ADDR/v1/$SECRET_PATH" \
-    | python3 "$WORK/pool.py" "$single" > "$WORK/pool.$tag.json"
+    | python3 "$WORK/pool.py" "$single" "active=$SOT_ACTIVE_ACCOUNT" > "$WORK/pool.$tag.json"
   # Aktuelle .env holen und die OPENCODE_GO_API_KEY-Zeilen ersetzen.
   "${SSH[@]}" "docker exec '$HERMES_CONTAINER' cat $env_path" > "$WORK/env.$tag.old" || true
   python3 - "$WORK/env.$tag.old" "$WORK/pool.$tag.json" "$label" > "$WORK/env.$tag.new" <<'PY'
@@ -337,6 +348,29 @@ PY
     echo "  → [$label] Modus SINGLE: Pool enthält NUR das aktive Abo (OPENCODE_GO_API_KEY_2/_3 entfernt)"
   fi
 }
+
+# Aktives Abo aus der Konten-SOT lesen (JSONC robust parsen, Default default1 —
+# analog startup.sh). Der Name wird an pool.py durchgereicht. Wird unabhängig
+# vom Default-Profil gelesen, damit auch einzelne Profile mit
+# pool.followActive=true den SOT-Account zuerst stellen.
+SOT_ACTIVE_ACCOUNT=""
+if [[ -r "$HESTIA_ACCOUNTS_PATH" ]]; then
+  SOT_ACTIVE_ACCOUNT="$(python3 -c '
+import json, re, sys
+raw = open(sys.argv[1], encoding="utf-8").read()
+try:
+    import hjsonc
+    cfg = hjsonc.parse(raw) or {}
+except Exception:
+    raw = re.sub(r"^[ \t]*//.*$|[ \t]+//.*$", "", raw, flags=re.M)
+    cfg = json.loads(re.sub(r",(\s*[}\]])", r"\1", raw))
+print(str(cfg.get("active") or "").strip())
+' "$HESTIA_ACCOUNTS_PATH" 2>/dev/null)" || SOT_ACTIVE_ACCOUNT=""
+  [ -z "$SOT_ACTIVE_ACCOUNT" ] && SOT_ACTIVE_ACCOUNT="default1"
+  [[ "$POOL_FOLLOW" == "true" ]] && echo "→ Aktives Abo laut Konten-SOT: $SOT_ACTIVE_ACCOUNT"
+elif [[ "$POOL_FOLLOW" == "true" ]]; then
+  echo "⚠ Konten-SOT nicht lesbar: $HESTIA_ACCOUNTS_PATH — Fallback auf default1"
+fi
 
 if [[ "$POOL_FOLLOW" == "true" ]]; then
   apply_pool "$ENV_IN_CONTAINER" "default" "$SINGLE"

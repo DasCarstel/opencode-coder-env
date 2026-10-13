@@ -1,446 +1,91 @@
 # opencode-coder-env
 
-Konfigurations-Repository für OpenCode in Coder Workspaces.
+Konfigurations-Repository für die OpenCode-Fleet in Coder Workspaces: Coder-Templates,
+MCP- und Skill-Konfiguration, Hestia-SOT-Dateien und die Betriebs-Dokumentation.
 
-## Struktur
+## Dokumentation
+
+| Datei | Inhalt |
+|-------|--------|
+| [`docs/architecture.md`](docs/architecture.md) | Systemüberblick: Coder-Host, Netzwerke, Herdr, Secret-Flow, Persistenz, Update-Verhalten |
+| [`docs/coder-templates.md`](docs/coder-templates.md) | Die vier Coder-Templates, Aufrufkette und der Ablauf von `shared/startup.sh` |
+| [`docs/workspaces.md`](docs/workspaces.md) | Workspaces mit MCP-Servern, Skills und Projekt-Configs |
+| [`docs/mcp-skills.md`](docs/mcp-skills.md) | MCP-Server im Detail (ssh-mcp, authentik, oCIS …) und die Skills-Architektur |
+| [`docs/secrets.md`](docs/secrets.md) | Secret-Fluss OpenBao → Container, Pfadliste, `oc-go`-Helper |
+| [`docs/hestia.md`](docs/hestia.md) | Hestia — OpenCode Model Panel, SOT-Dateien, CI/CD |
+
+## Projektstruktur
 
 ```
 opencode-coder-env/
-├── .opencode/
-│   └── opencode-model-router.overrides.jsonc # ← SOT der Tier-Anbindung (Hestia-managed)
-├── hestia/                                   # Hestia — OpenCode Model Panel
-│   ├── backend/                              # Python-Stdlib-Backend (kein Build im Container)
-│   ├── frontend/                             # Svelte-Source + gebautes dist/
-│   ├── skills/model-curator/                 # Hermes-Skill (Standardprofil, kleve ohne)
-│   ├── ci/                                   # validate.py, rollout_coder.py, setup/
-│   ├── Dockerfile
-│   └── docker-compose.yml
-├── .github/workflows/                        # validate + rollout + deploy (CI/CD)
-├── workspaces/
-│   ├── infrastructure/
-│   │   ├── homeassistant/                    # Home-Assistant-Workspace
-│   │   │   ├── opencode.json                 # HA-MCP + HA-Skills
-│   │   │   └── AGENTS.md
-│   │   ├── server-management/                # Server-Management-Workspace
-│   │   │   ├── opencode.json                 # authentik-MCP + Server-Skills
-│   │   │   └── AGENTS.md
-│   │   ├── svelte/                           # Svelte-Entwicklung
-│   │   │   ├── opencode.json                 # Svelte-MCP (remote) + oCIS privat
-│   │   │   └── AGENTS.md
-│   │   └── cleve/                            # Cleve-Infrastruktur (via Tailscale)
-│   │       ├── opencode.json                 # ssh-mcp (global) + oCIS privat
-│   │       └── AGENTS.md
-│   ├── general/
-│   │   └── workspace-global.json
-│   └── minijob/
-│       └── workspace-global.json
+├── README.md                  # ← diese Datei
+├── OPENBAO.md                 # OpenBao-Policies, -AppRoles, -Secrets, SSH-CA
+├── .gitignore
+├── .opencode/                 # SOT-Dateien (Hestia-managed)
+│   ├── opencode-model-router.overrides.jsonc   # Tier-Anbindung @fast/@medium/@heavy
+│   ├── hestia-accounts.jsonc                   # OpenCode-Go-Konten + Feld "active"
+│   ├── hestia-primary-agents.json              # build/plan-Modelle
+│   ├── hestia-fallbacks.json                  # bezahlte Ausfall-Modelle
+│   └── hestia-hermes.jsonc                     # Hermes-Steuerung
+├── docs/                      # diese Dokumentation
 ├── coder-templates/
-│   ├── shared/
-│   │   └── startup.sh                  # gemeinsames Setup (Profil: infrastructure|general|muellerconnect)
-│   ├── infrastructure/
-│   │   ├── main.tf
-│   │   ├── Dockerfile
-│   │   └── config/
-│   │       └── global-opencode.json          # globale Config (leer – MCP-Trennung per Projekt-Configs)
+│   ├── versions.env           # Versions-Pins (Hybrid: OpenCode ungepinnt)
+│   ├── shared/                # startup.sh, derive-agents.py, ha-forward.py
+│   ├── infrastructure/        # HA, Server-Management, Svelte, Cleve (coder-infra)
+│   ├── general/               # isoliert (coder-gen)
+│   ├── muellerconnect/        # isoliert (coder-mc)
+│   └── hermes/                # eigenständiges Referenz-Template
+├── workspaces/
+│   ├── infrastructure/{homeassistant,server-management,svelte,cleve}/
 │   ├── general/
-│   │   ├── main.tf
-│   │   └── Dockerfile
-│   └── muellerconnect/
-│       ├── main.tf
-│       └── Dockerfile
-└── skills/
-    ├── homeassistant/                     # nur Home-Assistant-Workspace
-    │   ├── home-assistant/
-    │   └── google-home-exposure/
-    ├── obsidian/                          # private Obsidian-Vault (Infra-Workspaces)
-    │   └── obsidian/
-    ├── server/                            # Krefeld-spezifisch (Server-Management/Svelte)
-    │   ├── authentik/                     # + authentik-integration/ -troubleshooting/
-    │   └── docker-host-location/          # Profil-Mapping: Krefeld → docker-host
-    ├── cleve/                             # Kleve-spezifisch (nur Cleve-Workspace)
-    │   └── docker-host-location/          # Profil-Mapping: Kleve → cleve-docker
-    ├── minijob/                           # nur MuellerConnect/minijob-Workspace
-    │   └── obsidian/
-    └── shared/                            # alle Infra-Workspaces (standortunabhängig)
-        ├── create-skill/
-        ├── docker-host/                   # generisch – Profil via docker-host-location
-        ├── docker-host-compose/
-        ├── docker-host-filesystem/
-        └── docker-host-git/
+│   └── minijob/
+├── skills/{homeassistant,obsidian,server,cleve,minijob,shared}/
+├── hestia/
+│   ├── backend/               # Python-Stdlib-Backend
+│   ├── frontend/              # Svelte-Source + dist/
+│   ├── ci/                    # validate.py, rollout.sh, setup/, check-oc-credentials.sh
+│   └── skills/                # model-curator (Hermes-Skill)
+├── scripts/                   # bootstrap-hosts.sh, check-updates.sh, setup-git-credentials.sh
+└── .github/workflows/         # validate + rollout + deploy + Modell-/Hermes-Steuerung
 ```
 
-## Wichtige Hinweise
-
-- **Keine Secrets in Git**: Keine Tokens, private SSH-Keys, Unseal-Shares oder `.env`-Dateien
-- **Kein eigener MCP-Code**: Nur deklarative Konfiguration, keine `node_modules` oder Build-Schritte
-- **Per-Workspace-Trennung**: Jeder Herdr-Workspace bekommt nur die benötigten MCP-Server und Skills
-- **OpenBao als Secret-Quelle**: Alle API-Keys werden zur Laufzeit aus OpenBao bezogen
-- **GitHub ohne MCP**: private Repos werden mit `git` + Token aus OpenBao geklont/gepusht (kein GitHub-MCP, kein `gh` im Workspace)
-
-## Hestia — OpenCode Model Panel
-
-Model-Verwaltung für das OpenCode-Fleet (Fast/Medium/Heavy der Model-Router-Tiers):
-
-- **URL**: https://hestia.mueller-nas.de (Authentik-SSO, Gruppe `admin` + Superuser;
-  direkter Port `10.0.10.17:49400` bleibt mit HTTP-Basic als fallback)
-- **Single Source of Truth**: `.opencode/opencode-model-router.overrides.jsonc`
-  (Repo-Root). Das `opencode-model-router`-Plugin (v2, `plugins`-Key in der
-  Profile-Configs) findet sie per cwd-Suche — jeder Coder-Container zieht sie
-  automatisch.
-- **Ablauf „Anwenden"**: Panel validiert gegen Live-Katalog → Commit auf master
-  (GitHub Contents API) → CI/CD: `validate-hestia-config.yml` → `rollout.yml`
-  (SSH vom Self-hosted Runner auf den Coder-Host: Container
-  infrastructure/general/muellerconnect werden neu gestartet; deren entrypoint
-  zieht frisches Repo) → Overrides aktiv.
-- **Automatischer Ausfallschutz** (2026-10-13): Setzt man `@fast`/`@medium` auf ein
-  **Gratis-Modell** (cost 0/0), hinterlegt das Panel automatisch das **bezahlte
-  Gegenstück** als Ausfall-Modell (`.opencode/hestia-fallbacks.json`). Bei
-  wiederholtem Fehlschlag wechselt der Auto-Failover (`HESTIA_AUTO_FAILOVER=1`,
-  Probe-Intervall 900 s, Schwelle 2) auf das bezahlte Modell. Aktuell:
-  `@fast=opencode/mimo-v2.6-flash-free` (Fallback `opencode-go/mimo-v2.6-flash`),
-  `@medium=opencode/space-bunny-free#high` (Fallback `opencode-go/claude-haiku-5-5#medium`),
-  `@heavy=opencode-go/gpt-6-luna#max`. Status: `/api/failover/status`,
-  Sofort-Prüfung: `POST /api/failover/check`.
-- **Budget/Abos**: `GET /api/accounts` zeigt je OpenCode-Go-Abo das Restbudget
-  (5 h/Woche/Monat, Quelle `opencode.ai/zen/go/v1/usage`). Konfiguration modular in
-  `.opencode/hestia-accounts.jsonc` (Provider-Adapter + Konten + Policy).
-- **Ablauf-Bevorzugung**: Setzt ein Abo-Fenster (Woche/Monat) innerhalb der konfigurierten Zeitspanne zurück und hat noch Restbudget, bevorzugt Hestia dieses Konto („use it or lose it"). Stellschrauben: `policy.expiring` (enabled, withinHours, windows, minRemainingPercent) in `.opencode/hestia-accounts.jsonc`.
-- **Auto-Kontowechsel**: Bei erschöpftem Abo (0 % frei) wechselt Hestia
-  automatisch (`mode: auto`) bzw. nach Bestätigung (`notify`) auf das Konto mit dem
-  meisten Restbudget; zusätzlich weiches Gleichgewicht für Woche/Monat. Mechanik:
-  `.github/workflows/switch-account.yml` → `hestia/ci/switch-account.sh`
-  (Key aus OpenBao + `opencode service set env` je Container, **kein**
-  Container-Neustart).
-- **Aktiver Account — eine einzige Quelle**: Hestia schreibt den aktiven Account
-  als Feld `active` in `.opencode/hestia-accounts.jsonc` (SOT) und dispatcht danach
-  den Workflow. OpenBao hält nur noch die **Keys** (`default1..3`); das dort
-  historische Feld `active` wird weder gelesen noch geschrieben.
-- **Selbstheilung alle 30 Minuten**: `verify-oc-credentials.yml` ruft
-  `hestia/ci/check-oc-credentials.sh --fix` auf — ein fehlender/abweichender Key
-  wird im Service-Env (`service.json`) und in `/root/.bashrc` (deduppt) nachgezogen.
-- **Service-Env bei jedem Start**: `/root/.config/opencode/service.json` ist ephemer,
-  deshalb setzt `coder-templates/shared/startup.sh` den Key des aktiven Kontos bei
-  jedem Container-Start neu (`opencode service set env OPENCODE_API_KEY`).
-- **Anzeige/Schwellen konfigurierbar**: Die Budget-Karte zeigt **Verbrauch**
-  (Balken) plus „x % verbraucht · y % frei", markiert erschöpfte Fenster/Konten
-  und hat manuelle Wechsel-Buttons. Farbschwellen stehen in
-  `.opencode/hestia-accounts.jsonc` unter `display` (barMetric,
-  warnBelowPercentFree, criticalBelowPercentFree).
-- **Hermes steuern**: Hestia gibt dem Hermes-Agenten Modell, Fallback-Kette und
-  Abo-Pool vor. SOT: `.opencode/hestia-hermes.jsonc`; Panel-Karte „Hermes —
-  Modell/Provider"; Verteilung über `.github/workflows/apply-hermes.yml` +
-  `hestia/ci/apply-hermes.sh` (config set, fallback_providers, Pool aus OpenBao,
-  Restart). Nach einem Konto-Wechsel wird der Pool automatisch nachgezogen
-  (`pool.followActive`).
-- **KI-Vorschlag**: `/api/suggest` dispatcht eine OpenCode-Session und lässt sie
-  mit dem gewählten Modell analysieren — Default: **@heavy aus den committeten
-  Overrides** (inkl. Effort-Variante), im Panel frei wählbar (Editor-Auswahl oder
-  jedes Katalog-Modell). Live-Status über `/api/suggest/status` (Modell, Versuch,
-  Laufzeit). **Fallback-Kette** heavy → medium → Session-Default; die Analyse-Session
-  wird danach **automatisch gelöscht** (`OC_SUGGEST_KEEP_SESSIONS=1` behält sie zum
-  Debuggen). Stellschrauben: `OC_SUGGEST_STALL_TIMEOUT` (45 s),
-  `OC_SUGGEST_TIMEOUT` (150 s), `OC_SUGGEST_MODEL`.
-- **Hermes**: `model-curator`-Skill (Standardprofil) fragt Hestia im Lesemodus;
-  kleve-Profil ist bewusst ausgeschlossen.
-- **One-Time-Setup** (GitHub-Secrets, Runner, OpenBao-AppRole):
-  `hestia/ci/setup/README.md`
-- **Phase 5 / O6 (teilweise umgesetzt, 2026-10-13)**: Das Budget-System
-  (Anzeige je Abo, Auto-/Notify-Kontowechsel, Ablauf-Bevorzugung), die
-  Hestia→Hermes-Steuerung und der Runner-Watchdog sind **umgesetzt**. Offen
-  bleiben bewusst: Feinschliff der Abo-Rotation, CI-Issue bei Modellverlust,
-  Cross-Provider-Fallback (braucht einen zweiten Provider-Key) sowie die
-  Gemini/Codex-Adapter.
-  Erledigte Kleinigkeiten: Preset-Name neutralisiert (`opencode-go` → `hestia`),
-  `tiers.json` entfernt, `OC_SUGGEST_TIMEOUT` auf 300 s, OpenCode-Go-Konto
-  zurück auf `default1`.
-
-## Workspaces
-
-| Workspace | Zweck | Netzwerk | MCP-Server | Skills |
-|-----------|-------|----------|------------|--------|
-| Home Assistant | HA-Verwaltung | `coder-infra` | `homeassistant`, `ocis` (privat) | `home-assistant`, `google-home-exposure`, `obsidian` |
-| Server Management | Infrastruktur-Hosts | `coder-infra` | `authentik`, `ocis` (privat), `ssh-mcp` | `authentik`, `docker-host*`, `create-skill`, `obsidian` |
-| Svelte | Svelte-Entwicklung | `coder-infra` | `authentik`, `svelte` (remote), `ocis` (privat), `ssh-mcp` | `create-skill`, `obsidian`, `docker-host*` |
-| Cleve | Cleve-Infrastruktur (Proxmox/TrueNAS/Docker) | `coder-infra` | `ssh-mcp`, `ocis` (privat) | `docker-host-location` (Kleve), `docker-host*`, `create-skill`, `obsidian` |
-| General | Allgemeine Aufgaben | `coder-gen` | `ocis` (privat), `pdf` | `create-skill`, `obsidian` |
-| MuellerConnect/minijob | Mini-Job | `coder-mc` | `ocis` (Arbeit), `pdf` | `create-skill`, `obsidian` |
-
-- **General** und **MuellerConnect/minijob** sind isoliert: kein `ssh-mcp`, keine
-  SSH-Keys, kein Zugriff auf das interne VLAN. Nur der oCIS-MCP (Obsidian-Vault).
-- **General** nutzt den privaten Obsidian-Vault, **MuellerConnect/minijob** den
-  Arbeits-Vault (Hard-Guardrail, siehe oCIS-Artikel).
-- Das komplette Setup liegt in `coder-templates/shared/startup.sh` (Profil:
-  `infrastructure` | `general` | `muellerconnect`). Die Templates `general/` und
-  `muellerconnect/` sind dünne Wrapper.
-
-## MCP-Server
-
-OpenCode V2 konfiguriert MCP-Server unter `mcp.servers`. Konfig-Dateien werden
-über die Verzeichnis-Hierarchie gemerged (global → Workspace).
-
-### Global – alle Workspaces
-`coder-templates/infrastructure/config/global-opencode.json` (installiert nach
-`~/.config/opencode/opencode.json`):
-
-- **ssh-mcp** – SSH-Zugriff auf die Infrastruktur-Hosts (siehe unten)
-
-### Home-Assistant-Workspace
-`workspaces/infrastructure/homeassistant/opencode.json`:
-
-- **homeassistant** – remote MCP, `https://intern-homeassistant.mueller-nas.de/api/mcp`,
-  Auth: `Authorization: Bearer {env:HA_LLA_TOKEN}`
-- **ocis** – lokaler offizieller ownCloud-MCP (`owncloud/ocis-mcp-server` v1.1.0, Go-Binary),
-  Env `OCIS_MCP_OCIS_URL=https://opencloud.mueller-nas.de`,
-  `OCIS_MCP_APP_TOKEN_USER={env:OCIS_PRIVATE_USER}`, `OCIS_MCP_APP_TOKEN_VALUE={env:OCIS_PRIVATE_TOKEN}`
-
-### Server-Management-Workspace
-`workspaces/infrastructure/server-management/opencode.json`:
-
-- **authentik** – lokaler Community-MCP (`nikitatsym/authentik-mcp` via `uvx`),
-  Env `AUTHENTIK_URL=https://auth.mueller-nas.de`, `AUTHENTIK_TOKEN={env:AUTHENTIK_API_KEY}`
-- **ocis** – lokaler offizieller ownCloud-MCP (`owncloud/ocis-mcp-server` v1.1.0),
-  Env wie im Home-Assistant-Workspace (`OCIS_PRIVATE_USER` / `OCIS_PRIVATE_TOKEN`)
-
-### Svelte-Workspace
-`workspaces/infrastructure/svelte/opencode.json`:
-
-- **svelte** – offizieller Remote-MCP, `https://mcp.svelte.dev/mcp` (kein API-Key, nichts lokal installiert)
-- **authentik** – lokaler Authentik-MCP wie im Server-Management-Space
-  (Env: `AUTHENTIK_API_KEY`, URL `https://auth.mueller-nas.de`)
-- **ocis** – lokaler offizieller ownCloud-MCP (`owncloud/ocis-mcp-server` v1.1.0),
-  Env wie im Home-Assistant-Workspace (`OCIS_PRIVATE_USER` / `OCIS_PRIVATE_TOKEN`)
-- **ssh-mcp** – aus der Projekt-Config (`config-full.toml`, alle Krefeld-Hosts, Gruppe prod) —
-  identisch zum Server-Management-Space
-
-### General / MuellerConnect-Workspace
-`workspaces/general/workspace-global.json` bzw. `workspaces/minijob/workspace-global.json`:
-
-- **ocis** – lokaler offizieller ownCloud-MCP (`owncloud/ocis-mcp-server` v1.1.0),
-  Env: `OCIS_PRIVATE_USER`/`OCIS_PRIVATE_TOKEN` (general) bzw. `OCIS_MUELLERCONNECT_USER`/`OCIS_MUELLERCONNECT_TOKEN` (muellerconnect)
-- **pdf** – lokaler MCP `@sylphx/anymd` v8.5.1 (Nachfolger von `@sylphx/pdf-reader-mcp`),
-  Rust-Binary via npm, lokales Lesen von PDFs und URLs, kein API-Key
-
-> `uvx` wird vom Template-Startup-Skript installiert (`/root/.local/bin/uvx`).
-> Das `ocis-mcp-server`-Binary lädt `startup.sh` nach `/root/.local/bin/ocis-mcp-server`.
-
-### oCIS (OpenCloud / Obsidian) – Hard-Guardrail
-
-Der offizielle ownCloud-MCP `owncloud/ocis-mcp-server` (v1.1.0, Go) stellt den
-Obsidian-Vault über die oCIS-APIs bereit — die Dateien bleiben ausschließlich
-auf OpenCloud (kein zweiter Speicher).
-
-Die Trennung erfolgt über **zwei getrennte OpenCloud-Service-Accounts** mit je
-einem App-Token, das nur den eigenen Space sieht:
-
-| Workspace | Account | Space | Space-ID (Beginn) |
-|-----------|---------|-------|-------------------|
-| Home Assistant, Server Management | `obsidian-private` | `Obsidian` | `a0ca6a90-…!8da8246b-…` |
-| MuellerConnect/minijob | `obsidian-muellerconnect` | `MuellerConnect` | `8da8246b-…$fb65ae72-…` |
-
-Tokens liegen in OpenBao unter `secret/data/mcp/opencloud-ocis`. Das
-**Infrastructure-Template injiziert nur** `OCIS_PRIVATE_*` und entfernt das
-MuellerConnect-Token aktiv — im Infrastructure-Workspace ist es physisch nicht
-vorhanden. Die passende Skill (`obsidian`) liegt pro Workspace unter
-`skills/obsidian/obsidian/` (privat) bzw. `skills/minijob/obsidian/` (Arbeit).
-
-### ssh-mcp – Hosts & Policy
-Konfiguration: `~/.config/ssh-mcp/config.toml` (von `startup.sh` erzeugt).
-
-| Profile | Host | Zweck |
-|---------|------|-------|
-| `docker-host` | 10.0.10.10 | Docker Host (CT 100) |
-| `proxmox` | 10.0.10.20 | Proxmox VE |
-| `truenas` | 10.0.10.30 | TrueNAS (VM 200) |
-| `pbs` | 10.0.10.21 | Proxmox Backup Server (CT 101) |
-| `coder` | 10.0.10.17 | Coder-Host (CT 120) |
-| `unifi` | 10.0.0.1 | UniFi Gateway (UCG-Ultra) |
-| `media` | 10.0.10.25 | Media (CT 115) |
-| `test` | 10.0.10.40 | Test (CT 105) |
-| `cleve-proxmox` | 192.168.178.50 | Proxmox VE (Cleve, via Tailscale) |
-| `cleve-truenas` | 192.168.178.51 | TrueNAS (Cleve, via Tailscale) |
-| `cleve-docker` | 192.168.178.52 | Docker Host (Cleve, via Tailscale) |
-
-- **Auth**: statischer ed25519-Key aus OpenBao (`secret/data/mcp/ssh-mcp`),
-  geschrieben nach `/root/.ssh/id_ed25519_mcp`
-- **Policy**: `role = "admin"`, `group = "prod"`, `approvalPolicy = "auto"` für
-  alle Profile; `[policy.roleBindings.admin] prod` schließt `privileged` (sudo) mit ein
-- **SFTP**: `transferRoot = "/root/.ssh-mcp-transfers"` aktiviert die Streaming-Tools
-  (`sftp-upload-file` / `sftp-download-file`)
-- Die eingebaute **Forbidden-Liste** (`rm -rf /`, `mkfs`, Schreibzugriff auf
-  `authorized_keys`, …) bleibt immer aktiv
-
-> **Kleve** (192.168.178.50/51/52) ist über **Tailscale** angebunden: Der
-> Workspace ist ein Tailscale-Node mit Tag `tag:coder`, ein Subnet-Router-Container
-> auf Docker-Kleve (`tag:kleve`) annonciert `192.168.178.0/24`. ACLs isolieren
-> beide von den privaten Geräten. Kein Port-Forwarding, kein NAT.
-> Auth-Key: `secret/data/mcp/tailscale`.
-
-### Skills-Architektur (generisch + Location)
-
-Die `docker-host*`-Skills sind **standortunabhängig** (in `skills/shared/`):
-Sie referenzieren das Profil nur als `<docker-profil>`. Das konkrete Profil
-kommt aus dem winzigen **`docker-host-location`**-Skill des jeweiligen
-Standortordners:
-
-| Workspace | lädt | Location-Mapping |
-|-----------|------|------------------|
-| Server Management, Svelte | `shared` + `server` + `obsidian` | `docker-host` → 10.0.10.10 |
-| Cleve | `shared` + `cleve` + `obsidian` | `cleve-docker` → 192.168.178.52 |
-
-→ Im Cleve-Workspace existieren keine Krefeld-Profil-Mappings; der Agent
-nimmt das Profil aus dem geladenen Location-Skill und muss es vor jedem
-Befehl nennen.
-
-## Skills
-
-Skills werden über das `skills`-Array in der jeweiligen `opencode.json`
-eingebunden. Pfade sind relativ zum Arbeitsverzeichnis des Workspace
-(`../../../skills/...`).
-
-| Skill | Home Assistant | Server Management | Svelte | Cleve |
-|-------|:--------------:|:-----------------:|:------:|:-----:|
-| `home-assistant` | ✅ | – | – | – |
-| `google-home-exposure` | ✅ | – | – | – |
-| `obsidian` | ✅ | ✅ | ✅ | ✅ |
-| `authentik` (+ `-integration`, `-troubleshooting`) | – | ✅ | – | – |
-| `docker-host-location` | – | ✅ (Krefeld) | ✅ (Krefeld) | ✅ (Kleve) |
-| `docker-host` (+ `-compose`, `-filesystem`, `-git`) | – | ✅ | ✅ | ✅ (generisch) |
-| `create-skill` | – | ✅ | ✅ | ✅ |
-
-Die Built-in-Skills von OpenCode (`opencode`, `report`) sind in allen
-Workspaces verfügbar.
-
-## Secrets-Architektur
-
-```
-Coder Secret (OPENBAO_APPROLE_SECRET_ID)
-  ↓ (wird in den Workspace injiziert)
-startup.sh → AppRole-Auth bei OpenBao
-  ↓ (kurzlebiger Token, 1h TTL)
-OpenBao KV (secret/data/mcp/*):
-  - homeassistant  → HA_LLA_TOKEN
-  - authentik      → AUTHENTIK_API_KEY
-  - grafana        → GRAFANA_API_KEY
-  - opencloud      → OPENCLOUD_API_KEY / OPENCLOUD_USERNAME
-  - opencloud-ocis → OCIS_PRIVATE_USER/TOKEN, OCIS_MUELLERCONNECT_USER/TOKEN
-  - opencode-go    → OC_GO_DEFAULT1..3 / OC_GO_ACTIVE
-  - ssh-mcp        → private_key (statischer ssh-mcp-Key)
-  - tailscale      → auth_key (Coder↔Kleve-Tailnet)
-  - github         → GITHUB_TOKEN (git-Credentials)
-  ↓ (geschrieben nach /etc/opencode.env bzw. /root/.ssh/)
-OpenCode MCPs nutzen die Umgebungsvariablen ({env:...})
-```
-
-**Keine Secrets in:**
-- ❌ Git Repository
-- ❌ Lokale Dateien (außer `bootstrap.env` auf dem Docker Host)
-- ❌ Shell-History
-- ❌ Logs
-
-## Setup in Coder Workspace
-
-### 1. Coder Secret setzen
-In der Coder-UI → Templates → `infrastructure` → Settings → Secrets:
-- `openbao_approle_secret_id` = AppRole Secret-ID aus OpenBao
-
-### 2. Template veröffentlichen
-```bash
-coder login --url https://coder.mueller-nas.de --token <dein-token>
-coder templates push infrastructure --directory coder-templates/infrastructure --yes --org=coder
-```
-
-### 3. Workspace starten
-Der Workspace cloned automatisch dieses Repo und holt die Secrets aus OpenBao.
-
-### 4. OpenCode starten
-
-Die Coder-App **„Infrastructure Workspace"** öffnet Herdr mit zwei Workspaces:
-
-- **Home Assistant** → OpenCode mit HA-MCP
-- **Server Management** → OpenCode mit authentik-MCP + SSH-MCP
-
-Beide OpenCode-Instanzen laufen parallel in separaten Herdr-Panes und
-beenden sich nicht gegenseitig.
-
-## Architektur (aktueller Stand)
-
-- **Herdr** ist der Einstiegspunkt (Coder-App). Es verwaltet beide
-  OpenCode-Sitzungen in einem persistenten Server.
-- **Secrets** kommen zur Laufzeit aus OpenBao (AppRole `mcp-server`).
-- **SSH (ssh-mcp)** nutzt einen **statischen Key** aus OpenBao
-  (`secret/data/mcp/ssh-mcp`). Der öffentliche Teil liegt in `authorized_keys`
-  der Zielhosts. Grund: ssh-mcp verwendet `ssh2`, das keine OpenSSH-CA-Zertifikate
-  unterstützt (`cert = true` schlägt fehl).
-- **SSH (interaktiv)** in `~/.ssh/config` nutzt weiterhin kurzlebige Zertifikate
-  der OpenBao-SSH-CA (Rolle `host-access`, Principal `root`).
-- **Herdr-Binary** liegt auf dem Coder-Host unter `/opt/opencode-bin/herdr`
-  und wird per Bind-Mount in den Workspace gemountet.
-
-### Voraussetzungen auf den Hosts
-
-- `authorized_keys` enthält den ssh-mcp-Public-Key (alle Profile)
-- Docker / Proxmox / TrueNAS vertrauen zusätzlich der OpenBao-CA für interaktives SSH:
-  `TrustedUserCAKeys /etc/ssh/openbao-ca.pub`
-
-### OpenCode Go (mehrere Keys)
-
-Die API-Keys liegen in OpenBao unter `secret/data/mcp/opencode-go`
-(Felder `default1`, `default2`, `default3`, `active`). Beim Start wird der in
-`active` hinterlegte Key als Umgebungsvariable `OPENCODE_API_KEY` gesetzt.
-
-Im Workspace umschalten:
-
-```bash
-oc-go list              # verfügbare Keys + aktiver Key
-oc-go use default1      # auf default1 wechseln (Session, Service-Restart)
-oc-go default default1  # Standard-Key dauerhaft setzen (OpenBao + .bashrc)
-```
-
-Der Helper `oc-go` wird von `startup.sh` nach `/usr/local/bin/oc-go` installiert.
-Der Standard-Key wird in OpenBao gespeichert und überlebt Container-Neuerstellungen.
-
-### Host-Bootstrap (einmalig)
-
-Das Skript `scripts/bootstrap-hosts.sh` richtet die OpenBao-Rolle `host-access`
-ein und verteilt den CA-Key auf Docker, Proxmox und TrueNAS:
-
-```bash
-export OPENBAO_ROOT_TOKEN=<root-token>
-bash scripts/bootstrap-hosts.sh
-```
-
-### Persistente Speicherung
-
-| Was | Host-Pfad | Container-Pfad | Inhalt |
-|-----|-----------|---------------|--------|
-| Workspace | Docker-Volume `coder-...-data` | `~/opencode-coder-env` | Workspace-Dateien, Repo |
-| OpenCode-Sessions | `/etc/opencode-data/<user>` | `~/.local/share/opencode` | Sessions/Chats (SQLite-DB), Configs |
-
-**Wichtig:** OpenCode-Sessions (Chats) liegen in `~/.local/share/opencode/opencode.db`.
-Der Ordner `/etc/opencode-data/<user>` auf dem Coder-Host persistiert sie über
-Container-Neuerstellungen hinweg.
-
-Beim Start wird das Repo im Volume per `git fetch` + `reset --hard FETCH_HEAD`
-hart auf `origin/master` gesetzt (lokale Abweichungen werden verworfen).
-
-### MCP- und Skill-Trennung
-
-| | Home Assistant | Server Management / Svelte | Cleve |
-|---|---|---|---|
-| MCP-Server | `homeassistant`, `ocis`, `ssh-mcp` | `authentik`, `svelte` (nur Svelte), `ocis`, `ssh-mcp` | `ocis`, `ssh-mcp` |
-| Skills | `home-assistant`, `google-home-exposure`, `obsidian` | `authentik` (nur SM), `docker-host-location` (Krefeld), `docker-host*`, `create-skill`, `obsidian` | `docker-host-location` (Kleve), `docker-host*`, `create-skill`, `obsidian` |
-
-Die Trennung erfolgt über `opencode.json` im jeweiligen Workspace-Verzeichnis
-(Projekt-Config); die globale Config enthält bewusst keine MCP-Server.
-
-## Aktueller Stand (07.10.2026)
-
-- OpenBao: unsealed, SSH-CA konfiguriert, AppRole `mcp-server` vorhanden
-- HA `mcp_server` Integration aktiv, Token in OpenBao (`secret/data/mcp/homeassistant`)
-- ssh-mcp v2.17.0 mit statischem Key (`secret/data/mcp/ssh-mcp`), 8 Host-Profile
-- authentik-MCP als Community-Server (`uvx`) im Server-Management-Workspace
-- oCIS-MCP (`owncloud/ocis-mcp-server` v1.1.0) für Obsidian-Vaults, Hard-Guardrail via pro-space Service-Accounts
-- Gemeinsames Setup in `coder-templates/shared/startup.sh` (Profile: `infrastructure`, `general`, `muellerconnect`)
-- Coder-Templates: `infrastructure` (HA + Server Management + Svelte + Cleve), `general` (isoliert), `muellerconnect` (isoliert)
-- Coder-Infrastruktur: Docker-Container auf 10.0.10.17
-- Cleve-Zugang über **Tailscale** (Tags `tag:coder`/`tag:kleve` + ACLs, Subnet-Router-Container auf Docker-Kleve) — kein WireGuard, kein Port-Forwarding
+> Das Setup-Skript liegt **ausschließlich** in `coder-templates/shared/startup.sh`;
+> die drei Wrapper-Templates `infrastructure`, `general` und `muellerconnect`
+> rufen es mit ihrem Profil auf.
+
+## Grundsätze
+
+- **Keine Secrets in Git** — Tokens, private Keys und `.env`-Dateien gehören in
+  OpenBao, nicht ins Repository.
+- **Deklarative Konfiguration** — nur JSON/TOML/Terraform/Bash-Setup, kein eigener
+  MCP-Code, keine `node_modules`, keine Build-Schritte für MCP-Server.
+- **Per-Workspace-Trennung** — jeder Herdr-Workspace bekommt nur die MCP-Server und
+  Skills, die er braucht (globale Config enthält bewusst keine MCP-Server).
+- **OpenBao als Secret-Quelle** — alle Zugangsdaten werden zur Laufzeit über die
+  AppRole `mcp-server` bezogen.
+- **OpenCode V2 merged Configs** — `global → Workspace`: `~/.config/opencode/opencode.json`
+  enthält das Profil, die Projekt-`opencode.json` im Workspace ergänzt es.
+
+## Erste Schritte
+
+1. **Coder-Secret setzen** — in der Coder-UI beim jeweiligen Template unter
+   *Settings → Secrets* den Parameter `openbao_approle_secret_id` auf die
+   AppRole-Secret-ID aus OpenBao setzen.
+2. **Template veröffentlichen**:
+
+   ```bash
+   coder templates push <name> --directory coder-templates/<name> --yes --org=coder
+   ```
+
+   `<name>` ist `infrastructure`, `general`, `muellerconnect` oder `hermes`.
+3. **Workspace starten** — der Container klont das Repo, holt die Secrets aus
+   OpenBao und startet Herdr mit den Workspaces des Profils.
+   Details: [`docs/coder-templates.md`](docs/coder-templates.md).
+
+## Weitere Doku
+
+- [`OPENBAO.md`](OPENBAO.md) — Policies, AppRoles, Secret-Pfade, SSH-CA, Bootstrap
+- [`hestia/ci/setup/README.md`](hestia/ci/setup/README.md) — One-Time-Setup für Hestia
+  (GitHub-Secrets, Runner, OpenBao-AppRole)
+- Ausführliche Betriebs- und Projektdokumentation liegt im privaten Obsidian-Vault
+  (Projekt **PRO-302**).
