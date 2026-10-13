@@ -33,10 +33,12 @@ ssh root@10.0.10.17 'mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys' \
 
 | Secret | Inhalt |
 |---|---|
-| `CODER_URL` | `https://coder.mueller-nas.de` |
-| `CODER_TOKEN` | Coder-API-Token (Coderr-Web → Profil → Token) |
-| `CODER_DEPLOY_KEY` | Inhalt von `coderdeploy_key` (private, ssh-ed25519) |
-| `HESTIA_PASSWORD` | Optional; Healthcheck im Deploy-Workflow |
+| `CODER_DEPLOY_KEY` | Inhalt von `coderdeploy_key` (privat, ssh-ed25519) — **einzige notwendige Secret** |
+
+Damit laufen **beide** Workflows: `deploy-hestia` (Panel ausrollen) und
+`rollout` (Coder-Container neu starten). Es wird **kein Coder-API-Token** benötigt:
+der Rollout läuft per SSH auf den Coder-Host und startet die OpenCode-Container
+neu — deren Entrypoint zieht beim Start das frische Repo.
 
 ## 4. OpenBao für den Hestia-Container
 

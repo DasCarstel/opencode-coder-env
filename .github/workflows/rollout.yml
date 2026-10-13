@@ -2,11 +2,10 @@ name: rollout
 
 # Rollout der Tier-Overrides auf alle OpenCode-Coder-Workspaces:
 # Push auf .opencode/opencode-model-router.overrides.jsonc → validieren →
-# Coder-Workspaces (infrastructure, general, muellerconnect) neu aufsetzen.
-# entrypoint.sh der Container zieht beim Start frisches Repo = Overrides aktiv.
-# Wenn CODER_URL/CODER_TOKEN leer sind, wird der Restart-Schritt übersprungen
-# (Setup: hestia/ci/setup/README.md).
-
+# Coder-Container (infrastructure, general, muellerconnect) neu starten.
+# Die Entrypoints ziehen beim Start frisches Repo = Overrides aktiv.
+# Kein Coder-API-Token nötig: läuft per SSH-Deploy-Key vom Self-hosted Runner
+# auf den Coder-Host (Setup: hestia/ci/setup/README.md).
 on:
   push:
     branches: [master]
@@ -15,20 +14,20 @@ on:
   workflow_dispatch:
 
 jobs:
-  restart-workspaces:
-    runs-on: ubuntu-latest
+  rollout:
+    runs-on: [self-hosted, docker-host]
     env:
-      CODER_URL: ${{ secrets.CODER_URL }}
-      CODER_TOKEN: ${{ secrets.CODER_TOKEN }}
+      CODER_DEPLOY_KEY: ${{ secrets.CODER_DEPLOY_KEY }}
     steps:
       - uses: actions/checkout@v4
-      - name: Schema-Check (schnell)
+      - name: Tier-Konfiguration validieren
         run: python hestia/ci/validate.py
-      - name: Coder-Workspaces neu aufsetzen (Hestia-Rollout)
-        if: ${{ env.CODER_URL != '' && env.CODER_TOKEN != '' }}
-        run: python hestia/ci/rollout_coder.py
-      - name: Rollout übersprungen (Secrets fehlen)
-        if: ${{ !(env.CODER_URL != '' && env.CODER_TOKEN != '') }}
+      - name: Deploy-Key hinterlegen
         run: |
-          echo "::notice::CODER_URL / CODER_TOKEN nicht gesetzt — Restart-Schritt übersprungen."
-          echo " Setup-Anleitung: hestia/ci/setup/README.md (Schritt 3: GitHub-Secrets)."
+          mkdir -p ~/.ssh
+          echo "${{ secrets.CODER_DEPLOY_KEY }}" > ~/.ssh/id_ed25519_coderdeploy
+          sed -i 's/\r$//' ~/.ssh/id_ed25519_coderdeploy
+          chmod 600 ~/.ssh/id_ed25519_coderdeploy
+          ssh-keyscan -H 10.0.10.17 >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Coder-Container neu starten (Repo-Pull beim Entrypoint)
+        run: bash hestia/ci/rollout.sh

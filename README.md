@@ -90,7 +90,8 @@ Model-Verwaltung für das OpenCode-Fleet (Fast/Medium/Heavy der Model-Router-Tie
   automatisch.
 - **Ablauf „Anwenden"**: Panel validiert gegen Live-Katalog → Commit auf master
   (GitHub Contents API) → CI/CD: `validate-hestia-config.yml` → `rollout.yml`
-  (Coder-API: infrastructure/general/muellerconnect neu aufsetzen; entrypoint
+  (SSH vom Self-hosted Runner auf den Coder-Host: Container
+  infrastructure/general/muellerconnect werden neu gestartet; deren entrypoint
   zieht frisches Repo) → Overrides aktiv.
 - **KI-Vorschlag**: `/api/suggest` dispatcht OpenCode-Session mit Katalog+Preisen
   und liefert begründete 3-Tier-Empfehlung (Budget: Moderat — nutzt fast/medium).
