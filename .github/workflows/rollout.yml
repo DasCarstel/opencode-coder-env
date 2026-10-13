@@ -19,7 +19,7 @@ jobs:
     env:
       CODER_DEPLOY_KEY: ${{ secrets.CODER_DEPLOY_KEY }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Tier-Konfiguration validieren
         run: python3 hestia/ci/validate.py
       - name: Deploy-Key hinterlegen

@@ -117,7 +117,15 @@ PROBE_CODE="$(curl -s -o "$WORK/probe.json" -w '%{http_code}' -m 20 \
 if [[ "$PROBE_CODE" == "200" ]]; then
   echo "✓ Probe: aktives Abo $ACTIVE antwortet (HTTP 200)"
 else
-  fail "Probe für $ACTIVE fehlgeschlagen (HTTP $PROBE_CODE): $(head -c 160 "$WORK/probe.json")"
+  BODY="$(head -c 200 "$WORK/probe.json" 2>/dev/null)"
+  # Ein erschöpftes/limitiertes Abo ist KEIN Kettenfehler — der Wechsel hat
+  # funktioniert. Nur warnen (GitHub-Annotation), damit kein roter Lauf entsteht.
+  if [[ "$PROBE_CODE" == "429" || "$BODY" == *GoUsageLimitError* || "$BODY" == *Insufficient* ]]; then
+    echo "::warning title=Abo erschoepft::$ACTIVE antwortet mit HTTP $PROBE_CODE — Kette ok, aber dieses Abo ist limitiert/ohne Guthaben."
+    echo "⚠ Abo $ACTIVE erschöpft/limitiert (HTTP $PROBE_CODE) — Credential-Kette ist in Ordnung."
+  else
+    fail "Probe für $ACTIVE fehlgeschlagen (HTTP $PROBE_CODE): $BODY"
+  fi
 fi
 
 # --- 3) Je Container: kein gespeicherter Go-Credential, Key in .bashrc + service.json

@@ -32,7 +32,7 @@ jobs:
       OPENBAO_TOKEN_FILE: /opt/docker-compose/github-runner/openbao-switch.token
       CODER_SSH_HOST: 10.0.10.17
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Deploy-Key hinterlegen
         run: |
           mkdir -p ~/.ssh
