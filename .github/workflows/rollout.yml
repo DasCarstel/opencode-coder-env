@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Tier-Konfiguration validieren
-        run: python hestia/ci/validate.py
+        run: python3 hestia/ci/validate.py
       - name: Deploy-Key hinterlegen
         run: |
           mkdir -p ~/.ssh
