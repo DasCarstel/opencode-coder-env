@@ -8,6 +8,7 @@ erscheinen damit automatisch — ohne Modellpflege im Panel.
 """
 import json
 import os
+import re
 import urllib.request
 import urllib.error
 import base64
@@ -85,3 +86,41 @@ def usable(model_ref: str) -> tuple:
     if not m["enabled"]:
         return False, f"Modell {model_ref} ist disabled"
     return True, m
+
+
+def is_free(model_ref: str) -> bool:
+    """True, wenn das Modell kostenlos ist (Eingabe- UND Ausgabepreis 0)."""
+    m = find_model(model_ref)
+    if not m:
+        return False
+    cost = m.get("cost") or {}
+    return not cost.get("input") and not cost.get("output")
+
+
+def free_paid_counterpart(model_ref: str, prefer_provider: str = "opencode-go"):
+    """Bezahltes Gegenstück zu einem Gratis-Modell finden (Heuristik).
+
+    Gratis-Modelle tragen im Katalog üblicherweise das Suffix "-free"
+    (z. B. "cat-jam-free"). Das Gegenstück ist das Modell mit derselben
+    modelID ohne Suffix — sofern es einen Preis hat. Bevorzugt wird der
+    gleiche Provider, sonst der Preset-Provider ("opencode-go"), sonst der
+    erste Kandidat. Rückgabe: Modell-Dict (inkl. "ref") oder None.
+    """
+    m = find_model(model_ref)
+    if not m or not is_free(model_ref):
+        return None
+    model_id = m["modelID"] or ""
+    base = re.sub(r"-free$", "", model_id)
+    if base == model_id:            # kein "-free"-Suffix → keine Ableitung möglich
+        return None
+    cands = [c for c in fetch_models()
+             if c["modelID"] == base and (c["cost"].get("input") or c["cost"].get("output"))]
+    if not cands:
+        return None
+    for c in cands:                 # 1. gleicher Provider
+        if c["providerID"] == m["providerID"]:
+            return c
+    for c in cands:                 # 2. Preset-Provider
+        if c["providerID"] == prefer_provider:
+            return c
+    return cands[0]

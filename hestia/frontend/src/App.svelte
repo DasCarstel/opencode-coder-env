@@ -91,6 +91,10 @@ async function load() {
       src.model = cur.model || ''
       src.variant = cur.variant || ''
     }
+    // Persistierte Ausfall-Modelle aus dem Repository in den Editor spiegeln
+    const fb = config.fallbacks || {}
+    fallbacks.fast = fb.fast || null
+    fallbacks.medium = fb.medium || null
   } catch (e) {
     error = e.message
   }
@@ -98,6 +102,33 @@ async function load() {
 
 function modelOf(ref) {
   return catalog.models.find(m => m.ref === ref) || null
+}
+
+// Bezahltes Gegenstück zu einem Gratis-Modell — gleiche Heuristik wie im Backend:
+// modelID ohne Suffix "-free", bevorzugt gleicher Provider, sonst "opencode-go".
+function paidCounterpart(ref) {
+  const m = modelOf(ref)
+  if (!m || !isFree(ref)) return null
+  const base = (m.modelID || '').replace(/-free$/, '')
+  if (base === m.modelID) return null   // kein "-free"-Suffix → keine Ableitung
+  const cands = catalog.models.filter(c => c.modelID === base && (c.cost.input || c.cost.output))
+  if (!cands.length) return null
+  return cands.find(c => c.providerID === m.providerID)
+    || cands.find(c => c.providerID === 'opencode-go')
+    || cands[0]
+}
+
+// Manuelle Modellwahl im Tier-Editor: bei einem Gratis-Modell (fast/medium)
+// wird das bezahlte Gegenstück als Ausfall-Modell hinterlegt, sonst geräumt.
+function onModelChange(tier, src) {
+  src.variant = src.variant || '(keine)'
+  if (tier !== 'fast' && tier !== 'medium') return
+  if (isFree(src.model)) {
+    const c = paidCounterpart(src.model)
+    fallbacks[tier] = c ? { model: c.ref, variant: '' } : null
+  } else {
+    fallbacks[tier] = null
+  }
 }
 
 function variantOptions(ref) {
@@ -411,7 +442,7 @@ loadFailover()
         <strong>{TIER_INFO[tier].title}</strong>
         <span class="muted">{TIER_INFO[tier].role}</span>
       </div>
-      <select bind:value={src.model} onchange={() => (src.variant = src.variant || '(keine)')}>
+      <select bind:value={src.model} onchange={() => onModelChange(tier, src)}>
         <option value="" disabled>Modell wählen…</option>
         {#each goModels as m}
           <option value={m.ref}>{m.name} · {m.modelID} · {priceText(m.ref)}{isFree(m.ref) ? ' · gratis' : ''}</option>
@@ -421,6 +452,20 @@ loadFailover()
         {#each variantOptions(src.model) as v}<option value={v}>{v}</option>{/each}
       </select>
     </div>
+    {#if tier === 'fast' || tier === 'medium'}
+      {#if fallbacks[tier]}
+        <p class="muted fbHint">
+          Ausfallschutz (automatisch):
+          <span class="mono">{fallbacks[tier].model}{fallbacks[tier].variant ? '#' + fallbacks[tier].variant : ''}</span>
+        </p>
+      {:else if isFree(src.model) && !paidCounterpart(src.model)}
+        <p class="muted fbHint warn">
+          Gratis-Modell ohne bezahltes Gegenstück – bitte Ausfall-Modell prüfen
+        </p>
+      {:else if src.model && !isFree(src.model)}
+        <p class="muted fbHint">Ausfallschutz: – (Tier ist bezahlt)</p>
+      {/if}
+    {/if}
     {#if tier === 'medium'}
       {#each [{ key: 'build', label: 'Build', sel: buildSel, hint: 'Standardvariante', eff: effBuild },
               { key: 'plan', label: 'Plan', sel: planSel, hint: 'höchste Variante', eff: effPlan }] as ag}
@@ -538,6 +583,8 @@ loadFailover()
   .tierRow { display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 10px; align-items: center; margin-bottom: 10px; }
   .subRow { padding-left: 22px; border-left: 2px solid var(--line); margin-left: 6px; }
   .tierLabel { display: flex; flex-direction: column; gap: 2px; }
+  .fbHint { margin: -4px 0 10px 2px; font-size: .78rem; }
+  .fbHint.warn { color: var(--err); }
   .row { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
   .suggest { margin-top: 14px; }
   .errbox { border-color: var(--err); }

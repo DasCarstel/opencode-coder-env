@@ -163,6 +163,24 @@ def agents_from_overrides() -> dict:
         return {}
 
 
+def saved_fallbacks() -> dict:
+    """Persistierte Ausfall-Modelle aus dem Repo lesen.
+
+    Liefert immer {"fast": {...}|None, "medium": {...}|None}; leere oder
+    defekte Dateien (und GitHub-Fehler) werden stillschweigend als {} gelesen,
+    damit /api/config nicht an einem Fallback-Problem scheitert.
+    """
+    data = {}
+    try:
+        raw = github_api.get_file(FALLBACKS_PATH)
+        data = json.loads(raw) if raw else {}
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    return {t: (data.get(t) or None) for t in ("fast", "medium")}
+
+
 def effective_agents(preset: dict, overrides: dict) -> dict:
     """Effektive Primär-Agenten: manuell > hergeleitet aus @medium.
 
@@ -303,6 +321,7 @@ class Handler(BaseHTTPRequestHandler):
                     "presetProvider": PRESET_PROVIDER,
                     "tiers": {t: preset.get(t, {}) for t in TIER_DEFS},
                     "primaryAgents": eff,
+                    "fallbacks": saved_fallbacks(),
                     "modes": list(cfg.get("modes") or {}),
                     "sha": r["sha"],
                     "html_url": r["html_url"],
@@ -398,6 +417,13 @@ class Handler(BaseHTTPRequestHandler):
                 for tier in ("fast", "medium"):
                     fb = fb_in.get(tier) or {}
                     ref = (fb.get("model") or "").strip()
+                    if not ref and catalog.is_free(tiers[tier]["model"]):
+                        # Gratis-Tier ohne gesendetes Ausfall-Modell: das bezahlte
+                        # Gegenstück automatisch als Ausfall-Modell hinterlegen.
+                        paid = catalog.free_paid_counterpart(tiers[tier]["model"])
+                        if paid:
+                            ref = paid["ref"]
+                            _log(f"Ausfall-Modell {tier}: automatisch {ref} (Gratis-Tier)")
                     if not ref:
                         continue
                     ok, res2 = catalog.usable(ref)
