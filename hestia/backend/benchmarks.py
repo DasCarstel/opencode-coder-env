@@ -647,14 +647,33 @@ def _cache_sources(cache: dict) -> dict:
     }
 
 
+def _missing_sources(cache: dict) -> list:
+    """Aktivierte Quellen, die im Cache noch nicht erfolgreich vorliegen.
+
+    Der reale Fall: AA_API_KEY wird nachträglich in OpenBao hinterlegt → AA ist
+    aktiv, aber der (noch frische) Cache kennt sie nicht (`sources.aa` fehlt
+    oder `ok=false`). Ohne diese Prüfung bliebe AA bis zum nächsten TTL- oder
+    force-Refresh komplett außen vor. OR ist immer aktiv (kein Key nötig);
+    alte Caches ohne `sources` fallen über _cache_sources() korrekt auf
+    "nicht erfolgreich gelaufen" zurück.
+    """
+    cached = _cache_sources(cache or {})
+    active = [OR_KEY_NAME]
+    if aa_enabled():
+        active.insert(0, AA_KEY_NAME)
+    return [key for key in active if not (cached.get(key) or {}).get("ok")]
+
+
 def refresh(force: bool = False) -> dict:
     """Benchmarks holen — aber nur wenn es etwas zu holen gibt.
 
     Neu geholt wird nur bei: force ODER Cache fehlt ODER Cache älter als
-    `refreshDays` ODER ein Katalog-Ref hat keinen Eintrag und es gab in den
-    letzten 6 h keinen Fehlversuch (Drossel). Fällt eine Quelle aus, läuft der
-    Lauf mit der anderen weiter; bei Netzfehlern in BEIDEN Quellen bleibt der
-    alte Cache unangetastet und der Fehler landet im Ergebnis (kein Crash).
+    `refreshDays` ODER eine aktivierte Quelle fehlt im Cache (reason
+    `new-source`, z. B. AA-Key nachträglich gesetzt) ODER ein Katalog-Ref hat
+    keinen Eintrag — jeweils mit Drossel (kein erneuter Versuch innerhalb von
+    6 h). Fällt eine Quelle aus, läuft der Lauf mit der anderen weiter; bei
+    Netzfehlern in BEIDEN Quellen bleibt der alte Cache unangetastet und der
+    Fehler landet im Ergebnis (kein Crash).
     """
     settings = read_settings()
     cache = read_cache()
@@ -668,15 +687,19 @@ def refresh(force: bool = False) -> dict:
     models = catalog_models()
     refs = catalog_refs(models)
     missing = _missing(refs, entries)
+    new_source = _missing_sources(cache)
 
     if not settings["enabled"]:
         return {"refreshed": False, "reason": "disabled", "error": None,
                 "count": len(entries), **state()}
     if not force:
-        if not stale and not missing:
+        if not stale and not missing and not new_source:
             return {"refreshed": False, "reason": "fresh", "error": last_error,
                     "count": len(entries), **state()}
-        if missing and not stale and last_attempt is not None \
+        # Drossel gilt für beide "es gibt was zu tun"-Gründe: ein dauerhaft
+        # fehlschlagender Abruf (z. B. ungültiger AA-Key) darf nicht bei jedem
+        # Statusabruf erneut zuschlagen.
+        if (missing or new_source) and not stale and last_attempt is not None \
                 and (now - last_attempt) < MISSING_RETRY_THROTTLE:
             return {"refreshed": False, "reason": "throttled", "error": last_error,
                     "count": len(entries), **state()}
@@ -749,11 +772,12 @@ def refresh(force: bool = False) -> dict:
         STATE["lastAttempt"] = time.time()
         STATE["lastRefresh"] = time.time()
     missing_after = _missing(refs, new_entries)
-    _log(f"Abruf ok: {len(new_entries)}/{len(refs)} Modelle zugeordnet "
+    reason = ("forced" if force else "stale" if stale
+              else "new-source" if new_source else "missing")
+    _log(f"Abruf ok ({reason}): {len(new_entries)}/{len(refs)} Modelle zugeordnet "
          f"(AA {len(aa_rows)} / OR {len(or_rows)} Zeilen), ohne Zuordnung: "
          f"{len(missing_after)}")
-    return {"refreshed": True, "reason": "forced" if force else
-            ("stale" if stale else "missing"), "error": STATE.get("lastError"),
+    return {"refreshed": True, "reason": reason, "error": STATE.get("lastError"),
             "count": len(new_entries), "missing": len(missing_after), **state()}
 
 

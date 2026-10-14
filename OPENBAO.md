@@ -31,6 +31,7 @@ OpenBao (Vault-Fork) verwaltet alle Secrets für die Coder-Infrastruktur.
 | secret/data/mcp/ssh-mcp | private_key, public_key – statischer SSH-Key für ssh-mcp |
 | secret/data/mcp/tailscale | auth_key – Tailscale Auth-Key (eigenes Coder↔Kleve-Tailnet) |
 | secret/data/mcp/github | api_key – GitHub PAT (git clone/push in allen Workspaces) |
+| secret/data/mcp/artificialanalysis | api_key – Artificial Analysis API-Key (Modell-Benchmarks der Hestia, optional; Policy `hestia` hat Leserecht) |
 | secret/data/ssh/unifi | UniFi SSH-Zugang |
 
 ## SSH-CA

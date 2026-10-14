@@ -6,7 +6,8 @@ Name → datumsbereinigter canonical_slug, Eindeutigkeit, `:`-Varianten),
 Werte-Extraktion (artificial_analysis / design_arena codecategories),
 AA-Zuordnung über slug bzw. creator/slug, Feld-Merge AA > OR, Ausfall einer
 Quelle, Terminal-Bench-Fallbackkette, state()/fieldLabels, Cache-Roundtrip
-inkl. Abwärtskompatibilität, Fault-Tolerance, Drossel und TTL.
+inkl. Abwärtskompatibilität, Fault-Tolerance, Drossel, TTL und den
+Refresh-Grund `new-source` (nachträglich aktivierte Quelle).
 
 Läuft mit pytest UND direkt:
     pytest -q hestia/ci/test_benchmarks.py
@@ -400,6 +401,103 @@ def test_ttl_fresh_vs_stale():
         assert len(calls) == 2
         assert benchmarks.read_cache()["entries"]["opencode-go/qwen3.8-max"][
             "source_id"] == "qwen/qwen3.8-max-0902"
+
+
+def test_new_active_source_triggers_refresh():
+    """Realer Fall: AA-Key nachträglich gesetzt → AA aktiv, aber im noch
+    frischen Cache nicht vorhanden ⇒ refresh() MUSS holen (reason new-source)."""
+    calls = []
+
+    def counting_or():
+        calls.append("or")
+        return ROWS
+
+    def counting_aa():
+        calls.append("aa")
+        return AA_ROWS
+
+    models = [_model("opencode/claude-fable-5-1", "claude-fable-5.1",
+                     "Claude Fable 5.1")]
+    now = int(time.time())
+
+    def with_sources(sources):
+        """Cache frisch (1 h), Ref belegt — nur `sources` variiert."""
+        calls.clear()
+        with temp_cache():
+            benchmarks.write_cache({
+                "fetchedAt": now - 3600,          # < refreshDays (30)
+                "source": "openrouter",
+                "count": 1,
+                "sources": sources,
+                "entries": {"opencode/claude-fable-5-1": {
+                    "coding_index": 1.0, "aa_id": None,
+                    "or_id": "acme/alt", "source_id": "acme/alt"}},
+            })
+            with _refresh_env(models=models, fetch=counting_or,
+                              aa_fetch=counting_aa, aa_key=AA_KEY):
+                return benchmarks.refresh()
+
+    ok_or = {"ok": True, "ts": now, "count": len(ROWS)}
+    ok_aa = {"ok": True, "ts": now, "count": len(AA_ROWS)}
+
+    # 1) `sources` kennt kein "aa" → Fetch, beide Quellen.
+    res = with_sources({"or": ok_or})
+    assert res["refreshed"] is True and res["reason"] == "new-source", res
+    assert sorted(calls) == ["aa", "or"], calls
+
+    # 2) Gegenprobe: AA war erfolgreich im Cache → kein Fetch, "fresh".
+    res = with_sources({"or": ok_or, "aa": ok_aa})
+    assert res["refreshed"] is False and res["reason"] == "fresh", res
+    assert calls == [], calls
+
+    # 3) Alte Caches komplett ohne `sources` (Legacy, nur OR) → Fetch.
+    res = with_sources(None)
+    assert res["refreshed"] is True and res["reason"] == "new-source", res
+    assert sorted(calls) == ["aa", "or"], calls
+
+    # 4) Auch die andere Richtung: AA ok, OR fehlt → Fetch.
+    res = with_sources({"aa": ok_aa, "or": {"ok": False, "ts": None, "count": 0}})
+    assert res["refreshed"] is True and res["reason"] == "new-source", res
+    assert sorted(calls) == ["aa", "or"], calls
+
+
+def test_new_source_respects_throttle():
+    """Bleibt die Quelle dauerhaft rot, greift die 6-h-Drossel auch für
+    `new-source` — kein Abruf-Hämmern (AA: 1.000 Requests/Tag)."""
+    models = [_model("opencode/claude-fable-5-1", "claude-fable-5.1",
+                     "Claude Fable 5.1")]
+
+    def boom():
+        raise RuntimeError("HTTP 403")
+
+    with temp_cache():
+        benchmarks.write_cache({
+            "fetchedAt": int(time.time()) - 3600,
+            "entries": {"opencode/claude-fable-5-1": {"coding_index": 1.0}},
+            "sources": {"or": {"ok": True, "ts": int(time.time()), "count": 1}},
+        })
+        with _refresh_env(models=models, fetch=lambda: ROWS, aa_fetch=boom,
+                          aa_key=AA_KEY):
+            first = benchmarks.refresh()
+            assert first["refreshed"] is True, first
+            # AA bleibt rot → Quelle fehlt weiterhin im Cache → Drossel.
+            second = benchmarks.refresh()
+        assert second["refreshed"] is False and second["reason"] == "throttled", second
+
+
+def test_no_new_source_without_aa_key():
+    """Ohne AA-Key ist AA keine aktive Quelle → kein new-source-Grund."""
+    models = [_model("opencode-go/qwen3.8-max", "qwen3.8-max")]
+    now = int(time.time())
+    with temp_cache():
+        benchmarks.write_cache({
+            "fetchedAt": now - 3600,
+            "entries": {"opencode-go/qwen3.8-max": {"coding_index": 1.0}},
+            "sources": {"or": {"ok": True, "ts": now, "count": 1}},
+        })
+        with _refresh_env(models=models):
+            res = benchmarks.refresh()
+    assert res["refreshed"] is False and res["reason"] == "fresh", res
 
 
 # --- Artificial Analysis ----------------------------------------------------

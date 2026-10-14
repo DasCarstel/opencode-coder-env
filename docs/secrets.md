@@ -43,6 +43,7 @@ ausschließlich in `/etc/opencode.env` (Mode 0600) ab.
 | `secret/data/mcp/tailscale` | `TS_AUTHKEY` |
 | `secret/data/mcp/github` | GitHub-PAT (via `scripts/setup-git-credentials.sh`) |
 | `secret/data/mcp/hermes-opencode-service` | `OPENCODE_SERVER_PASSWORD` |
+| `secret/data/mcp/artificialanalysis` | `AA_API_KEY` (Artificial Analysis, **optional** — ohne Key laufen die Benchmarks nur über OpenRouter) |
 
 > **Hinweis zu `opencode-go`:** Der Pfad enthält ausschließlich die drei Keys
 > `default1`, `default2`, `default3`. Das frühere Feld `active` wird weder

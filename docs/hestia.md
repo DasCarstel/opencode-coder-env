@@ -353,27 +353,33 @@ bei einer **materiellen Katalogänderung**. Konfiguration in `.opencode/hestia-s
 - **Aufräumen:** die Analyse-Session wird danach automatisch gelöscht;
   `OC_SUGGEST_KEEP_SESSIONS=1` behält sie zum Debuggen.
 
-## Benchmarks (OpenRouter, 2026-10-14)
+## Benchmarks (Artificial Analysis + OpenRouter, 2026-10-14)
 
-Preisübersicht und KI-Vorschlag nutzen **Modell-Benchmarks** von OpenRouter
-(`GET https://openrouter.ai/api/v1/models` — öffentlich, **kein API-Key**; die
-Rate-Limits gelten nur für Inferenz auf Gratis-Modellen).
+Preisübersicht und KI-Vorschlag nutzen **Modell-Benchmarks** aus zwei Quellen, pro
+Feld zusammengeführt — **der erste Treffer gewinnt**:
 
-- **Felder:** `coding_index`, `agentic_index`, `intelligence_index` (Artificial
-  Analysis) sowie `code_elo`/`code_rank` aus der `design_arena`-Kategorie
-  `codecategories`. Konfigurierbar in `.opencode/hestia-benchmarks.jsonc`
-  (`fields`, `refreshDays`, `aliases`).
-- **Zuordnung** Katalog-Ref → OpenRouter, in dieser Reihenfolge: expliziter
-  Alias → `modelID` ohne `-free` → Modellname → **`canonical_slug` datumsbereinigt**
-  (OpenRouter listet Modelle teils nur als datierte Snapshots; greift **nur bei
-  Eindeutigkeit**, sonst „—"). Verifizierter Stand 2026-10-14: **59 von 78** mit Zahlen.
-- **Verifizierte Lücken (0 Zuordnungsfehler):** Von den 19 Modellen ohne Zahlen haben
-  **10 keinen OpenRouter-Zwilling** (Zen-exklusiv: `space-bunny`, `cat-jam`,
-  `big-pickle`, `exo`, `ling-3.0-flash-fin`, `longcat-2.5-preview`,
-  `gpt-5.3-codex-spark` …) und **9 einen Zwilling, für den Artificial Analysis
-  (noch) keine Werte liefert** (`step-5-preview`, `qwen3.8-flash`, `muse-spark-*`,
-  `hy4-preview`, `gpt-5.5-pro`). Neue Modelle werden beim nächsten Abgleich mitgezogen.
-- **Regressionstest:** `hestia/ci/test_benchmarks.py` (19 Tests, **kein Netz**) prüft
+1. **Artificial Analysis** (primär): `GET https://artificialanalysis.ai/api/v2/data/llms/models`
+   (Header `x-api-key`; gratis, 1.000 Requests/Tag, **Attribution Pflicht**). Der Key liegt
+   in OpenBao unter `secret/data/mcp/artificialanalysis` (`api_key`) → Env `AA_API_KEY`;
+   fehlt er, fällt die Quelle automatisch weg (dann alles über OpenRouter).
+2. **OpenRouter** (Fallback/Ergänzung): `GET https://openrouter.ai/api/v1/models` —
+   öffentlich, **kein API-Key**.
+
+- **Felder** (konfigurierbar in `.opencode/hestia-benchmarks.jsonc`; Labels aus
+  `benchmarks.FIELD_LABELS`): `intelligence_index`, `coding_index` (AA/OR),
+  `terminalbench` (AA, Terminal-Bench v4.0 ×100), `speed` (AA, Tok/s),
+  `agentic_index` (nur OR), `code_elo`/`code_rank` (nur OR). AA liefert zusätzlich
+  SciCode und τ²-bench; `livecodebench` ist für unsere Modelle leer und bewusst ungenutzt.
+- **Zuordnung** Katalog-Ref → Quelle: expliziter Alias → `modelID` ohne `-free` →
+  Modellname → **`canonical_slug` datumsbereinigt** (nur bei Eindeutigkeit, sonst „—");
+  bei AA zusätzlich über `slug`/`model_creator.slug`. Verifizierter Stand 2026-10-14:
+  **61 von 78** mit Zahlen (AA 700 Modelle, OR 462).
+- **Verifizierte Lücken (0 Zuordnungsfehler):** Die Modelle ohne Zahlen sind geprüft —
+  überwiegend **Zen-exklusiv ohne Zwilling** bei beiden Quellen (`space-bunny`,
+  `cat-jam`, `big-pickle`, `exo`, `ling-3.0-flash-fin`, `longcat-2.5-preview`,
+  `gpt-5.3-codex-spark` …); der Rest hat bei den Quellen (noch) keine Werte. Neue
+  Modelle werden beim nächsten Abgleich mitgezogen.
+- **Regressionstest:** `hestia/ci/test_benchmarks.py` (36 Tests, **kein Netz**) prüft
   Zuordnung inkl. `canonical_slug`/Eindeutigkeit, Werte-Extraktion, Cache,
   Fault-Tolerance, Drossel und TTL — läuft in `validate-hestia-config.yml` mit.
 - **Lokaler Cache:** `/etc/hestia/model-benchmarks.json` (Bind-Mount, **nicht** im
