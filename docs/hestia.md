@@ -364,8 +364,18 @@ Rate-Limits gelten nur für Inferenz auf Gratis-Modellen).
   `codecategories`. Konfigurierbar in `.opencode/hestia-benchmarks.jsonc`
   (`fields`, `refreshDays`, `aliases`).
 - **Zuordnung** Katalog-Ref → OpenRouter, in dieser Reihenfolge: expliziter
-  Alias → `modelID` ohne `-free` → Modellname. Nicht zuordenbare Modelle bleiben
-  leer (`—`); Stand 2026-10-14: **55 von 78** mit Zahlen.
+  Alias → `modelID` ohne `-free` → Modellname → **`canonical_slug` datumsbereinigt**
+  (OpenRouter listet Modelle teils nur als datierte Snapshots; greift **nur bei
+  Eindeutigkeit**, sonst „—"). Verifizierter Stand 2026-10-14: **59 von 78** mit Zahlen.
+- **Verifizierte Lücken (0 Zuordnungsfehler):** Von den 19 Modellen ohne Zahlen haben
+  **10 keinen OpenRouter-Zwilling** (Zen-exklusiv: `space-bunny`, `cat-jam`,
+  `big-pickle`, `exo`, `ling-3.0-flash-fin`, `longcat-2.5-preview`,
+  `gpt-5.3-codex-spark` …) und **9 einen Zwilling, für den Artificial Analysis
+  (noch) keine Werte liefert** (`step-5-preview`, `qwen3.8-flash`, `muse-spark-*`,
+  `hy4-preview`, `gpt-5.5-pro`). Neue Modelle werden beim nächsten Abgleich mitgezogen.
+- **Regressionstest:** `hestia/ci/test_benchmarks.py` (19 Tests, **kein Netz**) prüft
+  Zuordnung inkl. `canonical_slug`/Eindeutigkeit, Werte-Extraktion, Cache,
+  Fault-Tolerance, Drossel und TTL — läuft in `validate-hestia-config.yml` mit.
 - **Lokaler Cache:** `/etc/hestia/model-benchmarks.json` (Bind-Mount, **nicht** im
   Repo). Neu geholt wird nur bei Bedarf — Cache fehlt, älter als `refreshDays`
   (Default 30), ein Modell fehlt — oder manuell über `POST /api/benchmarks/refresh`;

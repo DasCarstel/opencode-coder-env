@@ -29,3 +29,5 @@ jobs:
         run: python hestia/ci/validate.py
         env:
           MODEL_CATALOG_URL: https://models.dev/api.json
+      - name: Benchmark-Zuordnung testen (kein Netz)
+        run: python hestia/ci/test_benchmarks.py
