@@ -794,10 +794,10 @@ async function loadHermes() {
     hermesFb1 = hermesRef(fb[0]) || hermesFb1
     hermesFb2 = hermesRef(fb[1]) || hermesFb2
     hermesPool = !!cfg?.pool?.followActive
-    const api = cfg?.api_server || {}
-    hermesApiEnabled = api.enabled !== false
-    hermesApiPort = Number(api.port) || 8642
-    hermesApiHost = api.host || '0.0.0.0'
+    const apiCfg = cfg?.api_server || {}
+    hermesApiEnabled = apiCfg.enabled !== false
+    hermesApiPort = Number(apiCfg.port) || 8642
+    hermesApiHost = apiCfg.host || '0.0.0.0'
     hermesError = ''
   } catch (e) {
     // Nicht schlucken: ein Fehler beim Panel-eigenen Aufruf ist etwas anderes als
