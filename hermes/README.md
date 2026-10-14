@@ -12,7 +12,7 @@ Details und Betrieb: [`../docs/hermes.md`](../docs/hermes.md).
 | Datei | Inhalt |
 |-------|--------|
 | [`Dockerfile`](Dockerfile) | Basis-Image `nousresearch/hermes-agent:latest` + `opencode-mcp@3.0.0` + `ocis-mcp-server` v1.1.0, danach wieder `USER hermes` |
-| [`docker-compose.yml`](docker-compose.yml) | Service `hermes`, Netz `coder-infra` (extern), Port **9119**, Neustart `unless-stopped` |
+| [`docker-compose.yml`](docker-compose.yml) | Service `hermes`, Netz `coder-infra` (extern), Ports **9119** (Dashboard) und **8642** (API-Server, u. a. Open WebUI), Neustart `unless-stopped` |
 
 Der Container nutzt das **Entrypoint des Basis-Images**
 (`/opt/hermes/docker/entrypoint-dispatch.sh`) — es gibt hier bewusst **kein**
