@@ -312,6 +312,87 @@ def resolve_analysis_model() -> tuple:
     return chain[0][0], chain[0][1]
 
 
+def session_default_ref() -> str:
+    """Modell, das eine Session ohne eigenes Modell erbt (GET /api/model/default).
+
+    Genau dieser Wert war am 14.10.2026 die Ursache: er zeigte auf ein Modell mit
+    Trainings-Klausel, und jede ohne eigenes Modell dispatchte Session erbte ihn
+    und starb im ersten Turn. Der Wert ist serverseitig und NICHT setzbar — daher
+    nur lesbar pruefen.
+    """
+    status, payload = _req("GET", f"{OC_SERVER_URL}/api/model/default")
+    if status != 200:
+        return ""
+    data = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(data, dict):
+        return ""
+    provider = data.get("providerID") or ""
+    mid = data.get("modelID") or data.get("id") or ""
+    return f"{provider}/{mid}" if provider and mid else ""
+
+
+def check_model_surface() -> dict:
+    """Selbsttest der Modellwahl (rein lesend).
+
+    Prueft (a) die Modelle aller Tiers aus den Overrides und (b) den
+    Session-Default daraufhin, ob sie nutzbar sind. Der Default ist lokal pruefbar
+    und wird IMMER geprueft; die Tiers brauchen die Overrides aus dem Repo und
+    sind sonst "degraded" (nicht falsch-negativ).
+
+    Rueckgabe: {"ok": bool, "degraded": bool, "tiers": {...}, "sessionDefault": {...}}
+    """
+    tiers = {}
+    ok = True
+    degraded = False
+    error = ""
+    preset = None
+    try:
+        from github_api import get_overrides
+        preset = (get_overrides()["config"].get("presets") or {}).get(PRESET) or {}
+    except Exception as e:  # noqa: BLE001
+        degraded = True
+        error = f"Overrides nicht lesbar: {e}"
+
+    tier_refs = set()
+    if preset is not None:
+        for tier in ("fast", "medium", "heavy"):
+            ref = ((preset.get(tier) or {}).get("model") or "").strip()
+            if not ref:
+                tiers[tier] = {"ref": "", "ok": False, "reason": "kein Modell im Preset"}
+                ok = False
+                continue
+            tier_refs.add(ref)
+            good, res = usable(ref)
+            entry = {"ref": ref, "ok": bool(good)}
+            if good:
+                entry["label"] = res.get("name") or ref
+            else:
+                entry["reason"] = res
+            tiers[tier] = entry
+            ok = ok and bool(good)
+
+    default_ref = session_default_ref()
+    if not default_ref:
+        dflt = {"ref": "", "ok": False, "reason": "Session-Default nicht lesbar"}
+        ok = False
+    else:
+        good, res = usable(default_ref)
+        dflt = {"ref": default_ref, "ok": bool(good)}
+        if good:
+            dflt["label"] = res.get("name") or default_ref
+            if tier_refs and default_ref not in tier_refs:
+                dflt["note"] = ("ausserhalb der Tier-Liste - unkritisch, solange der "
+                                "Dispatch das Modell selbst setzt")
+        else:
+            dflt["reason"] = res
+            ok = False
+
+    out = {"ok": ok, "degraded": degraded, "tiers": tiers, "sessionDefault": dflt}
+    if error:
+        out["error"] = error
+    return out
+
+
 class StallError(RuntimeError):
     """Keine Lebenszeichen vom Modell (Event-Stille) — echter Hänger."""
 
@@ -710,6 +791,7 @@ def read_state() -> dict:
     out = {
         "fingerprint": "", "lastCheck": None, "lastChange": None,
         "lastAutoRun": None, "generatedAt": None, "model": None, "result": None,
+        "modelHealth": None,
     }
     try:
         with open(STATE_PATH, encoding="utf-8") as fh:
@@ -735,6 +817,7 @@ def write_state(data: dict) -> bool:
         "generatedAt": data.get("generatedAt"),
         "model": data.get("model"),
         "result": data.get("result"),
+        "modelHealth": data.get("modelHealth"),
     }
     try:
         os.makedirs(os.path.dirname(STATE_PATH) or ".", exist_ok=True)
@@ -851,6 +934,22 @@ def run_auto_check() -> dict:
         STATE["analysisModel"] = settings["analysisModel"]
         stored = STATE.get("fingerprint") or ""
 
+    # Modell-Oberflaeche bei JEDEM Zyklus pruefen - unabhaengig vom Katalog-
+    # Fingerprint. Ein unbrauchbares Tier- oder Default-Modell (z. B. eines mit
+    # Trainings-Klausel) soll im Panel sichtbar werden, nicht erst im Lauf.
+    try:
+        health = check_model_surface()
+    except Exception as e:  # noqa: BLE001
+        health = {"ok": False, "error": str(e)}
+    with LOCK:
+        STATE["modelHealth"] = health
+    if not health.get("ok"):
+        _log("WARNUNG Modell-Oberflaeche: "
+             + json.dumps(health, ensure_ascii=False)[:600])
+    elif health.get("degraded"):
+        _log("Modell-Oberflaeche nur teilweise pruefbar: "
+             + str(health.get("error", ""))[:200])
+
     now = time.time()
     fp = catalog_fingerprint()
 
@@ -931,6 +1030,7 @@ def auto_status() -> dict:
         generated = STATE["generatedAt"]
         model = STATE["model"]
         result = STATE["result"]
+        health = STATE.get("modelHealth")
     now = time.time()
     next_in = max(0, int(interval - (now - last_check))) if last_check else interval
     return {
@@ -943,6 +1043,7 @@ def auto_status() -> dict:
         "lastAutoRun": STATE["lastAutoRun"],
         "fingerprint": fingerprint,
         "nextCheckIn": next_in,
+        "modelHealth": health,
     }, ({"generatedAt": generated, "model": model, "result": result}
         if result and generated else None)
 
