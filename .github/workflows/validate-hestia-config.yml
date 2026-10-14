@@ -31,3 +31,5 @@ jobs:
           MODEL_CATALOG_URL: https://models.dev/api.json
       - name: Benchmark-Zuordnung testen (kein Netz)
         run: python hestia/ci/test_benchmarks.py
+      - name: Konto-Wechsel testen (kein Netz, kein GITHUB_TOKEN)
+        run: python hestia/ci/test_switch_account.py

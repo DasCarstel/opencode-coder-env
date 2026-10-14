@@ -5,7 +5,9 @@ Dispatch wird komplett abgefangen — es wird nichts wirklich ausgelöst.
 Läuft ohne Netz/Container: python3 hestia/ci/test_switch_account.py
 """
 import os
+import shutil
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"))
@@ -20,11 +22,37 @@ CFG = {
     "providers": {},
 }
 CALLS = []
+SOT_WRITES = []
+
+# Sicherheitsnetz wie in test_benchmarks.py: NIE den Produktionspfad
+# (/app/data bzw. .opencode/hestia-accounts.jsonc im Repo) anfasen. Die SOT
+# liegt produktiv nur in GitHub, aber Accounts/Hermes laden sie über einen
+# konfigurierbaren Pfad — ein vergessener Stub würde sonst im Repo schreiben.
+_TMP = tempfile.mkdtemp(prefix="hestia-switch-tests-")
+accounts.ACCOUNTS_PATH = os.path.join(_TMP, "hestia-accounts.jsonc")
 
 
-def fake_get_file(path):
-    import hjsonc
-    return hjsonc.dumps(CFG) if hasattr(hjsonc, "dumps") else None
+# Rohtext statt hjsonc.dumps (das gibt es nicht) — so bleibt der Weg über die
+# Regex in _set_sot_active() realistisch inkl. Kommentarzeilen.
+SOT_RAW = """{
+  // Quelle der Wahrheit fuer das aktive OpenCode-Go-Konto.
+  "active": "default1",
+  "policy": {"mode": "auto", "cooldownSeconds": 1800},
+  "accounts": [{"id": "default1"}, {"id": "default2"}, {"id": "default3"}],
+  "providers": {}
+}
+"""
+
+
+def fake_get_file(path, *a, **kw):
+    """SOT-Lesen stubben (wird von _config() UND _set_sot_active() benutzt)."""
+    return SOT_RAW
+
+
+def fake_put_files(files, msg, *a, **kw):
+    """SOT-Schreiben abfangen — kein Commit, kein Netz, keine Schreibzugriffe."""
+    SOT_WRITES.append({"files": files, "msg": msg})
+    return {"commit": "deadbeef"}
 
 
 def fake_dispatch(workflow, ref=None, inputs=None):
@@ -36,7 +64,15 @@ def fake_dispatch(workflow, ref=None, inputs=None):
 # Modulobjekt wie github_api — der Patch wirkt sonst global).
 real_dispatch_workflow = github_api.dispatch_workflow
 accounts._config = lambda force=False: CFG
+accounts.github_api.get_file = fake_get_file
+accounts.github_api.put_files = fake_put_files
 accounts.github_api.dispatch_workflow = fake_dispatch
+
+
+def reset():
+    """Zustand UND die Aufzeichnungen der Stubs zurücksetzen."""
+    CALLS.clear()
+    SOT_WRITES.clear()
 
 
 def reset():
@@ -85,8 +121,14 @@ check("dispatched im Ergebnis", r.get("dispatched", {}).get("dispatched") is Tru
 check("lastSwitch gesetzt", accounts.STATE["lastSwitch"] and accounts.STATE["lastSwitch"] >= before)
 check("switching zurückgesetzt", accounts.STATE["switching"] is False)
 check("genau 1 Dispatch", len(CALLS) == 1)
-check("Workflow = switch-account.yml", CALLS[0]["workflow"] == "switch-account.yml", CALLS[0]["workflow"])
-check("inputs korrekt", CALLS[0]["inputs"] == {"account": "default2", "reason": "Test"}, str(CALLS[0]["inputs"]))
+check("genau 1 SOT-Schreiben", len(SOT_WRITES) == 1)
+check("commit zurückgegeben", r.get("commit") == "deadbeef", str(r.get("commit")))
+# CALL_DEREF statt CALLS[0]: leerer Dispatch-Container -> "" (sauberer FAIL),
+# nicht IndexError (der war der ursprüngliche Bug-Abbruch des Tests).
+CALL_DEREF = CALLS[0] if CALLS else {}
+check("Workflow = switch-account.yml", CALL_DEREF.get("workflow") == "switch-account.yml", str(CALL_DEREF.get("workflow")))
+check("inputs korrekt", CALL_DEREF.get("inputs") == {"account": "default2", "reason": "Test"}, str(CALL_DEREF.get("inputs")))
+check("SOT enthält active=default2", '"active": "default2"' in str(SOT_WRITES[0]["files"] if SOT_WRITES else ""))
 ev = [e for e in accounts.STATE["events"] if e.get("type") == "switch"]
 check("Event type=switch", len(ev) == 1 and ev[0]["target"] == "default2" and ev[0]["by"] == "manual")
 
@@ -160,4 +202,5 @@ check("ohne inputs kein inputs-Block", bodies[0][2] == {"ref": "master"}, str(bo
 
 print()
 print(f"FEHLGESCHLAGEN: {len(fails)}" + (f" -> {fails}" if fails else ""))
+shutil.rmtree(_TMP, ignore_errors=True)
 sys.exit(1 if fails else 0)

@@ -102,7 +102,11 @@ resource "docker_container" "workspace" {
   command = ["sh", "-c", coder_agent.main.init_script]
 
   cpu_shares = 2048
-  memory     = 2048
+  # 4 GB statt 2 GB: mit 2 GB hat der OpenCode-Server im Infrastructure-Workspace
+  # regelmaessig OOM-Kills kassiert (cgroup memory.events oom_kill 48, Container
+  # bei 1.78/2.0 GiB) — Folge waren abgebrochene Sessions. Das Limit ist keine
+  # Reservierung; der Host (8 GB) alloziert nur den tatsaechlichen Verbrauch.
+  memory     = 4096
   shm_size   = 512
 
   networks_advanced {
