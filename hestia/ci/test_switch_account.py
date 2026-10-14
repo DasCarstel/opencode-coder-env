@@ -15,6 +15,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import accounts  # noqa: E402
 import github_api  # noqa: E402
 
+# GitHub-Werte EXPLIZIT setzen (Muster wie das patching in test_benchmarks.py):
+# github_api liest GITHUB_REF/GITHUB_REPO beim Import aus der Umgebung. Auf einem
+# GitHub-Actions-Runner ist GITHUB_REF zwingend "refs/heads/<branch>" — der Test
+# erwartet aber den reinen Branch-Namen ("master"), weil die Contents-/
+# Dispatch-API nur den Kurz-Namen akzeptiert. Ohne dieses Pinning schlug der Test
+# auf CI fehl, lokal (ohne die Variablen) war er grün.
+os.environ["GITHUB_REF"] = "master"
+os.environ["GITHUB_REPO"] = "DasCarstel/opencode-coder-env"
+os.environ.pop("GITHUB_REPOSITORY", None)
+github_api.GITHUB_REF = "master"
+github_api.GITHUB_REPO = "DasCarstel/opencode-coder-env"
+
 CFG = {
     "active": "default1",
     "policy": {"mode": "auto", "cooldownSeconds": 1800},
