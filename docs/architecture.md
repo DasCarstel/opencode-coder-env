@@ -45,8 +45,7 @@ Die Trennung ist hart: `general` und `muellerconnect` hängen **nicht** in
 
 Zusätzlich zu den Docker-Netzen existiert ein **Proxmox-seitiges Segment**, das
 ausschließlich diese zwei Hosts verbindet. Es trägt die Absicherung des
-Hermes-API-Servers — Begründung und Verifikation in
-[`hermes.md`](hermes.md#sicherheit).
+Hermes-API-Servers — Begründung in [`hermes.md`](hermes.md#sicherheit).
 
 | Baustein | Wert |
 |----------|------|
@@ -56,9 +55,8 @@ Hermes-API-Servers — Begründung und Verifikation in
 | Nutzer | nur der Hermes-API-Server (`10.99.0.2:8642`), Traefik-Regel `hermes-api.yml` |
 
 Im Segment existieren **nur** diese beiden Hosts: kein Uplink auf die Physis,
-kein Gateway, keine VLAN-Zuordnung. Weder das LAN noch Tailscale noch der
-Proxmox-Host selbst erreichen eine Adresse daraus (verifiziert: `Connection
-refused` bzw. `100% packet loss`). Der Hermes-API-Server bindet ausschließlich
+kein Gateway, keine VLAN-Zuordnung. Das LAN, Tailscale und der Proxmox-Host
+selbst haben keine Adresse darin. Der Hermes-API-Server bindet ausschließlich
 hieran — als `"10.99.0.2:8642:8642"` in [`hermes/docker-compose.yml`](../hermes/docker-compose.yml).
 Ein blanks `"8642:8642"` würde ihn wieder im ganzen LAN öffnen.
 
@@ -86,12 +84,6 @@ Beide `pct set`-Aufrufe sind **hotplug-fähig** (`net(\d+)` ist in
 `PVE::LXC::Config` als hotpluggable behandelt, via `PVE::LXC::update_net`) — es
 braucht **keinen** CT-Neustart. `networkctl reload` reicht zum Einlesen der
 Adressen und verwirft keine bestehenden Verbindungen.
-
-**Noch nicht verifiziert:** ein echter Reboot-Test. Die Konfiguration ist
-persistent (`ifquery vmbr10` parst, `net1` in beiden CT-Configs,
-`eth1.network` in beiden Containern), aber das Hochkommen nach einem Neustart
-wurde nie durchgespielt. Falls `eth1` danach fehlt: `networkctl reload` in
-beiden CTs.
 
 ## Herdr als Einstieg
 
@@ -183,46 +175,3 @@ Container **ohne** Tailscale (der Hermes-Agent `hermes`, siehe
 [`hermes.md`](hermes.md)) erreichen Home Assistant Kleve über das TCP-Relay
 `ha-forward.py` (`127.0.0.1:18123` → HA Kleve) — siehe
 [`coder-templates.md`](coder-templates.md).
-
-## Betriebsfallen: nftables und Docker
-
-Zwei Fallen haben am 2026-10-14 auf dem Coder-Host zu einem Ausfall geführt und
-einer wirkungslosen Sicherheitsregel. Beide sind kontextbezogen in
-[`hermes.md`](hermes.md#sicherheit) beschrieben, hier allgemein — sie können auf
-jedem Docker-Host zuschlagen.
-
-**1. `flush ruleset` löscht die Docker-Tabellen mit.**
-
-`flush ruleset` entfernt *alle* Tabellen des Namespace — auch `ip nat`,
-`ip filter`, `ip6` und `bridge`, die Docker selbst verwaltet. Danach fehlen
-Docker die NAT- und Firewall-Regeln, und die Container verlieren die
-Netzverbindung. Eine eigene Regeldatei darf deshalb **nur die eigene Tabelle**
-anfassen:
-
-```nft
-add table inet filter
-delete table inet filter     # nur die eigene Tabelle; Docker bleibt unberührt
-```
-
-**2. Regeln in `chain input` sehen veröffentlichte Docker-Ports nie.**
-
-Docker veröffentlicht Ports per DNAT (`ip nat`, chain `DOCKER`). Das passiert in
-`PREROUTING`; die Pakete laufen danach durch die **FORWARD**-Kette, **nicht**
-durch **INPUT**. Eine Zugriffsbeschränkung in `chain input` ist damit
-wirkungslos — sie lädt fehlerfrei und tut nichts.
-
-Die richtige Stelle wäre `DOCKER-USER` (`table ip filter`): Docker wertet sie
-vor seinen eigenen Regeln aus und fasst sie nicht selbst an.
-
-```bash
-iptables -I DOCKER-USER -p tcp --dport <port> ! -s <erlaubte-quelle> -j DROP
-```
-
-**Konsequenz für dieses Setup:** Für den Hermes-API-Server wurde statt einer
-Firewall die Netz-Isolation gewählt (Segment `10.99.0.0/30`, siehe oben) — sie
-braucht keine Regeln, die man falsch schreiben kann, und ist gegen beide Fallen
-immun.
-
-> **Lehre daraus:** nftables-Syntax zu prüfen genügt nicht. Wer eine Regel scharf
-> schaltet, muss vorher gegen eine echte Fremd-Quelle testen — „die Regel ist
-> geladen" ist nicht „die Regel wirkt".

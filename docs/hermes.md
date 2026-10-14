@@ -139,14 +139,8 @@ CT 100 (Docker)  eth1  10.99.0.1/30
 CT 120 (Coder)   eth1  10.99.0.2/30
 ```
 
-In diesem Segment existieren **nur diese zwei Hosts**. Verifiziert:
-
-| Von | Port 8642 |
-|---|---|
-| CT 100 (`10.99.0.1`) | `200` |
-| Proxmox-Host | `Connection refused` |
-| LAN (`10.0.10.17:8642`) | `Connection refused` |
-| Tailscale | kein Weg — der Port ist an keine LAN-Adresse mehr gebunden |
+In diesem Segment existieren **nur diese zwei Hosts**. Weder das LAN noch
+Tailscale noch der Proxmox-Host haben eine Adresse darin.
 
 Der Port wird im Compose explizit gebunden (`"10.99.0.2:8642:8642"`). Ohne die
 Adresse — also als `"8642:8642"` — läge er wieder im ganzen LAN offen.
@@ -164,20 +158,11 @@ Agenten. Ohne den Filter wäre der API-Server über den Cloudflare-Tunnel aus de
 Internet erreichbar — nur durch den Key geschützt. Der Tunnel läuft mit
 Remote-Config (`TUNNEL_TOKEN`), die Ingress-Regeln liegen in der Cloudflare-Doku
 und sind vom Host aus nicht einsehbar; für das Dashboard ist
-`hermes.mueller-nas.de` nachweislich getunnelt. Verifiziert: mit entfernter
-`10.0.10.0/24` liefert der WAN-Test `403`.
+`hermes.mueller-nas.de` getunnelt.
 
 > **Nicht verwechseln:** „WAN geblockt" heißt **nicht** „Endpunkt abgesichert".
 > Der Filter ist die zweite Schicht, nicht die erste — wer das Segment erreicht,
 > erreicht den Agenten.
-
-**Eine frühere nftables-Regel auf dem Coder-Host wurde entfernt, weil sie
-wirkungslos war:** Docker veröffentlicht Ports per DNAT (`ip nat`, chain
-`DOCKER`); diese Pakete laufen danach durch die **FORWARD**- und nicht durch die
-**INPUT**-Kette. Eine Regel in `chain input` sieht diesen Verkehr nie — die
-richtige Stelle wäre `DOCKER-USER` gewesen. Details stehen als Kommentar in
-`/etc/nftables.conf` auf dem Coder-Host. Der Netzumbau macht die Regel
-gegenstandslos: es gibt keinen LAN-Pfad mehr, den man filtern könnte.
 
 Nicht zu verwechseln: `hermes proxy` (Port 8645) ist ein **reiner OAuth-Modell-Proxy**
 für Nous/xAI ohne Agent-Funktionalität — nicht der API-Server.
