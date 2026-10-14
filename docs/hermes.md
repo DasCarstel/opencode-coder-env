@@ -126,32 +126,39 @@ Quell-IP käme dann nicht aus den erlaubten Ranges und der Filter greift nicht.
 
 ### Sicherheit
 
-Zwei Schichten, weil der Endpoint **Shell-Zugriff auf den Coder-Host inkl. der
-oCIS-Tokens** vergibt:
+Der Endpoint vergibt **Shell- und Dateizugriff auf den Coder-Host inklusive der
+oCIS-Tokens**. Die Absicherung ruht auf **einer** Säule:
 
-1. **Bearer-Key** (`API_SERVER_KEY`) — die eigentliche Authentifizierung.
-   `forwardAuth` ist hier **unbrauchbar**: Open WebUI arbeitet server-to-server
-   ohne Browser-Session, jeder Request ohne Cookie würde abgelehnt.
-2. **IP-Filterung** (`hermes-api-lan-only`) — LAN/Server-VLAN plus das
-   Docker-Netz `proxy`, in dem Open WebUI Traefik erreicht.
+**Bearer-Key** (`API_SERVER_KEY`, 64 Zeichen) — die eigentliche Authentifizierung.
+`forwardAuth` ist hier **unbrauchbar**: Open WebUI arbeitet server-to-server ohne
+Browser-Session, jeder Request ohne Cookie würde abgelehnt.
 
-Warum die zweite Schicht nötig ist: der Cloudflare-Tunnel läuft mit
-Remote-Config (`TUNNEL_TOKEN`); die Ingress-Regeln liegen in der Cloudflare-Doku
-und sind vom Host aus **nicht** einsehbar. Es lässt sich also nicht belegen, dass
-`hermes.mueller-nas.de` nicht generell getunnelt wird — und für `/` (Dashboard)
-ist es bereits nachweislich der Fall, `https://hermes.mueller-nas.de/api/health`
-antwortet aus dem WAN mit `200`.
+**Was der Traefik-Filter leistet** (`hermes-api-lan-only`, `rules/hermes-api.yml`):
+Er sperrt den **WAN-Pfad**. Der Cloudflare-Tunnel läuft mit Remote-Config
+(`TUNNEL_TOKEN`), die Ingress-Regeln liegen in der Cloudflare-Doku und sind vom
+Host aus nicht einsehbar — für das Dashboard ist `hermes.mueller-nas.de`
+nachweislich getunnelt (`https://hermes.mueller-nas.de/api/health` antwortet aus
+dem WAN mit `200`). Ohne diesen Filter wäre der API-Server also öffentlich
+erreichbar. Verifiziert: mit entfernter `10.0.10.0/24` liefert der WAN-Test `403`.
 
-Getunnelter Verkehr trägt `X-Forwarded-For` mit der echten Client-IP und wird
-vom Filter abgewiesen. Verifiziert: mit entferntem `10.0.10.0/24` lieferte der
-WAN-Test `403`.
+**Was der Traefik-Filter nicht leistet:** Der Direktpfad
+`http://10.0.10.17:8642` ist **bewusst offen** (Entscheidung 2026-10-14). Eine
+IP-Filterung auf dem Coder-Host hätte nur gegriffen, wenn der Key leakt **und**
+der Aufrufer von außerhalb der erlaubten Ranges kommt — innerhalb des LAN hilft
+sie nicht, weil der Key bei einer Kompromittierung des Docker-Hosts ohnehin aus
+der Open-WebUI-Datenbank lesbar ist. Der Tailscale-Pfad ist damit ebenfalls
+offen: sobald das Tailnet geteilt wird, hat jeder Peer Zugriff auf den Agenten.
 
-> **Restrisiko:** `ipAllowList` wertet `X-Forwarded-For` aus. Solange der Host
-> nicht direkt aus dem Internet auf `:443` erreichbar ist (der Tunnel spricht für
-> CGNAT), ist das unkritisch. **Bekommt der Host später eine öffentliche IP oder
-> ein Port-Forward auf 443**, muss `ipStrategy.depth` gesetzt oder die
-> Docker-Range entfernt werden — sonst wäre ein gefälschter `XFF`-Header eine
-> Umgehung.
+> **Nicht verwechseln:** „WAN geblockt" heißt hier **nicht** „Endpunkt
+> abgesichert". Wer im LAN oder über Tailscale kommt, erreicht den Agenten
+> direkt — vorbei an Traefik.
+
+**Eine frühere nftables-Regel auf dem Coder-Host wurde entfernt, weil sie
+wirkungslos war:** Docker veröffentlicht Ports per DNAT (`ip nat`, chain
+`DOCKER`); diese Pakete laufen danach durch die **FORWARD**- und nicht durch die
+**INPUT**-Kette. Eine Regel in `chain input` sieht diesen Verkehr nie — die
+richtige Stelle wäre `DOCKER-USER` gewesen. Details stehen als Kommentar in
+`/etc/nftables.conf` auf dem Coder-Host.
 
 Nicht zu verwechseln: `hermes proxy` (Port 8645) ist ein **reiner OAuth-Modell-Proxy**
 für Nous/xAI ohne Agent-Funktionalität — nicht der API-Server.
