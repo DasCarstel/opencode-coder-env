@@ -23,6 +23,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 import benchmarks  # noqa: E402
 
+# Sicherheitsnetz: NIE den Produktionspfad (/app/data) benutzen. Einzelne Tests
+# patchen CACHE_PATH über temp_cache(); vergisst einer das, schlägt der Schreib-
+# vorgang auf dem CI-Runner fehl (/app ist nicht schreibbar) und der Test wird
+# still falsch. Deshalb hier global umbiegen.
+_GLOBAL_TMP = tempfile.mkdtemp(prefix="hestia-bm-tests-")
+benchmarks.CACHE_PATH = os.path.join(_GLOBAL_TMP, "model-benchmarks.json")
+
 # --- Testdaten -------------------------------------------------------------
 
 AA = {"intelligence_index": 45.4, "coding_index": 76.2, "agentic_index": 56}
@@ -313,10 +320,11 @@ def test_for_refs_all_fields_contains_more_than_sot():
     assert entry["or_id"] == "or-456"
     assert entry["source_id"] == "qwen/qwen3.8-max-0902"
     # null-Felder entfallen, dadurch bleibt der Payload schlank.
-    benchmarks.write_cache({"fetchedAt": int(time.time()),
-                            "entries": {"a/b": {"coding_index": 1.0}}})
-    with patched(read_settings=lambda: _settings()):
-        sparse = benchmarks.for_refs(["a/b"], all_fields=True)["a/b"]
+    with temp_cache():
+        benchmarks.write_cache({"fetchedAt": int(time.time()),
+                                "entries": {"a/b": {"coding_index": 1.0}}})
+        with patched(read_settings=lambda: _settings()):
+            sparse = benchmarks.for_refs(["a/b"], all_fields=True)["a/b"]
     assert sparse == {"coding_index": 1.0}
     # Der Prompt-Pfad (Default) nutzt weiterhin ausschließlich die SOT-Felder.
     assert "scicode" not in prompt["a/b"]
