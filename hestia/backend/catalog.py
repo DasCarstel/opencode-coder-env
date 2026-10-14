@@ -35,6 +35,13 @@ def _get(url: str, timeout: int = 15) -> dict:
 _CACHE = {"ts": 0.0, "data": None}
 CACHE_TTL = 60.0  # s
 
+# Modelle mit Trainings-Klausel tragen dieses Namens-Suffix. Das ist eine
+# Heuristik: der Katalog liefert dafuer KEIN Feld (geprueft am 14.10.2026 -
+# gemini-4-argon-contributor steht dort mit status=active/enabled=true wie jedes
+# andere Modell). Provider weisen diese Modelle mit "This Go model trains on
+# request data" ab, solange der Workspace-Toggle aus ist.
+TRAINING_SUFFIX = "-contributor"
+
 
 def fetch_models(force: bool = False) -> list:
     """Normalisierter Katalog: [{providerID, modelID, name, released, status,
@@ -77,7 +84,13 @@ def find_model(model_ref: str):
 
 
 def usable(model_ref: str) -> tuple:
-    """(ok, reason) — Status muss aktiv und enabled sein."""
+    """(ok, reason) — Status aktiv, enabled und keine Trainings-Klausel.
+
+    Die Trainings-Klausel ist im Katalog nicht als Feld vorhanden; Provider
+    kennzeichnen solche Modelle aber im Namen (Suffix "-contributor"). Ohne diese
+    Pruefung bietet das Panel ein Modell an, das der Provider mit
+    "This Go model trains on request data" abweist — genau der Fall vom 14.10.2026.
+    """
     m = find_model(model_ref)
     if not m:
         return False, f"Modell {model_ref} nicht im Katalog"
@@ -85,6 +98,12 @@ def usable(model_ref: str) -> tuple:
         return False, f"Modell {model_ref} hat Status '{m['status']}' (nur 'active' erlaubt)"
     if not m["enabled"]:
         return False, f"Modell {model_ref} ist disabled"
+    model_id = m.get("modelID") or ""
+    if model_id.endswith(TRAINING_SUFFIX):
+        return False, (
+            f"Modell {model_ref} traegt die Trainings-Klausel "
+            f"(Suffix '{TRAINING_SUFFIX}') und wird vom Provider abgewiesen"
+        )
     return True, m
 
 
