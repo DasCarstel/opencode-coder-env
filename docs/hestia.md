@@ -307,8 +307,18 @@ nur noch als Startwerte, wenn die SOT fehlt:
 | Fehlerschwelle | `threshold` | `HESTIA_FAIL_THRESHOLD` (`2`) | Fehlversuche bis zum Umschalten (1..10) |
 | Probe-Timeout | `timeoutSeconds` | `HESTIA_PROBE_TIMEOUT` (`35`) | Zeitfenster je Probe (5..300 s) |
 
-Änderungen wirken **sofort** (der Hintergrund-Thread liest Intervall und Schwelle
-je Iteration neu) und brauchen keinen Container-Neustart.
+Änderungen wirken **sofort**: Beim Umschalten von `enabled` startet bzw. stoppt der
+Hintergrund-Thread live, Intervall und Schwelle werden je Iteration neu gelesen —
+ein Container-Neustart ist nicht nötig.
+
+> **Betriebshinweis (2026-10-14):** Die SOT **übersteuert** die Env-Variable
+> `HESTIA_AUTO_FAILOVER`. Ein `"enabled": false` in `.opencode/hestia-failover.jsonc`
+> schaltet die Automatik still ab — die Env-Variable (z. B. `HESTIA_AUTO_FAILOVER=1`
+> aus `.env`) dient nur noch als Startwert, wenn die SOT fehlt. Beim Auto-Swap
+> werden auch die **hergeleiteten Primary-Agents** (`build`/`plan`) auf das neue
+> `@medium` gezogen; manuell gesetzte Agenten bleiben unangetastet. Ohne die
+> SOT-Synchronisierung wäre ein Failover nur für die Subagent-Tiers wirksam
+> gewesen, nicht für die Chat-Agenten.
 
 Status über `/api/failover/status`, Sofort-Prüfung per `POST /api/failover/check`.
 

@@ -13,10 +13,13 @@ Ablauf:
   - Nach HESTIA_FAIL_THRESHOLD Fehlschlägen in Folge UND wenn ein Ausfall-Modell
     hinterlegt ist, wird dieses als Tier-Modell geschrieben (Commit + Rollout) —
     automatisch nur wenn HESTIA_AUTO_FAILOVER=1, sonst per Klick im Panel.
+  - Beim Swap werden auch die hergeleiteten Primary-Agents (build/plan) auf das
+    neue @medium gezogen; manuell gesetzte Agenten bleiben unangetastet.
 
 Die Laufzeit-Parameter (enabled/threshold/Intervall/Timeout) liegen in der SOT
 .opencode/hestia-failover.jsonc und werden über POST /api/failover/settings vom
-Panel geschrieben; fehlt die Datei, gelten die HESTIA_*-Defaults.
+Panel geschrieben; fehlt die Datei, gelten die HESTIA_*-Defaults. Die SOT hat
+Vorrang vor der Env-Variable HESTIA_AUTO_FAILOVER.
 """
 import json
 import os
@@ -28,7 +31,9 @@ import github_api
 import suggest
 
 TIERS = ("fast", "medium", "heavy")
+PRIMARY_AGENTS = ("build", "plan")
 FALLBACKS_PATH = os.environ.get("HESTIA_FALLBACKS_PATH", ".opencode/hestia-fallbacks.json")
+AGENTS_PATH = os.environ.get("HESTIA_AGENTS_PATH", ".opencode/hestia-primary-agents.json")
 FAILOVER_SETTINGS_PATH = os.environ.get(
     "HESTIA_FAILOVER_SETTINGS_PATH", ".opencode/hestia-failover.jsonc"
 )
@@ -36,6 +41,12 @@ PROBE_TIMEOUT = int(os.environ.get("HESTIA_PROBE_TIMEOUT", "35"))
 THRESHOLD = int(os.environ.get("HESTIA_FAIL_THRESHOLD", "2"))
 INTERVAL = int(os.environ.get("HESTIA_PROBE_INTERVAL", "900"))
 AUTO = os.environ.get("HESTIA_AUTO_FAILOVER", "0") == "1"
+
+# Effort-Rang für die Ableitung der Primary-Agents (plan = höchste Variante).
+# Bewusst gespiegelt zu server.VARIANT_RANK — hier nur die für den Failover
+# nötige Teilmenge, um keinen Import-Zyklus (server → failover) zu erzeugen.
+VARIANT_RANK = {"minimal": 1, "none": 2, "low": 3, "medium": 4, "thinking": 4,
+                "high": 5, "xhigh": 6, "max": 7}
 
 # Grenzen für die Panel-Eingaben (POST /api/failover/settings)
 THRESHOLD_RANGE = (1, 10)
@@ -90,7 +101,8 @@ def read_settings() -> dict:
     """Ausfallschutz-SOT lesen und normalisieren.
 
     Fehlende/kaputte Datei oder GitHub-Fehler → die Env-Defaults, damit das
-    Panel immer eine plausible Konfiguration sieht.
+    Panel immer eine plausible Konfiguration sieht. Liegt die SOT vor, hat ihr
+    Feld "enabled" Vorrang vor HESTIA_AUTO_FAILOVER.
     """
     data = {}
     try:
@@ -129,7 +141,8 @@ def _require_int(payload: dict, key: str, lo: int, hi: int) -> int:
 def update_settings(payload: dict) -> dict:
     """Panel-Einstellungen validieren, als SOT committen und STATE aktualisieren.
 
-    Wirkt sofort: der Hintergrund-Thread liest das Intervall je Iteration neu.
+    Wirkt sofort: der Probe-Thread wird live gestartet/gestoppt und liest
+    Intervall/Schwelle je Iteration neu — kein Container-Neustart nötig.
     """
     if not isinstance(payload, dict):
         raise SettingsError("Body muss ein JSON-Objekt sein")
@@ -171,6 +184,8 @@ def update_settings(payload: dict) -> dict:
         STATE["threshold"] = settings["threshold"]
         STATE["interval"] = settings["intervalSeconds"]
         STATE["timeout"] = settings["timeoutSeconds"]
+    # Live-Umschaltung: Probe-Thread starten/stoppen, ohne Container-Neustart.
+    _apply_loop_state(settings["enabled"])
     _log(
         f"settings: enabled={settings['enabled']} threshold={settings['threshold']} "
         f"intervall={settings['intervalSeconds']}s timeout={settings['timeoutSeconds']}s "
@@ -238,7 +253,7 @@ def run_probes(apply_backup: bool = False) -> dict:
         fb = fallbacks.get(tier) or {}
         if (not res["ok"] and fb.get("model") and fails >= THRESHOLD):
             label = fb["model"] + (f"#{fb['variant']}" if fb.get("variant") else "")
-            if apply_backup or AUTO:
+            if apply_backup or _auto_enabled():
                 try:
                     _swap_tier(tier, fb)
                     swaps[tier] = label
@@ -257,6 +272,60 @@ def run_probes(apply_backup: bool = False) -> dict:
             STATE["events"] = ([{"at": time.time(), "swaps": swaps}] + STATE["events"])[:10]
             _log(f"Ausweichungen: {swaps}")
     return {"results": results, "swaps": swaps}
+
+
+def _highest_variant(model_ref: str) -> str:
+    """Höchste Effort-Variante eines Modells laut Live-Katalog ("" = keine)."""
+    m = catalog.find_model(model_ref)
+    if not m:
+        return ""
+    ranked = sorted([v for v in (m.get("variants") or []) if v in VARIANT_RANK],
+                    key=lambda v: VARIANT_RANK[v])
+    return ranked[-1] if ranked else ""
+
+
+def _derived_agents_json(new_preset: dict):
+    """Primary-Agents (build/plan) an das neue @medium anpassen.
+
+    Spiegelt server.effective_agents()/agents_to_display(): build = @medium
+    (Standardvariante), plan = @medium (höchste Variante). Manuell gewählte
+    Agenten (source == "manual") bleiben unangetastet. Rückgabe: neuer JSON-Text
+    oder None, wenn keine Änderung / kein @medium vorhanden.
+
+    Ohne diese Synchronisierung blieben build/plan nach einem Auto-Failover auf
+    dem (ausgefallenen) Gratis-Modell des alten @medium hängen — der Failover
+    wirkte dann nur für die Subagent-Tiers, nicht für die Chat-Agenten.
+    """
+    medium = (new_preset or {}).get("medium") or {}
+    med_ref = (medium.get("model") or "").strip()
+    if not med_ref:
+        return None
+    try:
+        raw = github_api.get_file(AGENTS_PATH)
+        data = json.loads(raw) if raw else {}
+    except Exception:  # noqa: BLE001
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    out, changed = {}, False
+    for agent in PRIMARY_AGENTS:
+        entry = data.get(agent) or {}
+        model = (entry.get("model") or "").strip()
+        source = entry.get("source")
+        manual = (source == "manual") or (bool(model) and not source)
+        if manual:
+            out[agent] = entry
+            continue
+        variant = (medium.get("variant") or "") if agent == "build" else _highest_variant(med_ref)
+        new_entry = {"model": med_ref, "variant": variant or "", "source": "derived"}
+        out[agent] = new_entry
+        if (entry.get("model") != new_entry["model"]
+                or (entry.get("variant") or "") != new_entry["variant"]
+                or source != "derived"):
+            changed = True
+    if not changed:
+        return None
+    return json.dumps(out, indent=2, ensure_ascii=False) + "\n"
 
 
 def _swap_tier(tier: str, backup: dict):
@@ -279,26 +348,57 @@ def _swap_tier(tier: str, backup: dict):
     import hjsonc
     jsonc = hjsonc.serialize(cfg)
     label = backup["model"] + (f"#{backup['variant']}" if backup.get("variant") else "")
-    res = github_api.put_files({github_api.OVERRIDES_PATH: jsonc},
-                               f"hestia: Ausfallschutz — {tier} auf {label} gewechselt")
+    # Primary-Agents (hergeleitet aus @medium) im selben Commit mitziehen.
+    files = {github_api.OVERRIDES_PATH: jsonc}
+    agents_json = _derived_agents_json(new_preset)
+    if agents_json:
+        files[AGENTS_PATH] = agents_json
+    res = github_api.put_files(files, f"hestia: Ausfallschutz — {tier} auf {label} gewechselt")
     github_api.dispatch_workflow(os.environ.get("ROLLOUT_WORKFLOW", "rollout.yml"))
-    _log(f"{tier} -> {label} (Commit {res.get('sha', '')[:8]})")
+    _log(f"{tier} -> {label} (Commit {res.get('sha', '')[:8]})"
+         + (" · Primary-Agents angepasst" if agents_json else ""))
     return res
 
 
-def loop():
+# Probe-Thread-Verwaltung: Live-Start/-Stopp bei Settings-Änderung.
+_LOOP_THREAD = None
+_STOP = threading.Event()
+
+
+def _auto_enabled() -> bool:
+    with LOCK:
+        return bool(STATE["autoFailover"])
+
+
+def _apply_loop_state(enabled: bool):
+    """Probe-Thread live starten/stoppen (ohne Container-Neustart)."""
+    global _LOOP_THREAD, _STOP
+    if not enabled:
+        _STOP.set()
+        _log("Auto-Ausfallschutz deaktiviert (Probe-Thread gestoppt)")
+        return
+    if _LOOP_THREAD and _LOOP_THREAD.is_alive():
+        return
+    _STOP = threading.Event()
+    _LOOP_THREAD = threading.Thread(target=loop, args=(_STOP,), daemon=True)
+    _LOOP_THREAD.start()
+
+
+def loop(stop_event: threading.Event):
     with LOCK:
         _log(f"Auto-Ausfallschutz aktiv (Intervall {STATE['interval']}s, "
              f"Schwelle {STATE['threshold']}, Timeout {STATE['timeout']}s)")
-    while True:
-        try:
-            run_probes()
-        except Exception as e:  # noqa: BLE001
-            _log(f"Probe fehlgeschlagen: {e}")
+    while not stop_event.is_set():
+        if _auto_enabled():
+            try:
+                run_probes()
+            except Exception as e:  # noqa: BLE001
+                _log(f"Probe fehlgeschlagen: {e}")
         # Intervall je Iteration neu lesen → Panel-Änderung wirkt ohne Neustart.
         with LOCK:
             wait = int(STATE["interval"])
-        time.sleep(wait)
+        stop_event.wait(wait)
+    _log("Auto-Ausfallschutz deaktiviert — Probe-Thread beendet")
 
 
 def start():
@@ -312,7 +412,7 @@ def start():
             STATE["fallbacks"] = read_fallbacks()
     except Exception:
         pass
-    with LOCK:
-        auto = bool(STATE["autoFailover"])
-    if auto:
-        threading.Thread(target=loop, daemon=True).start()
+    if _auto_enabled():
+        _apply_loop_state(True)
+    else:
+        _log("Auto-Ausfallschutz inaktiv (SOT enabled=false) — Proben nur manuell")
