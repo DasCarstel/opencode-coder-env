@@ -258,19 +258,20 @@ def apply(payload: dict) -> dict:
         p_in = prof.get("primary") if isinstance(prof.get("primary"), dict) else {}
         if p_in:
             p_out["primary"] = _validate(p_in, f"{label}.primary")
-        else:
-            # Erbt den Top-Level-Primary → nicht neu validieren (schon geprüft).
-            p_out["primary"] = primary
+        # KEIN else: fehlt "primary", wird nichts geschrieben — das Profil erbt dann
+        # beim Apply vom Top-Level (apply-hermes.sh: "jedes erbt vom Top-Level, was
+        # es nicht selbst setzt"). Wuerde hier der geerbte Wert eingetragen, laese
+        # der naechste Apply ihn als EIGENEN Wert und das Profil folgte dem
+        # Top-Level nicht mehr. Genau so ist "kleve" auf glm-5.3-flash eingefroren.
         p_fb = prof.get("fallback")
-        if p_fb is None:
-            p_out["fallback"] = fb_out           # erbt Top-Level
-        else:
+        if p_fb is not None:
             items = []
             for i, f in enumerate(p_fb, start=1):
                 if not isinstance(f, dict) or (not f.get("model") and not f.get("provider")):
                     continue
                 items.append(_validate(f, f"{label}.fallback[{i}]"))
             p_out["fallback"] = items
+        # sonst: nichts schreiben → Fallbacks werden geerbt
         if isinstance(prof.get("pool"), dict):
             p_out["pool"] = {
                 "followActive": bool(prof["pool"].get("followActive")),
@@ -306,8 +307,9 @@ def apply(payload: dict) -> dict:
     if changed:
         desc = ", ".join(f"{f['provider']}/{f['model']}" for f in fb_out) or "—"
         prof_desc = ", ".join(
-            f"{n}={p['primary']['provider']}/{p['primary']['model']}"
-            for n, p in profiles_out.items() if p.get("primary")
+            f"{n}=" + (f"{p['primary']['provider']}/{p['primary']['model']}"
+                       if p.get("primary") else "erbt")
+            for n, p in profiles_out.items()
         ) or "—"
         commit = github_api.put_files({CONFIG_PATH: new_text}, (
             "hestia: Hermes-Update\n\n"

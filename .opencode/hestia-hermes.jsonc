@@ -26,19 +26,14 @@
     "port": 8642,
     "host": "0.0.0.0"
   },
+  // "kleve" setzt bewusst NICHTS Eigenes: apply-hermes.sh erbt Primary, Fallbacks
+  // und Pool vom Top-Level ("jedes erbt vom Top-Level, was es nicht selbst setzt").
+  // Damit nutzt Kleve genau dasselbe wie das Default-Profil und folgt kuenftigen
+  // Aenderungen automatisch. Vorher stand hier primary=glm-5.3-flash — laut Log
+  // seit dem 10.10.2026 unbenutzt, und es band das Profil an ein eingefrorenes Modell.
   "profiles": {
     "kleve": {
-      "enabled": true,
-      "primary": {
-        "provider": "opencode-go",
-        "model": "glm-5.3-flash"
-      },
-      "fallback": [
-        {
-          "provider": "opencode-go",
-          "model": "gpt-6-luna"
-        }
-      ]
+      "enabled": true
     }
   }
 }
