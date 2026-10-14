@@ -41,6 +41,58 @@ Server verwaltet.
 Die Trennung ist hart: `general` und `muellerconnect` hängen **nicht** in
 `coder-infra` und bekommen weder `ssh-mcp` noch SSH-Keys — nur den oCIS-MCP.
 
+### Segment Coder ↔ Docker (`10.99.0.0/30`)
+
+Zusätzlich zu den Docker-Netzen existiert ein **Proxmox-seitiges Segment**, das
+ausschließlich diese zwei Hosts verbindet. Es trägt die Absicherung des
+Hermes-API-Servers — Begründung und Verifikation in
+[`hermes.md`](hermes.md#sicherheit).
+
+| Baustein | Wert |
+|----------|------|
+| Bridge (Proxmox) | `vmbr10` — `bridge-ports none`, keine IP, **kein Uplink** |
+| CT 100 (Docker) | `eth1` = `10.99.0.1/30` |
+| CT 120 (Coder) | `eth1` = `10.99.0.2/30` |
+| Nutzer | nur der Hermes-API-Server (`10.99.0.2:8642`), Traefik-Regel `hermes-api.yml` |
+
+Im Segment existieren **nur** diese beiden Hosts: kein Uplink auf die Physis,
+kein Gateway, keine VLAN-Zuordnung. Weder das LAN noch Tailscale noch der
+Proxmox-Host selbst erreichen eine Adresse daraus (verifiziert: `Connection
+refused` bzw. `100% packet loss`). Der Hermes-API-Server bindet ausschließlich
+hieran — als `"10.99.0.2:8642:8642"` in [`hermes/docker-compose.yml`](../hermes/docker-compose.yml).
+Ein blanks `"8642:8642"` würde ihn wieder im ganzen LAN öffnen.
+
+> **Nicht im Repo versioniert.** Die Bridge steht in `/etc/network/interfaces`
+> auf dem Proxmox-Host, die NICs in `/etc/pve/lxc/100.conf` und `120.conf`.
+> Wiederaufbau:
+
+```bash
+# --- Proxmox-Host ---
+ip link add name vmbr10 type bridge && ip link set vmbr10 up
+# zusätzlich in /etc/network/interfaces:
+#   auto vmbr10
+#   iface vmbr10 inet manual
+#           bridge-ports none
+#           bridge-stp off
+#           bridge-fd 0
+pct set 100 -net1 name=eth1,bridge=vmbr10,ip=10.99.0.1/30
+pct set 120 -net1 name=eth1,bridge=vmbr10,ip=10.99.0.2/30
+
+# --- in beiden CTs (PVE legt /etc/systemd/network/eth1.network an) ---
+networkctl reload
+```
+
+Beide `pct set`-Aufrufe sind **hotplug-fähig** (`net(\d+)` ist in
+`PVE::LXC::Config` als hotpluggable behandelt, via `PVE::LXC::update_net`) — es
+braucht **keinen** CT-Neustart. `networkctl reload` reicht zum Einlesen der
+Adressen und verwirft keine bestehenden Verbindungen.
+
+**Noch nicht verifiziert:** ein echter Reboot-Test. Die Konfiguration ist
+persistent (`ifquery vmbr10` parst, `net1` in beiden CT-Configs,
+`eth1.network` in beiden Containern), aber das Hochkommen nach einem Neustart
+wurde nie durchgespielt. Falls `eth1` danach fehlt: `networkctl reload` in
+beiden CTs.
+
 ## Herdr als Einstieg
 
 - Das Binary liegt auf dem Coder-Host unter `/opt/opencode-bin/herdr` und wird
@@ -131,3 +183,46 @@ Container **ohne** Tailscale (der Hermes-Agent `hermes`, siehe
 [`hermes.md`](hermes.md)) erreichen Home Assistant Kleve über das TCP-Relay
 `ha-forward.py` (`127.0.0.1:18123` → HA Kleve) — siehe
 [`coder-templates.md`](coder-templates.md).
+
+## Betriebsfallen: nftables und Docker
+
+Zwei Fallen haben am 2026-10-14 auf dem Coder-Host zu einem Ausfall geführt und
+einer wirkungslosen Sicherheitsregel. Beide sind kontextbezogen in
+[`hermes.md`](hermes.md#sicherheit) beschrieben, hier allgemein — sie können auf
+jedem Docker-Host zuschlagen.
+
+**1. `flush ruleset` löscht die Docker-Tabellen mit.**
+
+`flush ruleset` entfernt *alle* Tabellen des Namespace — auch `ip nat`,
+`ip filter`, `ip6` und `bridge`, die Docker selbst verwaltet. Danach fehlen
+Docker die NAT- und Firewall-Regeln, und die Container verlieren die
+Netzverbindung. Eine eigene Regeldatei darf deshalb **nur die eigene Tabelle**
+anfassen:
+
+```nft
+add table inet filter
+delete table inet filter     # nur die eigene Tabelle; Docker bleibt unberührt
+```
+
+**2. Regeln in `chain input` sehen veröffentlichte Docker-Ports nie.**
+
+Docker veröffentlicht Ports per DNAT (`ip nat`, chain `DOCKER`). Das passiert in
+`PREROUTING`; die Pakete laufen danach durch die **FORWARD**-Kette, **nicht**
+durch **INPUT**. Eine Zugriffsbeschränkung in `chain input` ist damit
+wirkungslos — sie lädt fehlerfrei und tut nichts.
+
+Die richtige Stelle wäre `DOCKER-USER` (`table ip filter`): Docker wertet sie
+vor seinen eigenen Regeln aus und fasst sie nicht selbst an.
+
+```bash
+iptables -I DOCKER-USER -p tcp --dport <port> ! -s <erlaubte-quelle> -j DROP
+```
+
+**Konsequenz für dieses Setup:** Für den Hermes-API-Server wurde statt einer
+Firewall die Netz-Isolation gewählt (Segment `10.99.0.0/30`, siehe oben) — sie
+braucht keine Regeln, die man falsch schreiben kann, und ist gegen beide Fallen
+immun.
+
+> **Lehre daraus:** nftables-Syntax zu prüfen genügt nicht. Wer eine Regel scharf
+> schaltet, muss vorher gegen eine echte Fremd-Quelle testen — „die Regel ist
+> geladen" ist nicht „die Regel wirkt".

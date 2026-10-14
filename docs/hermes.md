@@ -150,6 +150,8 @@ In diesem Segment existieren **nur diese zwei Hosts**. Verifiziert:
 
 Der Port wird im Compose explizit gebunden (`"10.99.0.2:8642:8642"`). Ohne die
 Adresse — also als `"8642:8642"` — läge er wieder im ganzen LAN offen.
+Aufbau, Wiederherstellung und Reboot-Persistenz des Segments stehen in
+[`architecture.md`](architecture.md).
 
 **2. Bearer-Key** (`API_SERVER_KEY`, 64 Zeichen) — die Authentifizierung für
 alles, was das Segment erreicht. `forwardAuth` ist hier **unbrauchbar**: Open
