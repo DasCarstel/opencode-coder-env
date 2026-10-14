@@ -302,7 +302,12 @@ def apply(payload: dict) -> dict:
     }
     new_text = json.dumps(new_cfg, indent=2, ensure_ascii=False) + "\n"
 
-    changed = _public(config()) != new_cfg
+    # Like-for-like vergleichen: _public() materialisiert die Profile fuer das
+    # Panel (fehlende Felder erben vom Top-Level). new_cfg materialisiert nicht,
+    # damit die Vererbung in der SOT erhalten bleibt. Ein direkter Vergleich
+    # beider Formen waere deshalb IMMER ungleich und wuerde bei jedem Apply einen
+    # Commit erzeugen.
+    changed = _public(config()) != _public(new_cfg)
     commit = None
     if changed:
         desc = ", ".join(f"{f['provider']}/{f['model']}" for f in fb_out) or "—"
