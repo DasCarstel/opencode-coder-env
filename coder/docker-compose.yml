@@ -1,0 +1,49 @@
+services:
+  coder:
+    image: ghcr.io/coder/coder:latest
+    container_name: coder
+    restart: unless-stopped
+    ports:
+      - "7080:7080"
+    env_file:
+      - .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /etc/docker/coder/home:/home/coder
+    user: "1000:990"
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      database:
+        condition: service_healthy
+    networks:
+      - coder-internal
+      - coder-gen
+      - coder-mc
+      - coder-infra
+
+  database:
+    image: postgres:17
+    container_name: coder-postgres
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - /etc/docker/coder/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coder -d coder"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - coder-internal
+
+networks:
+  coder-internal:
+    driver: bridge
+  coder-gen:
+    external: true
+  coder-mc:
+    external: true
+  coder-infra:
+    external: true

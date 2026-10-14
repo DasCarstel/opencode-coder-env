@@ -8,6 +8,7 @@ Herdr als Einstiegspunkt, Secret-Flow, Persistenz und Update-Verhalten.
 | Baustein | Ort | Aufgabe |
 |----------|-----|---------|
 | **Coder** | `10.0.10.17` (CT 120) | provisioniert die Workspace-Container per Docker-Provider |
+| **Coder-Server (Host-Compose)** | `/opt/docker-compose/coder/` auf `10.0.10.17`, Port **7080** | die Coder-Instanz selbst als Compose-Stack (`coder/` im Repo): Container `coder` plus `database` (`postgres:17`, Daten unter `/etc/docker/coder/postgres`) — wird **manuell** deployt, siehe [`coder/README.md`](../coder/README.md) |
 | **Workspace-Container** | Docker auf dem Coder-Host | betreiben OpenCode, MCP-Server, Herdr |
 | **Herdr** | `/opt/opencode-bin/herdr` (Bind-Mount) | Einstiegspunkt der Coder-App; verwaltet die Workspaces/Panes |
 | **OpenBao** | `openbao.mueller-nas.de` | Secret-Quelle (KV v2) + SSH-CA |
@@ -17,6 +18,13 @@ Ein Workspace ist ein einzelner Docker-Container. Der Coder-Agent verbindet sich
 direkt mit diesem Container; die eigentliche Arbeitsfläche ist Herdr, das im
 Container mehrere OpenCode-Instanzen (je ein Workspace) in einem persistenten
 Server verwaltet.
+
+> **Der Coder-Server selbst ist auch nur ein Compose-Stack:** Er läuft unter
+> `/opt/docker-compose/coder/` auf dem Coder-Host (Port 7080, Postgres daneben),
+> ist die **Steuerzentrale** der Fleet und wird deshalb **nicht** per Push,
+> sondern ausschließlich **manuell** über `.github/workflows/deploy-coder.yml`
+> deployt — nach Validierung des Compose-Stands und nur für den Service `coder`,
+> nie für die Datenbank. Details: [`coder/README.md`](../coder/README.md).
 
 ## Netzwerke
 

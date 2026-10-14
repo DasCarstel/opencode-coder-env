@@ -40,6 +40,7 @@ opencode-coder-env/
 │   ├── muellerconnect/        # isoliert (coder-mc)
 │   └── (kein hermes-Template — der Hermes-Agent ist ein Host-Deployment)
 ├── hermes/                    # Host-Compose des Hermes-Agenten (Coder-Host 10.0.10.17)
+├── coder/                     # Host-Compose des Coder-SERVERS selbst (Coder-Host 10.0.10.17, Port 7080)
 ├── workspaces/
 │   ├── infrastructure/{homeassistant,server-management,svelte,cleve}/
 │   ├── general/
@@ -91,6 +92,12 @@ opencode-coder-env/
 > [`hermes/`](hermes/) auf dem Coder-Host; er wird über
 > `.github/workflows/deploy-hermes.yml` ausgerollt und von Hestia konfiguriert.
 > Details: [`docs/hermes.md`](docs/hermes.md).
+
+> Auch der **Coder-Server** selbst liegt als Host-Compose unter
+> [`coder/`](coder/) auf dem Coder-Host (Port 7080, Postgres daneben). Er ist
+> die **Steuerzentrale** der Fleet und wird deshalb **manuell** über
+> `.github/workflows/deploy-coder.yml` deployt — nicht per Push. Details:
+> [`coder/README.md`](coder/README.md).
 
 ## Weitere Doku
 
