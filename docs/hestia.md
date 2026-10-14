@@ -387,10 +387,17 @@ Feld zusammengeführt — **der erste Treffer gewinnt**:
   (Default 30), ein Modell fehlt — oder manuell über `POST /api/benchmarks/refresh`;
   dazu eine 6-h-Drossel. Bei Netzfehler bleibt der alte Cache stehen (`lastError`).
 - **Für die AI (entscheidend):** Die Zahlen werden dem KI-Vorschlag **mitgeliefert**
-  (Spalte `Bench (coding | agentic | intell | code-elo)`) samt verbindlicher Regel,
-  **keine eigenen Benchmarks abzurufen oder zu schätzen**; `—` heißt „unbekannt".
-- **Anzeige:** Spalten in der Preisübersicht (Toggle „Benchmarks anzeigen",
-  Sortierung, Tooltip mit Quell-ID), Kopfzeile mit Datenstand, Refresh-Button.
+  (Spalte `Bench (…)` mit den in der SOT gewählten Feldern und ihren Labels) samt
+  verbindlicher Regel, **keine eigenen Benchmarks abzurufen oder zu schätzen**;
+  `—` heißt „unbekannt".
+- **Anzeige (UI-Redesign 2026-10-14):** Die Preisübersicht zeigt in der **Hauptzeile**
+  nur `Modell · Kontext · in/out` plus **2–3 per Chip wählbare Kennzahlen** als
+  Mini-Balken + Zahl (Auswahl in `localStorage`, max. 3; Balken relativ zum Maximum
+  über die sichtbaren Zeilen). Ein **Klick auf die Zeile** klappt eine **Detailzeile**
+  auf: alle vorhandenen Benchmarks (Label · Balken · Wert), Kontext/Max-Output,
+  Cache-Preise, Varianten, Status sowie die Quell-IDs (`aa_id`/`or_id`) mit
+  Attribution. Sortierung, Kennzahlen-Toggle, Provider-Filter, „Top-40/alle" und
+  Refresh bleiben; `table-layout: fixed` + Ellipsis verhindern horizontales Scrollen.
 
 ## Hermes-Steuerung
 

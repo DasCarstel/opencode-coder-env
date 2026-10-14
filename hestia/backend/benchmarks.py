@@ -781,34 +781,59 @@ def refresh(force: bool = False) -> dict:
             "count": len(new_entries), "missing": len(missing_after), **state()}
 
 
+# Zuordnungs-IDs gehören zu jedem Ref, unabhängig von der Feldauswahl.
+ID_FIELDS = ("aa_id", "or_id", "source_id")
+
+
 def _select(entry: dict, fields: list) -> dict:
-    """Eintrag auf die in der SOT gewählten Felder eindampfen."""
+    """Eintrag auf die in der SOT gewählten Felder eindampfen (Prompt-Pfad)."""
     keep = [f for f in fields if f in ALL_FIELDS]
     if "code_elo" in keep and "code_rank" not in keep:
         keep.append("code_rank")   # Rang gehört zur Elo-Anzeige dazu
     out = {f: entry.get(f) for f in keep}
-    out["aa_id"] = entry.get("aa_id")
-    out["or_id"] = entry.get("or_id")
-    out["source_id"] = entry.get("source_id")
+    for f in ID_FIELDS:
+        out[f] = entry.get(f)
     return out
 
 
-def for_refs(refs: list, fields: list | None = None) -> dict:
-    """Benchmark-Einträge für die angegebenen Refs (nur vorhandene)."""
+def _select_all(entry: dict) -> dict:
+    """Alle Felder, die für das Modell tatsächlich vorliegen.
+
+    Für die Tabellen-UI: die aufklappbare Detailzeile zeigt jeden Benchmark,
+    nicht nur die in der SOT konfigurierten. `null`-Werte entfallen
+    (schlanker Payload), die Zuordnungs-IDs sind immer dabei, sobald gesetzt.
+    """
+    out = {f: entry[f] for f in ALL_FIELDS if entry.get(f) is not None}
+    for f in ID_FIELDS:
+        if entry.get(f) is not None:
+            out[f] = entry[f]
+    return out
+
+
+def for_refs(refs: list, fields: list | None = None,
+             all_fields: bool = False) -> dict:
+    """Benchmark-Einträge für die angegebenen Refs (nur vorhandene).
+
+    Default (`all_fields=False`): ausschließlich die in der SOT konfigurierten
+    Felder — so nutzt der KI-Prompt (suggest.py) weiter nur die Auswahl.
+    `all_fields=True` liefert je Ref alle vorhandenen Felder (Catalog/UI).
+    """
     entries = read_cache().get("entries") or {}
-    if fields is None:
+    if not all_fields and fields is None:
         fields = read_settings()["fields"]
     wanted = set(refs or [])
     return {
-        ref: _select(entries[ref], fields)
+        ref: (_select_all(entries[ref]) if all_fields
+              else _select(entries[ref], fields))
         for ref in wanted
         if ref in entries
     }
 
 
 def field_labels(fields: list | None = None) -> dict:
-    """Label-Map für die übergebenen Felder (Default: konfigurierte Felder)."""
-    fields = read_settings()["fields"] if fields is None else fields
+    """Label-Map — ohne Argument alle bekannten Felder (für die Detailzeile)."""
+    if fields is None:
+        return dict(FIELD_LABELS)
     return {f: FIELD_LABELS[f] for f in fields if f in FIELD_LABELS}
 
 
@@ -825,7 +850,7 @@ def state() -> dict:
     return {
         "enabled": bool(settings["enabled"]),
         "fields": list(settings["fields"]),
-        "fieldLabels": field_labels(settings["fields"]),
+        "fieldLabels": field_labels(),
         "sources": sources,
         "aaEnabled": aa_enabled(),
         "attribution": ATTRIBUTION,

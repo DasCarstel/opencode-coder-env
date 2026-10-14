@@ -286,6 +286,45 @@ def test_for_refs_only_configured_fields():
         assert set(got["a/b"]) == {"code_elo", "code_rank", "aa_id", "or_id", "source_id"}
 
 
+def test_for_refs_all_fields_contains_more_than_sot():
+    """`all_fields=True` liefert mehr als die SOT-Auswahl — Prompt-Pfad bleibt schmal."""
+    with temp_cache():
+        benchmarks.write_cache({
+            "fetchedAt": int(time.time()),
+            "entries": {"a/b": {"coding_index": 76.2, "agentic_index": 56.0,
+                                "intelligence_index": 45.4, "code_elo": 1720,
+                                "code_rank": 7, "scicode": 12.5, "tau2": 0.41,
+                                "terminalbench": 33.0, "speed": 88.0,
+                                "aa_id": "aa-123", "or_id": "or-456",
+                                "source_id": "qwen/qwen3.8-max-0902"}},
+        })
+        with patched(read_settings=lambda: _settings()):
+            got = benchmarks.for_refs(["a/b"], all_fields=True)
+            prompt = benchmarks.for_refs(["a/b"])
+    entry = got["a/b"]
+    # Felder, die NICHT in der SOT-`fields` stehen, sind für die UI dabei.
+    for extra in ("scicode", "tau2", "terminalbench", "speed"):
+        assert extra not in _settings()["fields"]
+        assert extra in entry, extra
+        assert benchmarks.FIELD_LABELS[extra]
+    # … inkl. Rang und Zuordnungs-IDs.
+    assert entry["code_rank"] == 7
+    assert entry["aa_id"] == "aa-123"
+    assert entry["or_id"] == "or-456"
+    assert entry["source_id"] == "qwen/qwen3.8-max-0902"
+    # null-Felder entfallen, dadurch bleibt der Payload schlank.
+    benchmarks.write_cache({"fetchedAt": int(time.time()),
+                            "entries": {"a/b": {"coding_index": 1.0}}})
+    with patched(read_settings=lambda: _settings()):
+        sparse = benchmarks.for_refs(["a/b"], all_fields=True)["a/b"]
+    assert sparse == {"coding_index": 1.0}
+    # Der Prompt-Pfad (Default) nutzt weiterhin ausschließlich die SOT-Felder.
+    assert "scicode" not in prompt["a/b"]
+    assert set(prompt["a/b"]) == {"coding_index", "agentic_index", "intelligence_index",
+                                   "code_elo", "code_rank", "aa_id", "or_id",
+                                   "source_id"}
+
+
 # --- refresh: Fault-Tolerance, Drossel, TTL --------------------------------
 
 def _refresh_env(rows=None, settings=None, fetch=None, aa_fetch=None,

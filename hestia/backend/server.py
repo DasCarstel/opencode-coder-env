@@ -326,7 +326,9 @@ class Handler(BaseHTTPRequestHandler):
                 # Benchmarks dürfen den Katalog-Aufruf nie reißen (Quelle OpenRouter).
                 try:
                     refs = [m.get("ref") for m in models if isinstance(m, dict)]
-                    payload["benchmarks"] = benchmarks_mod.for_refs(refs)
+                    # Alle vorhandenen Felder — die Detailzeile der neuen
+                    # Tabellen-UI zeigt jeden Benchmark, nicht nur die SOT-Auswahl.
+                    payload["benchmarks"] = benchmarks_mod.for_refs(refs, all_fields=True)
                     payload["benchmarksStatus"] = benchmarks_mod.state()
                 except Exception as e:  # noqa: BLE001
                     _log(f"catalog benchmarks error: {e}")

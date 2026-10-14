@@ -77,6 +77,24 @@ let showBenchmarks = $state(localStorage.getItem(LS_BM) !== '0')
 let bmBusy = $state(false)
 let bmResult = $state(null)
 let bmSort = $state(null)   // { key, dir: 'asc'|'desc' }
+// Auswahl der Kennzahlen-Spalten (max. 3) – in localStorage gemerkt
+const LS_BMSEL = 'hestia-bm-selected'
+let bmSelected = $state(readBmSelected())
+// aufgeklappte Detailzeilen (Refs); mehrere gleichzeitig erlaubt
+let bmOpen = $state([])
+
+function readBmSelected() {
+  try {
+    const raw = localStorage.getItem(LS_BMSEL)
+    if (!raw) return []
+    const a = JSON.parse(raw)
+    return Array.isArray(a) ? a.filter(k => typeof k === 'string' && k) : []
+  } catch { return [] }
+}
+function writeBmSelected(list) {
+  try { localStorage.setItem(LS_BMSEL, JSON.stringify(list)) } catch { /* ignore */ }
+}
+const BM_MAX_COLS = 3
 
 const SOURCE_LABEL = { openrouter: 'OpenRouter', 'artificial-analysis': 'Artificial Analysis' }
 function sourceLabel(s) {
@@ -86,13 +104,97 @@ function sourceLabel(s) {
 }
 
 const bmStatus = $derived(catalog.benchmarksStatus || null)
-// Spalten dynamisch: Reihenfolge = Reihenfolge in fields, Label = fieldLabels[key] || key
+// Alle verfügbaren Kennzahlen-Schlüssel: fieldLabels ist die vollständige Menge,
+// fields ist nur die konfigurierte Vorauswahl (Reihenfolge = Default-Reihenfolge).
+const bmFieldKeys = $derived(
+  Array.isArray(bmStatus?.fields) ? bmStatus.fields.filter(k => typeof k === 'string' && k) : []
+)
+// Chips/Spalten dynamisch: erst die konfigurierten Felder, danach alle weiteren
+// Schlüssel aus fieldLabels (die Detailzeile zeigt sie vollständig).
 const bmCols = $derived.by(() => {
   const s = bmStatus
-  const fields = Array.isArray(s?.fields) ? s.fields.filter(k => typeof k === 'string' && k) : []
   const labels = (s && typeof s.fieldLabels === 'object' && s.fieldLabels) || {}
-  return fields.map(key => ({ key, label: labels[key] || key }))
+  const keys = []
+  for (const k of [...bmFieldKeys, ...Object.keys(labels)]) {
+    if (typeof k === 'string' && k && !keys.includes(k)) keys.push(k)
+  }
+  return keys.map(key => ({ key, label: labels[key] || key }))
 })
+// Gewählte Kennzahlen-Spalten (max. 3). Ungültige/verwaiste Keys fallen weg,
+// ist danach nichts übrig, gilt der Default: die ersten zwei Felder aus fields.
+const bmSelKeys = $derived.by(() => {
+  const valid = bmCols.map(c => c.key)
+  const sel = bmSelected.filter(k => valid.includes(k)).slice(0, BM_MAX_COLS)
+  return sel.length ? sel : valid.slice(0, 2)
+})
+const bmSelCols = $derived(bmCols.filter(c => bmSelKeys.includes(c.key)))
+function toggleMetric(key) {
+  const cur = bmSelKeys
+  const next = cur.includes(key)
+    ? cur.filter(k => k !== key)
+    : (cur.length >= BM_MAX_COLS ? [...cur.slice(1), key] : [...cur, key])
+  bmSelected = next
+  writeBmSelected(next)
+}
+// Maximum je Feld über die aktuell sichtbaren Zeilen → Normierung der Mini-Balken
+const bmMax = $derived.by(() => {
+  const keys = bmCols.map(c => c.key)
+  for (const mo of shownModels) {
+    const b = bmOf(mo.ref)
+    for (const k of Object.keys(b || {})) if (!keys.includes(k) && typeof b[k] === 'number') keys.push(k)
+  }
+  const out = {}
+  for (const key of keys) {
+    let m = 0
+    for (const mo of shownModels) {
+      const v = bmNum(bmOf(mo.ref), key)
+      if (v != null && v > m) m = v
+    }
+    out[key] = m
+  }
+  return out
+})
+function barPct(v, max) {
+  if (v == null || !(max > 0)) return 0
+  return Math.max(2, Math.min(100, Math.round((v / max) * 100)))
+}
+function bmIsOpen(ref) { return bmOpen.includes(ref) }
+function toggleRow(ref) {
+  bmOpen = bmIsOpen(ref) ? bmOpen.filter(r => r !== ref) : [...bmOpen, ref]
+}
+function rowKeydown(e, ref) {
+  if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+    e.preventDefault()
+    toggleRow(ref)
+  }
+}
+// Detailzeile: alle Zahlenfelder des Modells — bevorzugt die aus fieldLabels
+// bekannten, danach jede weitere im Datensatz vorhandene Kennzahl (neue Felder
+// des Backends erscheinen so automatisch).
+function bmFilledCols(b) {
+  if (!b) return []
+  const keys = []
+  for (const c of bmCols) if (bmNum(b, c.key) != null) keys.push(c.key)
+  for (const k of Object.keys(b)) {
+    if (keys.includes(k) || typeof b[k] !== 'number' || !Number.isFinite(b[k])) continue
+    keys.push(k)
+  }
+  return keys.map(key => ({ key, label: bmLabelOf(key) }))
+}
+function bmLabelOf(key) {
+  const c = bmCols.find(x => x.key === key)
+  return c ? c.label : key.replace(/_/g, ' ')
+}
+function modelMaxOut(m) {
+  const l = m?.limit || {}
+  const v = l.output ?? l.maxOutput ?? l.output_tokens ?? null
+  return v == null ? null : Number(v)
+}
+function fmtCount(n) {
+  const v = Number(n)
+  if (!Number.isFinite(v) || v <= 0) return '—'
+  return v >= 1000 ? `${Math.round(v / 1000)}k` : String(Math.round(v))
+}
 const bmSource = $derived(
   (bmStatus?.attribution || '').trim() || sourceLabel(bmStatus?.source)
 )
@@ -1346,51 +1448,115 @@ setInterval(loadSuggestStatus, 60000)
       <span class={bmResult.ok ? 'badge active' : 'badge err'}>{bmResult.text}</span>
     {/if}
   </p>
-  <table>
+  {#if showBenchmarks && bmCols.length}
+    <div class="bmChips">
+      <span class="muted">Kennzahlen in der Tabelle:</span>
+      {#each bmCols as c (c.key)}
+        <button
+          type="button"
+          class="chip {bmSelKeys.includes(c.key) ? 'chipActive' : ''}"
+          aria-pressed={bmSelKeys.includes(c.key)}
+          title="{c.label} — Quelle: {bmSource}"
+          onclick={() => toggleMetric(c.key)}
+        >{c.label}</button>
+      {/each}
+      <span class="muted bmHint">max. {BM_MAX_COLS} · Zeile anklicken für alle Werte</span>
+    </div>
+  {/if}
+  <table class="priceTable">
+    <colgroup>
+      <col class="cModel" /><col class="cCtx" /><col class="cPrice" /><col class="cPrice" />
+      {#if showBenchmarks}{#each bmSelCols as c (c.key)}<col class="cMetric" />{/each}{/if}
+    </colgroup>
     <thead>
       <tr>
         <th class="thSort" onclick={() => sortBy('name')} title="Nach Modell sortieren">Modell{sortMark('name')}</th>
-        <th class="thSort" onclick={() => sortBy('modelID')} title="Nach ID sortieren">ID{sortMark('modelID')}</th>
-        <th class="thSort" onclick={() => sortBy('status')} title="Nach Status sortieren">Status{sortMark('status')}</th>
+        <th class="thSort num" onclick={() => sortBy('context')} title="Nach Kontextfenster sortieren">Kontext{sortMark('context')}</th>
         <th class="thSort num" onclick={() => sortBy('input')} title="Nach Eingabepreis sortieren">In $/M{sortMark('input')}</th>
         <th class="thSort num" onclick={() => sortBy('output')} title="Nach Ausgabepreis sortieren">Out $/M{sortMark('output')}</th>
-        <th>Cache r/w</th>
-        <th class="thSort num" onclick={() => sortBy('context')} title="Nach Kontextfenster sortieren">Kontext{sortMark('context')}</th>
-        <th class="thSort" onclick={() => sortBy('variants')} title="Nach Anzahl Varianten sortieren">Variants{sortMark('variants')}</th>
-        <th class="thSort num" onclick={() => sortBy('released')} title="Nach Veröffentlichung sortieren">Release{sortMark('released')}</th>
         {#if showBenchmarks}
-          {#if bmCols.length}
-            {#each bmCols as c (c.key)}
-              <th class="thSort num" onclick={() => sortBy(c.key)} title="{c.label} — Quelle: {bmSource}">
-                {c.label}{sortMark(c.key)}
-              </th>
-            {/each}
-          {:else}
-            <th class="muted">Benchmarks: keine Spalten konfiguriert</th>
-          {/if}
+          {#each bmSelCols as c (c.key)}
+            <th class="thSort num" onclick={() => sortBy(c.key)} title="{c.label} — Quelle: {bmSource}">
+              {c.label}{sortMark(c.key)}
+            </th>
+          {/each}
         {/if}
       </tr>
     </thead>
     <tbody>
-      {#each shownModels as m}
+      {#each shownModels as m (m.ref)}
         {@const b = showBenchmarks ? bmOf(m.ref) : null}
-        <tr>
-          <td>{m.name}</td>
-          <td class="mono">{m.modelID}</td>
-          <td><span class="badge {m.status === 'active' ? 'active' : 'warn'}">{m.status}</span>
-            {#if !m.cost.input && !m.cost.output}<span class="badge active">gratis</span>{/if}</td>
-          <td>{m.cost.input ?? 0}</td>
-          <td>{m.cost.output ?? 0}</td>
-          <td>{m.cost.cacheRead ?? 0} / {m.cost.cacheWrite ?? 0}</td>
-          <td>{((m.limit?.context || 0) / 1000).toFixed(0)}k</td>
-          <td class="muted">{(m.variants || []).join(', ') || '—'}</td>
-          <td class="muted">{m.released ? new Date(m.released * 1000).toISOString().slice(0, 10) : '—'}</td>
+        {@const open = bmIsOpen(m.ref)}
+        {@const mx = modelMaxOut(m)}
+        <tr
+          class="priceRow"
+          class:rowOpen={open}
+          role="button"
+          tabindex="0"
+          aria-expanded={open}
+          onclick={() => toggleRow(m.ref)}
+          onkeydown={(e) => rowKeydown(e, m.ref)}
+        >
+          <td class="cModel" title="{m.name} · {m.modelID}">
+            <span class="chev" aria-hidden="true">{open ? '▾' : '▸'}</span>
+            <span class="modelName">{m.name}</span>
+            {#if m.status && m.status !== 'active'}<span class="badge warn">{m.status}</span>{/if}
+          </td>
+          <td class="num">{fmtCount(m.limit?.context)}</td>
+          <td class="num">{m.cost.input ?? 0}</td>
+          <td class="num">{m.cost.output ?? 0}</td>
           {#if showBenchmarks}
-            {#each bmCols as c (c.key)}
-              <td class="num {bmNum(b, c.key) == null ? 'bmNone' : ''}" title={bmTitle(b, c.key)}>{bmText(b, c.key)}</td>
+            {#each bmSelCols as c (c.key)}
+              {@const v = bmNum(b, c.key)}
+              <td class="num" title={bmTitle(b, c.key)}>
+                {#if v == null}
+                  <span class="bmNone">—</span>
+                {:else}
+                  <span class="bmCell">
+                    <span class="bmTrack"><span class="bmFill" style="width:{barPct(v, bmMax[c.key])}%"></span></span>
+                    <span class="bmVal">{bmText(b, c.key)}</span>
+                  </span>
+                {/if}
+              </td>
             {/each}
           {/if}
         </tr>
+        {#if open}
+          <tr class="detailRow">
+            <td colspan={4 + (showBenchmarks ? bmSelCols.length : 0)}>
+              <div class="detailBox">
+                {#if showBenchmarks && bmFilledCols(b).length}
+                  <div class="bmGrid">
+                    {#each bmFilledCols(b) as c (c.key)}
+                      {@const v = bmNum(b, c.key)}
+                      <div class="bmItem">
+                        <span class="bmLabel" title={c.key}>{c.label}</span>
+                        <span class="bmTrack"><span class="bmFill" style="width:{barPct(v, bmMax[c.key])}%"></span></span>
+                        <span class="bmVal">{bmText(b, c.key)}</span>
+                      </div>
+                    {/each}
+                  </div>
+                {:else if showBenchmarks}
+                  <p class="muted bmNoneLine">Keine Benchmark-Werte für dieses Modell.</p>
+                {/if}
+                <div class="metaRow">
+                  <span><b>Kontext</b> {fmtCount(m.limit?.context)}</span>
+                  <span><b>Max-Output</b> {fmtCount(mx)}</span>
+                  <span><b>Cache r/w</b> {m.cost.cacheRead ?? 0} / {m.cost.cacheWrite ?? 0}</span>
+                  <span><b>Varianten</b> {(m.variants || []).join(', ') || '—'}</span>
+                  <span><b>Status</b> {m.status || '—'}</span>
+                  <span><b>Release</b> {m.released ? new Date(m.released * 1000).toISOString().slice(0, 10) : '—'}</span>
+                  <span class="mono" title="Modell-ID">{m.modelID}</span>
+                </div>
+                <div class="srcRow">
+                  <span class="badge {b?.aa_id ? 'active' : ''}">AA: {b?.aa_id || '—'}</span>
+                  <span class="badge {b?.or_id ? 'active' : ''}">OR: {b?.or_id || '—'}</span>
+                  <span class="muted bmHint">{bmSource}</span>
+                </div>
+              </div>
+            </td>
+          </tr>
+        {/if}
       {/each}
     </tbody>
   </table>
@@ -1462,17 +1628,70 @@ setInterval(loadSuggestStatus, 60000)
   .budgetTrack { display: block; height: 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; }
   .budgetFill { display: block; height: 100%; border-radius: 999px; }
   .mini { padding: 1px 6px; font-size: .78rem; }
-  /* Preisübersicht: Benchmark-Spalten, Sortierköpfe, Statuszeile */
+  /* Preisübersicht: kompakte Hauptzeile + aufklappbare Detailzeile */
   .thSort { cursor: pointer; user-select: none; white-space: nowrap; }
   .thSort:hover { color: var(--fire-soft); }
   th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  td.num.bmNone { color: var(--muted); }
+  .bmNone { color: var(--muted); }
   .bmHint { font-size: .78rem; }
   .bmHead {
     display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
     margin: 8px 0 0; font-size: .8rem;
   }
   .bmHead .bmCheck { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; }
+  .bmChips {
+    display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+    margin: 10px 0 2px; font-size: .8rem;
+  }
+  .bmChips .chip { padding: 2px 10px; font-size: .7rem; }
+
+  /* table-layout: fixed + Prozentbreiten → kein horizontales Scrollen */
+  .priceTable { table-layout: fixed; width: 100%; }
+  .priceTable col.cModel { width: 30%; }
+  .priceTable col.cCtx { width: 12%; }
+  .priceTable col.cPrice { width: 12%; }
+  .priceTable col.cMetric { width: auto; }
+  .priceTable td { overflow: hidden; }
+  .detailRow td { overflow: visible; }
+
+  .priceRow { cursor: pointer; }
+  .priceRow:hover { background: var(--panel-2); }
+  .priceRow:focus-visible { outline: 2px solid var(--fire); outline-offset: -2px; }
+  .priceRow.rowOpen { background: rgba(224, 115, 29, .07); }
+  .chev { color: var(--fire-soft); margin-right: 6px; font-size: .7rem; }
+  .modelName { display: inline-block; max-width: 100%; vertical-align: bottom; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .priceRow td.cModel { overflow: hidden; }
+
+  /* Mini-Balken + Zahl */
+  .bmCell { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+  .bmTrack {
+    display: inline-block; width: 44px; height: 6px; border-radius: 999px;
+    background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; flex: none;
+  }
+  .bmFill { display: block; height: 100%; border-radius: 999px; background: var(--fire); opacity: .55; }
+  .bmVal { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  /* Detailzeile */
+  .detailRow td { background: var(--panel-2); padding: 0 8px 10px; }
+  .detailBox { border-left: 2px solid var(--fire); padding: 8px 0 4px 10px; }
+  .bmGrid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 18px; margin-bottom: 8px;
+  }
+  .bmItem { display: grid; grid-template-columns: minmax(0, 1fr) 60px 52px; gap: 8px; align-items: center; }
+  .bmItem .bmTrack { width: 60px; }
+  .bmItem .bmVal { text-align: right; }
+  .bmLabel {
+    color: var(--muted); font-size: .75rem; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .bmNoneLine { margin: 0 0 8px; }
+  .metaRow, .srcRow {
+    display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
+    font-size: .78rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 7px;
+  }
+  .srcRow { margin-top: 6px; border-top: 0; padding-top: 0; }
+  .metaRow b { color: var(--fire-soft); font-weight: 600; }
   /* Abo läuft bald ab (policy.expiring): Konto hervorheben */
   .subRow.expiring { border-left-color: var(--warn); background: var(--panel-2); border-radius: 0 8px 8px 0; }
   .subRow.expiring-now { animation: expiryPulse 2.4s ease-in-out infinite; }
