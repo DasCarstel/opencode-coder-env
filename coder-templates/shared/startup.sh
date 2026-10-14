@@ -928,29 +928,22 @@ try:
         lines = f.read().splitlines()
 except FileNotFoundError:
     lines = []
-want = [("name", 'name = "catppuccin-latte"'), ("auto_switch", "auto_switch = false")]
-start = None
-for i, l in enumerate(lines):
-    if l.strip() == "[theme]":
-        start = i
-        break
-if start is None:
-    if lines and lines[-1].strip() != "":
-        lines.append("")
-    lines.append("[theme]")
-    lines += [v for _, v in want]
-else:
-    end = len(lines)
-    for j in range(start + 1, len(lines)):
-        if lines[j].lstrip().startswith("["):
-            end = j
-            break
+latte = [("panel_bg", "#eff1f5"), ("sidebar_bg", "#e6e9ef"), ("active_row_bg", "#dce0e8"), ("selection_bg", "#ccd0da"), ("accent", "#8839ef"), ("blue", "#1e66f5"), ("green", "#40a02b"), ("red", "#d20f39"), ("yellow", "#df8e1d")]
+sections = [
+    ("[theme]", [("name", 'name = "rose-pine-dawn"'), ("auto_switch", "auto_switch = false")]),
+    ("[theme.custom]", [(k, f'{k} = "{v}"') for k, v in latte]),
+]
+for header, want in sections:
+    start = next((i for i, l in enumerate(lines) if l.strip() == header), None)
+    if start is None:
+        if lines and lines[-1].strip() != "":
+            lines.append("")
+        lines.append(header)
+        lines += [v for _, v in want]
+        continue
+    end = next((j for j in range(start + 1, len(lines)) if lines[j].lstrip().startswith("[")), len(lines))
     for key, val in want:
-        idx = None
-        for j in range(start + 1, end):
-            if "=" in lines[j] and lines[j].split("=", 1)[0].strip() == key:
-                idx = j
-                break
+        idx = next((j for j in range(start + 1, end) if "=" in lines[j] and lines[j].split("=", 1)[0].strip() == key), None)
         if idx is not None:
             lines[idx] = val
         else:
