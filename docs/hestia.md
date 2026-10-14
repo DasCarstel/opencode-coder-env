@@ -225,8 +225,14 @@ accounts.py → switch_account()
 
 ### Credential-Kette — `verify-oc-credentials.yml`
 
-Alle **30 Minuten** prüft der Workflow `hestia/ci/check-oc-credentials.sh --fix`
-die Kette, die nach einem Kontowechsel am ehesten bricht. Anlass war ein Fehler vom
+Der Workflow `hestia/ci/check-oc-credentials.sh --fix` prüft und heilt die
+Kette, die nach einem Kontowechsel am ehesten bricht. Er ist auf **alle 30 Minuten**
+getaktet — **in der Praxis aber deutlich seltener**: GitHubs Zeitplan ist „best
+effort" (gemessen am 2026-10-14: nur **6 Läufe in 24 h**, Lücken bis ~5,5 h). Die
+**verlässliche** Absicherung ist der Key, den `coder-templates/shared/startup.sh`
+bei **jedem** Container-Start setzt; der Workflow ist das zusätzliche Sicherheitsnetz
+für den Fall, dass sich *während* des Betriebs ein gespeicherter Account
+dazwischenschiebt. Anlass war ein Fehler vom
 2026-10-13, bei dem OpenCode v2 Credentials in `opencode.db` speichern konnte
 (`opencode auth login`) — ein gespeicherter Account **überschriebt dann die
 ENV-Variable** `OPENCODE_API_KEY`, und der Wechsel wird wirkungslos, ohne dass irgendwo

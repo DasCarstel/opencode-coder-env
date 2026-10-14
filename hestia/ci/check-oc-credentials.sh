@@ -25,7 +25,9 @@
 #      nutzbar, nicht gesperrt/ohne Guthaben).
 #
 # Aufruf: läuft auf dem Self-hosted Runner (Docker-Host), am Ende von
-# switch-account.sh und alle 30 min per .github/workflows/verify-oc-credentials.yml.
+# switch-account.sh und periodisch per .github/workflows/verify-oc-credentials.yml
+# (Cron */30, von GitHub aber nur "best effort" ausgeführt → real deutlich seltener;
+# Sicherheitsnetz — die garantierte Abdeckung liefert startup.sh beim Container-Start).
 #
 #   --fix   Selbstheilung: fehlenden/abweichenden Key in Service-Env und
 #           /root/.bashrc (deduppt) nachziehen, Service neu starten, neu prüfen.
