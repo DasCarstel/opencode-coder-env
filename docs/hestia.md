@@ -73,7 +73,7 @@ Schwellenwerte) steht als Klartext in `hestia/docker-compose.yml`.
 
 ## Single Sources of Truth
 
-Sieben Dateien unter `.opencode/` im Repo-Root, alle von Hestia verwaltet:
+Acht Dateien unter `.opencode/` im Repo-Root, alle von Hestia verwaltet:
 
 | Datei | Inhalt | Wer liest sie |
 |-------|--------|---------------|
@@ -84,6 +84,7 @@ Sieben Dateien unter `.opencode/` im Repo-Root, alle von Hestia verwaltet:
 | `hestia-primary-agents.json` | Agent→Modell-Zuordnung für `build` und `plan` | Hestia (`/api/config`) |
 | `hestia-failover.jsonc` | **Ausfallschutz-Einstellungen**: `enabled`, `threshold`, `intervalSeconds`, `timeoutSeconds` | Hestia (`failover.py`) |
 | `hestia-suggest.jsonc` | **KI-Vorschlag-Automatik**: `enabled`, `checkIntervalSeconds`, `cooldownSeconds`, `analysisModel` | Hestia (`suggest.py`) |
+| `hestia-benchmarks.jsonc` | **Modell-Benchmarks**: `enabled`, `refreshDays`, `fields`, `aliases` (Quelle OpenRouter) | Hestia (`benchmarks.py`) |
 
 Das Overrides-File ist JSONC (Kommentare erlaubt) und wird vom Router-Plugin per
 **cwd-Suche nach oben** bis zur Repo-Root gefunden. Deshalb braucht kein Workspace
@@ -118,7 +119,8 @@ Autorisierung; ein GET auf einen POST-only-Endpunkt liefert 405 mit Klartext-Hin
 | Pfad | Antwort |
 |------|---------|
 | `/api/health` | `status` (`ok`/`degraded`), Erreichbarkeit von OpenCode-Server und GitHub, Repo, Overrides-Pfad. **Bewusst unauthentifiziert** — monitoring-freundlich, keine sensiblen Inhalte |
-| `/api/catalog` | Live-Modellkatalog + erlaubte Provider + aktiver Preset-Provider |
+| `/api/catalog` | Live-Modellkatalog + erlaubte Provider + aktiver Preset-Provider; zusätzlich `benchmarks` je Modell und `benchmarksStatus` |
+| `/api/benchmarks/status` | Benchmark-Cache: Quelle, Datenstand/Alter, Anzahl, fehlende Modelle |
 | `/api/config` | aktiver Preset, Tiers, effektive Primary-Agents, Fallbacks, verfügbare Modes, Git-SHA und HTML-URL der Overrides |
 | `/api/rollout/status` | letzter Lauf des Rollout-Workflows |
 | `/api/failover/status` | Auto-Failover-Zustand |
@@ -135,6 +137,7 @@ Autorisierung; ein GET auf einen POST-only-Endpunkt liefert 405 mit Klartext-Hin
 | `/api/suggest/settings` | KI-Vorschlag-Automatik speichern (SOT-Commit, wirkt sofort) |
 | `/api/failover/check` | Failover-Probe sofort ausführen |
 | `/api/failover/settings` | Ausfallschutz-Einstellungen speichern (SOT-Commit, wirkt sofort) |
+| `/api/benchmarks/refresh` | Benchmarks sofort bei OpenRouter neu holen (read-only, gecacht) |
 | `/api/accounts/check` | Budget aller Konten sofort neu abfragen |
 | `/api/accounts/switch` | manueller Kontowechsel |
 | `/api/hermes/apply` | Hermes-Konfiguration verteilen |
@@ -349,6 +352,29 @@ bei einer **materiellen Katalogänderung**. Konfiguration in `.opencode/hestia-s
   Ein Hänger wird über *Stille* erkannt, nicht über das Gesamtlimit.
 - **Aufräumen:** die Analyse-Session wird danach automatisch gelöscht;
   `OC_SUGGEST_KEEP_SESSIONS=1` behält sie zum Debuggen.
+
+## Benchmarks (OpenRouter, 2026-10-14)
+
+Preisübersicht und KI-Vorschlag nutzen **Modell-Benchmarks** von OpenRouter
+(`GET https://openrouter.ai/api/v1/models` — öffentlich, **kein API-Key**; die
+Rate-Limits gelten nur für Inferenz auf Gratis-Modellen).
+
+- **Felder:** `coding_index`, `agentic_index`, `intelligence_index` (Artificial
+  Analysis) sowie `code_elo`/`code_rank` aus der `design_arena`-Kategorie
+  `codecategories`. Konfigurierbar in `.opencode/hestia-benchmarks.jsonc`
+  (`fields`, `refreshDays`, `aliases`).
+- **Zuordnung** Katalog-Ref → OpenRouter, in dieser Reihenfolge: expliziter
+  Alias → `modelID` ohne `-free` → Modellname. Nicht zuordenbare Modelle bleiben
+  leer (`—`); Stand 2026-10-14: **55 von 78** mit Zahlen.
+- **Lokaler Cache:** `/etc/hestia/model-benchmarks.json` (Bind-Mount, **nicht** im
+  Repo). Neu geholt wird nur bei Bedarf — Cache fehlt, älter als `refreshDays`
+  (Default 30), ein Modell fehlt — oder manuell über `POST /api/benchmarks/refresh`;
+  dazu eine 6-h-Drossel. Bei Netzfehler bleibt der alte Cache stehen (`lastError`).
+- **Für die AI (entscheidend):** Die Zahlen werden dem KI-Vorschlag **mitgeliefert**
+  (Spalte `Bench (coding | agentic | intell | code-elo)`) samt verbindlicher Regel,
+  **keine eigenen Benchmarks abzurufen oder zu schätzen**; `—` heißt „unbekannt".
+- **Anzeige:** Spalten in der Preisübersicht (Toggle „Benchmarks anzeigen",
+  Sortierung, Tooltip mit Quell-ID), Kopfzeile mit Datenstand, Refresh-Button.
 
 ## Hermes-Steuerung
 

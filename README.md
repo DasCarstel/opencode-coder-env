@@ -29,6 +29,7 @@ opencode-coder-env/
 │   ├── hestia-fallbacks.json                  # bezahlte Ausfall-Modelle
 │   ├── hestia-failover.jsonc                  # Ausfallschutz-Einstellungen
 │   ├── hestia-suggest.jsonc                   # KI-Vorschlag-Automatik
+│   ├── hestia-benchmarks.jsonc                # Modell-Benchmarks (OpenRouter)
 │   └── hestia-hermes.jsonc                     # Hermes-Steuerung
 ├── docs/                      # diese Dokumentation
 ├── coder-templates/
