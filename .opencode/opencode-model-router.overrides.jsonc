@@ -13,7 +13,7 @@
   "presets": {
     "hestia": {
       "fast": {
-        "model": "opencode/mimo-v2.6-flash-free",
+        "model": "opencode-go/mimo-v2.6-flash",
         "costRatio": 1,
         "description": "MiMo V2.5 für Explorer, Suche und einfache Lesesvorgänge",
         "steps": 30,
@@ -25,7 +25,7 @@
         ]
       },
       "medium": {
-        "model": "opencode/space-bunny-free",
+        "model": "opencode-go/claude-haiku-5-5",
         "costRatio": 5,
         "description": "DeepSeek V4 Flash für Implementation, Refactoring und Tests",
         "steps": 50,
@@ -36,7 +36,7 @@
           "Code-Review",
           "Bug fixes"
         ],
-        "variant": "high"
+        "variant": "medium"
       },
       "heavy": {
         "model": "opencode-go/gpt-6-luna",

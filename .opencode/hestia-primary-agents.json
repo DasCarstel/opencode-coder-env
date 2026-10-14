@@ -1,11 +1,11 @@
 {
   "build": {
-    "model": "opencode/space-bunny-free",
-    "variant": "high",
+    "model": "opencode-go/claude-haiku-5-5",
+    "variant": "medium",
     "source": "derived"
   },
   "plan": {
-    "model": "opencode/space-bunny-free",
+    "model": "opencode-go/claude-haiku-5-5",
     "variant": "max",
     "source": "derived"
   }
