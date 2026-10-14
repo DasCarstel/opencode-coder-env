@@ -12,9 +12,12 @@ services:
       - coder-infra
     ports:
       - "9119:9119"
-      # OpenAI-kompatibler API-Server fuer externe Frontends (Open WebUI).
-      # Aktiviert via API_SERVER_* in .env. LAN-only, bewusst ohne Traefik-Router.
-      - "8642:8642"
+      # OpenAI-kompatibler API-Server (Open WebUI). Lauscht NUR auf dem privaten
+      # Segment zu CT 100 (vmbr10) - nicht im LAN, nicht ueber Tailscale und
+      # nicht vom Proxmox-Host aus erreichbar. Regel hermes-api.yml zeigt
+      # dorthin. Ohne Adresse (also "8642:8642") waere der Port wieder im
+      # ganzen LAN offen.
+      - "10.99.0.2:8642:8642"
     volumes:
       # Laufzeit-Zustand (config.yaml) und die von Hestia gepflegte .env liegen
       # AUSSERHALB des Repos und bleiben beim Deploy erhalten.

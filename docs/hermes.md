@@ -127,38 +127,55 @@ Quell-IP käme dann nicht aus den erlaubten Ranges und der Filter greift nicht.
 ### Sicherheit
 
 Der Endpoint vergibt **Shell- und Dateizugriff auf den Coder-Host inklusive der
-oCIS-Tokens**. Die Absicherung ruht auf **einer** Säule:
+oCIS-Tokens**. Zwei Schichten:
 
-**Bearer-Key** (`API_SERVER_KEY`, 64 Zeichen) — die eigentliche Authentifizierung.
-`forwardAuth` ist hier **unbrauchbar**: Open WebUI arbeitet server-to-server ohne
-Browser-Session, jeder Request ohne Cookie würde abgelehnt.
+**1. Netz-Isolation (die tragende Maßnahme).** Port 8642 lauscht
+**ausschließlich** auf `10.99.0.2`, der Adresse des Coder-Hosts auf einem
+dedizierten Segment:
 
-**Was der Traefik-Filter leistet** (`hermes-api-lan-only`, `rules/hermes-api.yml`):
-Er sperrt den **WAN-Pfad**. Der Cloudflare-Tunnel läuft mit Remote-Config
-(`TUNNEL_TOKEN`), die Ingress-Regeln liegen in der Cloudflare-Doku und sind vom
-Host aus nicht einsehbar — für das Dashboard ist `hermes.mueller-nas.de`
-nachweislich getunnelt (`https://hermes.mueller-nas.de/api/health` antwortet aus
-dem WAN mit `200`). Ohne diesen Filter wäre der API-Server also öffentlich
-erreichbar. Verifiziert: mit entfernter `10.0.10.0/24` liefert der WAN-Test `403`.
+```
+vmbr10 auf dem Proxmox-Host   bridge-ports none, keine IP
+CT 100 (Docker)  eth1  10.99.0.1/30
+CT 120 (Coder)   eth1  10.99.0.2/30
+```
 
-**Was der Traefik-Filter nicht leistet:** Der Direktpfad
-`http://10.0.10.17:8642` ist **bewusst offen** (Entscheidung 2026-10-14). Eine
-IP-Filterung auf dem Coder-Host hätte nur gegriffen, wenn der Key leakt **und**
-der Aufrufer von außerhalb der erlaubten Ranges kommt — innerhalb des LAN hilft
-sie nicht, weil der Key bei einer Kompromittierung des Docker-Hosts ohnehin aus
-der Open-WebUI-Datenbank lesbar ist. Der Tailscale-Pfad ist damit ebenfalls
-offen: sobald das Tailnet geteilt wird, hat jeder Peer Zugriff auf den Agenten.
+In diesem Segment existieren **nur diese zwei Hosts**. Verifiziert:
 
-> **Nicht verwechseln:** „WAN geblockt" heißt hier **nicht** „Endpunkt
-> abgesichert". Wer im LAN oder über Tailscale kommt, erreicht den Agenten
-> direkt — vorbei an Traefik.
+| Von | Port 8642 |
+|---|---|
+| CT 100 (`10.99.0.1`) | `200` |
+| Proxmox-Host | `Connection refused` |
+| LAN (`10.0.10.17:8642`) | `Connection refused` |
+| Tailscale | kein Weg — der Port ist an keine LAN-Adresse mehr gebunden |
+
+Der Port wird im Compose explizit gebunden (`"10.99.0.2:8642:8642"`). Ohne die
+Adresse — also als `"8642:8642"` — läge er wieder im ganzen LAN offen.
+
+**2. Bearer-Key** (`API_SERVER_KEY`, 64 Zeichen) — die Authentifizierung für
+alles, was das Segment erreicht. `forwardAuth` ist hier **unbrauchbar**: Open
+WebUI arbeitet server-to-server ohne Browser-Session, jeder Request ohne Cookie
+würde abgelehnt.
+
+**Der Traefik-Filter bleibt nötig** (`hermes-api-lan-only`,
+`rules/hermes-api.yml`): Traefik steht selbst im Segment und erreicht den
+Agenten. Ohne den Filter wäre der API-Server über den Cloudflare-Tunnel aus dem
+Internet erreichbar — nur durch den Key geschützt. Der Tunnel läuft mit
+Remote-Config (`TUNNEL_TOKEN`), die Ingress-Regeln liegen in der Cloudflare-Doku
+und sind vom Host aus nicht einsehbar; für das Dashboard ist
+`hermes.mueller-nas.de` nachweislich getunnelt. Verifiziert: mit entfernter
+`10.0.10.0/24` liefert der WAN-Test `403`.
+
+> **Nicht verwechseln:** „WAN geblockt" heißt **nicht** „Endpunkt abgesichert".
+> Der Filter ist die zweite Schicht, nicht die erste — wer das Segment erreicht,
+> erreicht den Agenten.
 
 **Eine frühere nftables-Regel auf dem Coder-Host wurde entfernt, weil sie
 wirkungslos war:** Docker veröffentlicht Ports per DNAT (`ip nat`, chain
 `DOCKER`); diese Pakete laufen danach durch die **FORWARD**- und nicht durch die
 **INPUT**-Kette. Eine Regel in `chain input` sieht diesen Verkehr nie — die
 richtige Stelle wäre `DOCKER-USER` gewesen. Details stehen als Kommentar in
-`/etc/nftables.conf` auf dem Coder-Host.
+`/etc/nftables.conf` auf dem Coder-Host. Der Netzumbau macht die Regel
+gegenstandslos: es gibt keinen LAN-Pfad mehr, den man filtern könnte.
 
 Nicht zu verwechseln: `hermes proxy` (Port 8645) ist ein **reiner OAuth-Modell-Proxy**
 für Nous/xAI ohne Agent-Funktionalität — nicht der API-Server.
