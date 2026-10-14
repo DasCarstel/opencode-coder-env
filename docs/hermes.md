@@ -20,7 +20,7 @@ Der Container ist außerdem der einzige Ort, an dem **beide** oCIS-Identitäten
 | Datei | Inhalt |
 |-------|--------|
 | [`hermes/Dockerfile`](../hermes/Dockerfile) | `nousresearch/hermes-agent:latest` + `opencode-mcp@3.0.0` + `ocis-mcp-server` v1.1.0 |
-| [`hermes/docker-compose.yml`](../hermes/docker-compose.yml) | Service `hermes`, Netz `coder-infra` (extern), Port 9119, Neustart `unless-stopped` |
+| [`hermes/docker-compose.yml`](../hermes/docker-compose.yml) | Service `hermes`, Netz `coder-infra` (extern), Ports **9119** (Dashboard) und **8642** (API-Server), Neustart `unless-stopped` |
 | [`hermes/README.md`](../hermes/README.md) | Kurzfassung für den Ordner |
 
 Eigenes `entrypoint.sh`: **nein**. Der Container nutzt das Entrypoint des
@@ -62,6 +62,48 @@ Push auf master (Pfade hermes/** oder .github/workflows/deploy-hermes.yml)
 - Secrets kommen ausschließlich aus dem GitHub-Secret `CODER_DEPLOY_KEY`
   (Deploy-Key, wie bei Hestia). Im Workflow steht kein Hermes-Secret.
 - Port 9119 (Dashboard) wird nur informativ geprüft, ist kein harter Fehler.
+
+## API-Server und externe Frontends
+
+Hermes bringt einen **OpenAI-kompatiblen API-Server** mit (Port **8642**). Er ist
+kein Modell-Proxy, sondern der **Agent selbst**: Open WebUI spricht `/v1/chat/completions`
+mit Hermes an, Hermes führt Tools/MCP/Skills/Memory serverseitig aus. Upstream
+[Nous-Doku](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/open-webui),
+[Open WebUI-Doku](https://docs.openwebui.com/getting-started/quick-start/connect-an-agent).
+
+Aktiviert über `.env` (bewusst **nicht** über `config.yaml` — die wird von
+`hestia/ci/apply-hermes.sh` komplett überschrieben; die `.env` wird nur auf den
+`OPENCODE_GO_API_KEY*`-Zeilen angefasst, neue Zeilen bleiben erhalten):
+
+```dotenv
+API_SERVER_ENABLED=true
+API_SERVER_PORT=8642
+API_SERVER_HOST=0.0.0.0   # Default wäre 127.0.0.1 → von anderen Hosts nicht erreichbar
+API_SERVER_KEY=<Bearer-Key>
+```
+
+Danach `docker compose up -d` auf dem Coder-Host. `/v1/models` liefert genau **einen**
+Eintrag `hermes-agent` — die in Hermes konfigurierten Modelle und Provider bleiben
+ausschließlich in Hermes/Hestia und sind in Open WebUI weder sichtbar noch änderbar.
+
+### Open WebUI
+
+Connection unter *Admin → Settings → Connections → OpenAI*:
+
+| Feld | Wert |
+|------|------|
+| Base URL | `http://10.0.10.17:8642/v1` |
+| API Key | `API_SERVER_KEY` aus `/opt/docker-compose/hermes/.env` |
+
+### Sicherheit
+
+Port 8642 ist **LAN-only** — bewusst ohne Traefik-Router, nicht aus dem WAN erreichbar.
+Wer den Key hat, bekommt vollen Agent-Zugriff **inkl. Shell und Dateisystem auf dem
+Coder-Host** sowie die im Container hinterlegten oCIS-Tokens. Der Key darf daher
+nirgends im Repo landen.
+
+Nicht zu verwechseln: `hermes proxy` (Port 8645) ist ein **reiner OAuth-Modell-Proxy**
+für Nous/xAI ohne Agent-Funktionalität — nicht der API-Server.
 
 ## Pflege des Laufzeit-Zustands
 

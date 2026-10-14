@@ -12,6 +12,9 @@ services:
       - coder-infra
     ports:
       - "9119:9119"
+      # OpenAI-kompatibler API-Server fuer externe Frontends (Open WebUI).
+      # Aktiviert via API_SERVER_* in .env. LAN-only, bewusst ohne Traefik-Router.
+      - "8642:8642"
     volumes:
       # Laufzeit-Zustand (config.yaml) und die von Hestia gepflegte .env liegen
       # AUSSERHALB des Repos und bleiben beim Deploy erhalten.
