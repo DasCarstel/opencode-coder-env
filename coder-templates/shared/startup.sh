@@ -646,6 +646,24 @@ else
   echo "  ⚠ Config nicht gefunden: $GLOBAL_CFG_SRC"
 fi
 
+# ── OpenCode-Theme: dauerhaft hell (cli.json, idempotent) ───────────────────
+mkdir -p ~/.config/opencode
+python3 - <<'PY' >/dev/null 2>&1
+import os, json
+p = os.path.expanduser("~/.config/opencode/cli.json")
+try:
+    d = json.load(open(p))
+    if not isinstance(d, dict):
+        d = {}
+except Exception:
+    d = {}
+d.setdefault("$schema", "https://opencode.ai/v2/cli.json")
+d["theme"] = {"name": "opencode", "mode": "light"}
+with open(p, "w") as f:
+    json.dump(d, f, indent=2)
+os.chmod(p, 0o600)
+PY
+
 # ── Env-Injektion: HA / authentik (nur infrastructure) ──────────────────────
 if [ "$PROFILE" = "infrastructure" ]; then
   if [ -n "${HA_LLA_TOKEN:-}" ]; then
@@ -899,6 +917,52 @@ fi
 echo ""
 echo "=== Herdr-Server & Workspaces ==="
 export PATH="/root/.local/bin:$PATH"
+
+# ── Herdr-Theme: dauerhaft hell (config.toml [theme], idempotent) ───────────
+mkdir -p /root/.config/herdr
+python3 - <<'PY' >/dev/null 2>&1
+import os
+p = "/root/.config/herdr/config.toml"
+try:
+    with open(p, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+except FileNotFoundError:
+    lines = []
+want = [("name", 'name = "catppuccin-latte"'), ("auto_switch", "auto_switch = false")]
+start = None
+for i, l in enumerate(lines):
+    if l.strip() == "[theme]":
+        start = i
+        break
+if start is None:
+    if lines and lines[-1].strip() != "":
+        lines.append("")
+    lines.append("[theme]")
+    lines += [v for _, v in want]
+else:
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        if lines[j].lstrip().startswith("["):
+            end = j
+            break
+    for key, val in want:
+        idx = None
+        for j in range(start + 1, end):
+            if "=" in lines[j] and lines[j].split("=", 1)[0].strip() == key:
+                idx = j
+                break
+        if idx is not None:
+            lines[idx] = val
+        else:
+            lines.insert(end, val)
+            end += 1
+with open(p, "w", encoding="utf-8") as f:
+    f.write("\n".join(lines) + "\n")
+os.chmod(p, 0o600)
+PY
+if [ -x "$HERDR_BIN" ] && "$HERDR_BIN" status 2>/dev/null | grep -q "status: running"; then
+  "$HERDR_BIN" server reload-config >/dev/null 2>&1 || true
+fi
 
 if [ -x "$HERDR_BIN" ]; then
   echo "  → Herdr-Server wird gestartet..."
