@@ -1,0 +1,15 @@
+// Modell-Benchmarks (SOT des Hestia-Panels).
+// Quelle: OpenRouter /api/v1/models (öffentlich, ohne API-Key).
+// Gelesen von hestia/backend/benchmarks.py; der Abruf selbst wird lokal unter
+// HESTIA_BENCHMARKS_CACHE (Default /app/data/model-benchmarks.json) gecacht —
+// dieser Cache gehört NICHT ins Repo.
+//
+// aliases: bildet unsere Katalog-Ref (z. B. "opencode/space-bunny-free") auf eine
+// OpenRouter-ID (z. B. "anthropic/claude-haiku-4.5") ab, wenn die automatische
+// Zuordnung (modelID / Name) nicht greift. Leer = nur Automatik.
+{
+  "enabled": true,
+  "refreshDays": 30,
+  "fields": ["coding_index", "agentic_index", "intelligence_index", "code_elo"],
+  "aliases": {}
+}

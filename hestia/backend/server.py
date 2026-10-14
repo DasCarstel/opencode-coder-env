@@ -23,6 +23,8 @@ Endpoints (alle unter Basic Auth):
   POST /api/failover/settings Ausfallschutz-Einstellungen (SOT-Commit + STATE-Update)
   GET  /api/suggest/status    Live-Zustand + auto (Einstellungen/Fingerprint/Zeiten) + proposal
   POST /api/suggest/settings  Automatik-Einstellungen (SOT-Commit + STATE-Update)
+  GET  /api/benchmarks/status Benchmark-Zustand (Quelle/Alter/Zähler/fehlende Refs)
+  POST /api/benchmarks/refresh Benchmarks sofort neu holen (OpenRouter, read-only)
   GET  /*                     statisches Frontend (dist/)
 """
 import base64
@@ -45,6 +47,7 @@ import suggest as suggest_mod  # noqa: E402
 import failover as failover_mod  # noqa: E402
 import accounts as accounts_mod  # noqa: E402
 import hermes as hermes_mod  # noqa: E402
+import benchmarks as benchmarks_mod  # noqa: E402
 
 STATIC_DIR = os.environ.get(
     "HESTIA_STATIC", os.path.join(os.path.dirname(BASE_DIR), "frontend", "dist")
@@ -318,9 +321,18 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/catalog":
             try:
                 models = catalog.fetch_models()
-                provider_filter = PRESET_PROVIDER
-                return self._json({"models": models, "providers": ALLOWED_PROVIDERS,
-                                   "presetProvider": PRESET_PROVIDER})
+                payload = {"models": models, "providers": ALLOWED_PROVIDERS,
+                           "presetProvider": PRESET_PROVIDER}
+                # Benchmarks dürfen den Katalog-Aufruf nie reißen (Quelle OpenRouter).
+                try:
+                    refs = [m.get("ref") for m in models if isinstance(m, dict)]
+                    payload["benchmarks"] = benchmarks_mod.for_refs(refs)
+                    payload["benchmarksStatus"] = benchmarks_mod.state()
+                except Exception as e:  # noqa: BLE001
+                    _log(f"catalog benchmarks error: {e}")
+                    payload["benchmarks"] = {}
+                    payload["benchmarksStatus"] = {"error": str(e)}
+                return self._json(payload)
             except Exception as e:
                 return self._json({"error": str(e)}, 502)
         if path == "/api/config":
@@ -372,12 +384,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(state)
         if path in ("/api/accounts", "/api/accounts/status"):
             return self._json(accounts_mod.state())
+        if path in ("/api/benchmarks/status", "/api/benchmarks"):
+            try:
+                return self._json(benchmarks_mod.state())
+            except Exception as e:  # noqa: BLE001 — Status darf nie ausfallen
+                _log(f"benchmarks status error: {e}")
+                return self._json({"error": str(e)}, 500)
         if path in ("/api/hermes", "/api/hermes/status"):
             return self._json(hermes_mod.state())
         if path in ("/api/apply", "/api/suggest", "/api/rollout",
                     "/api/accounts/check", "/api/accounts/switch",
                     "/api/hermes/apply", "/api/failover/settings",
-                    "/api/failover/check", "/api/suggest/settings"):
+                    "/api/failover/check", "/api/suggest/settings",
+                    "/api/benchmarks/refresh"):
             return self._json(
                 {"error": f"{path} ist POST-only (der Aufruf kam als GET an)"}, 405
             )
@@ -628,6 +647,15 @@ class Handler(BaseHTTPRequestHandler):
                 _log(f"hermes apply error: {e}")
                 return self._json({"error": str(e)}, 500)
 
+        if path == "/api/benchmarks/refresh":
+            # Benchmarks sofort neu holen (OpenRouter ist read-only und gecacht).
+            try:
+                self._body()
+                return self._json(benchmarks_mod.refresh(force=True))
+            except Exception as e:
+                _log(f"benchmarks refresh error: {e}")
+                return self._json({"error": str(e)}, 500)
+
         if path == "/api/rollout":
             try:
                 payload = self._body()
@@ -655,6 +683,10 @@ def main():
         suggest_mod.start()
     except Exception as e:  # noqa: BLE001
         _log(f"Suggest-Automatik-Start fehlgeschlagen: {e}")
+    try:
+        benchmarks_mod.start()
+    except Exception as e:  # noqa: BLE001
+        _log(f"Benchmarks-Start fehlgeschlagen: {e}")
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     _log(f"Hestia backend listening on :{port} (user={HESTIA_USER}; static={STATIC_DIR})")
     if not os.environ.get("HESTIA_PASSWORD"):

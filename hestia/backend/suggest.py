@@ -59,20 +59,87 @@ def _req(method: str, url: str, body: dict | None = None, timeout: int = 30):
             return e.code, {}
 
 
+def _fmt(value) -> str:
+    """Benchmark-Wert für den Prompt — None wird als '—' (unbekannt) dargestellt."""
+    if value is None:
+        return "—"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _benchmarks_block(models: list) -> tuple:
+    """Benchmark-Werte je Kandidat-Modell (aus dem lokalen OpenRouter-Cache).
+
+    Liefert (zeilen_zusatz, anweisung) — ohne Cache/Fehler bleibt die Tabelle
+    unverändert und der Prompt funktioniert wie bisher weiter.
+    """
+    try:
+        import benchmarks as bench_mod
+        fields = bench_mod.read_settings()["fields"]
+        entries = bench_mod.for_refs([m["ref"] for m in models], fields)
+        st = bench_mod.state()
+    except Exception as e:  # noqa: BLE001 — Benchmarks dürfen nie den Lauf kippen
+        _log(f"benchmarks nicht verfügbar: {e}")
+        return {}, None
+    cols = []
+    for f, label in (("coding_index", "coding"), ("agentic_index", "agentic"),
+                     ("intelligence_index", "intell"), ("code_elo", "code-elo")):
+        if f in fields:
+            cols.append((f, label))
+    if not cols:
+        cols = [(f, l) for f, l in (("coding_index", "coding"),
+                                    ("agentic_index", "agentic"),
+                                    ("intelligence_index", "intell"),
+                                    ("code_elo", "code-elo"))]
+    header = " | ".join(label for _, label in cols)
+    unknown = " | ".join(["—"] * len(cols))
+    rows = {}
+    for m in models:
+        e = entries.get(m["ref"])
+        if not e:
+            continue
+        rows[m["ref"]] = " | ".join(_fmt(e.get(f)) for f, _ in cols)
+    if not rows:
+        return {}, None
+    source = st.get("source") or "openrouter"
+    note = (
+        f"(Quelle {source}, Stand {st.get('ageDays')} Tage alt, {st.get('count')} Modelle)"
+    )
+    instruction = (
+        "BENCHMARK-REGEL (wichtig): Die Benchmarks in der Modelltabelle sind die EINZIGEN\n"
+        "Werte, die du verwenden darfst. Verwende diese Zahlen AUSSCHLIESSLICH so, wie sie\n"
+        "dort stehen — rufe KEINE eigenen Benchmarks ab, schätze sie nicht und ergänze sie\n"
+        "nicht aus dem Gedächtnis oder aus anderen Quellen. Ein '—' bedeutet 'unbekannt':\n"
+        "dieses Modell hat dazu keine Daten — schätze den Wert NICHT und leite nichts daraus ab.\n"
+        "Fehlt zu einem Modell die ganze Benchmark-Spalte ('—'), darfst du Qualitätsaussagen\n"
+        "für dieses Modell nur aus Preis, Varianten und Modellnamen begründen."
+    )
+    return rows, (header, instruction, note, unknown)
+
+
 def _build_prompt() -> str:
     models = [m for m in fetch_models()
               if m["providerID"] in PROVIDERS and m["status"] == "active"]
+    bench_rows, bench_meta = _benchmarks_block(models)
+    bench_header = ""
+    if bench_meta:
+        bench_header = f" | Bench ({bench_meta[0]})"
     lines = []
     for m in models:
         c = m["cost"]
         v = ",".join(v for v in m["variants"] if v) or "-"
         lim = m.get("limit") or {}
         is_free = not c.get("input") and not c.get("output")
-        lines.append(
+        line = (
             f"- {m['ref']} | {m['name']}"
             + (" | KOSTENLOS" if is_free else f" | in ${c.get('input')}/M, out ${c.get('output')}/M")
             + f" | cache r ${c.get('cacheRead')}/w ${c.get('cacheWrite')} | ctx {lim.get('context', '?')} | variants [{v}]"
         )
+        if bench_header:
+            vals = bench_rows.get(m["ref"])
+            line += bench_header + (f" {vals}" if vals else f" {bench_meta[3]}")
+        lines.append(line)
     catalog = "\n".join(lines)
     from github_api import get_overrides
     try:
@@ -103,6 +170,8 @@ def _build_prompt() -> str:
         budget = "\n".join(blines) or "- unbekannt"
     except Exception:
         budget = "- unbekannt"
+    bench_instruction = bench_meta[1] + ("\n" + bench_meta[2]) if bench_meta else \
+        "BENCHMARK-REGEL: Für diesen Lauf liegen keine Benchmark-Daten vor — bewerte die\nModelle ausschließlich aus Preis, Varianten und Modellnamen und rate KEINE Kennzahlen."
     return f"""Du bist Modell-Stratege für ein Homelab (Coder-Workspaces, OpenCode Agenten-Fleet).
 Wähle aus dem Live-Katalog unten die beste 3-Tier-Anordnung für das Router-Plugin
 (alle drei Tier müssen Models DIESER Liste sein; erlaubte Provider: {", ".join(PROVIDERS)}):
@@ -133,11 +202,14 @@ opencode-go-Aufrufe — @fast/@medium/@heavy laufen über dieses Abo):
 MODELL-KATALOG (nur erlaubte Provider, alle active; Preis = USD pro Mio Tokens):
 {catalog}
 
+{bench_instruction}
+
 AUFGABE: Wähle je Tier das kosten-günstigste Modell, das die Rolle zuverlässig bewältigt
 (cheap-but-capable statt Kompromiss-frei). Berücksichtige: Tool-Fähigkeit ist Pflicht;
 @heavy braucht starkes Reasoning (max-effort Variante bevorzugen wenn vorhanden);
 wähle Varianten aus der Liste. Wenn sich zwischen zwei Modellen der Preis kaum
-unterscheidet, nimm das neuere/stärkere. Für @medium gilt zusätzlich die Doppelrolle
+unterscheidet, nimm das neuere/stärkere. Nutze für Qualitätsvergleiche die Bench-Spalte
+der Modelltabelle (nicht-preisliche Argumente). Für @medium gilt zusätzlich die Doppelrolle
 (build/plan interaktiv) aus dem OpenCode-Kontext — träge Standardvarianten abwerten.
 ZU KOSTENLOSEN Modellen ("KOSTENLOS" in der Liste): sehr attraktiv für @fast (viele kleine
 Lesedispatches) und zum Ausprobieren — aber sie sind volatil (Preview/Community, können
@@ -788,6 +860,16 @@ def run_auto_check() -> dict:
         STATE["lastCheck"] = now
         STATE["lastChange"] = now
     _log(f"Katalog geändert: {stored} -> {fp}")
+
+    # Neue/geänderte Modelle ⇒ Benchmarks nachziehen (billig: nur bei Bedarf
+    # wirklich ein GET, sonst Cache). Fehler dürfen den Lauf nicht abbrechen.
+    try:
+        import benchmarks as bench_mod
+        bres = bench_mod.refresh()
+        _log(f"Benchmarks: refreshed={bres.get('refreshed')} reason={bres.get('reason')} "
+             f"count={bres.get('count')}")
+    except Exception as e:  # noqa: BLE001
+        _log(f"Benchmarks-Update übersprungen: {e}")
 
     last_run = STATE.get("lastAutoRun") or 0.0
     if now - last_run < settings["cooldownSeconds"]:

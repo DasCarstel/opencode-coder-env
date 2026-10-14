@@ -69,6 +69,125 @@ let pwInput = $state(getPassword())
 let catFilterOpenGoOnly = $state(true)
 let priceTableShowAll = $state(false)
 
+// ── Benchmarks (Quelle: GET /api/catalog → benchmarks + benchmarksStatus) ──
+const BM_COLS = [
+  { key: 'coding_index', label: 'Coding', hint: 'Coding-Index' },
+  { key: 'agentic_index', label: 'Agentic', hint: 'Agentic-Index' },
+  { key: 'intelligence_index', label: 'Intelligenz', hint: 'Intelligence-Index' },
+  { key: 'code_elo', label: 'Code-Elo', hint: 'Code-Elo (Arena)' },
+]
+const LS_BM = 'hestia-show-benchmarks'
+let showBenchmarks = $state(localStorage.getItem(LS_BM) !== '0')
+let bmBusy = $state(false)
+let bmResult = $state(null)
+let bmSort = $state(null)   // { key, dir: 'asc'|'desc' }
+
+const SOURCE_LABEL = { openrouter: 'OpenRouter', 'artificial-analysis': 'Artificial Analysis' }
+function sourceLabel(s) {
+  const raw = String(s || '').trim()
+  if (!raw) return 'Benchmark-Quelle'
+  return SOURCE_LABEL[raw.toLowerCase()] || raw.charAt(0).toUpperCase() + raw.slice(1)
+}
+
+const bmStatus = $derived(catalog.benchmarksStatus || null)
+const bmSource = $derived(sourceLabel(bmStatus?.source))
+function bmOf(ref) { return (catalog.benchmarks || {})[ref] || null }
+function bmNum(b, key) {
+  const v = b?.[key]
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+function bmText(b, key) {
+  const v = bmNum(b, key)
+  if (v == null) return '—'
+  if (key === 'code_elo') {
+    const rank = bmNum(b, 'code_rank')
+    return rank == null ? String(Math.round(v)) : `${Math.round(v)} (#${Math.round(rank)})`
+  }
+  return v.toFixed(1)
+}
+function bmTitle(b, key) {
+  const col = BM_COLS.find(c => c.key === key)
+  const what = col ? col.hint : 'Benchmark'
+  if (!b) return `${what}: keine Daten`
+  const id = b.source_id || 'ohne Quell-ID'
+  return `${what} — Quelle: ${bmSource} → ${id}`
+}
+const bmStatusText = $derived.by(() => {
+  const s = bmStatus
+  if (!s || !s.fetchedAt) return 'noch keine Daten'
+  let age = Number(s.ageDays)
+  if (!Number.isFinite(age)) {
+    age = Math.max(0, Math.round((Date.now() / 1000 - Number(s.fetchedAt)) / 86400))
+  }
+  return `${bmSource} · Stand: ${stampText(s.fetchedAt)} (${age} ${age === 1 ? 'Tag' : 'Tage'} alt) · ${s.count ?? 0} Modelle`
+})
+
+// Sortierung per Klick auf den Spaltenkopf; fehlende Werte (null) immer ans Ende.
+function sortVal(m, key) {
+  switch (key) {
+    case 'input': return Number(m.cost?.input ?? 0)
+    case 'output': return Number(m.cost?.output ?? 0)
+    case 'context': return Number(m.limit?.context ?? 0)
+    case 'released': return m.released ? Number(m.released) : null
+    case 'variants': return (m.variants || []).length
+    default:
+      if (BM_COLS.some(c => c.key === key)) return bmNum(bmOf(m.ref), key)
+      return String(m[key] ?? '')
+  }
+}
+function sortBy(key) {
+  if (bmSort?.key === key) bmSort = { key, dir: bmSort.dir === 'asc' ? 'desc' : 'asc' }
+  else bmSort = { key, dir: 'desc' }
+}
+function sortMark(key) {
+  if (bmSort?.key !== key) return ''
+  return bmSort.dir === 'asc' ? ' ▲' : ' ▼'
+}
+const sortedModels = $derived.by(() => {
+  const rows = [...tableModels]
+  if (!bmSort) return rows
+  const { key, dir } = bmSort
+  const mult = dir === 'asc' ? 1 : -1
+  rows.sort((a, b) => {
+    const va = sortVal(a, key)
+    const vb = sortVal(b, key)
+    const na = va == null || va === ''
+    const nb = vb == null || vb === ''
+    if (na && nb) return 0
+    if (na) return 1
+    if (nb) return -1
+    const r = (typeof va === 'number' && typeof vb === 'number')
+      ? va - vb
+      : String(va).localeCompare(String(vb), 'de')
+    return mult * r
+  })
+  return rows
+})
+const shownModels = $derived(priceTableShowAll ? sortedModels : sortedModels.slice(0, 40))
+
+function onBmToggle() {
+  localStorage.setItem(LS_BM, showBenchmarks ? '1' : '0')
+}
+
+async function refreshBenchmarks() {
+  bmBusy = true
+  bmResult = null
+  try {
+    const res = await api('/api/benchmarks/refresh', { method: 'POST', body: {} })
+    if (res?.refreshed) {
+      bmResult = { ok: true, text: `${res.count ?? 0} Modelle aktualisiert (${stampText(res.fetchedAt)})` }
+    } else {
+      const msg = res?.error || (Array.isArray(res?.errors) ? res.errors.join('; ') : 'kein Ergebnis')
+      bmResult = { ok: false, text: msg }
+    }
+    await load()
+  } catch (e) {
+    bmResult = { ok: false, text: e.message }
+  } finally {
+    bmBusy = false
+  }
+}
+
 // ── Automatik des KI-Vorschlags (GET /api/suggest/status, POST /api/suggest/settings) ──
 let suggestStatus = $state(null)
 let autoSaveBusy = $state(false)
@@ -1177,12 +1296,42 @@ setInterval(loadSuggestStatus, 60000)
       <input type="checkbox" bind:checked={catFilterOpenGoOnly} /> nur erlaubte Provider ({allowed.join(", ")})
     </label>
   </h2>
+  <p class="bmHead">
+    <label class="muted bmCheck">
+      <input type="checkbox" bind:checked={showBenchmarks} onchange={onBmToggle} /> Benchmarks anzeigen
+    </label>
+    <span class="muted">Benchmarks: {bmStatusText}</span>
+    <button class="mini" onclick={refreshBenchmarks} disabled={bmBusy}>
+      {bmBusy ? '↻ aktualisiere …' : '↻ Benchmarks aktualisieren'}
+    </button>
+    {#if bmResult}
+      <span class={bmResult.ok ? 'badge active' : 'badge err'}>{bmResult.text}</span>
+    {/if}
+  </p>
   <table>
     <thead>
-      <tr><th>Modell</th><th>ID</th><th>Status</th><th>In $/M</th><th>Out $/M</th><th>Cache r/w</th><th>Kontext</th><th>Variants</th><th>Release</th></tr>
+      <tr>
+        <th class="thSort" onclick={() => sortBy('name')} title="Nach Modell sortieren">Modell{sortMark('name')}</th>
+        <th class="thSort" onclick={() => sortBy('modelID')} title="Nach ID sortieren">ID{sortMark('modelID')}</th>
+        <th class="thSort" onclick={() => sortBy('status')} title="Nach Status sortieren">Status{sortMark('status')}</th>
+        <th class="thSort num" onclick={() => sortBy('input')} title="Nach Eingabepreis sortieren">In $/M{sortMark('input')}</th>
+        <th class="thSort num" onclick={() => sortBy('output')} title="Nach Ausgabepreis sortieren">Out $/M{sortMark('output')}</th>
+        <th>Cache r/w</th>
+        <th class="thSort num" onclick={() => sortBy('context')} title="Nach Kontextfenster sortieren">Kontext{sortMark('context')}</th>
+        <th class="thSort" onclick={() => sortBy('variants')} title="Nach Anzahl Varianten sortieren">Variants{sortMark('variants')}</th>
+        <th class="thSort num" onclick={() => sortBy('released')} title="Nach Veröffentlichung sortieren">Release{sortMark('released')}</th>
+        {#if showBenchmarks}
+          {#each BM_COLS as c (c.key)}
+            <th class="thSort num" onclick={() => sortBy(c.key)} title="{c.hint} — Quelle: {bmSource}">
+              {c.label}{sortMark(c.key)}
+            </th>
+          {/each}
+        {/if}
+      </tr>
     </thead>
     <tbody>
-      {#each tableModels.slice(0, 40) as m}
+      {#each shownModels as m}
+        {@const b = showBenchmarks ? bmOf(m.ref) : null}
         <tr>
           <td>{m.name}</td>
           <td class="mono">{m.modelID}</td>
@@ -1194,11 +1343,23 @@ setInterval(loadSuggestStatus, 60000)
           <td>{((m.limit?.context || 0) / 1000).toFixed(0)}k</td>
           <td class="muted">{(m.variants || []).join(', ') || '—'}</td>
           <td class="muted">{m.released ? new Date(m.released * 1000).toISOString().slice(0, 10) : '—'}</td>
+          {#if showBenchmarks}
+            {#each BM_COLS as c (c.key)}
+              <td class="num {bmNum(b, c.key) == null ? 'bmNone' : ''}" title={bmTitle(b, c.key)}>{bmText(b, c.key)}</td>
+            {/each}
+          {/if}
         </tr>
       {/each}
     </tbody>
   </table>
-  <p class="muted">{tableModels.length} Modelle im Katalog (Live-Quelle: OpenCode-Server /api/model)</p>
+  <p class="muted">
+    {tableModels.length} Modelle im Katalog (Live-Quelle: OpenCode-Server /api/model)
+    {#if sortedModels.length > 40}
+      · <button class="mini" onclick={() => priceTableShowAll = !priceTableShowAll}>
+        {priceTableShowAll ? 'nur 40 zeigen' : `alle ${sortedModels.length} zeigen`}
+      </button>
+    {/if}
+  </p>
 </div>
 
 <style>
@@ -1259,6 +1420,16 @@ setInterval(loadSuggestStatus, 60000)
   .budgetTrack { display: block; height: 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; }
   .budgetFill { display: block; height: 100%; border-radius: 999px; }
   .mini { padding: 1px 6px; font-size: .78rem; }
+  /* Preisübersicht: Benchmark-Spalten, Sortierköpfe, Statuszeile */
+  .thSort { cursor: pointer; user-select: none; white-space: nowrap; }
+  .thSort:hover { color: var(--fire-soft); }
+  th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.num.bmNone { color: var(--muted); }
+  .bmHead {
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    margin: 8px 0 0; font-size: .8rem;
+  }
+  .bmHead .bmCheck { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; }
   /* Abo läuft bald ab (policy.expiring): Konto hervorheben */
   .subRow.expiring { border-left-color: var(--warn); background: var(--panel-2); border-radius: 0 8px 8px 0; }
   .subRow.expiring-now { animation: expiryPulse 2.4s ease-in-out infinite; }
