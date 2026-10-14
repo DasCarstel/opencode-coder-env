@@ -393,7 +393,15 @@ class Handler(BaseHTTPRequestHandler):
                 _log(f"benchmarks status error: {e}")
                 return self._json({"error": str(e)}, 500)
         if path in ("/api/hermes", "/api/hermes/status"):
-            return self._json(hermes_mod.state())
+            # Der Hermes-Status darf nie ausfallen: eine Ausnahme hier beendet die
+            # Verbindung ohne Antwort, und das Panel zeigt dann nur noch "nicht
+            # erreichbar" — unabhaengig von der echten Ursache. Gleiche Absicherung
+            # wie bei /api/catalog.
+            try:
+                return self._json(hermes_mod.state())
+            except Exception as e:  # noqa: BLE001
+                _log(f"hermes status error: {e}")
+                return self._json({"error": str(e)}, 502)
         if path in ("/api/apply", "/api/suggest", "/api/rollout",
                     "/api/accounts/check", "/api/accounts/switch",
                     "/api/hermes/apply", "/api/failover/settings",

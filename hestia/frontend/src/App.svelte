@@ -32,6 +32,7 @@ let accBusy = $state(false)
 
 // Hermes-Agent (Nous Research): primäres Modell + Fallback-Kette aus der SOT
 let hermesStatus = $state(null)
+let hermesError = $state('')
 let hermesBusy = $state(false)
 let hermesSel = $state('')
 let hermesFb1 = $state('')
@@ -797,7 +798,12 @@ async function loadHermes() {
     hermesApiEnabled = api.enabled !== false
     hermesApiPort = Number(api.port) || 8642
     hermesApiHost = api.host || '0.0.0.0'
-  } catch { /* ignore */ }
+    hermesError = ''
+  } catch (e) {
+    // Nicht schlucken: ein Fehler beim Panel-eigenen Aufruf ist etwas anderes als
+    // "Hermes nicht erreichbar" und muss unterscheidbar bleiben.
+    hermesError = e?.message || String(e)
+  }
 }
 
 async function runHermesApply() {
@@ -964,6 +970,8 @@ setInterval(loadSuggestStatus, 60000)
         <span class="badge active">ok</span>
       {:else if hermesStatus?.reachable}
         <span class="badge warn">health: {hermesStatus?.health?.error || 'kein ok'}</span>
+      {:else if hermesError}
+        <span class="badge err">Panel-Aufruf fehlgeschlagen: {hermesError}</span>
       {:else}
         <span class="badge err">nicht erreichbar</span>
       {/if}
