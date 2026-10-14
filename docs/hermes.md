@@ -94,19 +94,64 @@ ausschließlich in Hermes/Hestia und sind in Open WebUI weder sichtbar noch änd
 
 ### Open WebUI
 
+Open WebUI spricht den API-Server über **Traefik** an, nicht über die direkte
+Container-IP. Das ist im Setup der etablierte Weg für Dienste auf einem anderen
+LXC (vgl. `rules/coder.yml`, `rules/hestia.yml`) und liefert TLS plus stabilen
+Namen. Regel: `/etc/docker/traefik/rules/hermes-api.yml` auf dem Docker-Host.
+
+Gleiches Host-Pattern wie Speaches (PRO-337) — ein Hostname, zwei Ziele:
+
+| Pfad | Ziel | Regel |
+|------|------|-------|
+| `hermes.mueller-nas.de/` | Dashboard (9119) | `rules/hermes.yml` |
+| `hermes.mueller-nas.de/v1` | API-Server (8642) | `rules/hermes-api.yml` |
+
 Connection unter *Admin → Settings → Connections → OpenAI*:
 
 | Feld | Wert |
 |------|------|
-| Base URL | `http://10.0.10.17:8642/v1` |
+| Base URL | `https://hermes.mueller-nas.de/v1` |
 | API Key | `API_SERVER_KEY` aus `/opt/docker-compose/hermes/.env` |
+
+Damit der Aufruf im LAN bleibt statt durch den Cloudflare-Tunnel zu laufen,
+steht in `ollama/docker-compose.yml` zusätzlich:
+
+```yaml
+extra_hosts:
+  - "hermes.mueller-nas.de:10.0.10.10"
+```
+
+Ohne diesen Eintrag liefe der Aufruf über die öffentliche DNS-Auflösung; die
+Quell-IP käme dann nicht aus den erlaubten Ranges und der Filter greift nicht.
 
 ### Sicherheit
 
-Port 8642 ist **LAN-only** — bewusst ohne Traefik-Router, nicht aus dem WAN erreichbar.
-Wer den Key hat, bekommt vollen Agent-Zugriff **inkl. Shell und Dateisystem auf dem
-Coder-Host** sowie die im Container hinterlegten oCIS-Tokens. Der Key darf daher
-nirgends im Repo landen.
+Zwei Schichten, weil der Endpoint **Shell-Zugriff auf den Coder-Host inkl. der
+oCIS-Tokens** vergibt:
+
+1. **Bearer-Key** (`API_SERVER_KEY`) — die eigentliche Authentifizierung.
+   `forwardAuth` ist hier **unbrauchbar**: Open WebUI arbeitet server-to-server
+   ohne Browser-Session, jeder Request ohne Cookie würde abgelehnt.
+2. **IP-Filterung** (`hermes-api-lan-only`) — LAN/Server-VLAN plus das
+   Docker-Netz `proxy`, in dem Open WebUI Traefik erreicht.
+
+Warum die zweite Schicht nötig ist: der Cloudflare-Tunnel läuft mit
+Remote-Config (`TUNNEL_TOKEN`); die Ingress-Regeln liegen in der Cloudflare-Doku
+und sind vom Host aus **nicht** einsehbar. Es lässt sich also nicht belegen, dass
+`hermes.mueller-nas.de` nicht generell getunnelt wird — und für `/` (Dashboard)
+ist es bereits nachweislich der Fall, `https://hermes.mueller-nas.de/api/health`
+antwortet aus dem WAN mit `200`.
+
+Getunnelter Verkehr trägt `X-Forwarded-For` mit der echten Client-IP und wird
+vom Filter abgewiesen. Verifiziert: mit entferntem `10.0.10.0/24` lieferte der
+WAN-Test `403`.
+
+> **Restrisiko:** `ipAllowList` wertet `X-Forwarded-For` aus. Solange der Host
+> nicht direkt aus dem Internet auf `:443` erreichbar ist (der Tunnel spricht für
+> CGNAT), ist das unkritisch. **Bekommt der Host später eine öffentliche IP oder
+> ein Port-Forward auf 443**, muss `ipStrategy.depth` gesetzt oder die
+> Docker-Range entfernt werden — sonst wäre ein gefälschter `XFF`-Header eine
+> Umgehung.
 
 Nicht zu verwechseln: `hermes proxy` (Port 8645) ist ein **reiner OAuth-Modell-Proxy**
 für Nous/xAI ohne Agent-Funktionalität — nicht der API-Server.
