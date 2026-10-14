@@ -17,6 +17,13 @@ Zuordnung unserer Katalog-Ref auf eine OpenRouter-ID, in dieser Priorität:
   1. expliziter Alias (aliases[ref] → exakte OpenRouter-ID)
   2. normalisierte modelID gegen den Teil hinter "/" der OpenRouter-ID
   3. normalisierter Name gegen den OpenRouter-Namen (ohne Klammerzusätze)
+  4. datumsbereinigter canonical_slug (OpenRouter listet Modelle teils nur als
+     gepinnte Snapshots: "qwen/qwen3.8-max-0902" → canonical_slug
+     "qwen/qwen3.8-max-20260902" ist dasselbe Modell wie "qwen3.8-max").
+     Priorität ist 2 → 3 → 4; der canonical_slug greift also nur, wenn weder
+     ID noch Name treffen, und ausschließlich bei Eindeutigkeit: Bildet ein
+     Ref auf mehrere OpenRouter-Einträge ab, gibt es keinen Treffer ("—"
+     statt eines falschen Werts).
 Nicht zuordenbare Modelle werden weggelassen (das Panel zeigt dann "—").
 Werte können null sein — null heißt "keine Daten von der Quelle", nicht 0.
 """
@@ -176,6 +183,25 @@ def _base_id(rid: str) -> str:
     return str(rid or "").split(":", 1)[0].strip()
 
 
+# Abschließendes Datums-Suffix eines Snapshots: -20260902 oder -2026-09-02.
+_DATE_SUFFIX = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
+
+
+def _slug_no_date(s) -> str:
+    """Slug ohne abschließendes Datums-Suffix.
+
+    "qwen/qwen3.8-max-20260902" → "qwen/qwen3.8-max"
+    "acme/widget-2026-09-02"     → "acme/widget"
+    """
+    return _DATE_SUFFIX.sub("", str(s or "").strip())
+
+
+def _tail(s) -> str:
+    """Teil hinter "/" eines Slugs (ohne Namespace, z. B. "qwen/qwen3-max")."""
+    text = str(s or "").strip()
+    return text.split("/", 1)[1] if "/" in text else text
+
+
 def _entry(row: dict, rid: str) -> dict | None:
     """Einen OpenRouter-Datensatz auf unsere Felder eindampfen.
 
@@ -212,8 +238,8 @@ def _entry(row: dict, rid: str) -> dict | None:
 
 
 def _index(rows: list) -> dict:
-    """Suchindex über die OpenRouter-Zeilen: exakte ID / ID-Rumpf / Name."""
-    idx: dict = {"id": {}, "tail": {}, "name": {}}
+    """Suchindex über die OpenRouter-Zeilen: exakte ID / ID-Rumpf / Slug-Datum / Name."""
+    idx: dict = {"id": {}, "tail": {}, "canon": {}, "name": {}}
     for row in rows or []:
         if not isinstance(row, dict):
             continue
@@ -223,12 +249,20 @@ def _index(rows: list) -> dict:
         entry = _entry(row, rid)
         if entry is None:
             continue
-        idx["id"].setdefault(rid.lower(), entry)
-        idx["id"].setdefault(_base_id(rid).lower(), entry)
         base = _base_id(rid)
+        idx["id"].setdefault(rid.lower(), entry)
+        idx["id"].setdefault(base.lower(), entry)
         tail = _norm(base.split("/", 1)[1] if "/" in base else base)
         if tail:
             idx["tail"].setdefault(tail, []).append(entry)
+        # canonical_slug ohne Datums-Suffix → gepinnte Snapshots desselben
+        # Modells (nur nach _pick/_unique, nie als Überschreibung bestehender Keys).
+        # Wie der tail-Index wird nur der Teil hinter "/" verglichen.
+        slug = row.get("canonical_slug")
+        if slug:
+            canon = _norm(_slug_no_date(_tail(_base_id(slug))))
+            if canon:
+                idx["canon"].setdefault(canon, []).append(entry)
         name = _name_norm(row.get("name"))
         if name:
             idx["name"].setdefault(name, []).append(entry)
@@ -242,8 +276,26 @@ def _pick(candidates: list) -> dict | None:
     return sorted(candidates, key=lambda e: (":" in e["source_id"], e["source_id"]))[0]
 
 
+def _unique(candidates: list) -> dict | None:
+    """Nur bei Eindeutigkeit liefern — mehrdeutig heißt "kein Treffer".
+
+    Bewusst konservativ: lieber "—" im Panel als ein falsch zugeordneter Wert.
+    """
+    distinct = {}
+    for entry in candidates or []:
+        if isinstance(entry, dict) and entry.get("source_id"):
+            distinct[entry["source_id"]] = entry
+    if len(distinct) != 1:
+        return None
+    return next(iter(distinct.values()))
+
+
 def _match(model: dict, idx: dict, aliases: dict) -> dict | None:
-    """Ein Katalog-Modell auf einen Benchmark-Eintrag abbilden (oder None)."""
+    """Ein Katalog-Modell auf einen Benchmark-Eintrag abbilden (oder None).
+
+    Priorität: Alias → modelID → Name → datumsbereinigter canonical_slug.
+    Bestehende (früher gefundene) Treffer werden nie überschrieben.
+    """
     ref = str(model.get("ref") or "").strip()
     aliased = str((aliases.get(ref) or "")).strip().lower()
     if aliased:
@@ -258,6 +310,10 @@ def _match(model: dict, idx: dict, aliases: dict) -> dict | None:
     name = _name_norm(model.get("name"))
     if name:
         hit = _pick(idx["name"].get(name) or [])
+        if hit:
+            return hit
+    if tail:
+        hit = _unique(idx["canon"].get(tail) or [])
         if hit:
             return hit
     return None
