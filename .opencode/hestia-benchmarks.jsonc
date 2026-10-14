@@ -1,21 +1,42 @@
 // Modell-Benchmarks (SOT des Hestia-Panels).
-// Quelle: OpenRouter /api/v1/models (öffentlich, ohne API-Key).
+// Quellen, in dieser Reihenfolge (Merge pro Feld — der erste Treffer gewinnt):
+//   1. Artificial Analysis (PRIMÄR) — https://artificialanalysis.ai/api/v2/data/llms/models
+//      Key: OpenBao secret/data/mcp/artificialanalysis → AA_API_KEY (optional!).
+//      Ohne Key fällt die Quelle automatisch weg, es startet trotzdem.
+//      Liefert: Intelligenz, Coding, Terminal-Bench (×100), SciCode (×100),
+//      τ²-bench (×100), Geschwindigkeit in Tok/s.
+//   2. OpenRouter (Fallback/Ergänzung) — https://openrouter.ai/api/v1/models
+//      (öffentlich, ohne API-Key). Liefert zusätzlich den Agentic-Index (AA
+//      kennt ihn nicht) und Code-Elo/Code-Rang aus design_arena/codecategories.
+//
+// Attribution (Pflicht, steht auch im Prompt): artificialanalysis.ai / OpenRouter.
+//
+// Hinweis: `livecodebench` ist bei AA für unsere Modelle durchgängig leer
+// (0/59) und deshalb bewusst NICHT als Feld vorgeschlagen. Die Feldnamen sind
+// stabil; neue Felder brauchen nur einen Eintrag hier + ein Label in
+// benchmarks.py (FIELD_LABELS).
+//
 // Gelesen von hestia/backend/benchmarks.py; der Abruf selbst wird lokal unter
 // HESTIA_BENCHMARKS_CACHE (Default /app/data/model-benchmarks.json) gecacht —
 // dieser Cache gehört NICHT ins Repo.
 //
+// fields: die Spalten der Modelltabelle (Anzeige-Labels kommen aus
+// benchmarks.FIELD_LABELS). "terminalbench"/"scicode"/"tau2" sind Prozentwerte
+// (0–100), "speed" ist Tokens/s, Indizes 0–100, "—" = unbekannt.
+//
 // aliases: bildet unsere Katalog-Ref (z. B. "opencode/space-bunny-free") auf eine
-// OpenRouter-ID (z. B. "anthropic/claude-haiku-4.5") ab, wenn die automatische
-// Zuordnung (modelID / Name) nicht greift. Leer = nur Automatik.
+// Quell-ID (z. B. "anthropic/claude-haiku-4.5" bzw. der AA-slug) ab, wenn die
+// automatische Zuordnung (modelID / Name / Slug) nicht greift. Leer = nur Automatik.
 {
   "enabled": true,
   "refreshDays": 30,
-  "fields": ["coding_index", "agentic_index", "intelligence_index", "code_elo"],
+  "fields": ["intelligence_index", "coding_index", "terminalbench", "speed", "agentic_index", "code_elo"],
 
-  // aliases: nur VERIFIZIERTE Zwillinge (OpenRouter-ID geprüft, inkl. Datenlage).
-  // Grundsatz: lieber "—" als falsche Zahlen. Keinen OpenRouter-Zwilling haben die
-  // Zen-eigenen Modelle (space-bunny, cat-jam, big-pickle, exo, gpt-5.3-codex-spark,
-  // ling-3.0-flash-fin, longcat-2.5-preview); qwen3.8-max ist mehrdeutig -> leer.
+  // aliases: nur VERIFIZIERTE Zwillinge (Quell-ID geprüft, inkl. Datenlage) —
+  // Wert ist ein OpenRouter-Slug ODER ein AA-slug. Grundsatz: lieber "—" als
+  // falsche Zahlen. Keinen Zwilling haben die Zen-eigenen Modelle (space-bunny,
+  // cat-jam, big-pickle, exo, gpt-5.3-codex-spark, ling-3.0-flash-fin,
+  // longcat-2.5-preview); qwen3.8-max wird über canonical_slug automatisch gelöst.
   "aliases": {
     "opencode/gemini-3.1-pro": "google/gemini-3.1-pro-preview",
     "opencode/mistral-large-4": "mistralai/mistral-large-4-0",

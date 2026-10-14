@@ -8,6 +8,10 @@ Secrets (AppRole-Policy muss covered paths freigeben):
   secret/data/mcp/github                    → GITHUB_TOKEN (api_key)
   secret/data/mcp/hermes-opencode-service   → OC_SERVER_PASSWORD (password)
   secret/data/mcp/hestia                    → HESTIA_PASSWORD (password) [optional]
+  secret/data/mcp/artificialanalysis        → AA_API_KEY (api_key) [optional]
+                                           Fehlt der Pfad oder das Feld (403/404),
+                                           ist das kein Fehler: Benchmarks laufen
+                                           dann mit OpenRouter allein weiter.
   secret/data/mcp/opencode-go               → OC_GO_DEFAULT1..3 (je ein Feld)
                                           ('active' wird NICHT mehr geladen — die
                                            SOT .opencode/hestia-accounts.jsonc
@@ -36,6 +40,14 @@ GO_ACCOUNTS_PATH = "secret/data/mcp/opencode-go"
 GO_FIELDS = [("default1", "OC_GO_DEFAULT1"),
              ("default2", "OC_GO_DEFAULT2"),
              ("default3", "OC_GO_DEFAULT3")]
+
+# Artificial Analysis (Primärquelle der Benchmarks) — OPTIONAL.
+# Fehlt der Pfad (403/404) oder das Feld, wird nur geloggt: benchmarks.py
+# erkennt AA_API_KEY == "" und nutzt dann OpenRouter allein. Der Start darf
+# daran nie scheitern.
+AA_SECRET_PATH = "secret/data/mcp/artificialanalysis"
+AA_SECRET_KEY = "api_key"
+AA_ENVNAME = "AA_API_KEY"
 
 
 def log(msg):
@@ -73,6 +85,22 @@ def _load_go_accounts(token):
             f"(aktiv bestimmt Hestia über die SOT)")
 
 
+def _load_aa(token):
+    """Artificial-Analysis-Key laden — optional, Fehler werden nur geloggt."""
+    try:
+        data = bao_request(AA_SECRET_PATH, token=token)["data"]["data"]
+    except Exception as e:
+        log(f"  ⚠ {AA_ENVNAME}: {AA_SECRET_PATH} nicht lesbar ({e}) — "
+            f"Benchmarks laufen ohne Artificial Analysis (nur OpenRouter)")
+        return
+    value = (data or {}).get(AA_SECRET_KEY, "")
+    if value:
+        os.environ[AA_ENVNAME] = value
+        log(f"  ✓ {AA_ENVNAME} geladen ({AA_SECRET_PATH})")
+    else:
+        log(f"  ⚠ {AA_ENVNAME}: Key '{AA_SECRET_KEY}' leer in {AA_SECRET_PATH}")
+
+
 def main():
     if OPENBAO_ROLE_ID and OPENBAO_SECRET_ID:
         try:
@@ -91,6 +119,7 @@ def main():
                 except Exception as e:
                     log(f"  ⚠ {envname}: {path} nicht lesbar ({e})")
             _load_go_accounts(token)
+            _load_aa(token)
             os.environ["BAO_TOKEN"] = token
         except Exception as e:
             log(f"⚠ OpenBao-Login fehlgeschlagen ({e}) — fahre mit Container-Env fort")

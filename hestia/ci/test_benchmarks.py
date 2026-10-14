@@ -4,7 +4,9 @@
 Abgedeckt: Normalisierung (_norm/_name_norm), Zuordnung (Alias → modelID →
 Name → datumsbereinigter canonical_slug, Eindeutigkeit, `:`-Varianten),
 Werte-Extraktion (artificial_analysis / design_arena codecategories),
-Cache-Roundtrip, Fault-Tolerance, Drossel und TTL.
+AA-Zuordnung über slug bzw. creator/slug, Feld-Merge AA > OR, Ausfall einer
+Quelle, Terminal-Bench-Fallbackkette, state()/fieldLabels, Cache-Roundtrip
+inkl. Abwärtskompatibilität, Fault-Tolerance, Drossel und TTL.
 
 Läuft mit pytest UND direkt:
     pytest -q hestia/ci/test_benchmarks.py
@@ -274,26 +276,32 @@ def test_for_refs_only_configured_fields():
         assert set(got) == {"a/b"}
         entry = got["a/b"]
         assert set(entry) == {"coding_index", "agentic_index", "intelligence_index",
-                              "code_elo", "code_rank", "source_id"}
+                              "code_elo", "code_rank", "aa_id", "or_id", "source_id"}
         assert entry["code_rank"] == 7
         assert entry["source_id"] == "qwen/qwen3.8-max-0902"
         # code_rank wird automatisch mitgezogen, sobald code_elo gefordert ist.
         with patched(read_settings=lambda: _settings(fields=["code_elo"])):
             got = benchmarks.for_refs(["a/b"])
-        assert set(got["a/b"]) == {"code_elo", "code_rank", "source_id"}
+        assert set(got["a/b"]) == {"code_elo", "code_rank", "aa_id", "or_id", "source_id"}
 
 
 # --- refresh: Fault-Tolerance, Drossel, TTL --------------------------------
 
-def _refresh_env(rows=None, settings=None, fetch=None, models=None):
+def _refresh_env(rows=None, settings=None, fetch=None, aa_fetch=None,
+                 aa_key="", models=None):
     rows = ROWS if rows is None else rows
     if fetch is None:
         def fetch():
             return rows
+    if aa_fetch is None:
+        def aa_fetch():
+            raise AssertionError("AA-Abruf erwartet, aber AA_API_KEY war gesetzt")
     return patched(
         read_settings=lambda: (settings or _settings()),
         catalog_models=lambda: (models if models is not None else []),
-        _fetch=fetch,
+        _fetch_or=fetch,
+        _fetch_aa=aa_fetch,
+        AA_API_KEY=aa_key,
     )
 
 
@@ -392,6 +400,324 @@ def test_ttl_fresh_vs_stale():
         assert len(calls) == 2
         assert benchmarks.read_cache()["entries"]["opencode-go/qwen3.8-max"][
             "source_id"] == "qwen/qwen3.8-max-0902"
+
+
+# --- Artificial Analysis ----------------------------------------------------
+
+AA_KEY = "test-aa-key"
+
+
+def _aa_row(slug, name, creator="openai", evaluations=None, speed=None):
+    return {
+        "id": slug,
+        "slug": slug,
+        "name": name,
+        "model_creator": {"id": creator, "name": creator.title(), "slug": creator},
+        "evaluations": evaluations or {},
+        "median_output_tokens_per_second": speed,
+    }
+
+
+def _aa_idx(rows=None):
+    return benchmarks._aa_index(AA_ROWS if rows is None else rows)
+
+
+AA_ROWS = [
+    # Vollständiger Datensatz (Indizes 0..100, Anteile 0..1).
+    _aa_row("gpt-6", "GPT-6", creator="openai",
+            evaluations={
+                "artificial_analysis_intelligence_index": 58.2,
+                "artificial_analysis_coding_index": 71.0,
+                "terminalbench_v4_0": 0.4123,
+                "scicode": 0.3300,
+                "tau2": 0.4567,
+                "livecodebench": None,          # bei AA leer → Feld nicht genutzt
+            },
+            speed=143.26),
+    # Nur Coding gefüllt (Rest leer) — genau der Fall für den Merge mit OR.
+    _aa_row("claude-fable-5-1", "Claude Fable 5.1", creator="anthropic",
+            evaluations={"artificial_analysis_coding_index": 63.5}, speed=88.0),
+    # Terminal-Bench nur in der älteren Kette.
+    _aa_row("qwen3-max", "Qwen3 Max", creator="qwen",
+            evaluations={"terminalbench_v2_1": 0.25}),
+    # Terminal-Bench nur in der ältesten Kette.
+    _aa_row("qwen3-mini", "Qwen3 Mini", creator="qwen",
+            evaluations={"terminalbench_hard": 0.125}),
+    # Trägt gar keine verwertbaren Werte → kein Index-Eintrag.
+    _aa_row("acme/leer", "Acme Leer", creator="acme", evaluations={}, speed=None),
+]
+
+
+def test_aa_entry_values_and_scaling():
+    entry = benchmarks._aa_entry(AA_ROWS[0])
+    assert entry["intelligence_index"] == 58.2      # Index bleibt 0..100
+    assert entry["coding_index"] == 71.0
+    assert entry["terminalbench"] == 41.2           # 0.4123 → 41.23 → 41.2
+    assert entry["scicode"] == 33.0
+    assert entry["tau2"] == 45.7
+    assert entry["speed"] == 143.3                   # 1 Dezimale
+    assert entry["aa_id"] == "gpt-6"
+    # Felder, die AA nicht kennt, bleiben leer (kommen ggf. aus OR).
+    assert entry["agentic_index"] is None
+    assert entry["code_elo"] is None and entry["code_rank"] is None
+    assert benchmarks._aa_entry(AA_ROWS[4]) is None
+
+
+def test_aa_terminalbench_fallback_chain():
+    # v4_0 hat Vorrang vor v2_1 …
+    assert benchmarks._aa_entry(AA_ROWS[0])["terminalbench"] == 41.2
+    # … v2_1 vor hard …
+    assert benchmarks._aa_entry(AA_ROWS[2])["terminalbench"] == 25.0
+    # … und hard ist der letzte Ausweg.
+    assert benchmarks._aa_entry(AA_ROWS[3])["terminalbench"] == 12.5
+    # Kette priorisiert innerhalb einer Zeile strikt.
+    row = _aa_row("kette", "Kette", evaluations={"terminalbench_hard": 0.9,
+                                                 "terminalbench_v2_1": 0.4,
+                                                 "terminalbench_v4_0": 0.1})
+    assert benchmarks._aa_entry(row)["terminalbench"] == 10.0
+
+
+def test_aa_match_by_slug_and_creator_slug():
+    idx = _aa_idx()
+    # Über den modelID-Slug.
+    hit = benchmarks._aa_match(_model("opencode/gpt-6", "gpt-6"), idx, {})
+    assert hit and hit["aa_id"] == "gpt-6"
+    assert hit["speed"] == 143.3
+    # Über den Namen.
+    hit = benchmarks._aa_match(_model("x/x", "gibtsnicht", "Claude Fable 5.1"), idx, {})
+    assert hit and hit["aa_id"] == "claude-fable-5-1"
+    # Über creator/slug, wenn der modelID nur den Namespace trägt …
+    idx2 = benchmarks._aa_index(
+        [_aa_row("gpt-6", "GPT-6", creator="openai",
+                 evaluations={"artificial_analysis_coding_index": 71.0})])
+    hit = benchmarks._aa_match(_model("x/gpt-6", "openai/gpt-6"), idx2, {})
+    assert hit and hit["aa_id"] == "gpt-6"
+    # … und über einen expliziten Alias (Slug oder creator/slug).
+    hit = benchmarks._aa_match(_model("x/y", "nix"), idx,
+                               {"x/y": "anthropic/claude-fable-5-1"})
+    assert hit and hit["aa_id"] == "claude-fable-5-1"
+    hit = benchmarks._aa_match(_model("x/y", "nix"), idx, {"x/y": "claude-fable-5-1"})
+    assert hit and hit["aa_id"] == "claude-fable-5-1"
+    # Kein Treffer → None.
+    assert benchmarks._aa_match(_model("x/z", "gibtsnicht"), idx, {}) is None
+
+
+def test_aa_best_candidate_has_most_filled_values():
+    rows = [_aa_row("duo", "Duo", creator="acme",
+                    evaluations={"artificial_analysis_coding_index": 10.0}),
+            _aa_row("duo", "Duo", creator="acme",
+                    evaluations={"artificial_analysis_coding_index": 20.0,
+                                 "artificial_analysis_intelligence_index": 30.0,
+                                 "scicode": 0.5})]
+    hit = benchmarks._aa_match(_model("x/duo", "duo"), benchmarks._aa_index(rows), {})
+    assert hit["intelligence_index"] == 30.0 and hit["scicode"] == 50.0
+
+
+def test_merge_aa_wins_per_field():
+    aa_hit = benchmarks._aa_entry(AA_ROWS[1])              # nur coding + speed
+    or_hit = benchmarks._entry(ROWS[0], "qwen/qwen3.8-max-0902")
+    merged = benchmarks._merge(aa_hit, or_hit)
+    # AA hat coding_index/speed → AA gewinnt.
+    assert merged["coding_index"] == 63.5
+    assert merged["speed"] == 88.0
+    # Wo AA leer ist, greift OR.
+    assert merged["intelligence_index"] == 45.4
+    assert merged["agentic_index"] == 56
+    assert merged["code_elo"] == 1720 and merged["code_rank"] == 7
+    assert merged["aa_id"] == "claude-fable-5-1"
+    assert merged["or_id"] == "qwen/qwen3.8-max-0902"
+    assert merged["source_id"] == "qwen/qwen3.8-max-0902"
+    # Nur eine Quelle liefert nichts Verwertbares → kein Eintrag.
+    assert benchmarks._merge(None, None) is None
+
+
+# --- Zwei Quellen im refresh() ---------------------------------------------
+
+
+def _two_source_models():
+    return [_model("opencode/claude-fable-5-1", "claude-fable-5-1", "Claude Fable 5.1"),
+            _model("opencode-go/qwen3.8-max", "qwen3.8-max")]
+
+
+def test_refresh_merges_aa_and_or_offline():
+    """Offline-Beleg: ein AA- und ein OR-Datensatz für dasselbe Modell werden
+    pro Feld zusammengeführt — AA sichtbar, OR nur, wo AA leer ist."""
+    or_rows = [_row("anthropic/claude-fable-5.1", "Claude Fable 5.1",
+                    aa={"coding_index": 11.0, "intelligence_index": 22.0,
+                        "agentic_index": 33},
+                    arena=ARENA_OK)]
+    with temp_cache():
+        with _refresh_env(rows=or_rows, models=[_model(
+                "opencode/claude-fable-5-1", "claude-fable-5.1", "Claude Fable 5.1")],
+                fetch=lambda: or_rows, aa_fetch=lambda: [AA_ROWS[1]], aa_key=AA_KEY):
+            res = benchmarks.refresh(force=True)
+        assert res["refreshed"] is True, res
+        cache = benchmarks.read_cache()
+        entry = cache["entries"]["opencode/claude-fable-5-1"]
+        assert entry["aa_id"] == "claude-fable-5-1"
+        assert entry["or_id"] == "anthropic/claude-fable-5.1"
+        # AA-Wert sichtbar, OR-Felder nur dort, wo AA leer ist.
+        assert entry["coding_index"] == 63.5          # von AA
+        assert entry["speed"] == 88.0                 # von AA
+        assert entry["agentic_index"] == 33           # nur OR kennt das
+        assert entry["code_elo"] == 1720              # nur OR (design_arena)
+        assert cache["sources"]["aa"]["ok"] is True and cache["sources"]["aa"]["count"] == 1
+        assert cache["sources"]["or"]["ok"] is True
+
+
+def test_refresh_without_aa_key_uses_or_only():
+    models = [_model("opencode-go/qwen3.8-max", "qwen3.8-max")]
+    with temp_cache():
+        with _refresh_env(models=models):
+            res = benchmarks.refresh(force=True)
+        assert res["refreshed"] is True, res
+        cache = benchmarks.read_cache()
+    assert cache["sources"]["aa"]["ok"] is False
+    assert cache["sources"]["or"]["ok"] is True
+    assert cache["entries"]["opencode-go/qwen3.8-max"]["aa_id"] is None
+    assert cache["entries"]["opencode-go/qwen3.8-max"]["or_id"] == "qwen/qwen3.8-max-0902"
+
+
+def test_aa_error_falls_back_to_or():
+    models = [_model("opencode-go/qwen3.8-max", "qwen3.8-max")]
+
+    def boom():
+        raise RuntimeError("HTTP 403")
+
+    with temp_cache() as path:
+        with _refresh_env(models=models, aa_fetch=boom, aa_key=AA_KEY):
+            res = benchmarks.refresh(force=True)
+        assert res["refreshed"] is True, res
+        cache = benchmarks.read_cache()
+        assert cache["sources"]["aa"]["ok"] is False
+        assert "403" in cache["sources"]["aa"]["error"]
+        assert cache["sources"]["or"]["ok"] is True
+        assert cache["entries"]["opencode-go/qwen3.8-max"]["or_id"] == "qwen/qwen3.8-max-0902"
+        assert os.path.exists(path)
+
+
+def test_or_error_falls_back_to_aa():
+    models = [_model("opencode/claude-fable-5-1", "claude-fable-5-1", "Claude Fable 5.1")]
+
+    def boom():
+        raise RuntimeError("HTTP 500")
+
+    with temp_cache():
+        with _refresh_env(fetch=boom, aa_fetch=lambda: AA_ROWS, aa_key=AA_KEY,
+                          models=models):
+            res = benchmarks.refresh(force=True)
+        assert res["refreshed"] is True, res
+        cache = benchmarks.read_cache()
+    assert cache["sources"]["or"]["ok"] is False
+    assert cache["sources"]["aa"]["ok"] is True
+    entry = cache["entries"]["opencode/claude-fable-5-1"]
+    assert entry["aa_id"] == "claude-fable-5-1" and entry["or_id"] is None
+    assert entry["coding_index"] == 63.5 and entry["speed"] == 88.0
+    assert entry["code_elo"] is None and entry["agentic_index"] is None
+
+
+def test_both_sources_failed_keeps_old_cache():
+    models = [_model("opencode-go/qwen3.8-max", "qwen3.8-max")]
+
+    def boom():
+        raise RuntimeError("HTTP 503")
+
+    with temp_cache() as path:
+        with _refresh_env(models=models):
+            benchmarks.refresh(force=True)
+        good = benchmarks.read_cache()
+        assert good["entries"]
+
+        with _refresh_env(models=models, fetch=boom, aa_fetch=boom, aa_key=AA_KEY):
+            res = benchmarks.refresh(force=True)
+        assert res["refreshed"] is False and res["reason"] == "error"
+        assert "503" in (res["error"] or "")
+        assert res.get("cacheKept") is True
+        assert benchmarks.read_cache()["entries"] == good["entries"]
+        assert os.path.exists(path)
+
+
+# --- state() / fieldLabels --------------------------------------------------
+
+
+def test_state_exposes_labels_and_sources():
+    fields = ["intelligence_index", "coding_index", "terminalbench", "speed",
+              "agentic_index", "code_elo", "scicode", "tau2"]
+    with temp_cache():
+        with _refresh_env(models=[_model("opencode-go/qwen3.8-max", "qwen3.8-max")],
+                          aa_fetch=lambda: AA_ROWS, aa_key=AA_KEY,
+                          settings=_settings(fields=fields)):
+            benchmarks.refresh(force=True)
+            st = benchmarks.state()
+    assert st["aaEnabled"] is True
+    assert st["attribution"] == "artificialanalysis.ai / OpenRouter"
+    assert st["sources"]["aa"]["ok"] is True
+    assert st["sources"]["aa"]["count"] == len(AA_ROWS)
+    assert st["sources"]["or"]["ok"] is True
+    labels = st["fieldLabels"]
+    assert labels["terminalbench"] == "Terminal-Bench"
+    assert labels["speed"] == "Tok/s"
+    assert labels["agentic_index"] == "Agentic-Index"
+    assert labels["code_elo"] == "Code-Elo"
+    assert labels["intelligence_index"] == "Intelligenz"
+    assert labels["coding_index"] == "Coding"
+    assert labels["scicode"] == "SciCode"
+    assert labels["tau2"] == "τ²-bench"
+    assert isinstance(st["fields"], list) and st["fields"]
+    for key in ("enabled", "count", "missing", "fetchedAt", "ageDays",
+                "refreshDays", "lastError"):
+        assert key in st, key
+
+
+def test_state_without_aa_key():
+    with temp_cache():
+        with patched(AA_API_KEY="", catalog_models=lambda: []):
+            st = benchmarks.state()
+    assert st["aaEnabled"] is False
+    assert st["sources"]["aa"] == {"ok": False, "ts": None, "count": 0}
+
+
+def test_old_cache_without_sources_is_readable():
+    """Abwärtskompatibilität: Cache vor dem AA-Update (kein `sources`)."""
+    with temp_cache():
+        benchmarks.write_cache({
+            "fetchedAt": 1700000000,
+            "source": "openrouter",
+            "count": 1,
+            "entries": {"a/b": {"coding_index": 76.2, "agentic_index": 56.0,
+                                "source_id": "qwen/qwen3.8-max-0902"}},
+        })
+        st = benchmarks.state()
+    assert st["sources"]["or"]["ok"] is True
+    assert st["sources"]["or"]["count"] == 1
+    assert st["sources"]["aa"]["ok"] is False and st["sources"]["aa"]["count"] == 0
+    assert st["attribution"] == "artificialanalysis.ai / OpenRouter"
+
+
+class _GhStub:
+    """Minimaler github_api-Ersatz: liefert eine feste SOT (kein Netz)."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    def get_file(self, path, *a, **kw):
+        return self._raw
+
+
+def test_sot_fields_are_valid():
+    """Die SOT darf nur bekannte Felder nennen (read_settings filtert das)."""
+    import json as _json
+    import json as _json
+    raw = _json.dumps({"fields": ["coding_index", "quatsch", 7], "refreshDays": 3})
+    with patched(github_api=_GhStub(raw)):
+        s = benchmarks.read_settings()
+    assert s["fields"] == ["coding_index"]   # unbekannte/falsche Typen fliegen raus
+    assert s["refreshDays"] == 3
+    assert benchmarks.field_labels(["terminalbench", "speed", "code_elo"]) == {
+        "terminalbench": "Terminal-Bench", "speed": "Tok/s", "code_elo": "Code-Elo"}
+    for f in benchmarks.DEFAULT_FIELDS:
+        assert f in benchmarks.ALL_FIELDS, f
+        assert f in benchmarks.FIELD_LABELS, f
 
 
 # --- Standalone-Runner -----------------------------------------------------

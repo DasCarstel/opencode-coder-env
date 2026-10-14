@@ -70,12 +70,8 @@ let catFilterOpenGoOnly = $state(true)
 let priceTableShowAll = $state(false)
 
 // ── Benchmarks (Quelle: GET /api/catalog → benchmarks + benchmarksStatus) ──
-const BM_COLS = [
-  { key: 'coding_index', label: 'Coding', hint: 'Coding-Index' },
-  { key: 'agentic_index', label: 'Agentic', hint: 'Agentic-Index' },
-  { key: 'intelligence_index', label: 'Intelligenz', hint: 'Intelligence-Index' },
-  { key: 'code_elo', label: 'Code-Elo', hint: 'Code-Elo (Arena)' },
-]
+// KEINE fest verdrahtete Spaltenliste: Reihenfolge, Keys und Labels kommen
+// vollständig aus benchmarksStatus.fields + benchmarksStatus.fieldLabels.
 const LS_BM = 'hestia-show-benchmarks'
 let showBenchmarks = $state(localStorage.getItem(LS_BM) !== '0')
 let bmBusy = $state(false)
@@ -90,7 +86,27 @@ function sourceLabel(s) {
 }
 
 const bmStatus = $derived(catalog.benchmarksStatus || null)
-const bmSource = $derived(sourceLabel(bmStatus?.source))
+// Spalten dynamisch: Reihenfolge = Reihenfolge in fields, Label = fieldLabels[key] || key
+const bmCols = $derived.by(() => {
+  const s = bmStatus
+  const fields = Array.isArray(s?.fields) ? s.fields.filter(k => typeof k === 'string' && k) : []
+  const labels = (s && typeof s.fieldLabels === 'object' && s.fieldLabels) || {}
+  return fields.map(key => ({ key, label: labels[key] || key }))
+})
+const bmSource = $derived(
+  (bmStatus?.attribution || '').trim() || sourceLabel(bmStatus?.source)
+)
+// Quellen-Badges (AA / OR) inkl. Trefferzahl
+const bmSources = $derived.by(() => {
+  const s = bmStatus?.sources || {}
+  const out = []
+  for (const [key, tag] of [['aa', 'AA'], ['or', 'OR']]) {
+    const e = s[key]
+    if (!e) continue
+    out.push({ tag, ok: !!e.ok, count: Number(e.count) || 0 })
+  }
+  return out
+})
 function bmOf(ref) { return (catalog.benchmarks || {})[ref] || null }
 function bmNum(b, key) {
   const v = b?.[key]
@@ -101,20 +117,28 @@ function bmText(b, key) {
   if (v == null) return '—'
   if (key === 'code_elo') {
     const rank = bmNum(b, 'code_rank')
-    return rank == null ? String(Math.round(v)) : `${Math.round(v)} (#${Math.round(rank)})`
+    return rank == null ? v.toFixed(1) : `${v.toFixed(1)} (#${Math.round(rank)})`
   }
   return v.toFixed(1)
 }
+// Zellen-Tooltip: Feld-Label + Quelle + Quell-ID des Modells (aa_id / or_id)
+function bmCellSrc(b) {
+  if (!b) return null
+  if (b.aa_id) return { name: 'artificialanalysis.ai', id: b.aa_id }
+  if (b.or_id) return { name: 'OpenRouter', id: b.or_id }
+  if (b.source_id) return { name: bmSource, id: b.source_id }
+  return null
+}
 function bmTitle(b, key) {
-  const col = BM_COLS.find(c => c.key === key)
-  const what = col ? col.hint : 'Benchmark'
-  if (!b) return `${what}: keine Daten`
-  const id = b.source_id || 'ohne Quell-ID'
-  return `${what} — Quelle: ${bmSource} → ${id}`
+  const col = bmCols.find(c => c.key === key)
+  const what = col ? col.label : key
+  if (!b) return `${what} — keine Daten`
+  const src = bmCellSrc(b)
+  return src ? `${what} — ${src.name} (${src.id})` : `${what} — Quelle unbekannt`
 }
 const bmStatusText = $derived.by(() => {
   const s = bmStatus
-  if (!s || !s.fetchedAt) return 'noch keine Daten'
+  if (!s || !s.fetchedAt) return `${bmSource} · noch keine Daten`
   let age = Number(s.ageDays)
   if (!Number.isFinite(age)) {
     age = Math.max(0, Math.round((Date.now() / 1000 - Number(s.fetchedAt)) / 86400))
@@ -131,7 +155,7 @@ function sortVal(m, key) {
     case 'released': return m.released ? Number(m.released) : null
     case 'variants': return (m.variants || []).length
     default:
-      if (BM_COLS.some(c => c.key === key)) return bmNum(bmOf(m.ref), key)
+      if (bmCols.some(c => c.key === key)) return bmNum(bmOf(m.ref), key)
       return String(m[key] ?? '')
   }
 }
@@ -1301,6 +1325,20 @@ setInterval(loadSuggestStatus, 60000)
       <input type="checkbox" bind:checked={showBenchmarks} onchange={onBmToggle} /> Benchmarks anzeigen
     </label>
     <span class="muted">Benchmarks: {bmStatusText}</span>
+    {#each bmSources as s (s.tag)}
+      <span class="badge {s.ok ? 'active' : 'err'}" title="{s.tag}: {s.ok ? 'ok' : 'nicht verfügbar'} · {s.count} Einträge">
+        {s.tag} {s.ok ? 'ok' : 'aus'}{s.ok ? ` · ${s.count}` : ''}
+      </span>
+    {/each}
+    {#if bmStatus && bmStatus.aaEnabled === false}
+      <span class="muted bmHint">AA-Key fehlt — Fallback OpenRouter</span>
+    {/if}
+    {#if bmStatus && bmStatus.enabled === false}
+      <span class="muted bmHint">Benchmarks im Backend deaktiviert</span>
+    {/if}
+    {#if bmStatus?.lastError}
+      <span class="muted" style="color:var(--err)">⚠ {bmStatus.lastError}</span>
+    {/if}
     <button class="mini" onclick={refreshBenchmarks} disabled={bmBusy}>
       {bmBusy ? '↻ aktualisiere …' : '↻ Benchmarks aktualisieren'}
     </button>
@@ -1321,11 +1359,15 @@ setInterval(loadSuggestStatus, 60000)
         <th class="thSort" onclick={() => sortBy('variants')} title="Nach Anzahl Varianten sortieren">Variants{sortMark('variants')}</th>
         <th class="thSort num" onclick={() => sortBy('released')} title="Nach Veröffentlichung sortieren">Release{sortMark('released')}</th>
         {#if showBenchmarks}
-          {#each BM_COLS as c (c.key)}
-            <th class="thSort num" onclick={() => sortBy(c.key)} title="{c.hint} — Quelle: {bmSource}">
-              {c.label}{sortMark(c.key)}
-            </th>
-          {/each}
+          {#if bmCols.length}
+            {#each bmCols as c (c.key)}
+              <th class="thSort num" onclick={() => sortBy(c.key)} title="{c.label} — Quelle: {bmSource}">
+                {c.label}{sortMark(c.key)}
+              </th>
+            {/each}
+          {:else}
+            <th class="muted">Benchmarks: keine Spalten konfiguriert</th>
+          {/if}
         {/if}
       </tr>
     </thead>
@@ -1344,7 +1386,7 @@ setInterval(loadSuggestStatus, 60000)
           <td class="muted">{(m.variants || []).join(', ') || '—'}</td>
           <td class="muted">{m.released ? new Date(m.released * 1000).toISOString().slice(0, 10) : '—'}</td>
           {#if showBenchmarks}
-            {#each BM_COLS as c (c.key)}
+            {#each bmCols as c (c.key)}
               <td class="num {bmNum(b, c.key) == null ? 'bmNone' : ''}" title={bmTitle(b, c.key)}>{bmText(b, c.key)}</td>
             {/each}
           {/if}
@@ -1425,6 +1467,7 @@ setInterval(loadSuggestStatus, 60000)
   .thSort:hover { color: var(--fire-soft); }
   th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
   td.num.bmNone { color: var(--muted); }
+  .bmHint { font-size: .78rem; }
   .bmHead {
     display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
     margin: 8px 0 0; font-size: .8rem;

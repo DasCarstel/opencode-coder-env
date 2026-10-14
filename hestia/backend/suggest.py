@@ -68,30 +68,40 @@ def _fmt(value) -> str:
     return str(value)
 
 
+def _sources_name(key: str) -> str:
+    """Quell-Key → Anzeigename (für die Prompt-Notiz)."""
+    return {
+        "aa": "Artificial Analysis",
+        "artificialanalysis": "Artificial Analysis",
+        "or": "OpenRouter",
+        "openrouter": "OpenRouter",
+    }.get(str(key or "").lower(), str(key))
+
+
 def _benchmarks_block(models: list) -> tuple:
-    """Benchmark-Werte je Kandidat-Modell (aus dem lokalen OpenRouter-Cache).
+    """Benchmark-Werte je Kandidat-Modell (aus dem lokalen Benchmark-Cache).
+
+    Spalten = die in der SOT konfigurierten Felder, beschriftet über
+    `fieldLabels` (nicht mehr über fest verdrahtete Namen). Quellen-Angabe:
+    Artificial Analysis (primär) / OpenRouter (Fallback).
 
     Liefert (zeilen_zusatz, anweisung) — ohne Cache/Fehler bleibt die Tabelle
     unverändert und der Prompt funktioniert wie bisher weiter.
     """
     try:
         import benchmarks as bench_mod
-        fields = bench_mod.read_settings()["fields"]
+        settings = bench_mod.read_settings()
+        fields = settings["fields"]
         entries = bench_mod.for_refs([m["ref"] for m in models], fields)
         st = bench_mod.state()
+        labels = (st.get("fieldLabels") or {}) or bench_mod.field_labels(fields)
     except Exception as e:  # noqa: BLE001 — Benchmarks dürfen nie den Lauf kippen
         _log(f"benchmarks nicht verfügbar: {e}")
         return {}, None
-    cols = []
-    for f, label in (("coding_index", "coding"), ("agentic_index", "agentic"),
-                     ("intelligence_index", "intell"), ("code_elo", "code-elo")):
-        if f in fields:
-            cols.append((f, label))
+    cols = [(f, labels.get(f, f)) for f in fields if f in bench_mod.ALL_FIELDS]
     if not cols:
-        cols = [(f, l) for f, l in (("coding_index", "coding"),
-                                    ("agentic_index", "agentic"),
-                                    ("intelligence_index", "intell"),
-                                    ("code_elo", "code-elo"))]
+        cols = [("coding_index", "Coding"), ("agentic_index", "Agentic-Index"),
+                ("intelligence_index", "Intelligenz"), ("code_elo", "Code-Elo")]
     header = " | ".join(label for _, label in cols)
     unknown = " | ".join(["—"] * len(cols))
     rows = {}
@@ -102,9 +112,12 @@ def _benchmarks_block(models: list) -> tuple:
         rows[m["ref"]] = " | ".join(_fmt(e.get(f)) for f, _ in cols)
     if not rows:
         return {}, None
-    source = st.get("source") or "openrouter"
+    sources = st.get("sources") or {}
+    ok = [k for k, v in sources.items() if isinstance(v, dict) and v.get("ok")]
+    source = " + ".join(_sources_name(k) for k in ok) or st.get("source") or "openrouter"
     note = (
-        f"(Quelle {source}, Stand {st.get('ageDays')} Tage alt, {st.get('count')} Modelle)"
+        f"(Quelle {source} — {st.get('attribution')}; Stand {st.get('ageDays')} Tage alt, "
+        f"{st.get('count')} Modelle)"
     )
     instruction = (
         "BENCHMARK-REGEL (wichtig): Die Benchmarks in der Modelltabelle sind die EINZIGEN\n"
@@ -113,7 +126,9 @@ def _benchmarks_block(models: list) -> tuple:
         "nicht aus dem Gedächtnis oder aus anderen Quellen. Ein '—' bedeutet 'unbekannt':\n"
         "dieses Modell hat dazu keine Daten — schätze den Wert NICHT und leite nichts daraus ab.\n"
         "Fehlt zu einem Modell die ganze Benchmark-Spalte ('—'), darfst du Qualitätsaussagen\n"
-        "für dieses Modell nur aus Preis, Varianten und Modellnamen begründen."
+        "für dieses Modell nur aus Preis, Varianten und Modellnamen begründen.\n"
+        f"Die Werte stammen aus {st.get('attribution') or 'den oben genannten Quellen'} "
+        "(Attribution Pflicht) — gib sie als solche weiter."
     )
     return rows, (header, instruction, note, unknown)
 
