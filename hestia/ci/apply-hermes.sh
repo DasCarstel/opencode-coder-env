@@ -10,10 +10,12 @@
 # 2) model.provider + model.default über die Hermes-CLI setzen
 # 3) fallback_providers als YAML-Liste schreiben (die CLI erzeugt sonst ein Dict,
 #    das Hermes ignoriert) — bestehenden Block entfernen, neuen anhängen
-# 4) optional den Abo-Pool (OPENCODE_GO_API_KEY*) aus OpenBao neu setzen
-# 5) dasselbe für jedes weitere SOT-Profil ("profiles") — der Multiplexer
+# 4) API_SERVER_ENABLED/PORT/HOST aus der SOT nach /opt/data/.env schreiben
+#    (immer, unabhaengig vom Pool; API_SERVER_KEY bleibt unangetastet)
+# 5) optional den Abo-Pool (OPENCODE_GO_API_KEY*) aus OpenBao neu setzen
+# 6) dasselbe für jedes weitere SOT-Profil ("profiles") — der Multiplexer
 #    bedient mehrere Profile mit je eigenen Dateien unter /opt/data/profiles/
-# 6) hermes config check, optionaler Neustart + Health-Wait, Zusammenfassung
+# 7) hermes config check, optionaler Neustart + Health-Wait, Zusammenfassung
 #
 # Sicherheit: die API-Keys stehen nie im Log, nie in einer Kommandozeile und nie
 # im Workflow-Log — sie wandern ausschließlich über stdin.
@@ -61,7 +63,8 @@ if [[ ! -r "$SOT_PATH" ]]; then
 fi
 # Ein Helper für die ganze SOT:jq ist auf dem Runner nicht garantiert.
 # IFS=Tabulator, weil die JSON-Werte Leerzeichen enthalten.
-IFS=$'\t' read -r PRIMARY_PROVIDER PRIMARY_MODEL FALLBACKS_JSON POOL_FOLLOW RESTART ENABLED PROFILES_JSON < <(
+IFS=$'\t' read -r PRIMARY_PROVIDER PRIMARY_MODEL FALLBACKS_JSON POOL_FOLLOW RESTART ENABLED PROFILES_JSON \
+  API_ENABLED API_PORT API_HOST < <(
   python3 - "$SOT_PATH" <<'PY'
 import json, sys
 try:
@@ -76,6 +79,15 @@ except Exception as e:
     sys.exit(1)
 p = cfg.get("primary") or {}
 pool_top = cfg.get("pool") or {}
+# API-Server (fehlt er die Sektion, greifen die Defaults — abwaertskompatibel).
+api = cfg.get("api_server") if isinstance(cfg.get("api_server"), dict) else {}
+try:
+    api_port = int(api.get("port", 8642))
+except (TypeError, ValueError):
+    api_port = 8642
+if not 1 <= api_port <= 65535:
+    api_port = 8642
+api_host = str(api.get("host") or "0.0.0.0").strip() or "0.0.0.0"
 
 
 def norm_fb(raw):
@@ -123,6 +135,9 @@ print("\t".join([
     "false" if cfg.get("restart") is False else "true",
     "true" if cfg.get("enabled", True) else "false",
     json.dumps(profiles, separators=(",", ":")),
+    "true" if api.get("enabled", True) else "false",
+    str(api_port),
+    api_host,
 ]))
 PY
 )
@@ -228,6 +243,99 @@ write_fallbacks() {
 write_fallbacks "$CONFIG_IN_CONTAINER" "$FALLBACKS_JSON" "default"
 echo "→ Fallback-Kette laut Hermes:"
 "${SSH[@]}" "docker exec -u 0 '$HERMES_CONTAINER' sh -lc 'HOME=/opt/data $HERMES_BIN fallback list'" | sed 's/^/   /'
+
+# --- 4b) API-Server-Variablen aus der SOT ------------------------------------
+# Schreibt API_SERVER_ENABLED/PORT/HOST nach /opt/data/.env. Wird UNABHAENGIG
+# vom Pool-Ansatz ausgefuehrt (pool.followActive=false darf die .env nicht
+# unangetastet lassen). API_SERVER_KEY ist ein Secret und wird hier bewusst
+# NICHT angefasst — der Merge laesst alle anderen Zeilen unverändert durch.
+# Aufruf: write_api_server <.env-Pfad im Container> <label>
+write_api_server() {
+  local env_file="$1" label="$2"
+  local base
+  base="$(basename "$env_file")"
+  # Aktuelle .env holen und die drei API_SERVER_*-Zeilen ersetzen/ergänzen.
+  # Bewusst strenger als apply_pool: diese Funktion läuft bei JEDEM Apply. Schlägt
+  # das Lesen fehl oder kommt leeres Ergebnis, brechen wir ab — sonst würden wir
+  # eine .env mit nur drei Zeilen schreiben und API_SERVER_KEY + Pool-Keys verlieren.
+  if ! "${SSH[@]}" "docker exec '$HERMES_CONTAINER' cat $env_file" > "$WORK/$base.apisrv.old"; then
+    echo "✗ [$label] $env_file nicht lesbar — API-Server nicht geschrieben (bestehende .env unveraendert)" >&2
+    return 1
+  fi
+  if [[ ! -s "$WORK/$base.apisrv.old" ]]; then
+    echo "✗ [$label] $env_file ist leer — Abbruch, um keine Secrets zu ueberschreiben (bestehende .env unveraendert)" >&2
+    return 1
+  fi
+  python3 - "$WORK/$base.apisrv.old" "$API_ENABLED" "$API_PORT" "$API_HOST" > "$WORK/$base.apisrv.new" <<'PY'
+import re, sys
+
+enabled = sys.argv[2]
+port = sys.argv[3]
+host = sys.argv[4]
+old = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+
+mapping = {
+    "API_SERVER_ENABLED": "true" if enabled == "true" else "false",
+    "API_SERVER_PORT": port,
+    "API_SERVER_HOST": host,
+}
+
+out, seen = [], set()
+for line in old:
+    m = re.match(r"^(API_SERVER_(ENABLED|PORT|HOST))\s*=", line)
+    if m:
+        name = m.group(1)
+        if name not in seen:
+            seen.add(name)
+            out.append(f"{name}={mapping[name]}")
+        continue
+    out.append(line)          # alles andere — auch API_SERVER_KEY! — bleibt
+
+for name, value in mapping.items():      # fehlende Zeilen ergaenzen
+    if name not in seen:
+        out.append(f"{name}={value}")
+        seen.add(name)
+
+sys.stdout.write("\n".join(out) + "\n")
+PY
+  # Sicherheitsnetz: bevor die .env ueberschrieben wird, muessen die gesetzten
+  # Werte plausibel sein — sonst bricht der Lauf ab und die .env bleibt wie
+  # sie ist (Backup/Review noetig).
+  if ! python3 - "$WORK/$base.apisrv.new" <<'PY'
+import re, sys
+
+BAD_HOST = re.compile(r"^[A-Za-z0-9_.:\[\]-]+$")
+bad = []
+for line in open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines():
+    m = re.match(r"^(API_SERVER_(ENABLED|PORT|HOST))\s*=\s*(.*)$", line)
+    if not m:
+        continue
+    name, value = m.group(1), m.group(3).strip().strip('"').strip("'")
+    if name == "API_SERVER_ENABLED":
+        if value.lower() not in ("true", "false"):
+            bad.append(f"{name}={value!r} (erlaubt: true|false)")
+    elif name == "API_SERVER_PORT":
+        if not value.isdigit() or not 1 <= int(value) <= 65535:
+            bad.append(f"{name}={value!r} (erlaubt: 1-65535)")
+    else:
+        if not value or not BAD_HOST.match(value):
+            bad.append(f"{name}={value!r} (kein plausibler Host/IP)")
+if bad:
+    sys.stderr.write("✗ API-Server-Werte ungueltig: " + ", ".join(bad) + "\n")
+    sys.exit(1)
+PY
+  then
+    echo "✗ [$label] API-Server nicht geschrieben — bestehende .env bleibt unveraendert (Backup/Review noetig)" >&2
+    return 1
+  fi
+  # In-place überschreiben (ein mv auf /opt/data scheitert im Volume).
+  "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > $env_file && chown hermes:hermes $env_file && chmod 600 $env_file'" <"$WORK/$base.apisrv.new"
+  echo "✓ [$label] API-Server gesetzt: enabled=$API_ENABLED · $API_HOST:$API_PORT (API_SERVER_KEY unangetastet)"
+}
+
+# Immer anwenden — unabhaengig von POOL_FOLLOW. Faellt die Validierung durch,
+# bricht das Skript ab (set -e) und die .env bleibt unveraendert.
+write_api_server "$ENV_IN_CONTAINER" "default"
 
 # --- 5) Abo-Pool aus OpenBao -------------------------------------------------
 # Die KEYS (default1..3) kommen aus OpenBao; welches Abo zuerst steht, wird NICHT
@@ -529,10 +637,19 @@ if [[ "$RESTART" == "true" ]]; then
   else
     echo "⚠ Health nach 30s nicht erreichbar — bitte $HERMES_CONTAINER prüfen"
   fi
+  # API-Server nur HINWEISEN: er ist optional, ein Fehler darf den Apply nicht rot machen.
+  if [[ "$API_ENABLED" == "true" ]]; then
+    if "${SSH[@]}" "docker exec '$HERMES_CONTAINER' sh -lc 'wget -qO- --timeout=2 http://127.0.0.1:$API_PORT/ 2>/dev/null || curl -sf --max-time 2 http://127.0.0.1:$API_PORT/ 2>/dev/null || (exec 3<>/dev/tcp/127.0.0.1/$API_PORT && echo open)'" >/dev/null 2>&1; then
+      echo "  → API-Server $API_HOST:$API_PORT erreichbar"
+    else
+      echo "  ⚠ API-Server $API_HOST:$API_PORT nicht erreichbar (nur Hinweis — Apply bleibt erfolgreich)"
+    fi
+  fi
 fi
 
 # --- 8) Zusammenfassung ------------------------------------------------------
 echo "✓ Hermes angewendet: primary=$PRIMARY_PROVIDER/$PRIMARY_MODEL · fallbacks=$FALLBACKS_JSON · pool=$POOL_FOLLOW · single=$SINGLE · restart=$RESTART"
+echo "✓ API-Server laut SOT: enabled=$API_ENABLED · $API_HOST:$API_PORT (API_SERVER_KEY unveraendert)"
 if [[ "$PROFILES_JSON" != "[]" ]]; then
   echo "✓ Profile angewendet: $PROFILES_APPLIED · $PROFILES_JSON"
 fi

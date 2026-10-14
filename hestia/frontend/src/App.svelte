@@ -37,6 +37,10 @@ let hermesSel = $state('')
 let hermesFb1 = $state('')
 let hermesFb2 = $state('')
 let hermesPool = $state(false)
+// API-Server von Hermes (ENV in /opt/data/.env; API_SERVER_KEY bleibt Secret)
+let hermesApiEnabled = $state(true)
+let hermesApiPort = $state(8642)
+let hermesApiHost = $state('0.0.0.0')
 
 const VARIANT_RANK = { minimal: 1, none: 2, low: 3, medium: 4, thinking: 4, high: 5, xhigh: 6, max: 7 }
 function highestVariantOf(ref) {
@@ -789,11 +793,22 @@ async function loadHermes() {
     hermesFb1 = hermesRef(fb[0]) || hermesFb1
     hermesFb2 = hermesRef(fb[1]) || hermesFb2
     hermesPool = !!cfg?.pool?.followActive
+    const api = cfg?.api_server || {}
+    hermesApiEnabled = api.enabled !== false
+    hermesApiPort = Number(api.port) || 8642
+    hermesApiHost = api.host || '0.0.0.0'
   } catch { /* ignore */ }
 }
 
 async function runHermesApply() {
   if (!hermesSel) { error = 'Hermes: kein Primary-Modell gewählt'; return }
+  const apiPort = Number(hermesApiPort)
+  if (!Number.isInteger(apiPort) || apiPort < 1 || apiPort > 65535) {
+    error = 'Hermes: API-Server-Port muss eine Zahl zwischen 1 und 65535 sein'; return
+  }
+  if (!String(hermesApiHost || '').trim()) {
+    error = 'Hermes: API-Server-Host darf nicht leer sein'; return
+  }
   if (!confirm(`Hermes auf "${hermesSel}" umstellen?\n\nAnwenden aktualisiert /opt/data/config.yaml und startet Hermes neu — laufende Hermes-Sessions brechen dabei ab.`)) return
   hermesBusy = true
   error = null
@@ -802,7 +817,12 @@ async function runHermesApply() {
     const fallback = [hermesFb1, hermesFb2].filter(Boolean).map(toEntry)
     const res = await api('/api/hermes/apply', {
       method: 'POST',
-      body: { primary: toEntry(hermesSel), fallback, pool: { followActive: hermesPool } },
+      body: {
+        primary: toEntry(hermesSel),
+        fallback,
+        pool: { followActive: hermesPool },
+        api_server: { enabled: hermesApiEnabled, port: apiPort, host: String(hermesApiHost).trim() },
+      },
     })
     hermesStatus = { ...(hermesStatus || {}), config: res.config || hermesStatus?.config }
     await loadHermes()
@@ -985,6 +1005,20 @@ setInterval(loadSuggestStatus, 60000)
     <label>
       <input type="checkbox" bind:checked={hermesPool} disabled={hermesBusy} />
       Abo folgt dem aktiven Konto
+    </label>
+    <label title="API_SERVER_ENABLED">
+      <input type="checkbox" bind:checked={hermesApiEnabled} disabled={hermesBusy} />
+      API-Server an
+    </label>
+    <label title="API_SERVER_PORT">
+      Port
+      <input type="number" min="1" max="65535" step="1" bind:value={hermesApiPort}
+        disabled={hermesBusy || !hermesApiEnabled} style="width:96px" />
+    </label>
+    <label title="API_SERVER_HOST">
+      Host
+      <input type="text" bind:value={hermesApiHost} placeholder="0.0.0.0"
+        disabled={hermesBusy || !hermesApiEnabled} style="width:130px" />
     </label>
     <span class="muted">
       Restart: {hermesStatus?.config?.restart === false ? 'nein' : 'ja'} ·

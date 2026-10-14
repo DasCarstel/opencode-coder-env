@@ -19,6 +19,13 @@
     "onlyActiveWhenExpiring": false
   },
   "restart": true,
+  // API-Server von Hermes (schreibt apply-hermes.sh nach /opt/data/.env).
+  // API_SERVER_KEY ist ein Secret und bleibt bewusst ausserhalb der SOT.
+  "api_server": {
+    "enabled": true,
+    "port": 8642,
+    "host": "0.0.0.0"
+  },
   "profiles": {
     "kleve": {
       "enabled": true,

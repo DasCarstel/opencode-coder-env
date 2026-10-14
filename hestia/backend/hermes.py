@@ -39,6 +39,9 @@ def _default_config() -> dict:
         "primary": {"provider": "", "model": ""},
         "fallback": [],
         "pool": {"followActive": False, "onlyActiveWhenExpiring": False},
+        # API-Server von Hermes (ENV-Variablen in /opt/data/.env). API_SERVER_KEY
+        # ist ein Secret und wird bewusst NICHT hier gepflegt.
+        "api_server": {"enabled": True, "port": 8642, "host": "0.0.0.0"},
         "restart": True,
         # Weitere Hermes-Profile des Multiplexers (je eigene config.yaml/.env
         # unter /opt/data/profiles/<name>/). Leeres Dict = nur das Default-Profil.
@@ -76,9 +79,61 @@ def _public(cfg: dict) -> dict:
         "pool": {"followActive": bool((cfg.get("pool") or {}).get("followActive")),
                  "onlyActiveWhenExpiring": bool(
                      (cfg.get("pool") or {}).get("onlyActiveWhenExpiring"))},
+        "api_server": _api_server_public(cfg.get("api_server")),
         "restart": bool(cfg.get("restart", True)),
         "profiles": _profiles_public(cfg.get("profiles") or {}, cfg),
     }
+
+
+def _api_server_public(section) -> dict:
+    """api_server normalisieren; fehlende/ungueltige Felder → Default.
+
+    Aeltere SOT-Dateien ohne "api_server" bleiben so abwaertskompatibel.
+    """
+    d = _default_config()["api_server"]
+    src = section if isinstance(section, dict) else {}
+    port = src.get("port", d["port"])
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        port = d["port"]
+    if not 1 <= port <= 65535:
+        port = d["port"]
+    host = str(src.get("host", d["host"]) or "").strip()
+    return {"enabled": bool(src.get("enabled", d["enabled"])),
+            "port": port,
+            "host": host or d["host"]}
+
+
+def _validate_api_server(section) -> dict:
+    """api_server aus dem Panel validieren (kein Apply bei Unsinn)."""
+    if section is None:
+        return {}
+    if not isinstance(section, dict):
+        raise ApplyError("api_server: muss ein Objekt sein "
+                         "(enabled/port/host)")
+    out = {}
+    if "enabled" in section:
+        if not isinstance(section["enabled"], bool):
+            raise ApplyError("api_server.enabled: muss true oder false sein")
+        out["enabled"] = section["enabled"]
+    if "port" in section:
+        port = section["port"]
+        if isinstance(port, bool) or not isinstance(port, (int, str)):
+            raise ApplyError("api_server.port: muss eine Zahl 1-65535 sein")
+        try:
+            port = int(str(port).strip())
+        except ValueError:
+            raise ApplyError("api_server.port: muss eine Zahl 1-65535 sein") from None
+        if not 1 <= port <= 65535:
+            raise ApplyError(f"api_server.port: {port} liegt ausserhalb 1-65535")
+        out["port"] = port
+    if "host" in section:
+        host = section["host"]
+        if not isinstance(host, str) or not host.strip():
+            raise ApplyError("api_server.host: muss ein nicht-leerer String sein")
+        out["host"] = host.strip()
+    return out
 
 
 def _profiles_public(profiles: dict, cfg: dict) -> dict:
@@ -225,6 +280,11 @@ def apply(payload: dict) -> dict:
 
     pool_in = payload.get("pool") or {}
     current_pool = (current.get("pool") or {})
+    # api_server bevorzugt aus dem Payload, sonst aus der aktuellen SOT
+    # (das Panel schickt es evtl. noch nicht mit) — sonst wuerde ein apply()
+    # den API-Server-Block loeschen bzw. auf den Default zuruecksetzen.
+    api_in = _validate_api_server(payload.get("api_server"))
+    api_server = _api_server_public({**_api_server_public(current.get("api_server")), **api_in})
     new_cfg = {
         "enabled": bool(payload.get("enabled", True)),
         "primary": primary,
@@ -235,6 +295,7 @@ def apply(payload: dict) -> dict:
                  "onlyActiveWhenExpiring": bool(pool_in.get(
                      "onlyActiveWhenExpiring",
                      (current_pool or {}).get("onlyActiveWhenExpiring")))},
+        "api_server": api_server,
         "restart": bool(payload.get("restart", True)),
         "profiles": profiles_out,
     }
@@ -253,6 +314,8 @@ def apply(payload: dict) -> dict:
             f"primary={primary['provider']}/{primary['model']}\n"
             f"fallback={desc}\n"
             f"pool.followActive={new_cfg['pool']['followActive']}\n"
+            f"api_server={new_cfg['api_server']['enabled']}@"
+            f"{new_cfg['api_server']['host']}:{new_cfg['api_server']['port']}\n"
             f"profiles={prof_desc}"
         ))
         _log(f"Hermes-SOT aktualisiert: {primary['provider']}/{primary['model']} | "

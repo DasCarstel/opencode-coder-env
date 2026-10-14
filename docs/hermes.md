@@ -71,9 +71,9 @@ mit Hermes an, Hermes führt Tools/MCP/Skills/Memory serverseitig aus. Upstream
 [Nous-Doku](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/open-webui),
 [Open WebUI-Doku](https://docs.openwebui.com/getting-started/quick-start/connect-an-agent).
 
-Aktiviert über `.env` (bewusst **nicht** über `config.yaml` — die wird von
-`hestia/ci/apply-hermes.sh` komplett überschrieben; die `.env` wird nur auf den
-`OPENCODE_GO_API_KEY*`-Zeilen angefasst, neue Zeilen bleiben erhalten):
+Aktiviert über die **SOT-Sektion `api_server`** in `.opencode/hestia-hermes.jsonc`
+(panel → *Hermes-Karte* → „API-Server an" / Port / Host). `apply-hermes.sh`
+schreibt daraus nach `hermes/ci/apply-hermes.sh` die Variablen nach `/opt/data/.env`:
 
 ```dotenv
 API_SERVER_ENABLED=true
@@ -81,6 +81,12 @@ API_SERVER_PORT=8642
 API_SERVER_HOST=0.0.0.0   # Default wäre 127.0.0.1 → von anderen Hosts nicht erreichbar
 API_SERVER_KEY=<Bearer-Key>
 ```
+
+> **Warum nicht `config.yaml`:** die wird von `hestia/ci/apply-hermes.sh` komplett
+> überschrieben. Die `.env` wird nur auf den `OPENCODE_GO_API_KEY*`-** und den
+> `API_SERVER_{ENABLED,PORT,HOST}`-Zeilen angefasst — `API_SERVER_KEY` und alle
+> übrigen Zeilen laufen unverändert durch. `write_api_server()` läuft **immer**,
+> unabhängig von `pool.followActive`.
 
 Danach `docker compose up -d` auf dem Coder-Host. `/v1/models` liefert genau **einen**
 Eintrag `hermes-agent` — die in Hermes konfigurierten Modelle und Provider bleiben
