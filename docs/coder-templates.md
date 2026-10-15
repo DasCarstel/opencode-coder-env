@@ -62,18 +62,35 @@ Hadoop-Edge + 2 Worker) hochzieht, und dazu alpine-/mongodb-Container aus Notebo
 - Für „Firework"/„Rocket" werden zusätzlich die `hadoop-node:0.3.6-rootless`-Images
   gezogen (zusammen ~2,8 GiB, anonym); `deds candle` zieht nur den
   `pyspark-client-node` (~3,7 GiB entpackt/1,3 GiB Download).
-- **Sync-Idempotenz bei „State-Vault-Desync"**: kennt `~/uni/state/state.json`
-  eine Datei nicht, die im oCIS-Space schon liegt (z. B. State-Volume neu,
-  Vault voll), legt der Sync eine Kopie `…-generated-2.<ext>` an und warnt
-  („vorhandene Datei nicht im State"). Seit Commit `c7e9f6f` (2026-10-15) führt
-  er diese Kopie im State und überspringt sie ab dem **nächsten** Lauf; vorher
-  hat **jeder** Lauf dieselben 207 Dateien erneut geladen (`207 Download(s)`,
-  `0 unveraendert`). Ist der State synchron, meldet der Lauf `0 Download(s)`.
-- **Aufräum-Rest aus den Abnahmetests:** im FernUni-oCIS-Space liegen 207
-  Duplikate `…-generated-2.<ext>` neben den Original-Materialdateien (entstanden
-  durch den oben beschriebenen Desync). Beide Sätze sind gültig; der State führt
-  die `-generated-2`-Datei. Das Zusammenführen ist ein manueller Schritt im Vault
-  (nicht Teil des Templates).
+- **Der Material-Baum gehört dem Sync** (Regel seit Commit `0e91a25`,
+  2026-10-15): kennt `~/uni/state/state.json` eine Datei nicht, die im
+  oCIS-Space schon liegt (z. B. State-Volume neu, Vault voll), wird sie
+  **übernommen** (gleiche Größe = inhaltsgleich, kein Download) oder sonst
+  **überschrieben** — nie mehr dupliziert. Vorher wich der Sync auf
+  `…-generated-2.<ext>` aus; bei frischem State traf das auf **jede**
+  Material-Datei zu (207 Duplikate, in jedem Lauf erneut geladen). Die
+  `-generated-2`-Ausweichung gilt nur noch für **Notizen** ohne
+  `generated: true` (Nutzerdateien werden nie überschrieben). Ist der State
+  synchron, meldet der Lauf `0 Download(s)`.
+- **Duplikate aufgeräumt (geprüft 2026-10-15):** der FernUni-oCIS-Space
+  enthält **261 Dateien, 0 Treffer** auf `…-generated-2.<ext>` und
+  `0 *.generated-2.md` — der frühere Desync-Rest (207 Kopien) ist weg, der
+  Material-Baum ist eindeutig; der manuelle Aufräumschritt entfällt.
+- **Musterlösungs-Ordner sind gesperrt, nicht leer:** alle sechs Ordner
+  „Musterlösung - Lektion 1…6" in Kurs 6556 hängen an einer
+  Moodle-Verfügbarkeitsbedingung (Freigaben 16.10.2026, 31.10.2026,
+  16.11.2026, 01.12.2026, 16.12.2026, 08.01.2027). `/mod/folder/view.php`
+  leitet dafür auf die Kursseite um („availabilityinfo-error: Verfügbar ab …").
+  Früher meldete der Sync „Ordner … ohne Dateiliste"; seit Commit `46a1188`
+  (2026-10-15) nennt er die Sperre (`🔒 Verfügbar ab …`) und ruft die Seite
+  gar nicht mehr ab. Die Dateien landen nach der jeweiligen Freigabe
+  automatisch beim nächsten Sync-Lauf.
+- **`deds rocket` ist im 8-GiB-Workspace nicht lauffähig:** das Rocket-Compose
+  (`docker-compose.yml`) setzt `memory` 2048M + 4096M + 4096M + 2048M
+  (Jupyter-PySpark-Client, zwei Worker, Edge) ≈ **12 GiB**; der Workspace hat
+  `memory = 8192`. Nutzbar sind `deds candle` (nur Client, 2 GiB) und
+  `deds firework` (mit `docker-compose-small.yml`: 768M + 1408M + 1408M + 512M
+  ≈ 4 GiB). Verifiziert 2026-10-15 im Workspace `ds-test`.
 - Ein Coder-`restart` baut das Workspace-Image neu (`CACHE_DATE` im `Dockerfile`)
   — der Neustart dauert dadurch ~4–6 min. Die drei Volumes bleiben dabei
   erhalten.
