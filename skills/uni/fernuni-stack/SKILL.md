@@ -36,22 +36,30 @@ Unser JupyterLab weicht bewusst auf 8890 aus, weil der FernUni-Stack
 ```bash
 cd ~/uni/data-engineering-infrastructure
 git checkout "$(git tag | sort -V | tail -1)"     # neuestes Release
-./Deploy-DeDs-Candle.sh    # nur Jupyter-/PySpark-Client (kleinster Test)
-./Deploy-DeDs-Rocket.sh    # voller Stack (Hadoop + 2 Worker)
-./Deploy-DeDs-Firework.sh  # Variante für kleine Maschinen
+deds candle      # nur Jupyter-/PySpark-Client (kleinster Test)
+deds rocket      # voller Stack (Hadoop + 2 Worker)
+deds firework    # Variante für kleine Maschinen
+deds down        # Stack abbauen
 ```
 
-`Candle` = kleinster Test (ein Container), `Rocket`/`Firework` = voller Stack
-(PySpark-Client + Hadoop-Edge + 2 Worker). Danach:
+> **`deds` statt `./Deploy-DeDs-*.sh`!** Die FernUni-Skripte setzen im Compose
+> `user: ${UID}:${GID}` aus `id -u`. Im Workspace läuft alles als **root** —
+> Jupyter im `pyspark-client-node` bricht dann ab:
+> `Running as root is not recommended. Use --allow-root to bypass.` →
+> `dbis-pyspark-client-node exited with code 1 (restarting)`.
+> `deds` (`/usr/local/bin/deds`, von `uni-bootstrap.sh` installiert) erzwingt
+> UID/GID 1000 (`pyspark-client` im Image). `Candle` = kleinster Test
+> (ein Container), `Rocket`/`Firework` = voller Stack (PySpark-Client +
+> Hadoop-Edge + 2 Worker). Danach:
 
 ```bash
 docker ps                              # erwartet: dbis-pyspark-client-node (+ Hadoop/Worker)
 docker compose ls                      # laufende Compose-Projekte
-docker compose -f <stack> down         # Stack wieder abbauen
 ```
 
 Jupyter des Stacks: `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8888`
-(erwartet 200). Den Token zeigt `docker logs dbis-pyspark-client-node`.
+(erwartet **302**, Weiterleitung auf `/tree`); `deds candle` belegt das Terminal
+(`docker compose up` ohne `-d`).
 
 ## Diagnose
 
