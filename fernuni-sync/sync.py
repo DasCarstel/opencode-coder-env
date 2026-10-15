@@ -687,6 +687,22 @@ class Kurs:
                 alt = ob.safe_existing_filename(
                     os.path.splitext(dateiname)[0] + "-generated-2" + os.path.splitext(dateiname)[1])
                 neu = join_path(mat_dir, alt)
+                # Ist die Namenskollision schon aufgeloest (der State kennt die
+                # -generated-2-Datei) und der Moodle-Stand unveraendert, dann
+                # NICHT erneut laden. Sonst laedt jeder Lauf dieselben Dateien
+                # wiederholt, obwohl nichts neu ist ("0 Downloads" bleibt aus).
+                if ist_unveraendert(self.state["material"].get(neu), gr, info.get("etag")):
+                    st, _, _ = self.dav.head(neu)
+                    if st != 404:
+                        self.files_skipped += 1
+                        self.run_urls[key] = neu
+                        lokal += 1
+                        if self.args.verbose:
+                            print(f"      = unveraendert, kein Download: {alt}")
+                        zeilen.append(ob.activity_line(
+                            act, url, ob.fmt_size(gr),
+                            ob.wikilink(neu, label="Datei")))
+                        continue
                 self.errors.append(f"WARNUNG: {ziel} existiert, steht nicht im State "
                                    f"-> schreibe {neu}")
                 print(f"      ! vorhandene Datei nicht im State -> {alt}")
