@@ -1,11 +1,11 @@
 {
   "build": {
-    "model": "opencode/claude-haiku-5-5",
+    "model": "opencode/deepseek-v4.1-flash-free",
     "variant": "max",
     "source": "derived"
   },
   "plan": {
-    "model": "opencode/claude-haiku-5-5",
+    "model": "opencode/deepseek-v4.1-flash-free",
     "variant": "max",
     "source": "derived"
   }

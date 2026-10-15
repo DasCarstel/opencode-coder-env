@@ -26,7 +26,7 @@
         "variant": "low"
       },
       "medium": {
-        "model": "opencode/claude-haiku-5-5",
+        "model": "opencode/deepseek-v4.1-flash-free",
         "costRatio": 5,
         "description": "DeepSeek V4 Flash für Implementation, Refactoring und Tests",
         "steps": 50,
@@ -40,7 +40,7 @@
         "variant": "max"
       },
       "heavy": {
-        "model": "opencode/claude-sonnet-5-5",
+        "model": "opencode-go/glm-5.3",
         "costRatio": 12,
         "description": "GLM 5.3 Flash für Architektur, komplexes Debugging und Security",
         "steps": 120,
