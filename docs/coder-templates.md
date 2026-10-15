@@ -49,7 +49,8 @@ Hadoop-Edge + 2 Worker) hochzieht, und dazu alpine-/mongodb-Container aus Notebo
 | Compose | `docker-compose-plugin` aus dem Docker-Repo (≥ 2.32) |
 | Ports | 8890 unser JupyterLab (Kernel „Python (ml)" / „Python (dl)"), 8888 Jupyter des FernUni-Stacks, 4040–4050 Spark-UI, 9000/9870/8088 Hadoop (Namenode/WebUI/ResourceManager – erst nach „Firework"/„Rocket") |
 | Volumes | `…-data` → `~/opencode-coder-env`, `…-uni` → `~/uni`, `…-docker` → `/var/lib/docker` (Images/Container überleben „Stop"/„Restart"), Sessions: `/etc/opencode-data/<user>-datascience` |
-| AppRole | `mcp-uni` (Least Privilege, fail-closed in `startup.sh`) — Secrets `secret/data/uni/fernuni-ocis` (user, token, password, space_id, url) und `secret/data/uni/moodle` (username, password, base_url) |
+| AppRole | `mcp-uni` (Least Privilege, fail-closed in `startup.sh`) — Secrets `secret/data/uni/fernuni-ocis` (user, token, password, space_id, url), `secret/data/uni/moodle` (username, password, base_url) und `secret/data/mcp/github` (`api_key`, nur für die privaten Modul-Repos; die Policy `mcp-server-uni` erlaubt genau diesen einen mcp-Pfad) |
+| Modul-Repos | vier private GitHub-Repos `fernuni-<modulnummer>-<slug>`, lokal in `~/uni/module/<modulnummer>-<slug>`; Abgleich per `uni-git-setup.sh` (Log `~/uni/logs/git-setup.log`) — Details unten |
 | MCP | nur FernUni-oCIS + pdf (`workspaces/uni/workspace-global.json`); das private/muellerconnect-oCIS-Token wird im Service aktiv `unset` |
 | Sync | `fernuni-sync/` läuft per `sync-loop.sh` beim Start + alle 6 h (Log `~/uni/logs/sync.log`); Zustand/config/env in `~/uni/state` → Neustart ist idempotent („0 Downloads") |
 
@@ -100,7 +101,56 @@ Hadoop-Edge + 2 Worker) hochzieht, und dazu alpine-/mongodb-Container aus Notebo
 Setup-Reihenfolge im Container: `entrypoint.sh` (Tools + Repo) →
 `uni-bootstrap.sh` im Hintergrund (dockerd → `~/uni`-Struktur →
 FernUni-Repo klonen → `~/uni/workspace`-Symlink im FernUni-Klon → uv-Umgebungen ml/dl →
-JupyterLab 8890 → `startup.sh datascience`).
+JupyterLab 8890 → `startup.sh datascience` → Modul-Repos).
+
+### Modul-Repos (ein privates Git-Repo pro Studienmodul)
+
+Jedes Pflichtmodul hat ein **eigenes privates GitHub-Repo**. Zweck: Versionierung
+der eigenen Arbeiten, Zugriff vom PC — und vor allem **Wiederherstellung in einem
+neuen Workspace** (dessen `~/uni`-Volume ist leer).
+
+| Moodle-Kurs | Modulnummer | Modul | Lokaler Pfad (`~/uni/module/…`) | GitHub-Repo (privat) |
+|---|---|---|---|---|
+| 6556 | 63123 | Data Engineering für Data Science | `63123-data-engineering-fuer-data-science` | `DasCarstel/fernuni-63123-data-engineering-fuer-data-science` |
+| 6591 | 64401 | Maschinelles Lernen | `64401-maschinelles-lernen` | `DasCarstel/fernuni-64401-maschinelles-lernen` |
+| — | 64511 | Einführung in Data Science | `64511-einfuehrung-in-data-science` | `DasCarstel/fernuni-64511-einfuehrung-in-data-science` |
+| — | 61811 | Mathematische Grundlagen von Data Science | `61811-mathematische-grundlagen-von-data-science` | `DasCarstel/fernuni-61811-mathematische-grundlagen-von-data-science` |
+
+Namensschema: `fernuni-<modulnummer>-<slug>`. Jedes Repo enthält eine
+`README.md` (Modulnummer, Modulname, Moodle-Kurs-ID, Verweis auf den Vault-Pfad
+`10-Semester/1-Semester/<…>`) und eine `.gitignore` (Python-Artefakte, Daten
+`*.csv`/`*.parquet`/…, `.env`; **Notebooks `.ipynb` werden versioniert**).
+Die **Moodle-Materialien liegen im Vault/oCIS und werden nicht hier versioniert.**
+
+`coder-templates/datascience/uni-git-setup.sh` (idempotent, läuft im Hintergrund
+aus `uni-bootstrap.sh`, Log `~/uni/logs/git-setup.log`) stellt den Zustand her:
+
+| Fall | Verhalten |
+|---|---|
+| `~/uni/module/<slug>/.git` vorhanden | nur `git remote get-url origin` prüfen — **nichts** ändern; `git pull --ff-only` nur bei sauberem Arbeitsbaum (sonst überspringen + melden) |
+| `.git` fehlt, Remote erreichbar | `git clone <url> ~/uni/module/<slug>` |
+| `.git` fehlt, Remote fehlt/gesperrt | `git init -b main` + Remote + `README.md` + `.gitignore` + Erstcommit + `push -u origin main` |
+
+**Token:** gelesen wird `secret/data/mcp/github` → `api_key` (Classic-PAT mit
+Scope `repo`, Login `DasCarstel`), im Profil `datascience` per
+`read_secret … GITHUB_TOKEN` in `shared/startup.sh` → landet in
+`/etc/opencode.env` (0600, außerhalb des Repos). Der Token steht **nie** in
+einem Repo, in einer Remote-URL oder in einem Log: die Remotes sind
+`https://github.com/<owner>/<repo>.git` (tokenfrei), authentifiziert wird über
+`credential.helper store` mit `/root/.git-credentials` (0600) — dieselbe
+Konvention wie `scripts/setup-git-credentials.sh`. `url.insteadOf` wurde
+bewusst **nicht** gewählt, weil das den Token dauerhaft in `~/.gitconfig`
+schreiben würde.
+
+Neuer Workspace von Hand (statt auf `uni-bootstrap.sh` zu warten):
+
+```bash
+bash ~/opencode-coder-env/coder-templates/datascience/uni-git-setup.sh
+```
+
+Voraussetzung: `GITHUB_TOKEN` in der Umgebung oder in `/etc/opencode.env`
+(Start über `paperclip`-freies `startup.sh datascience`). Fehlt der Token,
+werden die Repos nur lokal angelegt (kein Push) — das Skript meldet das.
 
 ### FernUni-Stack starten (abgenommen 2026-10-15)
 

@@ -10,6 +10,8 @@
 #   5. uv-Umgebungen (ml/dl) im Hintergrund anstoßen (uni-envs-setup.sh)
 #   6. JupyterLab auf Port 8890 starten (8888 gehört dem FernUni-Stack)
 #   7. startup.sh datascience (letzter Schritt)
+#   8. Modul-Repos (Git) abgleichen (uni-git-setup.sh im Hintergrund) – läuft
+#      bewusst NACH startup.sh, weil erst dort GITHUB_TOKEN aus OpenBao kommt
 #
 # Wird von entrypoint.sh per nohup gestartet; bewusst OHNE `set -e`, damit ein
 # Fehler (z. B. dockerd) den Workspace-Start nicht verhindert.
@@ -28,6 +30,7 @@ DOCKER_LOG="/var/log/dockerd.log"
 LOG_DIR="$UNI_DIR/logs"
 DOCKER_SUMMARY="$LOG_DIR/dockerd.log"
 ENV_LOG="$LOG_DIR/env-setup.log"
+GIT_LOG="$LOG_DIR/git-setup.log"
 JUPYTER_LOG="$LOG_DIR/jupyter.log"
 SYNC_LOG="$LOG_DIR/sync.log"
 JUPYTER_PORT=8890
@@ -42,7 +45,7 @@ echo "=== $(date -Is) uni-bootstrap gestartet (owner=$WS_OWNER) ==="
 # ── 0. ~/uni-Struktur (persistentes Volume) ───────────────────────────────
 mkdir -p "$UNI_DIR"/module "$UNI_DIR"/material "$UNI_DIR"/state \
          "$UNI_DIR"/logs "$UNI_DIR"/workspace "$UNI_DIR"/envs/ml "$UNI_DIR"/envs/dl
-: >> "$ENV_LOG"; : >> "$SYNC_LOG"; : >> "$DOCKER_SUMMARY"
+: >> "$ENV_LOG"; : >> "$SYNC_LOG"; : >> "$DOCKER_SUMMARY"; : >> "$GIT_LOG"
 
 log_docker() {
   printf '%s %s\n' "$(date -Is)" "$*" >> "$DOCKER_SUMMARY"
@@ -210,6 +213,24 @@ if [ -x "$REPO_DIR/coder-templates/shared/startup.sh" ]; then
     || echo "  ⚠ startup.sh wurde mit Fehler beendet (siehe /tmp/uni-startup.log)"
 else
   echo "  ⚠ startup.sh nicht gefunden: $REPO_DIR/coder-templates/shared/startup.sh"
+fi
+
+# ── 6b. Modul-Repos (Git) im Hintergrund ──────────────────────────────────
+# Pro Studienmodul ein eigenes privates GitHub-Repo; ~/uni/module ist persistent.
+# Ein NEUER Workspace (leeres ~/uni) holt die Repos hier aus dem Remote zurück.
+# Läuft NACH startup.sh, weil GITHUB_TOKEN erst dort aus OpenBao geladen wird
+# (/etc/opencode.env). Bewusst im Hintergrund: Klonen/Pushen darf den
+# Workspace-Start nicht verzögern.
+echo "  → Modul-Repos im Hintergrund abgleichen (Log: $GIT_LOG)"
+GIT_SETUP=""
+for kandidat in "$REPO_DIR/coder-templates/datascience/uni-git-setup.sh" \
+                /usr/local/bin/uni-git-setup.sh; do
+  [ -f "$kandidat" ] && GIT_SETUP="$kandidat" && break
+done
+if [ -n "$GIT_SETUP" ]; then
+  nohup bash "$GIT_SETUP" >> "$GIT_LOG" 2>&1 &
+else
+  echo "  ⚠ uni-git-setup.sh nicht gefunden – Modul-Repos werden nicht abgeglichen"
 fi
 
 # herdr sicherstellen (analog general/entrypoint.sh)

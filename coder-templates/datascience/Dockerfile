@@ -50,8 +50,9 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 | tail -2 \
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY uni-bootstrap.sh /usr/local/bin/uni-bootstrap.sh
 COPY uni-envs-setup.sh /usr/local/bin/uni-envs-setup.sh
+COPY uni-git-setup.sh /usr/local/bin/uni-git-setup.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/uni-bootstrap.sh \
-             /usr/local/bin/uni-envs-setup.sh
+             /usr/local/bin/uni-envs-setup.sh /usr/local/bin/uni-git-setup.sh
 
 # ENTRYPOINT: Wrapper startet DinD + Uni-Setup im Hintergrund, dann exec "$@"
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

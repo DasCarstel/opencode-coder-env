@@ -152,6 +152,11 @@ case "$PROFILE" in
     read_secret "secret/data/uni/moodle" "username" "MD_USER"
     read_secret "secret/data/uni/moodle" "password" "MD_PW"
     read_secret "secret/data/uni/moodle" "base_url" "MD_BASE"
+    # GitHub: private Modul-Repos (coder-templates/datascience/uni-git-setup.sh).
+    # Die AppRole 'mcp-server-uni' erlaubt genau secret/data/mcp/github – andere
+    # mcp-Secrets bleiben diesem Profil verborgen. Der Token wird nur zur
+    # Laufzeit benutzt; die Remote-URLs der Modul-Repos tragen keinen Token.
+    read_secret "secret/data/mcp/github" "api_key" "GITHUB_TOKEN"
     ;;
 esac
 # OpenCode Go: mehrere Accounts (alle Profile)
