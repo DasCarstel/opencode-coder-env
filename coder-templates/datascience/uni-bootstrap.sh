@@ -94,6 +94,21 @@ if docker info >/dev/null 2>&1; then
   fi
 fi
 
+# ── 2b. FernUni-Repo sicherstellen (öffentliches GitLab, idempotent) ───────
+# Der Klon liegt im persistenten Volume ~/uni und übersteht Workspace-Neustarts.
+# Fehlt er (frischer Workspace), wird er hier einmalig geholt.
+FERNUNI_URL="https://code.dbis-pro1.fernuni-hagen.de/pub-access/data-engineering-infrastructure.git"
+if [ ! -d "$FERNUNI_REPO/.git" ]; then
+  echo "  → FernUni-Repo klonen (code.dbis-pro1.fernuni-hagen.de)..."
+  if GIT_TERMINAL_PROMPT=0 git clone -q "$FERNUNI_URL" "$FERNUNI_REPO" 2>/dev/null; then
+    echo "  ✓ FernUni-Repo geklont ($(git -C "$FERNUNI_REPO" tag | sort -V | tail -1))"
+  else
+    echo "  ⚠ FernUni-Repo konnte nicht geklont werden (Netz/Proxy?) – Deploy-DeDs-*.sh nicht verfügbar"
+  fi
+else
+  echo "  ✓ FernUni-Repo vorhanden ($(git -C "$FERNUNI_REPO" tag | sort -V | tail -1))"
+fi
+
 # ── 3. workspace/-Symlink im FernUni-Klon (> ~/uni/workspace) ─────────────
 # Das FernUni-Repo bringt einen eigenen workspace/-Ordner mit; der Compose-Stack
 # bind-mountet ihn. Er wird durch einen Symlink auf das persistente
