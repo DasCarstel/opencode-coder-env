@@ -13,7 +13,7 @@
   "presets": {
     "hestia": {
       "fast": {
-        "model": "opencode/claude-haiku-5-5",
+        "model": "opencode/deepseek-v4.1-flash-free",
         "costRatio": 1,
         "description": "MiMo V2.5 für Explorer, Suche und einfache Lesesvorgänge",
         "steps": 30,
@@ -23,7 +23,7 @@
           "Grep/glob-Operationen",
           "Schnelle Lookups und Recherche"
         ],
-        "variant": "medium"
+        "variant": "low"
       },
       "medium": {
         "model": "opencode/claude-haiku-5-5",
