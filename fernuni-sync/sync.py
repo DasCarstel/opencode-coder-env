@@ -623,6 +623,17 @@ class Kurs:
 
     def _material(self, sec, slug, act, url, seite=None):
         """Dateien einer resource/folder/assign-Aktivitaet holen bzw. pruefen."""
+        if act.get("availability"):
+            # Gesperrte Aktivitaet (Moodle-Verfuegbarkeitsbedingung, im HTML
+            # ``availabilityinfo isrestricted``): ``/mod/<typ>/view.php`` leitet
+            # auf die Kursseite um - es gibt keine Dateiliste, und der Abruf
+            # meldete frueher irrefuehrend "ohne Dateiliste". Der Sperrhinweis
+            # gehoert nur als Text (Schloss-Symbol) in die Zeile; sobald die
+            # Bedingung greift, kommt die Datei beim naechsten Lauf automatisch.
+            if self.args.verbose:
+                print(f"      * {act['name']!r} gesperrt ({act['availability']}) - "
+                      f"keine Dateipruefung")
+            return [ob.activity_line(act, url)], 0
         mat_dir = join_path(self.base_dir, "Material", slug)
         used = set()
         zeilen = []

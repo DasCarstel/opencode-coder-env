@@ -178,6 +178,46 @@ FOLDER_PAGE = """<html><head><title>Kurs: Data Engineering für Data Science: \
  daten.csv</a>
 </div></body></html>"""
 
+# Gesperrter Ordner (Realitaet Kurs 6556, section=8, Modul 339098): der
+# Modulblock der Kursseite, auf das Wesentliche gekuerzt. Der Sperrhinweis
+# steht in ``class="activity-availability availabilityinfo isrestricted"``.
+FOLDER_GESPERRT_BLOCK = """<li class="activity folder modtype_folder  hasinfo indented"
+ id="module-339098" data-for="cmitem" data-id="339098">
+ <div class="activity-item focus-control " data-activityname="Musterlösung - Lektion 1"
+  data-region="activity-card">
+  <div class="activity-altcontent text-break activity-description">
+   <div class="no-overflow"><div class="no-overflow"><p>Jupyter Notebook und PDF mit der Musterlösung</p></div></div>
+  </div>
+  <div class="activity-availability availabilityinfo isrestricted" data-region="availabilityinfo">
+   <div><i class="icon fa fa-lock fa-fw " aria-hidden="true" ></i> Verfügbar ab <strong>16. Oktober 2026</strong></div>
+  </div>
+ </div>
+</li>"""
+
+# Was Moodle liefert, wenn die gesperrte view.php direkt aufgerufen wird:
+# Redirect auf die Kursseite mit Fehlermeldung (Klasse availabilityinfo-error),
+# keine Dateiliste. Auszug aus dem echten Abruf von
+# /mod/folder/view.php?id=339098 (Oktober 2026).
+FOLDER_GESPERRT_REDIRECT = """<html><body><span class="notifications">
+<div class="alert alert-danger alert-block fade in alert-dismissible" role="alert">
+ <div class="activityinstance-error"><span class="instancename"> Musterlösung - Lektion 1<span class="accesshide"> Verzeichnis</span></span></div>
+ <div class="availabilityinfo-error">Verfügbar ab <strong>16. Oktober 2026</strong></div>
+</div></span></body></html>"""
+
+# Kursseite mit genau diesem gesperrten Ordner (eine Tab-Leiste, ein Abschnitt).
+GESPERRT_KURS = """<html><head><title>Kurs: Data Engineering für Data Science | \
+Data Engineering für Data Science - WiSe 2026/27 | Moodle</title></head><body>
+<ul class="nav nav-tabs">
+ <li class="nav-item" id="onetabid-58614"><a class="nav-link" href="#section-8"
+   title="Lektion 1 - Einführung">Lektion 1 - Einführung</a></li>
+</ul>
+<li id="section-8" class="section" data-id="58614">
+ <h3 class="sectionname">Lektion 1 - Einführung</h3>
+ <ul class="section img-text">
+""" + FOLDER_GESPERRT_BLOCK + """
+ </ul>
+</li></body></html>"""
+
 
 class FakeDav:
     """WebDAV-Attrappe mit In-Memory-Dateisystem."""
@@ -699,6 +739,64 @@ def test_material_kollision():
     shutil.rmtree(tmpdir)
 
 
+def test_gesperrter_ordner():
+    """Verfuegbarkeitsbedingung: kein Abruf der gesperrten Seite, klarer Hinweis.
+
+    Realfall Kurs 6556: alle sechs 'Musterloesung - Lektion N'-Ordner sind bis
+    zum jeweiligen Freigabedatum gesperrt; /mod/folder/view.php?id=<cmid> leitet
+    auf die Kursseite um. Vor dem Fix lief trotzdem ein Abruf und der Lauf
+    meldete "! Ordner '...' ohne Dateiliste".
+    """
+    print("Gesperrter Ordner (Verfuegbarkeitsbedingung)")
+    import contextlib
+    import io
+
+    acts = mp.parse_activities(FOLDER_GESPERRT_BLOCK)
+    check("Sperrhinweis am Modul erkannt",
+          len(acts) == 1 and acts[0].get("availability") == "Verfügbar ab 16. Oktober 2026",
+          acts)
+    check("gesperrte view.php liefert keine Dateiliste",
+          mp.parse_folder(FOLDER_GESPERRT_REDIRECT) == [],
+          mp.parse_folder(FOLDER_GESPERRT_REDIRECT))
+
+    class ZaehlendesFakeMoodle(FakeMoodle):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.abrufe = []
+
+        def text(self, path):
+            self.abrufe.append(path)
+            return FakeMoodle.text(self, path)
+
+    b = FakeMoodle.base
+    pages = {sy.norm_key(f"{b}/course/view.php?id=6556"): GESPERRT_KURS,
+             f"{b}/mod/folder/view.php?id=339098": FOLDER_GESPERRT_REDIRECT}
+    st = {"version": 1, "material": {}, "notes": {}}
+    tmpdir = tempfile.mkdtemp()
+    dav = FakeDav()
+    fm = ZaehlendesFakeMoodle(pages, {})
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        s = sy.Kurs(MODUL, args(verbose=True), fm, dav, st, tmpdir).run()
+    out = buf.getvalue()
+    check("keine Fehler, nichts heruntergeladen",
+          not s["fehler"] and s["dateien"] == 0, (s["fehler"], s["dateien"]))
+    check("gesperrte Seite wird gar nicht abgerufen",
+          not any("/mod/folder/" in p for p in fm.abrufe), fm.abrufe)
+    check("keine irrefuehrende 'ohne Dateiliste'-Meldung",
+          "ohne Dateiliste" not in out, out[-400:])
+    note = f"{BASIS}/08-Lektion-1-Einfuehrung.md"
+    t = txt(dav, note)
+    check("Sperrhinweis in der Notiz",
+          "\U0001f512 Verfügbar ab 16. Oktober 2026" in t, t[-400:])
+    check("gesperrter Ordner bleibt verlinkt",
+          "[In Moodle \u00f6ffnen](https://moodle.fernuni-hagen.de/mod/folder/view.php?id=339098)"
+          in t, t[-400:])
+    check("kein Material-Baum fuer gesperrte Ordner",
+          not any("/Material/" in p for p in dav.files), sorted(dav.files))
+    shutil.rmtree(tmpdir)
+
+
 def test_auth():
     print("Auth-/Formatpruefung")
     try:
@@ -748,7 +846,8 @@ def test_cli():
 
 if __name__ == "__main__":
     for t in (test_parser, test_slug, test_notiz, test_dav, test_state, test_lauf,
-              test_onetopic_tabs, test_material_kollision, test_auth, test_cli):
+              test_onetopic_tabs, test_material_kollision, test_gesperrter_ordner,
+              test_auth, test_cli):
         t()
     print(f"\n{OK[0]} Pruefungen ok, {len(FEHLER)} fehlgeschlagen")
     if FEHLER:
