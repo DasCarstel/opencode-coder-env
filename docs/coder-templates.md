@@ -69,6 +69,11 @@ Hadoop-Edge + 2 Worker) hochzieht, und dazu alpine-/mongodb-Container aus Notebo
   er diese Kopie im State und überspringt sie ab dem **nächsten** Lauf; vorher
   hat **jeder** Lauf dieselben 207 Dateien erneut geladen (`207 Download(s)`,
   `0 unveraendert`). Ist der State synchron, meldet der Lauf `0 Download(s)`.
+- **Aufräum-Rest aus den Abnahmetests:** im FernUni-oCIS-Space liegen 207
+  Duplikate `…-generated-2.<ext>` neben den Original-Materialdateien (entstanden
+  durch den oben beschriebenen Desync). Beide Sätze sind gültig; der State führt
+  die `-generated-2`-Datei. Das Zusammenführen ist ein manueller Schritt im Vault
+  (nicht Teil des Templates).
 - Ein Coder-`restart` baut das Workspace-Image neu (`CACHE_DATE` im `Dockerfile`)
   — der Neustart dauert dadurch ~4–6 min. Die drei Volumes bleiben dabei
   erhalten.
