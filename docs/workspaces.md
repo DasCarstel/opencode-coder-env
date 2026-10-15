@@ -9,7 +9,7 @@ Verzeichnis, eine eigene Konfigurationsdatei und damit eine eigene MCP-/Skill-Si
 | 2 | `infrastructure/homeassistant` | `workspaces/infrastructure/homeassistant/opencode.json` | Home Assistant Krefeld + Obsidian | internes VLAN, SSH-Key | `ssh-mcp` (config-full), `homeassistant`, `ocis` | `homeassistant`, `server`, `shared`, `obsidian` |
 | 3 | `infrastructure/svelte` | `workspaces/infrastructure/svelte/opencode.json` | Svelte/SvelteKit-Entwicklung + denselben Infra-Kontext | internes VLAN, SSH-Key | `ssh-mcp` (config-full), `authentik`, `ocis`, `svelte` | `shared`, `server`, `obsidian` |
 | 4 | `infrastructure/cleve` | `workspaces/infrastructure/cleve/opencode.json` | Zweite Site Kleve (eigener Proxmox, TrueNAS, Docker-Host) | Kleve-Subnetz `192.168.178.x` (Tailscale-Tunnel/Subnet-Route) | `ssh-mcp` (**config-cleve**), `homeassistant-kleve` | `shared`, `cleve` |
-| 5 | `general` | `workspaces/general/workspace-global.json` | Allgemeine Aufgaben ohne Site-Bindung | **kein internes VLAN**, kein SSH-Key | `ocis`, `pdf` | `shared`, `obsidian` |
+| 5 | `general` | `workspaces/general/workspace-global.json` | Allgemeine Aufgaben ohne Site-Bindung | **kein internes VLAN**; nur Carsten-PC (`10.0.0.20`) per NAT erreichbar, eigener Key | `ocis`, `pdf`, `ssh-mcp` (**config-general**, nur Carsten-PC) | `shared`, `general`, `obsidian` |
 | 6 | `minijob` | `workspaces/minijob/workspace-global.json` | MuellerConnect-Space (externer Kunde) | öffentlich, **kein internes VLAN**, kein SSH-Key | `ocis`, `pdf` | `shared`, `minijob` |
 
 Die vier Workspaces 1–4 liegen unter `workspaces/infrastructure/<space>/` und bringen
@@ -50,14 +50,17 @@ Zusätzlich setzt der Cleve-Workspace **`model` und `small_model` explizit**
 dem Router-Tier ableiten soll.
 
 ### 5. General
-Allgemeiner Workspace ohne Site-Bezug. **Kein `ssh-mcp`, kein SSH-Key, kein internes
-VLAN.** Damit kann von hier aus strukturell kein Host erreicht werden — das ist der
-Isolationseffekt, nicht nur eine Konfigurationsfehlermöglichkeit. Verfügbar sind
-OpenCloud (privater Space) und ein PDF-MCP.
+Allgemeiner Workspace ohne Site-Bezug. Er hat **`ssh-mcp` mit genau einem Profil**:
+`carsten-pc` (Windows, `10.0.0.20`) über `--config=/root/.config/ssh-mcp/config-general.toml`.
+Der Schlüssel ist exklusiv (`secret/data/mcp/ssh-mcp-pc`), und der Workspace läuft mit der
+minimal berechtigten AppRole `mcp-general` (Policy `mcp-server-general`) statt der
+gemeinsamen `mcp-server`. Krefeld- und Kleve-Hosts bleiben unerreichbar: deren Profile
+existieren in dieser Config nicht und das Krefelder/Kleve-VLAN ist nicht angebunden. Verfügbar
+sind außerdem OpenCloud (privater Space) und ein PDF-MCP.
 
 ### 6. minijob (MuellerConnect)
-Der Workspace des externen Kunden-Spaces. Trennung wie bei General: kein SSH-Zugang,
-kein internes Netz. Zusätzlich zum privaten oCIS-Zugriff hat er den **MuellerConnect-
+Der Workspace des externen Kunden-Spaces. Vollständig abgeschnitten: kein SSH-Zugang
+(anders als General, das den Carsten-PC erreicht), kein internes Netz. Zusätzlich zum privaten oCIS-Zugriff hat er den **MuellerConnect-
 Service-Account**; siehe [oCIS-Guardrail](mcp-skills.md#ocis-guardrail). Skills kommen
 aus `shared` + `minijob`.
 
@@ -106,6 +109,7 @@ aus der jeweiligen Config referenziert. Die Gruppen:
 | `skills/server/` | `authentik`, `authentik-integration`, `authentik-troubleshooting`, `docker-host-location` (Krefeld) | server-management, homeassistant, svelte |
 | `skills/cleve/` | `docker-host-location` (Kleve) | cleve |
 | `skills/homeassistant/` | `home-assistant`, `google-home-exposure` | homeassistant |
+| `skills/general/` | `carsten-pc` | general |
 | `skills/obsidian/` | `obsidian` | server-management, homeassistant, svelte, general |
 | `skills/minijob/` | `obsidian` | minijob |
 

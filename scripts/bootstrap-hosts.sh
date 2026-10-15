@@ -94,6 +94,101 @@ else
   echo "  ✓ Policy existiert bereits"
 fi
 
+# ─── Policy: mcp-server-general (Least Privilege für den general-Space) ─────
+
+echo ""
+echo "=== OpenBao: Policy mcp-server-general ==="
+POLICY_EXISTS=$(curl -sS -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+  "${OPENBAO_ADDR}/v1/sys/policy/acl/mcp-server-general" 2>/dev/null | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('rules',''))" 2>/dev/null || echo "")
+
+if [ -z "$POLICY_EXISTS" ]; then
+  echo "  → Policy wird erstellt..."
+  curl -sS -X PUT -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "policy": "path \"secret/data/mcp/github\" { capabilities = [\"read\"] }\npath \"secret/data/mcp/opencloud-ocis\" { capabilities = [\"read\"] }\npath \"secret/data/mcp/opencode-go\" { capabilities = [\"read\"] }\npath \"secret/data/mcp/hermes-opencode-service\" { capabilities = [\"read\"] }\npath \"secret/data/mcp/ssh-mcp-pc\" { capabilities = [\"read\"] }\npath \"secret/metadata/mcp/github\" { capabilities = [\"list\",\"read\"] }\npath \"secret/metadata/mcp/opencloud-ocis\" { capabilities = [\"list\",\"read\"] }\npath \"secret/metadata/mcp/opencode-go\" { capabilities = [\"list\",\"read\"] }\npath \"secret/metadata/mcp/hermes-opencode-service\" { capabilities = [\"list\",\"read\"] }\npath \"secret/metadata/mcp/ssh-mcp-pc\" { capabilities = [\"list\",\"read\"] }\npath \"auth/token/renew-self\" { capabilities = [\"update\"] }\npath \"auth/token/revoke-self\" { capabilities = [\"update\"] }"
+    }' \
+    "${OPENBAO_ADDR}/v1/sys/policy/acl/mcp-server-general" >/dev/null 2>&1
+  echo "  ✓ Policy erstellt"
+else
+  echo "  ✓ Policy existiert bereits"
+fi
+
+# ─── AppRole: mcp-general (Least-Privilege für den general-Space) ───────────
+
+echo ""
+echo "=== OpenBao: AppRole mcp-general ==="
+ROLE_EXISTS=$(curl -sS -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+  "${OPENBAO_ADDR}/v1/auth/approle/role/mcp-general/role-id" 2>/dev/null | \
+  python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('role_id',''))" 2>/dev/null || echo "")
+
+if [ -z "$ROLE_EXISTS" ]; then
+  echo "  → Rolle mcp-general wird erstellt..."
+  curl -sS -X POST -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "token_policies": ["mcp-server-general"],
+      "token_ttl": "3600",
+      "token_max_ttl": "86400",
+      "secret_id_ttl": "0",
+      "secret_id_num_uses": "0",
+      "token_num_uses": "0"
+    }' \
+    "${OPENBAO_ADDR}/v1/auth/approle/role/mcp-general" >/dev/null 2>&1
+  echo "  ✓ Rolle erstellt"
+else
+  echo "  ✓ Rolle existiert bereits"
+fi
+
+# ─── Secret: ssh-mcp-pc (exklusiver Key für den Carsten-PC) ─────────────────
+
+echo ""
+echo "=== OpenBao: Secret ssh-mcp-pc ==="
+PC_PUB_EXISTS=$(curl -sS -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+  "${OPENBAO_ADDR}/v1/secret/data/mcp/ssh-mcp-pc" 2>/dev/null | \
+  python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('data',{}).get('public_key',''))" 2>/dev/null || echo "")
+
+if [ -z "$PC_PUB_EXISTS" ]; then
+  echo "  → ssh-mcp-PC-Key wird erzeugt..."
+  TMPKEY_DIR=$(mktemp -d)
+  ssh-keygen -t ed25519 -f "$TMPKEY_DIR/id_ed25519_pc" -N "" -C "ssh-mcp-carsten-pc" -q
+  PC_PRIV=$(cat "$TMPKEY_DIR/id_ed25519_pc")
+  PC_PUB=$(cat "$TMPKEY_DIR/id_ed25519_pc.pub")
+  rm -rf "$TMPKEY_DIR"
+  python3 - "$OPENBAO_ADDR" "$OPENBAO_ROOT_TOKEN" "$PC_PRIV" "$PC_PUB" <<'PY'
+import json, sys, urllib.request
+addr, tok, priv, pub = sys.argv[1:5]
+body = json.dumps({"data": {"private_key": priv, "public_key": pub}}).encode()
+req = urllib.request.Request(addr + "/v1/secret/data/mcp/ssh-mcp-pc", data=body,
+                             method="POST",
+                             headers={"X-Vault-Token": tok, "Content-Type": "application/json"})
+urllib.request.urlopen(req, timeout=15).read()
+PY
+  echo "  ✓ Secret erstellt (privater + öffentlicher Key)"
+else
+  echo "  ✓ Secret existiert bereits"
+fi
+
+echo "  → Public-Key für den Carsten-PC (in authorized_keys des Users 'carst'):"
+curl -sS -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+  "${OPENBAO_ADDR}/v1/secret/data/mcp/ssh-mcp-pc" 2>/dev/null | \
+  python3 -c "import sys,json; print('    ' + (json.load(sys.stdin).get('data',{}).get('data',{}).get('public_key','') or 'FEHLT').strip())"
+
+# ─── general-Template: Role-ID ausgeben ─────────────────────────────────────
+
+echo ""
+echo "=== general-Template: Role-ID / Secret-ID ==="
+GENERAL_ROLE_ID=$(curl -sS -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+  "${OPENBAO_ADDR}/v1/auth/approle/role/mcp-general/role-id" 2>/dev/null | \
+  python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('role_id',''))" 2>/dev/null || echo "")
+echo "  Role-ID  (mcp-general): ${GENERAL_ROLE_ID:-FEHLT}"
+echo "  Secret-ID ausstellen:"
+echo "    curl -sS -X POST -H \"X-Vault-Token: \$OPENBAO_ROOT_TOKEN\" \\"
+echo "      ${OPENBAO_ADDR}/v1/auth/approle/role/mcp-general/secret-id \\"
+echo "      | python3 -c \"import sys,json; print(json.load(sys.stdin)['data']['secret_id'])\""
+echo "  → im Coder-Template 'general' als openbao_role_id / openbao_approle_secret_id eintragen."
+
 # CA-Key holen
 echo ""
 echo "=== OpenBao: CA-Key abrufen ==="

@@ -40,6 +40,7 @@ ausschließlich in `/etc/opencode.env` (Mode 0600) ab.
 | `secret/data/mcp/opencloud-ocis` | `OCIS_PRIVATE_USER/TOKEN`, `OCIS_MUELLERCONNECT_USER/TOKEN` |
 | `secret/data/mcp/opencode-go` | `OC_GO_DEFAULT1..3` — **nur diese drei Felder** |
 | `secret/data/mcp/ssh-mcp` | statischer ed25519-Key → `/root/.ssh/id_ed25519_mcp` |
+| `secret/data/mcp/ssh-mcp-pc` | exklusiver ed25519-Key für den Carsten-PC (Windows) → `/root/.ssh/id_ed25519_mcp_pc` (Profile `general` + `infrastructure`; **nicht** der gemeinsame Key) |
 | `secret/data/mcp/tailscale` | `TS_AUTHKEY` |
 | `secret/data/mcp/github` | GitHub-PAT (via `scripts/setup-git-credentials.sh`) |
 | `secret/data/mcp/hermes-opencode-service` | `OPENCODE_SERVER_PASSWORD` |
@@ -51,7 +52,9 @@ ausschließlich in `/etc/opencode.env` (Mode 0600) ab.
 
 **AppRoles** (Details in [`OPENBAO.md`](../OPENBAO.md)): `mcp-server` für die
 Coder-Workspaces (`secret/data/mcp/*` lesen, `ssh/sign/host-access`),
-`host-access` nur für die SSH-CA-Signierung. Die Host-/SSH-Credentials der
+`mcp-general` (Policy `mcp-server-general`) für den General-Workspace — minimal
+berechtigt, liest nur `secret/data/mcp/{github,opencloud-ocis,opencode-go,hermes-opencode-service,ssh-mcp-pc}` —
+und `host-access` nur für die SSH-CA-Signierung. Die Host-/SSH-Credentials der
 Zielmaschinen selbst sind nicht Teil dieses Flusses; sie liegen in
 `authorized_keys` bzw. `TrustedUserCAKeys` auf den Hosts.
 

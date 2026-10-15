@@ -8,6 +8,8 @@ Authentik über den Community-MCP (`authentik-mcp`).
 - **ssh-mcp** (lokal, stdio) – im Workspace-Container via `npm install -g ssh-mcp`
   - Konfiguration: `~/.config/ssh-mcp/config.toml` (von `startup.sh` erzeugt, nicht im Repo)
   - Auth: statischer ed25519-Key aus OpenBao (`secret/data/mcp/ssh-mcp`) → `/root/.ssh/id_ed25519_mcp`
+  - Zusätzlich: exklusiver PC-Key `secret/data/mcp/ssh-mcp-pc` → `/root/.ssh/id_ed25519_mcp_pc` (nur für Profil `carsten-pc`)
+  - `config-full.toml` enthält zusätzlich das Profil `carsten-pc`
   - Policy: `role=admin`, `group=prod`, `approvalPolicy=auto` (alle Befehlsklassen inkl. sudo)
   - SFTP: `transferRoot=/root/.ssh-mcp-transfers`
 - **authentik** (lokal, `uvx`) – `nikitatsym/authentik-mcp`
@@ -25,6 +27,10 @@ Authentik über den Community-MCP (`authentik-mcp`).
 | `unifi` | 10.0.0.1 | UniFi Gateway (UCG-Ultra) |
 | `media` | 10.0.10.25 | Media (CT 115) |
 | `test` | 10.0.10.40 | Test (CT 105) |
+| `carsten-pc` | 10.0.0.20 | Carsten-PC (Windows, User carst, VLAN 10.0.0.0/24) |
+
+> **Carsten-PC** ist Windows: kein `sudo` (`privileged-command` nicht verwenden) und die
+> Shell ist `cmd.exe`/PowerShell — POSIX-Helfer wie `ls`/`cat`/`grep` sind unzuverlässig.
 
 > **Kleve-Hosts** (`cleve-proxmox` .50, `cleve-truenas` .51, `cleve-docker` .52)
 > sind angeschlossen, gehören aber zum **cleve**-Workspace mit eigenen Skills.

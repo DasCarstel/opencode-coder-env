@@ -1,8 +1,11 @@
 # Coder Template: general (Allgemeine OpenCode-Aufgaben)
 #
-# Isolierter Workspace: NUR der oCIS-MCP (private Obsidian-Vault).
-# Kein ssh-mcp, keine SSH-Keys, kein Zugriff auf das interne VLAN.
+# Workspace mit dedizierter, minimal berechtigter OpenBao-AppRole (`mcp-general`).
 # Netzwerk: coder-gen (dediziert, kein coder-infra).
+# MCP: oCIS (privater Obsidian-Vault) + pdf + ssh-mcp.
+# ssh-mcp erhält einen eigenen, exklusiven Key (secret/data/mcp/ssh-mcp-pc) und
+# eine config-general.toml mit ausschließlich dem Profil `carsten-pc` — Krefeld-
+# und Kleve-Hosts existieren dort nicht (harte Grenze, analog zu config-cleve.toml).
 #
 # Das komplette Setup liegt in coder-templates/shared/startup.sh (Profil: general).
 
@@ -39,24 +42,32 @@ variable "git_branch" {
   default     = "master"
 }
 
-variable "openbao_role_id" {
-  type        = string
-  description = "OpenBao AppRole Role-ID (UUID, nicht der Rollenname)"
-  default     = "a18d13b0-9ccd-304b-da63-db3545546b1d"
-}
-
 variable "openbao_addr" {
   type        = string
   description = "OpenBao Adresse (wird vom Workspace aus erreicht)"
   default     = "https://openbao.mueller-nas.de"
 }
 
+# Role-ID + Secret-ID der dedizierten AppRole `mcp-general` werden als
+# Coder-Parameter gepflegt (kein UUID im Repo). Die AppRole entsteht über
+# scripts/bootstrap-hosts.sh und darf NICHT `mcp-server` sein (die liest alle
+# secret/data/mcp/*). Fehlt sie, bricht startup.sh fail-closed ab.
+data "coder_parameter" "openbao_role_id" {
+  name         = "openbao_role_id"
+  display_name = "OpenBao AppRole Role-ID (mcp-general)"
+  description  = "Role-ID der AppRole 'mcp-general' (Ausgabe von scripts/bootstrap-hosts.sh)."
+  type         = "string"
+  default      = ""
+  order        = 0
+  mutable      = true
+}
+
 data "coder_parameter" "openbao_approle_secret_id" {
   name         = "openbao_approle_secret_id"
-  display_name = "OpenBao AppRole Secret-ID"
-  description  = "Secret-ID für die AppRole 'mcp-server' in OpenBao."
+  display_name = "OpenBao AppRole Secret-ID (mcp-general)"
+  description  = "Secret-ID der AppRole 'mcp-general' in OpenBao."
   type         = "string"
-  default      = "0f3d31dc-cd9f-a62d-5b47-9148a4e1004b"
+  default      = ""
   order        = 1
   mutable      = true
 }
@@ -90,7 +101,7 @@ resource "docker_container" "workspace" {
     "CODER_AGENT_TOKEN=${coder_agent.main.token}",
     "OPENBAO_APPROLE_SECRET_ID=${data.coder_parameter.openbao_approle_secret_id.value}",
     "OPENBAO_ADDR=https://openbao.mueller-nas.de",
-    "OPENBAO_ROLE_ID=${var.openbao_role_id}",
+    "OPENBAO_ROLE_ID=${data.coder_parameter.openbao_role_id.value}",
   ]
 
   # Coder-Agent-Bootstrap (offizielles init_script) als Payload nach dem ENTRYPOINT-Wrapper

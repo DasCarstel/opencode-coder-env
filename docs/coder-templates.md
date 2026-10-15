@@ -22,9 +22,12 @@ eigenes persistentes Tailscale-State-Volume, Netzwerk `coder-infra`. Coder-App
 „Infrastructure Workspace" → `herdr`.
 
 ### `general`
-Isolierter Workspace: nur oCIS-MCP (privater Obsidian-Vault). `main.tf`-Besonderheiten:
+Isolierter Workspace: oCIS-MCP (privater Obsidian-Vault), PDF-MCP und `ssh-mcp` mit
+**ausschließlich** dem Carsten-PC (`config-general.toml`). `main.tf`-Besonderheiten:
 Netzwerk `coder-gen` (kein internes VLAN), eigener Session-Pfad
-`/etc/opencode-data/<user>-general`. Coder-App „General Workspace".
+`/etc/opencode-data/<user>-general`. Der Container bekommt die Zugangsdaten über eine eigene,
+minimal berechtigte AppRole `mcp-general`; Role-ID und Secret-ID kommen aus den Coder-Parametern
+`openbao_role_id` und `openbao_approle_secret_id` (beide standardmäßig leer). Coder-App „General Workspace".
 
 ### `muellerconnect`
 Wie `general`, aber Arbeits-Vault: Netzwerk `coder-mc`, eigener Session-Pfad
@@ -62,12 +65,15 @@ fehlendes Profil bricht mit Fehler ab.
      → Passwort für den OpenCode-Server
    Der OpenBao-Token selbst wird nicht weitergereicht.
 4. **Git-Credentials** — `scripts/setup-git-credentials.sh` (GitHub-PAT aus OpenBao).
-5. **SSH + ssh-mcp** *(nur `infrastructure`)* — ed25519-Key erzeugen, per
+5. **SSH + ssh-mcp** *(`infrastructure`; `general` nur ssh-mcp mit PC-Config)* — ed25519-Key erzeugen, per
    `ssh/sign/host-access` (24 h) signieren, `~/.ssh/config` schreiben; statischen
    ssh-mcp-Key aus OpenBao installieren; `uvx` (für authentik) und **`ssh-mcp` per
    npm** installieren (Stempel-Datei, idempotent); `config.toml`,
-   `config-full.toml` (Krefeld+Kleve)
+   `config-full.toml` (Krefeld+Kleve+Carsten-PC)
    und `config-cleve.toml` (nur Kleve) unter `/root/.config/ssh-mcp/` erzeugen.
+   Für `general` läuft ein eigener Abschnitt: `ssh-mcp` installieren, den exklusiven
+   PC-Key `secret/data/mcp/ssh-mcp-pc` nach `/root/.ssh/id_ed25519_mcp_pc` schreiben und
+   ausschließlich `config-general.toml` (Profil `carsten-pc`) erzeugen.
 6. **Tailscale** *(nur `infrastructure`)* — `tailscaled` starten, `tailscale up`
    mit Auth-Key, `--accept-routes`, `--ssh=false`.
 7. **OpenCode-CLI** — Abgleich gegen npm-latest, ggf. Neuinstallation + Service-Neustart
@@ -111,14 +117,15 @@ fehlendes Profil bricht mit Fehler ab.
 | Aspekt | `infrastructure` | `general` | `muellerconnect` |
 |--------|------------------|-----------|------------------|
 | Netz | `coder-infra` | `coder-gen` | `coder-mc` |
-| SSH/ssh-mcp | ✅ | ❌ | ❌ |
+| SSH/ssh-mcp | ✅ | ✅ (nur Carsten-PC) | ❌ |
 | Tailscale | ✅ | ❌ | ❌ |
 | oCIS-Vault | privat | privat | Arbeit (MuellerConnect) |
-| Extra-Secrets | HA, authentik, grafana, opencloud, tailscale | — | — |
+| Extra-Secrets | HA, authentik, grafana, opencloud, tailscale | `ssh-mcp-pc` | — |
 | Herdr-Workspaces | HA, Server Mgmt, Svelte, Cleve | General | MuellerConnect |
 
-`general` und `muellerconnect` sind bewusst abgeschnitten: kein `ssh-mcp`, keine
-SSH-Keys, kein internes VLAN.
+`muellerconnect` ist vollständig abgeschnitten: kein `ssh-mcp`, keine SSH-Keys, kein
+internes VLAN. `general` ist ebenfalls abgeschnitten, mit einer Ausnahme: Es hat `ssh-mcp`
+mit **nur** dem Carsten-PC (`config-general.toml`, exklusiver Key). Kein internes VLAN.
 
 ## `derive-agents.py`
 

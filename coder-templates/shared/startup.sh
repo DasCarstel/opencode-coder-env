@@ -3,7 +3,7 @@
 #
 # Aufruf: startup.sh <profil>
 #   infrastructure – HA + Server Management (ssh-mcp, authentik, HA, oCIS privat)
-#   general        – Allgemeine Aufgaben (nur oCIS privat)
+#   general        – Allgemeine Aufgaben (oCIS privat + Carsten-PC via ssh-mcp)
 #   muellerconnect – MuellerConnect Mini-Job (nur oCIS Arbeit)
 #
 # Gemeinsam: OpenBao-Auth, Secrets, Git-Credentials, OpenCode V2, oCIS-MCP,
@@ -18,13 +18,28 @@ case "$PROFILE" in
   *) echo "ERROR: Profil angeben: infrastructure|general|muellerconnect"; exit 1 ;;
 esac
 
+# Profil-Trennung (Least Privilege): der general-Space nutzt die dedizierte
+# AppRole 'mcp-general' — nicht die gemeinsame 'mcp-server' (die alle
+# secret/data/mcp/* lesen darf). Ohne dedizierte Role-ID bricht der Start ab
+# (fail-closed), damit general niemals versehentlich alle mcp-Secrets sieht.
+if [ "$PROFILE" = "general" ]; then
+  if [ -z "${OPENBAO_ROLE_ID:-}" ] || [ "$OPENBAO_ROLE_ID" = "mcp-server" ]; then
+    echo "ERROR: Profil general benötigt die dedizierte AppRole 'mcp-general'."
+    echo "       OPENBAO_ROLE_ID ist leer oder 'mcp-server'. Bitte die Role-ID aus"
+    echo "       scripts/bootstrap-hosts.sh im general-Template setzen."
+    exit 1
+  fi
+else
+  OPENBAO_ROLE_ID="${OPENBAO_ROLE_ID:-mcp-server}"
+fi
+
 # ── PATH sicherstellen ─────────────────────────────────────────────────
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin:$PATH"
 grep -q '/root/.local/bin' /root/.bashrc 2>/dev/null || echo 'export PATH="/root/.local/bin:$PATH"' >> /root/.bashrc
 mkdir -p /root/.local/bin /usr/local/bin
 
 OPENBAO_ADDR="https://openbao.mueller-nas.de"
-OPENBAO_ROLE_ID="${OPENBAO_ROLE_ID:-mcp-server}"
+# OPENBAO_ROLE_ID wird oben profilabhängig gesetzt (general → mcp-general).
 HERDR_BIN="/usr/local/bin/herdr"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -210,6 +225,25 @@ except Exception:
     echo "  ⚠ ssh-mcp Key nicht gefunden (secret/data/mcp/ssh-mcp)"
   fi
 
+  # ── ssh-mcp: eigener Key für den Carsten-PC (Windows) ──────────────────────
+  SSH_MCP_PC_KEY=/root/.ssh/id_ed25519_mcp_pc
+  PC_KEY=$(curl -sS --max-time 10 -H "X-Vault-Token: ${BAO_TOKEN}" \
+    "${OPENBAO_ADDR}/v1/secret/data/mcp/ssh-mcp-pc" \
+    | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin)['data']['data'].get('private_key', ''))
+except Exception:
+    print('')
+")
+  if [ -n "$PC_KEY" ]; then
+    printf '%s\n' "$PC_KEY" > "$SSH_MCP_PC_KEY"
+    chmod 600 "$SSH_MCP_PC_KEY"
+    echo "  ✓ Carsten-PC Key installiert ($SSH_MCP_PC_KEY)"
+  else
+    echo "  ⚠ Carsten-PC Key nicht gefunden (secret/data/mcp/ssh-mcp-pc)"
+  fi
+
   # ── uvx + ssh-mcp installieren (Pin via versions.env, Stempel-Datei) ──────
   echo ""
   echo "=== uvx / ssh-mcp ==="
@@ -249,6 +283,7 @@ transferRoot = "/root/.ssh-mcp-transfers"
 [policy.roleBindings.admin]
 prod = ["read-only", "safe", "destructive", "privileged"]
 kleve = ["read-only", "safe", "destructive", "privileged"]
+pc = ["read-only", "safe", "destructive", "privileged"]
 
 [[profiles]]
 name = "docker-host"
@@ -336,6 +371,18 @@ auth = "key"
 keyRef = "/root/.ssh/id_ed25519_mcp"
 role = "admin"
 group = "prod"
+approvalPolicy = "auto"
+
+# Carsten-PC (Windows, User-VLAN 10.0.0.0/24) — eigener Key (ssh-mcp-pc)
+[[profiles]]
+name = "carsten-pc"
+host = "10.0.0.20"
+port = 22
+user = "carst"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp_pc"
+role = "admin"
+group = "pc"
 approvalPolicy = "auto"
 
 # Cleve Hosts (via Tailscale-Tunnel / Subnet-Route)
@@ -384,6 +431,7 @@ transferRoot = "/root/.ssh-mcp-transfers"
 [policy.roleBindings.admin]
 prod = ["read-only", "safe", "destructive", "privileged"]
 kleve = ["read-only", "safe", "destructive", "privileged"]
+pc = ["read-only", "safe", "destructive", "privileged"]
 
 [[profiles]]
 name = "docker-host"
@@ -471,6 +519,18 @@ auth = "key"
 keyRef = "/root/.ssh/id_ed25519_mcp"
 role = "admin"
 group = "prod"
+approvalPolicy = "auto"
+
+# Carsten-PC (Windows, User-VLAN 10.0.0.0/24) — eigener Key (ssh-mcp-pc)
+[[profiles]]
+name = "carsten-pc"
+host = "10.0.0.20"
+port = 22
+user = "carst"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp_pc"
+role = "admin"
+group = "pc"
 approvalPolicy = "auto"
 
 # Cleve Hosts (via Tailscale-Tunnel / Subnet-Route)
@@ -555,6 +615,83 @@ MCPCFG
   chmod 700 /root/.config/ssh-mcp
   chmod 600 /root/.config/ssh-mcp/config.toml /root/.config/ssh-mcp/config-full.toml /root/.config/ssh-mcp/config-cleve.toml
   echo "  ✓ ssh-mcp Config erstellt"
+fi
+
+# ── ssh-mcp (nur general): Zugang zum Carsten-PC (Windows) ──────────────────
+if [ "$PROFILE" = "general" ]; then
+  echo ""
+  echo "=== ssh-mcp (Carsten-PC) ==="
+  mkdir -p /root/.ssh && chmod 700 /root/.ssh
+
+  # Eigener, exklusiver PC-Key (nicht der gemeinsame ssh-mcp-Key der Hosts).
+  SSH_MCP_PC_KEY=/root/.ssh/id_ed25519_mcp_pc
+  PC_KEY=$(curl -sS --max-time 10 -H "X-Vault-Token: ${BAO_TOKEN}" \
+    "${OPENBAO_ADDR}/v1/secret/data/mcp/ssh-mcp-pc" \
+    | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin)['data']['data'].get('private_key', ''))
+except Exception:
+    print('')
+")
+  if [ -n "$PC_KEY" ]; then
+    printf '%s\n' "$PC_KEY" > "$SSH_MCP_PC_KEY"
+    chmod 600 "$SSH_MCP_PC_KEY"
+    echo "  ✓ Carsten-PC Key installiert ($SSH_MCP_PC_KEY)"
+  else
+    echo "  ⚠ Carsten-PC Key nicht gefunden (secret/data/mcp/ssh-mcp-pc)"
+  fi
+
+  # uv (für uvx) sicherstellen, ssh-mcp per npm installieren (Pin + Stempel).
+  if [ ! -x "$HOME/.local/bin/uvx" ]; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 | tail -2 || true
+  fi
+  SSH_MCP_STAMP="$HOME/.local/bin/.ssh-mcp-version"
+  if [ -z "${SSH_MCP_VERSION}" ]; then
+    echo "  ⚠ SSH_MCP_VERSION nicht gesetzt – ssh-mcp läuft weiter in aktueller Version"
+  elif [ "$(cat "$SSH_MCP_STAMP" 2>/dev/null)" != "${SSH_MCP_VERSION}" ]; then
+    echo "  → ssh-mcp ${SSH_MCP_VERSION} installieren..."
+    if npm install -g "ssh-mcp@${SSH_MCP_VERSION}" >/tmp/npm-ssh-mcp.log 2>&1; then
+      tail -2 /tmp/npm-ssh-mcp.log
+      echo "${SSH_MCP_VERSION}" > "$SSH_MCP_STAMP"
+      echo "  ✓ ssh-mcp ${SSH_MCP_VERSION} installiert"
+    else
+      tail -3 /tmp/npm-ssh-mcp.log
+      echo "  ⚠ ssh-mcp ${SSH_MCP_VERSION} konnte nicht installiert werden – bisherige Version bleibt"
+    fi
+  else
+    echo "  ✓ ssh-mcp bereits auf Pin (${SSH_MCP_VERSION})"
+  fi
+
+  # config-general.toml: ausschließlich der Carsten-PC (harte Grenze,
+  # analog zu config-cleve.toml — Krefeld-/Kleve-Profile existieren hier nicht).
+  mkdir -p /root/.config/ssh-mcp /root/.ssh-mcp-transfers && chmod 700 /root/.ssh-mcp-transfers
+  cat > /root/.config/ssh-mcp/config-general.toml << 'MCPCFG'
+[defaults]
+defaultProfile = "carsten-pc"
+approvalMode = "auto"
+transferRoot = "/root/.ssh-mcp-transfers"
+
+# Nur der Carsten-PC (Windows) – für den general-Space.
+# Kein prod-/kleve-Binding: Krefeld- und Kleve-Hosts sind hier bewusst nicht
+# definiert (harte Grenze, analog zu config-cleve.toml).
+[policy.roleBindings.admin]
+pc = ["read-only", "safe", "destructive", "privileged"]
+
+[[profiles]]
+name = "carsten-pc"
+host = "10.0.0.20"
+port = 22
+user = "carst"
+auth = "key"
+keyRef = "/root/.ssh/id_ed25519_mcp_pc"
+role = "admin"
+group = "pc"
+approvalPolicy = "auto"
+MCPCFG
+  chmod 700 /root/.config/ssh-mcp
+  chmod 600 /root/.config/ssh-mcp/config-general.toml
+  echo "  ✓ ssh-mcp Config (config-general.toml) erstellt"
 fi
 
 # ── Tailscale (Cleve-Zugang, nur infrastructure) ────────────────────────────

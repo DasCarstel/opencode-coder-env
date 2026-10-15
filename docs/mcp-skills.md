@@ -25,7 +25,7 @@ Server-spezifische Details: [workspaces.md](workspaces.md#wie-die-trennung-funkt
 | `authentik` | local (via `uvx`) | Community-MCP `nikitatsym/authentik-mcp` | `AUTHENTIK_URL`, `AUTHENTIK_TOKEN` | server-management, svelte |
 | `svelte` | remote | `https://mcp.svelte.dev/mcp` | – | svelte |
 | `pdf` | local | `npx -y @sylphx/anymd@8.5.1` | – | general, minijob |
-| `ssh-mcp` | local (stdio) | `ssh-mcp` v2.18.0, eigener Container-Pfad | statischer ed25519-Key aus OpenBao | server-management, homeassistant, svelte (**config-full**), cleve (**config-cleve**) |
+| `ssh-mcp` | local (stdio) | `ssh-mcp` v2.18.0, eigener Container-Pfad | statischer ed25519-Key aus OpenBao | server-management, homeassistant, svelte (**config-full**), cleve (**config-cleve**), general (**config-general**, nur Carsten-PC) |
 
 ### `ocis` (OpenCloud)
 
@@ -71,32 +71,38 @@ Prompt oder Kontext.
 
 ### Erzeugung
 
-`coder-templates/shared/startup.sh` (Profil `infrastructure`) erzeugt bei jedem Start
-die Konfiguration neu. Es ist die **einzige** Quelle: Es gibt keine
+`coder-templates/shared/startup.sh` (Profile `infrastructure` und `general`) erzeugt
+bei jedem Start die Konfiguration neu. Es ist die **einzige** Quelle: Es gibt keine
 `config.toml` im Repo.
 
 Ablauf:
 
 1. Key aus OpenBao `secret/data/mcp/ssh-mcp` nach `/root/.ssh/id_ed25519_mcp`
    (statischer ed25519-Key; derselbe Key steht in `authorized_keys` der Zielhosts).
+   Zusätzlich holt das Skript den **exklusiven** PC-Key `secret/data/mcp/ssh-mcp-pc`
+   nach `/root/.ssh/id_ed25519_mcp_pc` (Profile `infrastructure` und `general`).
 2. `uvx` installieren (für den authentik-MCP) und **`ssh-mcp` per npm**,
    gepinnt über `SSH_MCP_VERSION` aus `coder-templates/versions.env`
    (aktuell **2.18.0**), mit Stempel-Datei, damit ein bereits passender Stand
    nicht erneut installiert wird.
-3. Drei TOML-Dateien unter `/root/.config/ssh-mcp/` schreiben, Verzeichnis `chmod 700`,
-   Dateien `chmod 600`.
+3. TOML-Dateien unter `/root/.config/ssh-mcp/` schreiben (Infrastructure: drei Dateien,
+   General: `config-general.toml`), Verzeichnis `chmod 700`, Dateien `chmod 600`.
+   Für das Profil `general` läuft ein **eigener zweiter Abschnitt** im Skript: er
+   installiert `ssh-mcp` und schreibt ausschließlich `config-general.toml` mit dem
+   Profil `carsten-pc`. `config-cleve.toml` bleibt unverändert.
 4. `/root/.ssh-mcp-transfers` anlegen (`chmod 700`) als `transferRoot` für SFTP.
 
 Fehlt der Key in OpenBao, warnt das Skript und fährt ohne weiter — der Container startet
 trotzdem, nur SSH-Zugriffe scheitern dann.
 
-### Die drei Config-Dateien
+### Die vier Config-Dateien
 
 | Datei | Default-Profil | Gruppen | Enthält |
 |-------|----------------|---------|---------|
-| `config.toml` | `docker-host` | `prod`, `kleve` | Krefeld- + Kleve-Profile |
-| `config-full.toml` | `docker-host` | `prod`, `kleve` | identisch zu `config.toml` |
+| `config.toml` | `docker-host` | `prod`, `kleve`, `pc` | Krefeld- + Kleve-Profile + `carsten-pc` |
+| `config-full.toml` | `docker-host` | `prod`, `kleve`, `pc` | identisch zu `config.toml` |
 | `config-cleve.toml` | `cleve-docker` | nur `kleve` | **ausschließlich** Kleve-Profile |
+| `config-general.toml` | `carsten-pc` | nur `pc` | **ausschließlich** das Profil `carsten-pc` |
 
 `config.toml` und `config-full.toml` sind aktuell inhaltlich gleich: `config.toml` ist
 die Basisdatei, `config-full.toml` der explizite Name, den die Workspaces
@@ -128,17 +134,28 @@ Kleve-Variante später abweichen, ohne die Infra-Workspaces anzufassen.
 
 Erreichbar über Tailscale-Tunnel bzw. Subnet-Route.
 
+**Carsten-PC** (Gruppe `pc`) — in `config.toml`, `config-full.toml` und
+`config-general.toml` (**nicht** in `config-cleve.toml`):
+
+| Profil | Host | Zweck |
+|--------|------|-------|
+| `carsten-pc` | `10.0.0.20` | Carsten-PC (Windows, User `carst`, VLAN `10.0.0.0/24`) |
+
+Erreichbar per Inter-VLAN-Routing bzw. NAT über den Docker-Host. Details und
+Windows-Einschränkungen: [Windows-Caveats](#windows-caveats-carsten-pc).
+
 ### Policy
 
 ```toml
 [defaults]
-defaultProfile = "docker-host"     # config-cleve.toml: "cleve-docker"
+defaultProfile = "docker-host"     # config-cleve.toml: "cleve-docker"; config-general.toml: "carsten-pc"
 approvalMode = "auto"
 transferRoot = "/root/.ssh-mcp-transfers"
 
 [policy.roleBindings.admin]
 prod  = ["read-only", "safe", "destructive", "privileged"]
 kleve = ["read-only", "safe", "destructive", "privileged"]
+pc    = ["read-only", "safe", "destructive", "privileged"]
 
 [[profiles]]
 role = "admin"
@@ -173,6 +190,22 @@ einhalten muss.
 Der Cleve-Workspace bindet `ssh-mcp` entsprechend mit
 `--config=/root/.config/ssh-mcp/config-cleve.toml` an; die Infra-Workspaces nutzen
 `config-full.toml`.
+
+`config-general.toml` folgt demselben Muster wie `config-cleve.toml`: Der General-Workspace
+bekommt `ssh-mcp` mit `--config=/root/.config/ssh-mcp/config-general.toml`, und in dieser
+Datei existiert **nur** das Profil `carsten-pc`. Krefeld- und Kleve-Profile fehlen dort
+vollständig — die Trennung ist auch hier eine Eigenschaft der Datei.
+
+### Windows-Caveats (Carsten-PC)
+
+- **Kein `sudo`:** `privileged-command` ist gegen den Windows-Host nicht verwendbar.
+- **Shell ist `cmd.exe` bzw. PowerShell:** POSIX-Helfer (`ls`, `cat`, `grep`) sind
+  unzuverlässig; Befehle und Pfade müssen Windows-Syntax nutzen (`C:\...`, `\`-Trenner).
+- **Einmalige Einrichtung auf dem PC:** `scripts/setup-windows-pc-ssh.ps1` als
+  Administrator ausführen. Das Skript installiert den OpenSSH-Server, öffnet TCP/22 in der
+  Firewall, legt den Public-Key ab und setzt optional PowerShell als `DefaultShell`.
+- **Erreichbarkeit:** Der Container erreicht den PC per NAT über den Docker-Host. Für
+  `10.0.0.20` sollte in der UniFi eine DHCP-Reservierung bestehen.
 
 ## oCIS-Guardrail
 
@@ -241,6 +274,7 @@ Host nennt → `skills/shared/`. Wenn sie einen Host nennt → in den Site-Ordne
 | `cleve` | — | — | — | ✅ | — | — |
 | `homeassistant` | — | ✅ | — | — | — | — |
 | `obsidian` | ✅ | ✅ | ✅ | — | ✅ | — |
+| `general` | — | — | — | — | ✅ | — |
 | `minijob` | — | — | — | — | — | ✅ |
 
 Inhalt der Gruppen:
@@ -250,6 +284,7 @@ Inhalt der Gruppen:
 - `skills/server/` — `authentik`, `authentik-integration`,
   `authentik-troubleshooting`, `docker-host-location` (→ Krefeld)
 - `skills/cleve/` — `docker-host-location` (→ Kleve)
+- `skills/general/` — `carsten-pc` (→ ssh-mcp Carsten-PC, Profil `carsten-pc`)
 - `skills/homeassistant/` — `home-assistant`, `google-home-exposure`
 - `skills/obsidian/` — `obsidian` (Vault-Zugriff)
 - `skills/minijob/` — `obsidian` (Vault-Zugriff mit MuellerConnect-Zugang)

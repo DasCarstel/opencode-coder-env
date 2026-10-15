@@ -31,7 +31,7 @@ Server verwaltet.
 | Netz | Container | Charakter |
 |------|-----------|-----------|
 | `coder-infra` | `infrastructure`, `hermes`¹ | Zugriff auf das interne VLAN |
-| `coder-gen` | `general` | isoliert, kein internes VLAN |
+| `coder-gen` | `general` | isoliert, kein internes VLAN; erreicht nur den Carsten-PC (`10.0.0.20`, VLAN `10.0.0.0/24`) per NAT |
 | `coder-mc` | `muellerconnect` | isoliert, kein internes VLAN |
 
 ¹ `hermes` ist kein Coder-Template, sondern der Hermes-Agent als Host-Deployment
@@ -39,7 +39,9 @@ Server verwaltet.
 `coder-infra`.
 
 Die Trennung ist hart: `general` und `muellerconnect` hängen **nicht** in
-`coder-infra` und bekommen weder `ssh-mcp` noch SSH-Keys — nur den oCIS-MCP.
+`coder-infra`. `muellerconnect` bekommt weiterhin weder `ssh-mcp` noch SSH-Keys — nur den
+oCIS-MCP. `general` bekommt `ssh-mcp` mit **genau einem** Ziel, dem Carsten-PC (eigener
+exklusiver Key, siehe [Carsten-PC](#carsten-pc-windows)); alle anderen Hosts bleiben unerreichbar.
 
 ### Segment Coder ↔ Docker (`10.99.0.0/30`)
 
@@ -150,6 +152,9 @@ Zwei Wege, zwei Auth-Verfahren:
 - **ssh-mcp** (MCP-Zugriff des Agenten): statischer ed25519-Key aus OpenBao
   (`secret/data/mcp/ssh-mcp`) → `/root/.ssh/id_ed25519_mcp`, dessen Public-Key
   in `authorized_keys` der Zielhosts liegt.
+- **ssh-mcp für den Carsten-PC**: eigener, exklusiver ed25519-Key aus
+  `secret/data/mcp/ssh-mcp-pc` → `/root/.ssh/id_ed25519_mcp_pc`. Er wird **nicht** mit dem
+  gemeinsamen Key geteilt; er liegt nur in den Profilen `general` und `infrastructure`.
 
 > **Grund für den Unterschied:** ssh-mcp nutzt die `ssh2`-Library, die keine
 > OpenSSH-CA-Zertifikate unterstützt (`cert = true` schlägt fehl). Deshalb ein
@@ -161,6 +166,27 @@ Einmalig pro Host (Policy `host-access`, CA-Key verteilen):
 export OPENBAO_ROOT_TOKEN=<root-token>
 bash scripts/bootstrap-hosts.sh
 ```
+
+## Carsten-PC (Windows)
+
+Der Carsten-PC ist der einzige Host, den der General-Workspace per `ssh-mcp` erreicht.
+Er hat die IP `10.0.0.20` (User `carst`) im VLAN `10.0.0.0/24`.
+
+- **Netzweg:** Der Container hängt in `coder-gen` bzw. `coder-infra` und erreicht den PC
+  über Inter-VLAN-Routing bzw. NAT über den Docker-Host. Port 22 ist erst offen, wenn
+  der OpenSSH-Server auf dem PC aktiv ist (Setup einmalig, siehe unten).
+- **Eigener Key:** `secret/data/mcp/ssh-mcp-pc` → `/root/.ssh/id_ed25519_mcp_pc`.
+- **Config:** `/root/.config/ssh-mcp/config-general.toml` enthält ausschließlich das
+  Profil `carsten-pc` (Gruppe `pc`). Die Profile `config.toml` und `config-full.toml`
+  enthalten es ebenfalls, `config-cleve.toml` nicht.
+- **Einrichtung:** `scripts/setup-windows-pc-ssh.ps1` als Administrator auf dem PC
+  ausführen (OpenSSH-Server, Firewall TCP/22, Public-Key ablegen, optional PowerShell als
+  `DefaultShell`).
+- **Windows-Einschränkungen:** kein `sudo` (`privileged-command` unbrauchbar), die Shell
+  ist `cmd.exe` bzw. PowerShell, POSIX-Helfer wie `ls`/`cat`/`grep` sind unzuverlässig.
+  Details: [`mcp-skills.md`](mcp-skills.md#windows-caveats-carsten-pc).
+- **Empfehlung:** Für `10.0.0.20` eine DHCP-Reservierung in der UniFi anlegen, damit die
+  Adresse stabil bleibt.
 
 ## Kleve via Tailscale
 

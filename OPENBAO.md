@@ -10,6 +10,7 @@ OpenBao (Vault-Fork) verwaltet alle Secrets für die Coder-Infrastruktur.
 |--------|-------|----------------|
 | `mcp-server` | Coder-Workspaces | secret/data/mcp/* (read, list), secret/data/ssh/unifi (read), secret/metadata/mcp/* (list, read), secret/metadata/ssh/unifi (read), auth/token/renew-self (update), auth/token/revoke-self (update), ssh/sign/host-access (update) |
 | `host-access` | Host-Zugriff | ssh/sign/host-access (update) |
+| `mcp-server-general` | General-Workspace (least privilege) | secret/data/mcp/{github,opencloud-ocis,opencode-go,hermes-opencode-service,ssh-mcp-pc} (read), secret/metadata/mcp/{github,opencloud-ocis,opencode-go,hermes-opencode-service,ssh-mcp-pc} (list, read), auth/token/renew-self (update), auth/token/revoke-self (update) |
 
 ## AppRoles
 
@@ -17,6 +18,7 @@ OpenBao (Vault-Fork) verwaltet alle Secrets für die Coder-Infrastruktur.
 |---------|--------|---------------|-------------------|---------------|
 | `mcp-server` | mcp-server | 0 (nie) | 0 (unbegrenzt) | 24h |
 | `host-access` | host-access | 0 (nie) | 0 (unbegrenzt) | 24h |
+| `mcp-general` | mcp-server-general | 0 (nie) | 0 (unbegrenzt) | 24h |
 
 ## Secrets
 
@@ -29,6 +31,7 @@ OpenBao (Vault-Fork) verwaltet alle Secrets für die Coder-Infrastruktur.
 | secret/data/mcp/opencloud-ocis | obsidian_private_user, obsidian_private_token, obsidian_muellerconnect_user, obsidian_muellerconnect_token – oCIS App-Tokens pro Obsidian-Vault (Hard-Guardrail) |
 | secret/data/mcp/opencode-go | default1, default2, default3 – OpenCode Go API-Keys (der **aktive** Account steht in der Hestia-SOT `.opencode/hestia-accounts.jsonc`) |
 | secret/data/mcp/ssh-mcp | private_key, public_key – statischer SSH-Key für ssh-mcp |
+| secret/data/mcp/ssh-mcp-pc | private_key, public_key – exklusiver SSH-Key für den Carsten-PC (Windows); wird **nicht** mit `ssh-mcp` geteilt |
 | secret/data/mcp/tailscale | auth_key – Tailscale Auth-Key (eigenes Coder↔Kleve-Tailnet) |
 | secret/data/mcp/github | api_key – GitHub PAT (git clone/push in allen Workspaces) |
 | secret/data/mcp/artificialanalysis | api_key – Artificial Analysis API-Key (Modell-Benchmarks der Hestia, optional; Policy `hestia` hat Leserecht) |
@@ -52,7 +55,11 @@ Signierung: ssh/sign/host-access (valid_principals: root, TTL 24h)
     export OPENBAO_ROOT_TOKEN=<root-token>
     bash scripts/bootstrap-hosts.sh
 
-Erstellt idempotent: Policies, AppRoles, verteilt CA-Key.
+Erstellt idempotent: Policies (inkl. `mcp-server-general`), AppRoles (inkl.
+`mcp-general`), verteilt CA-Key. Zusätzlich wird der Key `secret/data/mcp/ssh-mcp-pc`
+erzeugt und in OpenBao gespeichert; am Ende gibt das Skript den
+Public-Key des Carsten-PC und die Role-ID von `mcp-general` aus (für die
+Coder-Parameter `openbao_role_id` / `openbao_approle_secret_id` des `general`-Templates).
 
 Neues Secret-ID ausstellen:
 
