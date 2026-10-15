@@ -1,0 +1,4 @@
+# fernuni-sync benoetigt ausschliesslich die Python-Standardbibliothek.
+# Es gibt daher keine Abhaengigkeiten. Python >= 3.8.
+#
+# (urllib, http.cookiejar, xml.etree, zoneinfo -> alles Standard.)

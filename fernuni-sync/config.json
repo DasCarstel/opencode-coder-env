@@ -1,0 +1,11 @@
+{
+  "vault_root": "",
+  "state_file": "~/.local/state/fernuni-sync/state.json",
+  "max_file_mb": 100,
+  "courses": [
+    {"id": "6556", "slug": "63123-Data-Engineering-fuer-Data-Science", "base": "10-Semester/1-Semester", "modul": "63123", "titel": "Data Engineering für Data Science", "enabled": true},
+    {"id": "6591", "slug": "64401-Maschinelles-Lernen", "base": "10-Semester/1-Semester", "modul": "64401", "titel": "Maschinelles Lernen", "enabled": true},
+    {"id": "4714", "slug": "Studienstart", "base": "90-Meta/Moodle-Kurse", "modul": null, "titel": "Studienstart", "enabled": true},
+    {"id": "4419", "slug": "Fakultaet-MI", "base": "90-Meta/Moodle-Kurse", "modul": null, "titel": "Studium an der Fakultät für Mathematik und Informatik", "enabled": true}
+  ]
+}

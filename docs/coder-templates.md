@@ -1,19 +1,20 @@
 # Coder-Templates
 
-Drei Templates, ein gemeinsames Setup-Skript. Jeder Container startet über
+Vier Templates, ein gemeinsames Setup-Skript. Jeder Container startet über
 `entrypoint.sh`, das `coder-templates/shared/startup.sh <profil>` im Hintergrund
 startet und danach den Coder-Agent-Bootstrap per `exec "$@"` ausführt.
 
 > Der **Hermes-Agent** ist kein Coder-Template, sondern ein Host-Deployment auf
 > dem Coder-Host — siehe [`hermes.md`](hermes.md).
 
-## Die drei Templates
+## Die vier Templates
 
 | Template | Netz | Image / Container | `startup.sh`-Profil |
 |----------|------|-------------------|---------------------|
 | `infrastructure` | `coder-infra` | `workspace-infrastructure:v2` | `infrastructure` |
 | `general` | `coder-gen` | `workspace-general:v2` | `general` |
 | `muellerconnect` | `coder-mc` | `workspace-muellerconnect:v2` | `muellerconnect` |
+| `datascience` | `coder-ds` | `workspace-datascience:v2` | `datascience` |
 
 ### `infrastructure`
 HA-, Server-Management-, Svelte- und Cleve-Workspaces. `main.tf`-Besonderheiten:
@@ -33,6 +34,37 @@ minimal berechtigte AppRole `mcp-general`; Role-ID und Secret-ID kommen aus den 
 Wie `general`, aber Arbeits-Vault: Netzwerk `coder-mc`, eigener Session-Pfad
 `/etc/opencode-data/<user>-mc`. Coder-App „MuellerConnect Workspace".
 
+### `datascience` (FernUni Data Engineering)
+
+Workspace für das Modul „Data Engineering für Data Science" mit **Docker-in-Docker**:
+die Studierenden starten im Workspace `./Deploy-DeDs-Rocket.sh`/`-Firework.sh`/`-Candle.sh`
+aus dem FernUni-Repo, was per `docker compose` einen Stack (Jupyter/PySpark-Client +
+Hadoop-Edge + 2 Worker) hochzieht, und dazu alpine-/mongodb-Container aus Notebooks.
+
+| Punkt | Wert |
+|-------|------|
+| RAM | **8 GiB** (`memory = 8192`), `cpu_shares = 4096`, `shm_size = 2048` (MongoDB/Spark). **Proxmox CT 120 braucht ≥ 16 GiB** (`pct set 120 -memory 16384`), weil Coder + Workspaces denselben Host teilen. |
+| DinD | `privileged = true`, `cgroupns_mode = "host"`, `security_opts = ["apparmor=unconfined","seccomp=unconfined"]`. **Kein Host-Socket.** |
+| Storage-Treiber | Treiber-Probe in `uni-bootstrap.sh`: `overlay2` → `fuse-overlayfs` → `vfs`; Ergebnis + Compose-Version + cgroup-Check in `~/uni/logs/dockerd.log` |
+| Compose | `docker-compose-plugin` aus dem Docker-Repo (≥ 2.32) |
+| Ports | 8890 unser JupyterLab (Kernel „Python (ml)" / „Python (dl)"), 8888 Jupyter des FernUni-Stacks, 8088 Hadoop-ResourceManager (8888/8088 erst nach Stack-Start) |
+| Volumes | `…-data` → `~/opencode-coder-env`, `…-uni` → `~/uni`, `…-docker` → `/var/lib/docker` (Images/Container überleben „Stop"/„Restart"), Sessions: `/etc/opencode-data/<user>-datascience` |
+| AppRole | `mcp-uni` (Least Privilege, fail-closed in `startup.sh`) — Secrets `secret/data/uni/fernuni-ocis` (user, token, password, space_id, url) und `secret/data/uni/moodle` (username, password, base_url) |
+| MCP | nur FernUni-oCIS + pdf (`workspaces/uni/workspace-global.json`); das private/muellerconnect-oCIS-Token wird im Service aktiv `unset` |
+| Sync | `fernuni-sync/` läuft per `sync-loop.sh` beim Start + alle 6 h (Log `~/uni/logs/sync.log`); Zustand/config/env in `~/uni/state` → Neustart ist idempotent („0 Downloads") |
+
+Setup-Reihenfolge im Container: `entrypoint.sh` (Tools + Repo) →
+`uni-bootstrap.sh` im Hintergrund (dockerd → `~/uni`-Struktur →
+`~/uni/workspace`-Symlink im FernUni-Klon → uv-Umgebungen ml/dl →
+JupyterLab 8890 → `startup.sh datascience`).
+
+Python-Umgebungen (idempotent, Marker `.ready`, Hintergrund, Log `~/uni/logs/env-setup.log`):
+
+| env | Python | Pakete |
+|-----|--------|--------|
+| `~/uni/envs/ml` | 3.14.4 | numpy 2.4.4, pandas 3.0.2, matplotlib 3.10.9, scikit-learn 1.8.0 |
+| `~/uni/envs/dl` | 3.12.0 | numpy 1.26.4, pandas 3.0.2, matplotlib 3.10.9, scikit-learn 1.8.0, tensorflow 2.17.0 |
+
 ## Aufrufkette
 
 ```
@@ -48,7 +80,7 @@ Docker-Start
 
 ## `shared/startup.sh` — Ablauf
 
-Aufruf: `startup.sh <infrastructure|general|muellerconnect>` — ein anderes oder
+Aufruf: `startup.sh <infrastructure|general|muellerconnect|datascience>` — ein anderes oder
 fehlendes Profil bricht mit Fehler ab.
 
 1. **Versions-Pins laden** — `source ../versions.env`; fehlt die Datei, werden alle
@@ -171,6 +203,6 @@ coder login --url https://coder.mueller-nas.de --token <token>
 coder templates push <name> --directory coder-templates/<name> --yes --org=coder
 ```
 
-`<name>` = `infrastructure` | `general` | `muellerconnect`.
+`<name>` = `infrastructure` | `general` | `muellerconnect` | `datascience`.
 Das Image wird lokal aus dem jeweiligen `Dockerfile` gebaut; der `CACHE_DATE`
 Build-Arg erzwingt den Rebuild beim Push.

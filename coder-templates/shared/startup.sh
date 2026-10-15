@@ -5,6 +5,7 @@
 #   infrastructure – HA + Server Management (ssh-mcp, authentik, HA, oCIS privat)
 #   general        – Allgemeine Aufgaben (oCIS privat + Carsten-PC via ssh-mcp)
 #   muellerconnect – MuellerConnect Mini-Job (nur oCIS Arbeit)
+#   datascience    – FernUni Data Engineering (Docker-in-Docker, FernUni-oCIS, Moodle-Sync)
 #
 # Gemeinsam: OpenBao-Auth, Secrets, Git-Credentials, OpenCode V2, oCIS-MCP,
 # Herdr, Env-Injektion. Profil-spezifisch: Secrets, MCP-Config, Skills,
@@ -14,24 +15,29 @@ set -uo pipefail
 
 PROFILE="${1:-}"
 case "$PROFILE" in
-  infrastructure|general|muellerconnect) ;;
-  *) echo "ERROR: Profil angeben: infrastructure|general|muellerconnect"; exit 1 ;;
+  infrastructure|general|muellerconnect|datascience) ;;
+  *) echo "ERROR: Profil angeben: infrastructure|general|muellerconnect|datascience"; exit 1 ;;
 esac
 
-# Profil-Trennung (Least Privilege): der general-Space nutzt die dedizierte
-# AppRole 'mcp-general' — nicht die gemeinsame 'mcp-server' (die alle
-# secret/data/mcp/* lesen darf). Ohne dedizierte Role-ID bricht der Start ab
-# (fail-closed), damit general niemals versehentlich alle mcp-Secrets sieht.
-if [ "$PROFILE" = "general" ]; then
-  if [ -z "${OPENBAO_ROLE_ID:-}" ] || [ "$OPENBAO_ROLE_ID" = "mcp-server" ]; then
-    echo "ERROR: Profil general benötigt die dedizierte AppRole 'mcp-general'."
-    echo "       OPENBAO_ROLE_ID ist leer oder 'mcp-server'. Bitte die Role-ID aus"
-    echo "       scripts/bootstrap-hosts.sh im general-Template setzen."
-    exit 1
-  fi
-else
-  OPENBAO_ROLE_ID="${OPENBAO_ROLE_ID:-mcp-server}"
-fi
+# Profil-Trennung (Least Privilege): general nutzt die dedizierte AppRole
+# 'mcp-general', datascience die 'mcp-uni' — nicht die gemeinsame 'mcp-server'
+# (die alle secret/data/mcp/* lesen darf). Ohne dedizierte Role-ID bricht der
+# Start ab (fail-closed), damit diese Spaces niemals versehentlich alle
+# mcp-Secrets sehen.
+case "$PROFILE" in
+  general|datascience)
+    if [ -z "${OPENBAO_ROLE_ID:-}" ] || [ "$OPENBAO_ROLE_ID" = "mcp-server" ]; then
+      if [ "$PROFILE" = "general" ]; then ROLE_NAME="mcp-general"; else ROLE_NAME="mcp-uni"; fi
+      echo "ERROR: Profil $PROFILE benötigt die dedizierte AppRole '$ROLE_NAME'."
+      echo "       OPENBAO_ROLE_ID ist leer oder 'mcp-server'. Bitte die Role-ID aus"
+      echo "       scripts/bootstrap-hosts.sh im $PROFILE-Template setzen."
+      exit 1
+    fi
+    ;;
+  *)
+    OPENBAO_ROLE_ID="${OPENBAO_ROLE_ID:-mcp-server}"
+    ;;
+esac
 
 # ── PATH sicherstellen ─────────────────────────────────────────────────
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin:$PATH"
@@ -129,6 +135,22 @@ case "$PROFILE" in
   muellerconnect)
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_muellerconnect_user"  "OCIS_MUELLERCONNECT_USER"
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_muellerconnect_token" "OCIS_MUELLERCONNECT_TOKEN"
+    ;;
+  datascience)
+    # FernUni-Account: eigener oCIS-Space des Studenten (oCIS-MCP + fernuni-sync).
+    read_secret "secret/data/uni/fernuni-ocis" "user"     "FERNUNI_OCIS_USER"
+    read_secret "secret/data/uni/fernuni-ocis" "token"    "FERNUNI_OCIS_TOKEN"
+    read_secret "secret/data/uni/fernuni-ocis" "password" "FERNUNI_OCIS_PW"
+    read_secret "secret/data/uni/fernuni-ocis" "space_id" "FERNUNI_SPACE_ID"
+    read_secret "secret/data/uni/fernuni-ocis" "url"      "FERNUNI_OCIS_BASE"
+    if [ -z "${FERNUNI_OCIS_BASE:-}" ]; then
+      export FERNUNI_OCIS_BASE="https://opencloud.mueller-nas.de"
+      echo "  ⚠ FERNUNI_OCIS_BASE nicht im Secret – Fallback gesetzt"
+    fi
+    # Moodle (fernuni-sync)
+    read_secret "secret/data/uni/moodle" "username" "MD_USER"
+    read_secret "secret/data/uni/moodle" "password" "MD_PW"
+    read_secret "secret/data/uni/moodle" "base_url" "MD_BASE"
     ;;
 esac
 # OpenCode Go: mehrere Accounts (alle Profile)
@@ -775,6 +797,7 @@ case "$PROFILE" in
   infrastructure) GLOBAL_CFG_SRC="$REPO_DIR/coder-templates/infrastructure/config/global-opencode.json" ;;
   general)        GLOBAL_CFG_SRC="$REPO_DIR/workspaces/general/workspace-global.json" ;;
   muellerconnect)        GLOBAL_CFG_SRC="$REPO_DIR/workspaces/minijob/workspace-global.json" ;;
+  datascience)           GLOBAL_CFG_SRC="$REPO_DIR/workspaces/uni/workspace-global.json" ;;
 esac
 if [ -f "$GLOBAL_CFG_SRC" ]; then
   install -m 600 "$GLOBAL_CFG_SRC" /root/.config/opencode/opencode.json
@@ -1011,6 +1034,23 @@ case "$PROFILE" in
     opencode service unset env OCIS_PRIVATE_USER  >/dev/null 2>&1 || true
     opencode service unset env OCIS_PRIVATE_TOKEN >/dev/null 2>&1 || true
     ;;
+  datascience)
+    # Der datascience-Workspace sieht AUSSCHLIESSLICH den FernUni-Account.
+    if [ -n "${FERNUNI_OCIS_USER:-}" ] && [ -n "${FERNUNI_OCIS_TOKEN:-}" ]; then
+      for v in FERNUNI_OCIS_USER FERNUNI_OCIS_TOKEN FERNUNI_OCIS_PW FERNUNI_SPACE_ID \
+               FERNUNI_OCIS_BASE MD_USER MD_PW MD_BASE; do
+        [ -n "${!v:-}" ] && opencode service set env "$v" "${!v}" >/dev/null 2>&1
+      done
+      echo "  ✓ FernUni-oCIS + Moodle-Env im OpenCode-Service gesetzt"
+    else
+      echo "  ⚠ FernUni-oCIS-Zugangsdaten fehlen (secret/data/uni/fernuni-ocis)"
+    fi
+    opencode service unset env OCIS_PRIVATE_USER  >/dev/null 2>&1 || true
+    opencode service unset env OCIS_PRIVATE_TOKEN >/dev/null 2>&1 || true
+    opencode service unset env OCIS_MUELLERCONNECT_USER  >/dev/null 2>&1 || true
+    opencode service unset env OCIS_MUELLERCONNECT_TOKEN >/dev/null 2>&1 || true
+    unset OCIS_PRIVATE_USER OCIS_PRIVATE_TOKEN OCIS_MUELLERCONNECT_USER OCIS_MUELLERCONNECT_TOKEN
+    ;;
 esac
 
 # ── Herdr installieren (Pin via versions.env; Quelle: herdr.dev-API,
@@ -1121,6 +1161,10 @@ if [ -x "$HERDR_BIN" ]; then
       WS_BASE="$REPO_DIR/workspaces/minijob"
       WS_LIST=("MuellerConnect:.:opencode-mc")
       ;;
+    datascience)
+      WS_BASE="$REPO_DIR/workspaces/uni"
+      WS_LIST=("Data Science:.:opencode-datascience")
+      ;;
   esac
 
   for entry in "${WS_LIST[@]}"; do
@@ -1161,6 +1205,62 @@ echo ""
 echo "=== $PROFILE Workspace bereit ==="
 echo "  Öffne die App in Coder."
 echo ""
+
+# ── FernUni-Sync (nur datascience) ──────────────────────────────────────────
+# fernuni-sync (Python-Standardbibliothek) spiegelt die Moodle-Kurse als
+# Obsidian-Notizen + Material in den FernUni-oCIS-Space. systemd-freier Timer:
+# einmal beim Workspace-Start, danach alle 6 h (Log: ~/uni/logs/sync.log).
+# Zustand (state.json) + config.json + env-Datei liegen im PERSISTENTEN Volume
+# ~/uni/state → ein Workspace-Neustart lädt nichts erneut ("0 Downloads").
+if [ "$PROFILE" = "datascience" ]; then
+  echo ""
+  echo "=== FernUni-Sync (Moodle → oCIS) ==="
+  UNI_DIR="${UNI_DIR:-/home/carstenmueller2002/uni}"
+  SYNC_PY="$REPO_DIR/fernuni-sync/sync.py"
+  SYNC_LOOP="$REPO_DIR/coder-templates/datascience/sync-loop.sh"
+  SYNC_STATE_DIR="$UNI_DIR/state"
+  SYNC_STATE="$SYNC_STATE_DIR/state.json"
+  SYNC_CONFIG="$SYNC_STATE_DIR/fernuni-sync.config.json"
+  SYNC_ENV="$SYNC_STATE_DIR/fernuni-sync.env"
+  SYNC_LOG="$UNI_DIR/logs/sync.log"
+  mkdir -p "$SYNC_STATE_DIR" "$UNI_DIR/logs"
+
+  if [ -f "$SYNC_PY" ] && [ -f "$SYNC_LOOP" ]; then
+    # Env-Datei (600) für --env-file. Bewusst UNQUOTED und KEIN `. datei`:
+    # nur sync.py liest sie, so bleibt ein '$' in Passwort/Space-ID intakt.
+    umask 077
+    {
+      echo "# von startup.sh erzeugt – Werte aus OpenBao (secret/data/uni/*). Nicht per Shell sourcen."
+      for v in MD_USER MD_PW MD_BASE FERNUNI_OCIS_USER FERNUNI_OCIS_TOKEN \
+               FERNUNI_OCIS_PW FERNUNI_SPACE_ID FERNUNI_OCIS_BASE; do
+        [ -n "${!v:-}" ] && printf '%s=%s\n' "$v" "${!v}"
+      done
+    } > "$SYNC_ENV"
+    chmod 600 "$SYNC_ENV"
+    umask 022
+
+    # config.json mit state_file im persistenten Volume (Default wäre ~/.local/…)
+    python3 - "$REPO_DIR/fernuni-sync/config.json" "$SYNC_CONFIG" "$SYNC_STATE" << 'PY'
+import json, sys
+src, dst, state = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(src, encoding="utf-8") as fh:
+    cfg = json.load(fh)
+cfg["state_file"] = state
+with open(dst, "w", encoding="utf-8") as fh:
+    json.dump(cfg, fh, indent=2, ensure_ascii=False)
+PY
+
+    if pgrep -f "sync-loop.sh" >/dev/null 2>&1; then
+      echo "  ✓ Sync-Loop läuft bereits"
+    else
+      nohup bash "$SYNC_LOOP" "$SYNC_PY" "$SYNC_CONFIG" "$SYNC_ENV" "$SYNC_LOG" \
+        >> "$SYNC_LOG" 2>&1 &
+      echo "  ✓ Sync-Loop gestartet (sofort + alle 6 h, Log: $SYNC_LOG)"
+    fi
+  else
+    echo "  ⚠ fernuni-sync fehlt (Repo-Klon ohne fernuni-sync/?) – Sync übersprungen"
+  fi
+fi
 
 # ~ == HA-Kleve TCP-Relay (fuer Container ohne Tailscale, z. B. hermes) == ~
 HA_FORWARD_SCRIPT="/home/carstenmueller2002/opencode-coder-env/coder-templates/shared/ha-forward.py"
