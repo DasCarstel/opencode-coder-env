@@ -3,6 +3,6 @@
 {
   "enabled": true,
   "threshold": 2,
-  "intervalSeconds": 900,
+  "intervalSeconds": 3600,
   "timeoutSeconds": 35
 }
