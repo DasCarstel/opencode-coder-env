@@ -9,6 +9,8 @@ FakeDav) mit synthetischem Moodle-HTML:
     genau 2 Aktivitaeten (helixmedia "Intro (Video)", resource "Folien-Intro.pdf").
   * format_tiles: Kacheln + separater section.php-Inhalt.
   * 1. Lauf laedt die Datei, 2. Lauf laedt nichts erneut, `created` bleibt.
+  * Material-Datei liegt schon im Vault, aber nicht im State: gleiche Groesse ->
+    uebernehmen, abweichende Groesse -> ueberschreiben (nie "-generated-2").
 
 Aufruf: python3 fernuni-sync/selftest.py     (Exit 1 bei Fehlschlag)
 """
@@ -642,6 +644,61 @@ def test_onetopic_tabs():
     shutil.rmtree(tmpdir)
 
 
+def test_material_kollision():
+    """Frischer State + Datei schon im Vault: uebernehmen/ueberschreiben, nie duplizieren.
+
+    Sichert den Bugfix gegen den Fehlerfall ab, bei dem der Sync mit frischem
+    State (neuer Coder-Workspace) fuer JEDE vorhandene Material-Datei eine
+    "-generated-2"-Kopie anlegte (186 Duplikate im FernUni-Vault).
+    """
+    print("Material-Kollision (Datei im Vault, nicht im State)")
+    pages = {sy.norm_key("https://moodle.fernuni-hagen.de/course/view.php?id=6556"): ONETOPIC}
+    tmpdir = tempfile.mkdtemp()
+    groesse = 1782579                       # Moodle-Groesse der Fake-Datei
+
+    # (a) Vault-Datei ohne State-Eintrag, gleiche Groesse -> uebernehmen
+    st1 = {"version": 1, "material": {}, "notes": {}}
+    dav1 = FakeDav({PDF: b"x" * groesse})
+    k1 = sy.Kurs(MODUL, args(), FakeMoodle(pages, {}), dav1, st1, tmpdir)
+    s1 = k1.run()
+    check("Uebernahme: 0 Downloads", s1["dateien"] == 0, s1["dateien"])
+    check("Uebernahme: 1 uebersprungen", s1["uebersprungen"] == 1, s1["uebersprungen"])
+    e1 = st1["material"].get(PDF)
+    check("Uebernahme: State-Eintrag angelegt",
+          bool(e1) and "source" in e1 and e1.get("moodle_size") == groesse
+          and e1.get("sha256") is None and e1.get("etag") == '"etag-1"'
+          and bool(e1.get("updated")), e1)
+    check("Uebernahme: Datei unveraendert",
+          dav1.files.get(PDF) == b"x" * groesse, len(dav1.files.get(PDF) or b""))
+    check("Uebernahme: keine -generated-2-Datei",
+          not any("-generated-2" in p for p in dav1.files), sorted(dav1.files))
+    check("Uebernahme: Notiz verlinkt die vorhandene Datei",
+          ob.wikilink(PDF, label="Datei") in txt(dav1, NOTIZ), txt(dav1, NOTIZ)[-300:])
+    dav2 = FakeDav(dav1.files)
+    s2 = sy.Kurs(MODUL, args(), FakeMoodle(pages, {}), dav2, st1, tmpdir).run()
+    check("Uebernahme: 2. Lauf 0 Downloads", s2["dateien"] == 0, s2["dateien"])
+    check("Uebernahme: 2. Lauf PDF nicht angefasst", PDF not in dav2.puts, dav2.puts)
+    check("Uebernahme: 2. Lauf keine -generated-2-Datei",
+          not any("-generated-2" in p for p in dav2.files), sorted(dav2.files))
+
+    # (b) Vault-Datei ohne State-Eintrag, andere Groesse -> ueberschreiben
+    st3 = {"version": 1, "material": {}, "notes": {}}
+    dav3 = FakeDav({PDF: b"alter Inhalt"})
+    k3 = sy.Kurs(MODUL, args(), FakeMoodle(pages, {}), dav3, st3, tmpdir)
+    s3 = k3.run()
+    check("Ueberschreiben: 1 Download", s3["dateien"] == 1, s3["dateien"])
+    check("Ueberschreiben: PDF neu geschrieben", PDF in dav3.puts, dav3.puts)
+    check("Ueberschreiben: genau eine Datei am Zielpfad",
+          [p for p in dav3.files
+           if p.startswith(f"{BASIS}/Material/03-Data-Engineering-fuer-Data-Science/")] == [PDF],
+          sorted(dav3.files))
+    check("Ueberschreiben: keine -generated-2-Datei",
+          not any("-generated-2" in p for p in dav3.files), sorted(dav3.files))
+    check("Ueberschreiben: keine Warnung mehr",
+          not any("WARNUNG" in f for f in s3["fehler"]), s3["fehler"])
+    shutil.rmtree(tmpdir)
+
+
 def test_auth():
     print("Auth-/Formatpruefung")
     try:
@@ -691,7 +748,7 @@ def test_cli():
 
 if __name__ == "__main__":
     for t in (test_parser, test_slug, test_notiz, test_dav, test_state, test_lauf,
-              test_onetopic_tabs, test_auth, test_cli):
+              test_onetopic_tabs, test_material_kollision, test_auth, test_cli):
         t()
     print(f"\n{OK[0]} Pruefungen ok, {len(FEHLER)} fehlgeschlagen")
     if FEHLER:

@@ -683,30 +683,31 @@ class Kurs:
                 zeilen.append(ob.activity_line(act, url, ob.fmt_size(gr)))
                 continue
 
+            # Der Sync ist der EINZIGE Schreiber im Material/-Baum. Liegt dort eine
+            # Datei, die (noch) nicht im State steht, stammt sie aus einem frueheren
+            # Lauf oder wurde von Hand hineinkopiert -> uebernehmen oder
+            # ueberschreiben, niemals duplizieren. Frueher wurde hier nach
+            # "-generated-2" ausgewichen; bei frischem State (neuer Coder-Workspace)
+            # traf das auf ALLE Material-Dateien zu und erzeugte 186 Duplikate.
+            ueberschreiben = False
             if self.dav.exists(ziel) and ziel not in self.state["material"]:
-                alt = ob.safe_existing_filename(
-                    os.path.splitext(dateiname)[0] + "-generated-2" + os.path.splitext(dateiname)[1])
-                neu = join_path(mat_dir, alt)
-                # Ist die Namenskollision schon aufgeloest (der State kennt die
-                # -generated-2-Datei) und der Moodle-Stand unveraendert, dann
-                # NICHT erneut laden. Sonst laedt jeder Lauf dieselben Dateien
-                # wiederholt, obwohl nichts neu ist ("0 Downloads" bleibt aus).
-                if ist_unveraendert(self.state["material"].get(neu), gr, info.get("etag")):
-                    st, _, _ = self.dav.head(neu)
-                    if st != 404:
-                        self.files_skipped += 1
-                        self.run_urls[key] = neu
-                        lokal += 1
-                        if self.args.verbose:
-                            print(f"      = unveraendert, kein Download: {alt}")
-                        zeilen.append(ob.activity_line(
-                            act, url, ob.fmt_size(gr),
-                            ob.wikilink(neu, label="Datei")))
-                        continue
-                self.errors.append(f"WARNUNG: {ziel} existiert, steht nicht im State "
-                                   f"-> schreibe {neu}")
-                print(f"      ! vorhandene Datei nicht im State -> {alt}")
-                ziel = neu
+                st, rsize, _ = self.dav.head(ziel)
+                if st != 404 and rsize and gr and rsize == gr:
+                    # Gleiche Groesse -> inhaltsgleich, uebernehmen (kein Download).
+                    self.state["material"][ziel] = {
+                        "source": key, "moodle_size": gr, "etag": info.get("etag"),
+                        "sha256": None, "updated": ob.now_stamp(),
+                    }
+                    self.files_skipped += 1
+                    self.run_urls[key] = ziel
+                    lokal += 1
+                    print(f"      + vorhandene Datei uebernommen (Groesse gleich): {dateiname}")
+                    zeilen.append(ob.activity_line(
+                        act, url, ob.fmt_size(gr),
+                        ob.wikilink(ziel, label="Datei")))
+                    continue
+                # Groesse abweichend oder unbekannt -> Datei wird ersetzt.
+                ueberschreiben = True
 
             dl = self.moodle.download(furl, self.max_bytes, self.tmpdir)
             if dl["status"] != "ok":
@@ -732,7 +733,10 @@ class Kurs:
             self.bytes_downloaded += dl["size"] or 0
             self.run_urls[key] = ziel
             lokal += 1
-            print(f"      + {dateiname} ({ob.fmt_size(dl['size'])})")
+            if ueberschreiben:
+                print(f"      ~ vorhandene Datei ueberschrieben: {dateiname}")
+            else:
+                print(f"      + {dateiname} ({ob.fmt_size(dl['size'])})")
             zeilen.append(ob.activity_line(act, url, ob.fmt_size(dl["size"]),
                                            ob.wikilink(ziel, label="Datei")))
         return zeilen, lokal
