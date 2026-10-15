@@ -474,7 +474,9 @@ def _aa_variants(rows: list) -> dict:
             entry = _aa_entry(row)
             if entry is None:
                 break
-            entry["ttft"] = _num1(row.get("median_time_to_first_answer_token"))
+            # 0.0 = AA hat fuer diese Stufe keine Antwortzeit gemessen (Luecke, nicht
+            # "sofort") — als unbekannt weitergeben statt als "0s".
+            entry["ttft"] = _num1(row.get("median_time_to_first_answer_token")) or None
             entry["effort"] = suffix
             out.setdefault(base, {})[suffix] = entry
             break
