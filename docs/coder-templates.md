@@ -43,7 +43,7 @@ Hadoop-Edge + 2 Worker) hochzieht, und dazu alpine-/mongodb-Container aus Notebo
 
 | Punkt | Wert |
 |-------|------|
-| RAM | **8 GiB** (`memory = 8192`), `cpu_shares = 4096`, `shm_size = 2048` (MongoDB/Spark). **Proxmox CT 120 braucht ≥ 16 GiB** (`pct set 120 -memory 16384`), weil Coder + Workspaces denselben Host teilen. |
+| RAM | **Workspace: 8 GiB** (`memory = 8192`), `cpu_shares = 4096`, `shm_size = 2048` (MongoDB/Spark). Davon lauffähig: `deds candle` (~2 GiB) und `deds firework` (~4 GiB); `deds rocket` (~12 GiB) läuft **nicht** (Details unten). **Proxmox CT 120 braucht ≥ 16 GiB** (`pct set 120 -memory 16384`), weil Coder + Workspaces denselben Host teilen. |
 | DinD | `privileged = true`, `cgroupns_mode = "host"`, `security_opts = ["apparmor=unconfined","seccomp=unconfined"]`. **Kein Host-Socket.** |
 | Storage-Treiber | Treiber-Probe in `uni-bootstrap.sh`: `overlay2` → `fuse-overlayfs` → `vfs`; Ergebnis + Compose-Version + cgroup-Check in `~/uni/logs/dockerd.log` |
 | Compose | `docker-compose-plugin` aus dem Docker-Repo (≥ 2.32) |
