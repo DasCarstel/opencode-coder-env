@@ -552,6 +552,28 @@ function budgetText(m) {
   return `$${b.month}/Mon · 5h $${b.h5}`
 }
 
+// Verbrauchsampel (Backend-Feld `usage` aus usage.py): Prozente des engsten
+// Fensters gegen das Budget DIESES Modells. Ohne Abo-Limit gibt es keine Prozente,
+// dann zeigen wir die Kosten aus den eigenen Sitzungen.
+const AMPEL_LABEL = { h5: '5 h', week: 'Woche', month: '30 Tage' }
+
+function ampelText(m) {
+  const u = m?.usage
+  if (!u || u.tightest == null) return ''
+  return `${AMPEL_LABEL[u.window] || u.window} ${Math.round(u.tightest)} %`
+}
+
+function ampelWidth(m) {
+  const t = m?.usage?.tightest
+  return t == null ? 0 : Math.min(100, Math.max(2, Math.round(t)))
+}
+
+function costText(m) {
+  const c = m?.usage?.cost
+  if (!c) return ''
+  return `5 h $${c.h5.toFixed(2)} · 30 T $${c.month.toFixed(2)}`
+}
+
 function tierNorm(tier) {
   const src = { fast, medium, heavy }[tier]
   return { model: src.model, variant: src.variant === '(keine)' ? '' : src.variant }
@@ -1534,7 +1556,7 @@ setInterval(loadSuggestStatus, 60000)
         <th class="thSort num" onclick={() => sortBy('context')} title="Nach Kontextfenster sortieren">Kontext{sortMark('context')}</th>
         <th class="thSort num" onclick={() => sortBy('input')} title="Nach Eingabepreis sortieren">In $/M{sortMark('input')}</th>
         <th class="thSort num" onclick={() => sortBy('output')} title="Nach Ausgabepreis sortieren">Out $/M{sortMark('output')}</th>
-        <th class="num" title="Monatslimit im OpenCode-Go-Abo je Modell; das 5-h-Fenster ist 20 % davon. Quelle: SOT .opencode/hestia-benchmarks.jsonc (budgets)">Budget</th>
+        <th class="num" title="Monatslimit im OpenCode-Go-Abo je Modell (5-h-Fenster = 20 %) und der eigene Verbrauch aus den Sitzungen gegen das engste Fenster. Quelle: SOT .opencode/hestia-benchmarks.jsonc (budgets) + /api/session">Budget / Verbrauch</th>
         {#if showBenchmarks}
           {#each bmSelCols as c (c.key)}
             <th class="thSort num" onclick={() => sortBy(c.key)} title="{c.label} — Quelle: {bmSource}">
@@ -1569,7 +1591,17 @@ setInterval(loadSuggestStatus, 60000)
           <td class="num">{fmtCount(m.limit?.context)}</td>
           <td class="num" title="Gültiger Tarif (unsere Kontexte liegen über der Stufengrenze)">{effPrice(m)?.input ?? 0}</td>
           <td class="num" title="Gültiger Tarif (unsere Kontexte liegen über der Stufengrenze)">{effPrice(m)?.output ?? 0}</td>
-          <td class="num muted" title="Go-Abo: Monatslimit · 5-h-Fenster">{budgetText(m)}</td>
+          <td class="num muted" title="Go-Abo: Monatslimit · 5-h-Fenster">
+            <span class="budgetText">{budgetText(m)}</span>
+            {#if ampelText(m)}
+              <span class="ampel {m.usage?.state || ''}" title="Verbrauch aus den eigenen Sitzungen gegen das Limit des engsten Fensters">
+                <span class="ampelBar"><span class="ampelFill" style="width:{ampelWidth(m)}%"></span></span>
+                {ampelText(m)}
+              </span>
+            {:else if m.usage?.sessions}
+              <span class="ampelCost" title="Kein Abo-Limit — Kosten aus den eigenen Sitzungen">{costText(m)}</span>
+            {/if}
+          </td>
           {#if showBenchmarks}
             {#each bmSelCols as c (c.key)}
               {@const v = bmNum(b, c.key)}
@@ -1613,6 +1645,13 @@ setInterval(loadSuggestStatus, 60000)
                   {/if}
                   <span><b>Budget</b> {#if m.budget}{m.budget.unlimited ? 'unbegrenzt (Go-Abo)' : `$${m.budget.month}/Monat · 5h $${m.budget.h5} · Woche $${m.budget.week}`}{m.budget.checked ? ` · Stand ${m.budget.checked}` : ''}{:else}nicht im Go-Abo-Budget (SOT){/if}</span>
                   {#if m.price?.peak}<span class="badge warn" title="Peak-Zeit: DeepSeek rechnet jetzt den doppelten Preis">⚡ Peak ×{m.price.factor}</span>{/if}
+                  {#if m.usage?.sessions}
+                    <span><b>Verbrauch</b> {m.usage.sessions} Sitzungen · {fmtCount(m.usage.tokens)} Token{#if m.usage.pct} · 5 h {m.usage.pct.h5 ?? '—'} % · Woche {m.usage.pct.week ?? '—'} % · 30 Tage {m.usage.pct.month ?? '—'} %{/if}</span>
+                    {#if !m.usage.pct}
+                      <span><b>Kosten</b> 5 h ${m.usage.cost.h5.toFixed(2)} · 30 Tage ${m.usage.cost.month.toFixed(2)} (kein Abo-Limit)</span>
+                    {/if}
+                    <span class="muted">Verbrauch aus den eigenen Sitzungen (Näherung)</span>
+                  {/if}
                   <span><b>Varianten</b> {(m.variants || []).join(', ') || '—'}</span>
                   <span><b>Status</b> {m.status || '—'}</span>
                   <span><b>Release</b> {m.released ? new Date(m.released * 1000).toISOString().slice(0, 10) : '—'}</span>
@@ -1723,6 +1762,16 @@ setInterval(loadSuggestStatus, 60000)
   .priceTable col.cBudget { width: 17%; }
   .priceTable col.cMetric { width: auto; }
   .priceTable td { overflow: hidden; }
+  /* Verbrauchsampel in der Budget-Spalte */
+  .budgetText { display: block; white-space: nowrap; }
+  .ampel { display: flex; align-items: center; gap: 5px; font-size: .72rem; white-space: nowrap; }
+  .ampelBar { flex: 1 1 auto; min-width: 30px; height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .ampelFill { display: block; height: 100%; background: #3ba55d; }
+  .ampel.warn .ampelFill { background: #d9a021; }
+  .ampel.warn { color: #d9a021; }
+  .ampel.blocked .ampelFill { background: var(--err); }
+  .ampel.blocked { color: var(--err); font-weight: 600; }
+  .ampelCost { display: block; font-size: .72rem; white-space: nowrap; opacity: .85; }
   .detailRow td { overflow: visible; }
 
   .priceRow { cursor: pointer; }

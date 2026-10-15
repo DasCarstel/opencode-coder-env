@@ -267,6 +267,12 @@ def _build_prompt() -> str:
         budget = "- unbekannt"
     bench_instruction = bench_meta[1] + ("\n" + bench_meta[2]) if bench_meta else \
         "BENCHMARK-REGEL: Für diesen Lauf liegen keine Benchmark-Daten vor — bewerte die\nModelle ausschließlich aus Preis, Varianten und Modellnamen und rate KEINE Kennzahlen."
+    # Verbrauch je Modell (Ampel) aus den eigenen Sitzungen — Quelle usage.py.
+    try:
+        import usage as usage_mod
+        verbrauch = usage_mod.prompt_block([m["ref"] for m in models])
+    except Exception:  # noqa: BLE001 — fehlende Verbrauchsdaten kippen keinen Lauf
+        verbrauch = ""
     return f"""Du bist Modell-Stratege für ein Homelab (Coder-Workspaces, OpenCode Agenten-Fleet).
 Wähle aus dem Live-Katalog unten die beste 3-Tier-Anordnung für das Router-Plugin
 (alle drei Tier müssen Models DIESER Liste sein; erlaubte Provider: {", ".join(PROVIDERS)}):
@@ -293,6 +299,11 @@ AKTUELLE WERTE: {current_str}
 BUDGET-STATUS der OpenCode-Go-Konten (je Fenster "% frei"; das AKTIVE Konto trägt alle
 opencode-go-Aufrufe — @fast/@medium/@heavy laufen über dieses Abo):
 {budget}
+
+MODELL-VERBRAUCH (eigene Sitzungen, rollierend über 5 h / Woche / 30 Tage; Prozent = Anteil
+des jeweiligen Fensterlimits DIESES Modells. "GESPERRT" heißt: das Modell nimmt im laufenden
+Fenster nichts mehr an, bis es abläuft; "knapp" heißt: nur noch wenig Luft):
+{verbrauch or "- keine Verbrauchsdaten vorhanden"}
 
 MODELL-KATALOG (nur erlaubte Provider, alle active; Preise = USD pro Mio Tokens).
 Zu den PREIS-Angaben: "PREIS GÜLTIG ab <n> Kontexttoken" ist der Tarif, der bei unserem
@@ -329,6 +340,10 @@ wenigen Stunden gesperrt, obwohl der Tokenpreis günstig aussieht. @fast/@medium
 deshalb Modelle mit großem Monatslimit oder "Budget unbegrenzt"; ein kleines Modell-Limit
 ist höchstens für @heavy vertretbar (wenige Aufrufe). Vergleiche also IMMER Preis UND
 Monatslimit — bei knappem Budget der erste Blick, den du im reasoning nennst.
+Ist ein Modell im MODELL-VERBRAUCH als "GESPERRT" markiert, darfst du es NICHT wählen,
+auch wenn Preis und Benchmarks perfekt passen — nimm dann das nächstbeste Modell mit
+Zustand "ok". Bei "knapp" nur, wenn es keinen gleichwertigen Ersatz gibt, und nenne dann
+den Grund ausdrücklich im reasoning.
 
 ANTWORTE NUR MIT folgendem JSON (keine weiteren Worte, keine Backticks):
 {{"reasoning": "ein Satz Gesamtbegründung",

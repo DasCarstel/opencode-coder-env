@@ -332,6 +332,14 @@ class Handler(BaseHTTPRequestHandler):
                             m["price"] = gobudget.price_for(m)
                 except Exception as e:  # noqa: BLE001
                     _log(f"catalog budget error: {e}")
+                # Verbrauchsampel je Modell (aus den Sitzungen des OpenCode-Servers).
+                try:
+                    import usage
+                    for m in models:
+                        if isinstance(m, dict):
+                            m["usage"] = usage.ampel(m.get("ref") or "")
+                except Exception as e:  # noqa: BLE001
+                    _log(f"catalog usage error: {e}")
                 payload = {"models": models, "providers": ALLOWED_PROVIDERS,
                            "presetProvider": PRESET_PROVIDER}
                 # Benchmarks dürfen den Katalog-Aufruf nie reißen (Quelle OpenRouter).
