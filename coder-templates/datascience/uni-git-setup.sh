@@ -13,9 +13,10 @@
 #   1. .git vorhanden              → nur `git remote get-url origin` prüfen,
 #                                    NICHTS verändern; `git pull --ff-only`
 #                                    nur bei sauberem Arbeitsbaum.
-#   2. .git fehlt, Remote erreichbar → `git clone <url> <pfad>`
-#   3. .git fehlt, Remote fehlt/gesperrt → `git init -b main` + Remote +
-#                                    README.md + .gitignore + Erstcommit + Push
+#   2. .git fehlt, Remote hat Refs      → `git clone <url> <pfad>`
+#   3. .git fehlt, Remote fehlt/leer    → `git init -b main` + Remote +
+#                                         README.md + .gitignore + Erstcommit
+#                                         + `push -u origin main`
 #
 # Token-Behandlung (bewusst so entschieden):
 #   * Das Token wird NUR zur Laufzeit aus $GITHUB_TOKEN gelesen und NIE in
@@ -114,8 +115,17 @@ else
 fi
 
 # ── Hilfsfunktionen ────────────────────────────────────────────────────────
-remote_exists() {  # $1 = url
-  GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code "$1" >/dev/null 2>&1
+# Klassifiziert das Remote:
+#   vorhanden – erreichbar und hat Refs (0 Refs + rc 0 = "leer", rc != 0 = "fehlt")
+# Wichtig: ein per API angelegtes Repo OHNE Auto-Init ist erreichbar, hat aber
+# keine Refs – das ist NICHT "fehlt", sondern der Zustand vor dem ersten Push.
+remote_state() {  # $1 = url
+  local out rc
+  out="$(GIT_TERMINAL_PROMPT=0 git ls-remote "$1" 2>/dev/null)"; rc=$?
+  if [ "$rc" -ne 0 ]; then printf 'fehlt'
+  elif [ -z "$out" ]; then printf 'leer'
+  else printf 'vorhanden'
+  fi
 }
 
 schreibe_readme() {  # $1 = pfad  $2 = modulnummer  $3 = name  $4 = moodle  $5 = vault
@@ -221,9 +231,10 @@ for eintrag in "${MODULE[@]}"; do
     continue
   fi
 
-  if remote_exists "$URL"; then
+  REMOTE_STATE="$(remote_state "$URL")"
+  if [ "$REMOTE_STATE" = "vorhanden" ]; then
     # ── Fall 2: Remote da, lokal leer → klonen ────────────────────────────
-    echo "   → Remote erreichbar, klone..."
+    echo "   → Remote vorhanden, klone..."
     if git clone "$URL" "$PFAD" >/dev/null 2>&1; then
       echo "   ✓ geklont ($(git -C "$PFAD" log --oneline -1 2>/dev/null))"
     else
@@ -232,8 +243,12 @@ for eintrag in "${MODULE[@]}"; do
     continue
   fi
 
-  # ── Fall 3: Remote fehlt → Repo lokal anlegen und pushen ────────────────
-  echo "   → Remote nicht erreichbar → neues Repo lokal anlegen"
+  # ── Fall 3: Remote fehlt oder noch leer → Repo lokal anlegen + pushen ───
+  if [ "$REMOTE_STATE" = "leer" ]; then
+    echo "   → Remote existiert, ist aber leer (Repo ohne Auto-Init) → Repo lokal anlegen"
+  else
+    echo "   → Remote nicht vorhanden/nicht erreichbar → Repo lokal anlegen (Push legt es an)"
+  fi
   if [ "${#GIT_INIT_ARGS[@]}" -eq 0 ]; then
     git -C "$PFAD" init -q
     git -C "$PFAD" symbolic-ref HEAD refs/heads/main
