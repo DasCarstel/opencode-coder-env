@@ -76,11 +76,37 @@ Die Policies werden über `/v1/sys/policies/acl/<name>` gelesen und geschrieben
 (Feld `data.policy`) — **nicht** über `/v1/sys/policy/acl/<name>`, das eine Policy
 mit Slash im Namen adressiert.
 
-Neues Secret-ID ausstellen:
+Neue Secret-ID ausstellen (Modus ohne Bootstrap — Policies, Rollen und
+CA-Verteilung werden nicht angefasst):
 
-    bash scripts/bootstrap-hosts.sh --issue-secret-id
+    export OPENBAO_ROOT_TOKEN=<root-token>
+    bash scripts/bootstrap-hosts.sh --issue-secret-id [ROLLE]     # Default: mcp-uni
+
+Die Secret-ID wird **nie** auf stdout ausgegeben; sie landet 0600 in
+`~/.openbao/<rolle>.secret-id` (Pfad per `OPENBAO_SECRET_ID_FILE` übersteuerbar).
+stdout nennt nur Länge, Gültigkeit (`secret_id_ttl`) und Nutzungen
+(`secret_id_num_uses`). Auf dem Docker-Host liegt der Root-Token in
+`/opt/docker-compose/openbao/bootstrap.env` (0600), Aufruf dort z. B.:
+
+    set -a; . /opt/docker-compose/openbao/bootstrap.env; set +a
+    bash scripts/bootstrap-hosts.sh --issue-secret-id mcp-uni
+
+Vorhandene Secret-IDs listet `bao list auth/approle/role/<rolle>/secret-id`
+(Accessor-IDs); jederzeit gültig ist die Secret-ID nur bei `secret_id_ttl 0`
+und `secret_id_num_uses 0` — beides ist für `mcp-uni` gesetzt.
 
 ## Coder-Integration
 
-Das Secret-ID wird als Default im Template main.tf gesetzt und bei
-coder update infrastructure automatisch injiziert.
+Der datascience-Workspace loggt sich mit der Least-Privilege-AppRole `mcp-uni`
+ein. Role-ID und Secret-ID sind **Coder-Parameter** des Templates
+(`openbao_role_id`, `openbao_approle_secret_id`; beide Default leer, `mutable`)
+— im Repo liegt kein Secret.
+
+* **Role-ID** von `mcp-uni`: `0727dc69-cf01-014c-d3c5-a907499d0e43` (steht auch
+  in der Ausgabe von `bootstrap-hosts.sh`).
+* **Secret-ID**: wie oben ausstellen und aus der Datei lesen
+  (`cat ~/.openbao/mcp-uni.secret-id`) — nie in Logs oder Ausgaben kopieren.
+* Für einen neuen Workspace beide Werte setzen, z. B.
+  `coder update <workspace> --parameter openbao_role_id=… --parameter openbao_approle_secret_id=…`
+  oder im Coder-Panel unter „Parameters". Fehlen sie, bricht `startup.sh`
+  fail-closed ab (Docker/Jupyter/`~/uni` laufen, OpenCode/Secrets/Sync nicht).

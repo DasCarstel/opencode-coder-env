@@ -10,6 +10,11 @@
 # Aufruf:
 #   export OPENBAO_ROOT_TOKEN=<root-token>
 #   bash scripts/bootstrap-hosts.sh
+#
+# Nur eine neue AppRole-Secret-ID ausstellen (kein Bootstrap, kein SSH):
+#   bash scripts/bootstrap-hosts.sh --issue-secret-id [ROLLE]   (Default: mcp-uni)
+#   Die Secret-ID wird nie ausgegeben, sondern 0600 in
+#   $OPENBAO_SECRET_ID_FILE (Default ~/.openbao/<rolle>.secret-id) abgelegt.
 
 set -euo pipefail
 
@@ -21,6 +26,49 @@ HOSTS=("docker:10.0.10.10" "proxmox:10.0.10.20" "truenas:10.0.10.30")
 if [ -z "${OPENBAO_ROOT_TOKEN:-}" ]; then
   echo "ERROR: OPENBAO_ROOT_TOKEN ist nicht gesetzt."
   exit 1
+fi
+
+# ─── Modus: nur eine Secret-ID ausstellen ────────────────────────────────────
+# Stellt eine frische Secret-ID fuer eine AppRole aus (Default mcp-uni). Der
+# Wert wird NIE auf stdout ausgegeben; er landet 0600 in $OPENBAO_SECRET_ID_FILE
+# (Default: ~/.openbao/<rolle>.secret-id). stdout nennt nur Laenge, Gueltigkeit
+# und Ablageort - Details in OPENBAO.md.
+issue_secret_id() {
+  local role="$1" file out sid ttl uses role_json
+  file="${OPENBAO_SECRET_ID_FILE:-$HOME/.openbao/${role}.secret-id}"
+  umask 077
+  out=$(curl -sS -X POST -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+        "${OPENBAO_ADDR}/v1/auth/approle/role/${role}/secret-id") || {
+    echo "ERROR: OpenBao nicht erreichbar (${OPENBAO_ADDR})." >&2
+    exit 1
+  }
+  sid=$(printf '%s' "$out" | python3 -c \
+        'import sys,json; print(json.load(sys.stdin).get("data",{}).get("secret_id",""))' \
+        2>/dev/null || echo "")
+  if [ -z "$sid" ]; then
+    echo "ERROR: keine Secret-ID fuer die AppRole '${role}' erhalten (existiert sie?)." >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "$file")"
+  printf '%s\n' "$sid" > "$file"
+  chmod 600 "$file"
+  role_json=$(curl -sS -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+              "${OPENBAO_ADDR}/v1/auth/approle/role/${role}" 2>/dev/null || echo "{}")
+  ttl=$(printf '%s' "$role_json" | python3 -c \
+        'import sys,json; t=json.load(sys.stdin).get("data",{}).get("secret_id_ttl",0)
+print("unbegrenzt" if not t else str(t) + "s")' 2>/dev/null || echo "?")
+  uses=$(printf '%s' "$role_json" | python3 -c \
+         'import sys,json; u=json.load(sys.stdin).get("data",{}).get("secret_id_num_uses",0)
+print("unbegrenzt" if not u else u)' 2>/dev/null || echo "?")
+  echo "=== OpenBao: Secret-ID fuer AppRole '${role}' ==="
+  echo "  ✓ Secret-ID ausgestellt, Laenge ${#sid} Zeichen, gueltig fuer ${ttl} (secret_id_ttl), Nutzungen ${uses} (secret_id_num_uses)"
+  echo "  ✓ Ablage: ${file} (0600) - der Wert wird hier bewusst nicht ausgegeben"
+  echo "  → als Coder-Parameter 'openbao_approle_secret_id' des datascience-Workspace eintragen"
+}
+
+if [ "${1:-}" = "--issue-secret-id" ]; then
+  issue_secret_id "${2:-mcp-uni}"
+  exit 0
 fi
 
 echo "=== OpenBao: Rolle host-access sicherstellen ==="
