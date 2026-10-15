@@ -204,6 +204,9 @@ vollständig — die Trennung ist auch hier eine Eigenschaft der Datei.
 - **Einmalige Einrichtung auf dem PC:** `scripts/setup-windows-pc-ssh.ps1` als
   Administrator ausführen. Das Skript installiert den OpenSSH-Server, öffnet TCP/22 in der
   Firewall, legt den Public-Key ab und setzt optional PowerShell als `DefaultShell`.
+  Hängt `Add-WindowsCapability` (wartet auf Windows Update / die FoD-Quelle), bricht das
+  Skript nach einem Timeout ab und installiert die Standalone-Variante von
+  `PowerShell/Win32-OpenSSH` (unabhängig von Windows Update).
 - **Erreichbarkeit:** Der Container erreicht den PC per NAT über den Docker-Host. Für
   `10.0.0.20` sollte in der UniFi eine DHCP-Reservierung bestehen.
 
