@@ -118,38 +118,40 @@ if (-not (Get-NetFirewallRule -Name sshd -ErrorAction SilentlyContinue)) {
   Write-Host "OK Firewall-Regel für Port 22 existiert bereits"
 }
 
-# 4. Public-Key in die richtige authorized_keys legen
-$isAdmin = $false
-try {
-  $isAdmin = @(Get-LocalGroupMember -Group "Administrators" |
-    Where-Object { $_.Name -match "\\$([regex]::Escape($User))$" }).Count -gt 0
-} catch {}
-
-if ($isAdmin) {
-  $authKeys = Join-Path $env:ProgramData "ssh\administrators_authorized_keys"
-  Write-Host "-> User '$User' ist Administrator → administrators_authorized_keys"
-} else {
-  $authKeys = "C:\Users\$User\.ssh\authorized_keys"
-}
-
+# 4. Public-Key ablegen – an BEIDEN möglichen Stellen:
+#    - %ProgramData%\ssh\administrators_authorized_keys  (sshd nutzt das für
+#      Administratoren-Konten; die Datei im Benutzerprofil wird dann ignoriert)
+#    - %USERPROFILE%\.ssh\authorized_keys                (nicht-administrative Konten)
+#    Damit funktioniert es unabhängig davon, ob der User Admin ist – und ohne die
+#    lokalisierten Gruppennamen ("Administrators" vs. "Administratoren") zu raten.
 $keyLine = $PublicKey.Trim()
-New-Item -ItemType Directory -Force -Path (Split-Path $authKeys) | Out-Null
-$existing = if (Test-Path $authKeys) { [System.IO.File]::ReadAllText($authKeys) } else { "" }
-$alreadyThere = @($existing -split "`n" | Where-Object { $_.Trim() -eq $keyLine }).Count -gt 0
-if ($alreadyThere) {
-  Write-Host "OK Public-Key war bereits eingetragen: $authKeys"
-} else {
-  if ($existing -and -not $existing.EndsWith("`n")) { $existing += "`n" }
-  # UTF-8 ohne BOM + LF-Zeilenenden: Windows-sshd lehnt CRLF in authorized_keys häufig ab.
-  [System.IO.File]::WriteAllText($authKeys, $existing + $keyLine + "`n", (New-Object System.Text.UTF8Encoding($false)))
-  Write-Host "OK Public-Key eingetragen (UTF-8 ohne BOM, LF): $authKeys"
+
+function Set-AuthorizedKey {
+  param([string]$Path)
+  New-Item -ItemType Directory -Force -Path (Split-Path $Path) | Out-Null
+  $existing = if (Test-Path $Path) { [System.IO.File]::ReadAllText($Path) } else { "" }
+  $has = @($existing -split "`n" | Where-Object { $_.Trim() -eq $keyLine }).Count -gt 0
+  if ($has) {
+    Write-Host "OK Public-Key war bereits eingetragen: $Path"
+  } else {
+    if ($existing -and -not $existing.EndsWith("`n")) { $existing += "`n" }
+    # UTF-8 ohne BOM + LF-Zeilenenden: Windows-sshd lehnt CRLF in authorized_keys häufig ab.
+    [System.IO.File]::WriteAllText($Path, $existing + $keyLine + "`n", (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host "OK Public-Key eingetragen (UTF-8 ohne BOM, LF): $Path"
+  }
 }
+
+$userKeys  = "C:\Users\$User\.ssh\authorized_keys"
+$adminKeys = Join-Path $env:ProgramData "ssh\administrators_authorized_keys"
+
+Set-AuthorizedKey -Path $userKeys
+Set-AuthorizedKey -Path $adminKeys
 
 # administrators_authorized_keys braucht restriktive ACLs, sonst ignoriert sshd sie.
-if ($isAdmin) {
-  icacls $authKeys /inheritance:r /grant "SYSTEM:F" /grant "BUILTIN\Administrators:F" | Out-Null
-  Write-Host "OK ACLs für administrators_authorized_keys gesetzt"
-}
+# Grants über wohlbekannte SIDs -> lokalisierungsunabhängig (SYSTEM=S-1-5-18,
+# Administratoren=S-1-5-32-544).
+icacls $adminKeys /inheritance:r /grant "*S-1-5-18:F" /grant "*S-1-5-32-544:F" | Out-Null
+Write-Host "OK ACLs für administrators_authorized_keys gesetzt (über SIDs)"
 
 # 5. Optional: PowerShell als Default-Shell (statt cmd.exe)
 if ($SetDefaultShellPowerShell) {
