@@ -94,6 +94,15 @@ if docker info >/dev/null 2>&1; then
   fi
 fi
 
+# ── 2a. DinD-Vorbereitung für den FernUni-Stack ────────────────────────────
+# (a) Socket: der pyspark-client-node läuft als UID 1000 und mountet den
+#     INNEREN Docker-Socket (DinD aus Notebooks). Der Socket gehört nur dem
+#     Daemon im Container – kein Host-Zugriff, deshalb 666 hier vertretbar.
+# (b) ~/uni/workspace ist das Bind-Mount-Ziel des Stacks; UID 1000 muss dort
+#     schreiben können (sonst startet Jupyter, aber Notebooks sind read-only).
+chmod 666 /var/run/docker.sock 2>/dev/null || true
+chmod -R a+rwX "$UNI_DIR/workspace" 2>/dev/null || true
+
 # ── 2b. FernUni-Repo sicherstellen (öffentliches GitLab, idempotent) ───────
 # Der Klon liegt im persistenten Volume ~/uni und übersteht Workspace-Neustarts.
 # Fehlt er (frischer Workspace), wird er hier einmalig geholt.
@@ -129,8 +138,32 @@ if [ -d "$FERNUNI_REPO" ]; then
     echo "  ✓ workspace/ → $UNI_DIR/workspace (Symlink gesetzt)"
   fi
 else
-  echo "  ℹ FernUni-Repo noch nicht geklont – Symlink wird beim nächsten Start gesetzt"
+  echo "  ⚠ FernUni-Repo fehlt (Klon fehlgeschlagen?) – Deploy-DeDs-*.sh erst nach erfolgreichem Klon nutzbar"
 fi
+
+# ── 3b. Wrapper `deds` für die FernUni-Deploy-Skripte ──────────────────────
+# Die FernUni-Skripte (Deploy-DeDs-Candle.sh & Co.) setzen `user: ${UID}:${GID}`
+# aus `id -u`. Im Workspace läuft alles als root – Jupyter im client-node bricht
+# dann mit "Running as root is not recommended" ab (Exit 1). Der Wrapper
+# erzwingt die vorgesehene UID/GID 1000 (User pyspark-client im Image).
+cat > /usr/local/bin/deds <<'DEDS'
+#!/usr/bin/env bash
+# deds — FernUni-Stack im datascience-Workspace starten (Candle/Firework/Rocket).
+# Aufruf: deds [candle|firework|rocket|down]   (Default: candle)
+set -euo pipefail
+REPO=/home/carstenmueller2002/uni/data-engineering-infrastructure
+MODE="${1:-candle}"
+cd "$REPO" 2>/dev/null || { echo "FernUni-Repo fehlt: $REPO"; exit 1; }
+case "$MODE" in
+  candle)   exec env UID=1000 GID=1000 docker compose -f docker-compose.yml up client-node ;;
+  firework) exec env UID=1000 GID=1000 docker compose -f docker-compose.yml -f docker-compose-small.yml up ;;
+  rocket)   exec env UID=1000 GID=1000 docker compose -f docker-compose.yml up ;;
+  down)     exec docker compose -f docker-compose.yml -f docker-compose-small.yml down ;;
+  *) echo "Aufruf: deds [candle|firework|rocket|down]"; exit 2 ;;
+esac
+DEDS
+chmod 0755 /usr/local/bin/deds
+echo "  ✓ Wrapper deds installiert (/usr/local/bin/deds → UID 1000)"
 
 # ── 4. uv-Umgebungen (ml/dl) im Hintergrund – blockiert den Start nicht ───
 echo "  → uv-Umgebungen im Hintergrund einrichten (Log: $ENV_LOG)"
