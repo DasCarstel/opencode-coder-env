@@ -112,7 +112,8 @@ except Exception:
     echo "  ⚠ ${varname}: nicht gefunden"
   else
     export "${varname}=${value}"
-    printf '%s="%s"\n' "${varname}" "${value}"  "  ✓ ${varname} geladen"
+    # NIE den Wert loggen – nur den Variablennamen (Logs landen in /tmp/*.log).
+    echo "  ✓ ${varname} geladen"
   fi
 }
 
