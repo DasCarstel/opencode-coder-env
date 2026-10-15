@@ -259,6 +259,14 @@ function sortVal(m, key) {
     case 'input': return Number(effPrice(m)?.input ?? 0)
     case 'output': return Number(effPrice(m)?.output ?? 0)
     case 'context': return Number(m.limit?.context ?? 0)
+    // Budget: Monatslimit des Go-Abos. "∞" (unbegrenzt) sortiert als größter Wert,
+    // Modelle ganz ohne Abo-Limit liefern null und stehen damit immer am Ende.
+    case 'budget': {
+      const b = m.budget
+      if (!b) return null
+      if (b.unlimited) return Number.POSITIVE_INFINITY
+      return Number(b.month ?? 0)
+    }
     case 'released': return m.released ? Number(m.released) : null
     case 'variants': return (m.variants || []).length
     default:
@@ -1556,7 +1564,7 @@ setInterval(loadSuggestStatus, 60000)
         <th class="thSort num" onclick={() => sortBy('context')} title="Nach Kontextfenster sortieren">Kontext{sortMark('context')}</th>
         <th class="thSort num" onclick={() => sortBy('input')} title="Nach Eingabepreis sortieren">In $/M{sortMark('input')}</th>
         <th class="thSort num" onclick={() => sortBy('output')} title="Nach Ausgabepreis sortieren">Out $/M{sortMark('output')}</th>
-        <th class="num" title="Monatslimit im OpenCode-Go-Abo je Modell (5-h-Fenster = 20 %) und der eigene Verbrauch aus den Sitzungen gegen das engste Fenster. Quelle: SOT .opencode/hestia-benchmarks.jsonc (budgets) + /api/session">Budget / Verbrauch</th>
+        <th class="thSort num" onclick={() => sortBy('budget')} title="Nach Monatslimit des Go-Abos sortieren (∞ = unbegrenzt; Modelle ohne Abo-Limit stehen am Ende). Das 5-h-Fenster ist 20 % des Monatslimits. Quelle: SOT .opencode/hestia-benchmarks.jsonc (budgets) + /api/session">Budget / Verbrauch{sortMark('budget')}</th>
         {#if showBenchmarks}
           {#each bmSelCols as c (c.key)}
             <th class="thSort num" onclick={() => sortBy(c.key)} title="{c.label} — Quelle: {bmSource}">
