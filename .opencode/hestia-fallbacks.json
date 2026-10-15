@@ -1,2 +1,10 @@
 {
+  "fast": {
+    "model": "opencode/deepseek-v4.1-flash-free",
+    "variant": "low"
+  },
+  "medium": {
+    "model": "opencode/deepseek-v4.1-flash-free",
+    "variant": "max"
+  }
 }

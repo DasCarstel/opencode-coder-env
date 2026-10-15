@@ -1,11 +1,11 @@
 {
   "build": {
-    "model": "opencode-go/claude-haiku-5-5",
-    "variant": "medium",
+    "model": "opencode/claude-haiku-5-5",
+    "variant": "max",
     "source": "derived"
   },
   "plan": {
-    "model": "opencode-go/claude-haiku-5-5",
+    "model": "opencode/claude-haiku-5-5",
     "variant": "max",
     "source": "derived"
   }

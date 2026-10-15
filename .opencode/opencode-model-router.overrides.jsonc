@@ -13,7 +13,7 @@
   "presets": {
     "hestia": {
       "fast": {
-        "model": "opencode-go/mimo-v2.6-flash",
+        "model": "opencode/claude-haiku-5-5",
         "costRatio": 1,
         "description": "MiMo V2.5 für Explorer, Suche und einfache Lesesvorgänge",
         "steps": 30,
@@ -22,10 +22,11 @@
           "Einfache File-Lese- und Listing-Operationen",
           "Grep/glob-Operationen",
           "Schnelle Lookups und Recherche"
-        ]
+        ],
+        "variant": "medium"
       },
       "medium": {
-        "model": "opencode-go/claude-haiku-5-5",
+        "model": "opencode/claude-haiku-5-5",
         "costRatio": 5,
         "description": "DeepSeek V4 Flash für Implementation, Refactoring und Tests",
         "steps": 50,
@@ -36,10 +37,10 @@
           "Code-Review",
           "Bug fixes"
         ],
-        "variant": "medium"
+        "variant": "max"
       },
       "heavy": {
-        "model": "opencode-go/gpt-6-luna",
+        "model": "opencode/claude-sonnet-5-5",
         "costRatio": 12,
         "description": "GLM 5.3 Flash für Architektur, komplexes Debugging und Security",
         "steps": 120,
