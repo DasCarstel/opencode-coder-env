@@ -132,12 +132,17 @@ if ($isAdmin) {
   $authKeys = "C:\Users\$User\.ssh\authorized_keys"
 }
 
+$keyLine = $PublicKey.Trim()
 New-Item -ItemType Directory -Force -Path (Split-Path $authKeys) | Out-Null
-if (-not (Test-Path $authKeys) -or -not (Select-String -Path $authKeys -SimpleMatch $PublicKey -Quiet)) {
-  Add-Content -Path $authKeys -Value $PublicKey
-  Write-Host "OK Public-Key eingetragen: $authKeys"
-} else {
+$existing = if (Test-Path $authKeys) { [System.IO.File]::ReadAllText($authKeys) } else { "" }
+$alreadyThere = @($existing -split "`n" | Where-Object { $_.Trim() -eq $keyLine }).Count -gt 0
+if ($alreadyThere) {
   Write-Host "OK Public-Key war bereits eingetragen: $authKeys"
+} else {
+  if ($existing -and -not $existing.EndsWith("`n")) { $existing += "`n" }
+  # UTF-8 ohne BOM + LF-Zeilenenden: Windows-sshd lehnt CRLF in authorized_keys häufig ab.
+  [System.IO.File]::WriteAllText($authKeys, $existing + $keyLine + "`n", (New-Object System.Text.UTF8Encoding($false)))
+  Write-Host "OK Public-Key eingetragen (UTF-8 ohne BOM, LF): $authKeys"
 }
 
 # administrators_authorized_keys braucht restriktive ACLs, sonst ignoriert sshd sie.
