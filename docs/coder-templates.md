@@ -47,16 +47,67 @@ Hadoop-Edge + 2 Worker) hochzieht, und dazu alpine-/mongodb-Container aus Notebo
 | DinD | `privileged = true`, `cgroupns_mode = "host"`, `security_opts = ["apparmor=unconfined","seccomp=unconfined"]`. **Kein Host-Socket.** |
 | Storage-Treiber | Treiber-Probe in `uni-bootstrap.sh`: `overlay2` → `fuse-overlayfs` → `vfs`; Ergebnis + Compose-Version + cgroup-Check in `~/uni/logs/dockerd.log` |
 | Compose | `docker-compose-plugin` aus dem Docker-Repo (≥ 2.32) |
-| Ports | 8890 unser JupyterLab (Kernel „Python (ml)" / „Python (dl)"), 8888 Jupyter des FernUni-Stacks, 8088 Hadoop-ResourceManager (8888/8088 erst nach Stack-Start) |
+| Ports | 8890 unser JupyterLab (Kernel „Python (ml)" / „Python (dl)"), 8888 Jupyter des FernUni-Stacks, 4040–4050 Spark-UI, 9000/9870/8088 Hadoop (Namenode/WebUI/ResourceManager – erst nach „Firework"/„Rocket") |
 | Volumes | `…-data` → `~/opencode-coder-env`, `…-uni` → `~/uni`, `…-docker` → `/var/lib/docker` (Images/Container überleben „Stop"/„Restart"), Sessions: `/etc/opencode-data/<user>-datascience` |
 | AppRole | `mcp-uni` (Least Privilege, fail-closed in `startup.sh`) — Secrets `secret/data/uni/fernuni-ocis` (user, token, password, space_id, url) und `secret/data/uni/moodle` (username, password, base_url) |
 | MCP | nur FernUni-oCIS + pdf (`workspaces/uni/workspace-global.json`); das private/muellerconnect-oCIS-Token wird im Service aktiv `unset` |
 | Sync | `fernuni-sync/` läuft per `sync-loop.sh` beim Start + alle 6 h (Log `~/uni/logs/sync.log`); Zustand/config/env in `~/uni/state` → Neustart ist idempotent („0 Downloads") |
 
+**Bekannte Einschränkungen (Stand 2026-10-15, im Workspace `ds-test` verifiziert):**
+
+- `deds candle|firework|rocket` startet den Stack **im Vordergrund** (die
+  FernUni-Skripte nutzen `docker compose up` ohne `-d`) – das Terminal bleibt
+  belegt. Stop mit `deds down`; Strg-C beendet nur die Ausgabe, der Container
+  hat `restart: unless-stopped`.
+- Für „Firework"/„Rocket" werden zusätzlich die `hadoop-node:0.3.6-rootless`-Images
+  gezogen (zusammen ~2,8 GiB, anonym); `deds candle` zieht nur den
+  `pyspark-client-node` (~3,7 GiB entpackt/1,3 GiB Download).
+- **Sync-Idempotenz bei „State-Vault-Desync"**: kennt `~/uni/state/state.json`
+  eine Datei nicht, die im oCIS-Space schon liegt (z. B. State-Volume neu,
+  Vault voll), legt der Sync eine Kopie `…-generated-2.<ext>` an und warnt
+  („vorhandene Datei nicht im State"). Seit Commit `c7e9f6f` (2026-10-15) führt
+  er diese Kopie im State und überspringt sie ab dem **nächsten** Lauf; vorher
+  hat **jeder** Lauf dieselben 207 Dateien erneut geladen (`207 Download(s)`,
+  `0 unveraendert`). Ist der State synchron, meldet der Lauf `0 Download(s)`.
+- Ein Coder-`restart` baut das Workspace-Image neu (`CACHE_DATE` im `Dockerfile`)
+  — der Neustart dauert dadurch ~4–6 min. Die drei Volumes bleiben dabei
+  erhalten.
+- `herdr ls` gibt es nicht (Herdr hat kein `ls`-Subkommando); Status über
+  `herdr status server`, Workspaces über `herdr workspace <subcommand>`.
+
 Setup-Reihenfolge im Container: `entrypoint.sh` (Tools + Repo) →
 `uni-bootstrap.sh` im Hintergrund (dockerd → `~/uni`-Struktur →
-`~/uni/workspace`-Symlink im FernUni-Klon → uv-Umgebungen ml/dl →
+FernUni-Repo klonen → `~/uni/workspace`-Symlink im FernUni-Klon → uv-Umgebungen ml/dl →
 JupyterLab 8890 → `startup.sh datascience`).
+
+### FernUni-Stack starten (abgenommen 2026-10-15)
+
+| Schritt | Befehl |
+|---------|--------|
+| kleinster Test (nur Jupyter-/PySpark-Client) | `deds candle` |
+| Firework (kleine Maschinen) | `deds firework` |
+| Rocket (voller Stack) | `deds rocket` |
+| stoppen | `deds down` |
+
+**Warum der Wrapper `deds` (in `uni-bootstrap.sh` installiert)?** Die
+FernUni-Skripte `Deploy-DeDs-*.sh` setzen im Compose `user: ${UID}:${GID}` aus
+`id -u`. Im Workspace läuft alles als **root**, und Jupyter im
+`pyspark-client-node` lehnt das ab:
+
+```
+[C …] Running as root is not recommended. Use --allow-root to bypass.
+dbis-pyspark-client-node exited with code 1 (restarting)
+```
+
+`deds` erzwingt deshalb UID/GID **1000** (User `pyspark-client` im Image).
+`uni-bootstrap.sh` setzt zusätzlich `chmod 666 /var/run/docker.sock` (nur der
+Sockel des **inneren** Daemons – der Host-Socket wird bewusst nicht gemountet)
+und Schreibrechte auf `~/uni/workspace`, sonst kann UID 1000 nicht in den
+Bind-Mount schreiben.
+
+Beim **ersten** Start zieht der Stack ~1,3 GiB anonym von
+`registry.dbis-pro1.fernuni-hagen.de` (dauert einige Minuten). Die Images liegen
+in `/var/lib/docker` = Volume `…-docker` und überstehen Workspace-Stop/Restart.
 
 Voraussetzungen auf dem Coder-Host (CT 120):
 
