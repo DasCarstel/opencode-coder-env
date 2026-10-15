@@ -8,9 +8,10 @@ OpenBao (Vault-Fork) verwaltet alle Secrets für die Coder-Infrastruktur.
 
 | Policy | Zweck | Berechtigungen |
 |--------|-------|----------------|
-| `mcp-server` | Coder-Workspaces | secret/data/mcp/* (read, list), secret/data/ssh/unifi (read), secret/metadata/mcp/* (list, read), secret/metadata/ssh/unifi (read), auth/token/renew-self (update), auth/token/revoke-self (update), ssh/sign/host-access (update) |
+| `mcp-server` | Coder-Workspaces | secret/data/mcp/* (read, list), secret/data/uni/* (read, list), secret/data/ssh/unifi (read), secret/metadata/mcp/* (list, read), secret/metadata/uni/* (read, list), secret/metadata/ssh/unifi (read), auth/token/renew-self (update), auth/token/revoke-self (update), ssh/sign/host-access (update) |
 | `host-access` | Host-Zugriff | ssh/sign/host-access (update) |
 | `mcp-server-general` | General-Workspace (least privilege) | secret/data/mcp/{github,opencloud-ocis,opencode-go,hermes-opencode-service,ssh-mcp-pc} (read), secret/metadata/mcp/{github,opencloud-ocis,opencode-go,hermes-opencode-service,ssh-mcp-pc} (list, read), auth/token/renew-self (update), auth/token/revoke-self (update) |
+| `mcp-server-uni` | uni-Workspace (least privilege) | secret/data/uni/* (read, list), secret/metadata/uni/* (list, read), secret/data/mcp/{github,opencloud-ocis,opencode-go,hermes-opencode-service,ssh-mcp-pc} (read), secret/metadata/mcp/{github,opencloud-ocis,opencode-go,hermes-opencode-service,ssh-mcp-pc} (list, read), auth/token/renew-self (update), auth/token/revoke-self (update) |
 
 ## AppRoles
 
@@ -19,6 +20,10 @@ OpenBao (Vault-Fork) verwaltet alle Secrets für die Coder-Infrastruktur.
 | `mcp-server` | mcp-server | 0 (nie) | 0 (unbegrenzt) | 24h |
 | `host-access` | host-access | 0 (nie) | 0 (unbegrenzt) | 24h |
 | `mcp-general` | mcp-server-general | 0 (nie) | 0 (unbegrenzt) | 24h |
+| `mcp-uni` | mcp-server-uni | 0 (nie) | 0 (unbegrenzt) | 24h |
+
+Role-ID `mcp-uni` (live): `0727dc69-cf01-014c-d3c5-a907499d0e43` — das Skript liest sie
+zur Laufzeit aus und gibt sie am Ende aus; sie ist **nicht** hart im Skript hinterlegt.
 
 ## Secrets
 
@@ -36,6 +41,8 @@ OpenBao (Vault-Fork) verwaltet alle Secrets für die Coder-Infrastruktur.
 | secret/data/mcp/github | api_key – GitHub PAT (git clone/push in allen Workspaces) |
 | secret/data/mcp/artificialanalysis | api_key – Artificial Analysis API-Key (Modell-Benchmarks der Hestia, optional; Policy `hestia` hat Leserecht) |
 | secret/data/ssh/unifi | UniFi SSH-Zugang |
+| secret/data/uni/fernuni-ocis | user, token, password, space_id, url – oCIS App-Token des Service-Accounts `fernuni-obsidian` für den Space „FernUni" (FernUni/Obsidian-Second-Brain) |
+| secret/data/uni/moodle | username, password, base_url – FernUni-Moodle-Zugang für die Sync-Pipeline (lokaler Login, kein SSO/2FA) |
 
 ## SSH-CA
 
@@ -55,11 +62,19 @@ Signierung: ssh/sign/host-access (valid_principals: root, TTL 24h)
     export OPENBAO_ROOT_TOKEN=<root-token>
     bash scripts/bootstrap-hosts.sh
 
-Erstellt idempotent: Policies (inkl. `mcp-server-general`), AppRoles (inkl.
-`mcp-general`), verteilt CA-Key. Zusätzlich wird der Key `secret/data/mcp/ssh-mcp-pc`
+Erstellt idempotent: Policies (inkl. `mcp-server-general` und `mcp-server-uni`),
+AppRoles (inkl. `mcp-general` und `mcp-uni`), verteilt CA-Key. Die Policy
+`mcp-server` wird dabei **additiv** um `secret/data/uni/*` und
+`secret/metadata/uni/*` erweitert (bestehende Regeln bleiben erhalten).
+Zusätzlich wird der Key `secret/data/mcp/ssh-mcp-pc`
 erzeugt und in OpenBao gespeichert; am Ende gibt das Skript den
-Public-Key des Carsten-PC und die Role-ID von `mcp-general` aus (für die
-Coder-Parameter `openbao_role_id` / `openbao_approle_secret_id` des `general`-Templates).
+Public-Key des Carsten-PC sowie die Role-IDs von `mcp-general` und `mcp-uni` aus (für die
+Coder-Parameter `openbao_role_id` / `openbao_approle_secret_id` des `general`-Templates
+bzw. des uni-Workspace).
+
+Die Policies werden über `/v1/sys/policies/acl/<name>` gelesen und geschrieben
+(Feld `data.policy`) — **nicht** über `/v1/sys/policy/acl/<name>`, das eine Policy
+mit Slash im Namen adressiert.
 
 Neues Secret-ID ausstellen:
 

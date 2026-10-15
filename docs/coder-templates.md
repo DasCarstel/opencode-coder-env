@@ -58,6 +58,18 @@ Setup-Reihenfolge im Container: `entrypoint.sh` (Tools + Repo) →
 `~/uni/workspace`-Symlink im FernUni-Klon → uv-Umgebungen ml/dl →
 JupyterLab 8890 → `startup.sh datascience`).
 
+Voraussetzungen auf dem Coder-Host (CT 120):
+
+```bash
+docker network create coder-ds        # wie coder-gen/coder-mc: bridge, kein internes VLAN
+pct set 120 -memory 16384             # auf dem Proxmox-Host; 8 GiB reichen fuer Coder + Datascience-Workspace nicht
+```
+
+Die beiden Coder-Template-Parameter `openbao_role_id` und `openbao_approle_secret_id`
+müssen die AppRole **`mcp-uni`** enthalten (Role-ID/-Secret-ID aus `scripts/bootstrap-hosts.sh`),
+sonst bricht `startup.sh` fail-closed ab (Docker/Jupyter/`~/uni` laufen trotzdem,
+OpenCode/Secrets/Sync nicht).
+
 Python-Umgebungen (idempotent, Marker `.ready`, Hintergrund, Log `~/uni/logs/env-setup.log`):
 
 | env | Python | Pakete |

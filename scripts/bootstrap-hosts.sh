@@ -57,8 +57,8 @@ fi
 echo ""
 echo "=== OpenBao: Policy host-access ==="
 POLICY_EXISTS=$(curl -sS -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
-  "${OPENBAO_ADDR}/v1/sys/policy/acl/host-access" 2>/dev/null | \
-  python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('rules',''))" 2>/dev/null || echo "")
+  "${OPENBAO_ADDR}/v1/sys/policies/acl/host-access" 2>/dev/null | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('policy',''))" 2>/dev/null || echo "")
 
 if [ -z "$POLICY_EXISTS" ]; then
   echo "  → Policy wird erstellt..."
@@ -67,7 +67,7 @@ if [ -z "$POLICY_EXISTS" ]; then
     -d '{
       "policy": "path \"ssh/sign/host-access\" { capabilities = [\"create\",\"update\"] }"
     }' \
-    "${OPENBAO_ADDR}/v1/sys/policy/acl/host-access" >/dev/null 2>&1
+    "${OPENBAO_ADDR}/v1/sys/policies/acl/host-access" >/dev/null 2>&1
   echo "  ✓ Policy erstellt"
 else
   echo "  ✓ Policy existiert bereits"
@@ -78,20 +78,38 @@ fi
 echo ""
 echo "=== OpenBao: Policy mcp-server ==="
 POLICY_EXISTS=$(curl -sS -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
-  "${OPENBAO_ADDR}/v1/sys/policy/acl/mcp-server" 2>/dev/null | \
-  python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('rules',''))" 2>/dev/null || echo "")
+  "${OPENBAO_ADDR}/v1/sys/policies/acl/mcp-server" 2>/dev/null | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('policy',''))" 2>/dev/null || echo "")
 
 if [ -z "$POLICY_EXISTS" ]; then
   echo "  → Policy wird erstellt..."
   curl -sS -X PUT -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
     -H "Content-Type: application/json" \
     -d '{
-      "policy": "path \"secret/data/mcp/*\" { capabilities = [\"read\",\"list\"] }"
+      "policy": "path \"secret/data/mcp/*\" { capabilities = [\"read\",\"list\"] }\npath \"secret/data/uni/*\" { capabilities = [\"read\", \"list\"] }\npath \"secret/metadata/uni/*\" { capabilities = [\"read\", \"list\"] }"
     }' \
-    "${OPENBAO_ADDR}/v1/sys/policy/acl/mcp-server" >/dev/null 2>&1
+    "${OPENBAO_ADDR}/v1/sys/policies/acl/mcp-server" >/dev/null 2>&1
   echo "  ✓ Policy erstellt"
 else
-  echo "  ✓ Policy existiert bereits"
+  # Additive Erweiterung – die bestehenden Regeln müssen erhalten bleiben.
+  python3 - "$OPENBAO_ADDR" "$OPENBAO_ROOT_TOKEN" <<'PY'
+import json, sys, urllib.request
+addr, tok = sys.argv[1:3]
+hdrs = {"X-Vault-Token": tok, "Content-Type": "application/json"}
+req = urllib.request.Request(addr + "/v1/sys/policies/acl/mcp-server",
+                             headers=hdrs, method="GET")
+policy = json.load(urllib.request.urlopen(req, timeout=15)).get("data", {}).get("policy", "")
+if "secret/data/uni/" in policy:
+    print("  ✓ Policy existiert bereits (inkl. uni-Regeln)")
+else:
+    zusatz = ('path "secret/data/uni/*" { capabilities = ["read", "list"] }\n'
+              'path "secret/metadata/uni/*" { capabilities = ["read", "list"] }')
+    body = json.dumps({"policy": policy.rstrip("\n") + "\n" + zusatz + "\n"}).encode()
+    req = urllib.request.Request(addr + "/v1/sys/policies/acl/mcp-server",
+                                 data=body, method="PUT", headers=hdrs)
+    urllib.request.urlopen(req, timeout=15).read()
+    print("  ✓ Policy additiv um die uni-Regeln erweitert")
+PY
 fi
 
 # ─── Policy: mcp-server-general (Least Privilege für den general-Space) ─────
@@ -99,8 +117,8 @@ fi
 echo ""
 echo "=== OpenBao: Policy mcp-server-general ==="
 POLICY_EXISTS=$(curl -sS -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
-  "${OPENBAO_ADDR}/v1/sys/policy/acl/mcp-server-general" 2>/dev/null | \
-  python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('rules',''))" 2>/dev/null || echo "")
+  "${OPENBAO_ADDR}/v1/sys/policies/acl/mcp-server-general" 2>/dev/null | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('policy',''))" 2>/dev/null || echo "")
 
 if [ -z "$POLICY_EXISTS" ]; then
   echo "  → Policy wird erstellt..."
@@ -109,7 +127,28 @@ if [ -z "$POLICY_EXISTS" ]; then
     -d '{
       "policy": "path \"secret/data/mcp/github\" { capabilities = [\"read\"] }\npath \"secret/data/mcp/opencloud-ocis\" { capabilities = [\"read\"] }\npath \"secret/data/mcp/opencode-go\" { capabilities = [\"read\"] }\npath \"secret/data/mcp/hermes-opencode-service\" { capabilities = [\"read\"] }\npath \"secret/data/mcp/ssh-mcp-pc\" { capabilities = [\"read\"] }\npath \"secret/metadata/mcp/github\" { capabilities = [\"list\",\"read\"] }\npath \"secret/metadata/mcp/opencloud-ocis\" { capabilities = [\"list\",\"read\"] }\npath \"secret/metadata/mcp/opencode-go\" { capabilities = [\"list\",\"read\"] }\npath \"secret/metadata/mcp/hermes-opencode-service\" { capabilities = [\"list\",\"read\"] }\npath \"secret/metadata/mcp/ssh-mcp-pc\" { capabilities = [\"list\",\"read\"] }\npath \"auth/token/renew-self\" { capabilities = [\"update\"] }\npath \"auth/token/revoke-self\" { capabilities = [\"update\"] }"
     }' \
-    "${OPENBAO_ADDR}/v1/sys/policy/acl/mcp-server-general" >/dev/null 2>&1
+    "${OPENBAO_ADDR}/v1/sys/policies/acl/mcp-server-general" >/dev/null 2>&1
+  echo "  ✓ Policy erstellt"
+else
+  echo "  ✓ Policy existiert bereits"
+fi
+
+# ─── Policy: mcp-server-uni (Least Privilege für den uni-Space) ─────────────
+
+echo ""
+echo "=== OpenBao: Policy mcp-server-uni ==="
+POLICY_EXISTS=$(curl -sS -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+  "${OPENBAO_ADDR}/v1/sys/policies/acl/mcp-server-uni" 2>/dev/null | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('policy',''))" 2>/dev/null || echo "")
+
+if [ -z "$POLICY_EXISTS" ]; then
+  echo "  → Policy wird erstellt..."
+  curl -sS -X PUT -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "policy": "path \"secret/data/uni/*\" { capabilities = [\"read\",\"list\"] }\npath \"secret/metadata/uni/*\" { capabilities = [\"list\",\"read\"] }\npath \"secret/data/mcp/github\" { capabilities = [\"read\"] }\npath \"secret/data/mcp/opencloud-ocis\" { capabilities = [\"read\"] }\npath \"secret/data/mcp/opencode-go\" { capabilities = [\"read\"] }\npath \"secret/data/mcp/hermes-opencode-service\" { capabilities = [\"read\"] }\npath \"secret/data/mcp/ssh-mcp-pc\" { capabilities = [\"read\"] }\npath \"secret/metadata/mcp/github\" { capabilities = [\"list\",\"read\"] }\npath \"secret/metadata/mcp/opencloud-ocis\" { capabilities = [\"list\",\"read\"] }\npath \"secret/metadata/mcp/opencode-go\" { capabilities = [\"list\",\"read\"] }\npath \"secret/metadata/mcp/hermes-opencode-service\" { capabilities = [\"list\",\"read\"] }\npath \"secret/metadata/mcp/ssh-mcp-pc\" { capabilities = [\"list\",\"read\"] }\npath \"auth/token/renew-self\" { capabilities = [\"update\"] }\npath \"auth/token/revoke-self\" { capabilities = [\"update\"] }"
+    }' \
+    "${OPENBAO_ADDR}/v1/sys/policies/acl/mcp-server-uni" >/dev/null 2>&1
   echo "  ✓ Policy erstellt"
 else
   echo "  ✓ Policy existiert bereits"
@@ -136,6 +175,32 @@ if [ -z "$ROLE_EXISTS" ]; then
       "token_num_uses": "0"
     }' \
     "${OPENBAO_ADDR}/v1/auth/approle/role/mcp-general" >/dev/null 2>&1
+  echo "  ✓ Rolle erstellt"
+else
+  echo "  ✓ Rolle existiert bereits"
+fi
+
+# ─── AppRole: mcp-uni (Least-Privilege für den uni-Space) ───────────────────
+
+echo ""
+echo "=== OpenBao: AppRole mcp-uni ==="
+ROLE_EXISTS=$(curl -sS -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+  "${OPENBAO_ADDR}/v1/auth/approle/role/mcp-uni/role-id" 2>/dev/null | \
+  python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('role_id',''))" 2>/dev/null || echo "")
+
+if [ -z "$ROLE_EXISTS" ]; then
+  echo "  → Rolle mcp-uni wird erstellt..."
+  curl -sS -X POST -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "token_policies": ["mcp-server-uni"],
+      "token_ttl": "3600",
+      "token_max_ttl": "86400",
+      "secret_id_ttl": "0",
+      "secret_id_num_uses": "0",
+      "token_num_uses": "0"
+    }' \
+    "${OPENBAO_ADDR}/v1/auth/approle/role/mcp-uni" >/dev/null 2>&1
   echo "  ✓ Rolle erstellt"
 else
   echo "  ✓ Rolle existiert bereits"
@@ -188,6 +253,20 @@ echo "    curl -sS -X POST -H \"X-Vault-Token: \$OPENBAO_ROOT_TOKEN\" \\"
 echo "      ${OPENBAO_ADDR}/v1/auth/approle/role/mcp-general/secret-id \\"
 echo "      | python3 -c \"import sys,json; print(json.load(sys.stdin)['data']['secret_id'])\""
 echo "  → im Coder-Template 'general' als openbao_role_id / openbao_approle_secret_id eintragen."
+
+# ─── uni-Workspace: Role-ID ausgeben ────────────────────────────────────────
+
+echo ""
+echo "=== uni-Workspace: Role-ID / Secret-ID ==="
+UNI_ROLE_ID=$(curl -sS -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+  "${OPENBAO_ADDR}/v1/auth/approle/role/mcp-uni/role-id" 2>/dev/null | \
+  python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('role_id',''))" 2>/dev/null || echo "")
+echo "  Role-ID  (mcp-uni): ${UNI_ROLE_ID:-FEHLT}"
+echo "  Secret-ID ausstellen:"
+echo "    curl -sS -X POST -H \"X-Vault-Token: \$OPENBAO_ROOT_TOKEN\" \\"
+echo "      ${OPENBAO_ADDR}/v1/auth/approle/role/mcp-uni/secret-id \\"
+echo "      | python3 -c \"import sys,json; print(json.load(sys.stdin)['data']['secret_id'])\""
+echo "  → für den uni-Workspace als openbao_role_id / openbao_approle_secret_id hinterlegen."
 
 # CA-Key holen
 echo ""

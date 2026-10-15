@@ -45,16 +45,20 @@ ausschließlich in `/etc/opencode.env` (Mode 0600) ab.
 | `secret/data/mcp/github` | GitHub-PAT (via `scripts/setup-git-credentials.sh`) |
 | `secret/data/mcp/hermes-opencode-service` | `OPENCODE_SERVER_PASSWORD` |
 | `secret/data/mcp/artificialanalysis` | `AA_API_KEY` (Artificial Analysis, **optional** — ohne Key laufen die Benchmarks nur über OpenRouter) |
+| `secret/data/uni/fernuni-ocis` | `user`, `token`, `password`, `space_id`, `url` – oCIS App-Token des Service-Accounts `fernuni-obsidian` für den Space „FernUni" (FernUni/Obsidian-Second-Brain) |
+| `secret/data/uni/moodle` | `username`, `password`, `base_url` – FernUni-Moodle-Zugang für die Sync-Pipeline (lokaler Login, kein SSO/2FA) |
 
 > **Hinweis zu `opencode-go`:** Der Pfad enthält ausschließlich die drei Keys
 > `default1`, `default2`, `default3`. Das frühere Feld `active` wird weder
 > gelesen noch geschrieben — die aktive Konto-Wahl lebt im Repo (siehe unten).
 
 **AppRoles** (Details in [`OPENBAO.md`](../OPENBAO.md)): `mcp-server` für die
-Coder-Workspaces (`secret/data/mcp/*` lesen, `ssh/sign/host-access`),
+Coder-Workspaces (`secret/data/mcp/*` und `secret/data/uni/*` lesen, `ssh/sign/host-access`),
 `mcp-general` (Policy `mcp-server-general`) für den General-Workspace — minimal
 berechtigt, liest nur `secret/data/mcp/{github,opencloud-ocis,opencode-go,hermes-opencode-service,ssh-mcp-pc}` —
-und `host-access` nur für die SSH-CA-Signierung. Die Host-/SSH-Credentials der
+`mcp-uni` (Policy `mcp-server-uni`, Role-ID `0727dc69-cf01-014c-d3c5-a907499d0e43`)
+für den uni-Workspace — liest `secret/data/uni/*` plus dieselbe mcp-Auswahl wie
+`mcp-general` — und `host-access` nur für die SSH-CA-Signierung. Die Host-/SSH-Credentials der
 Zielmaschinen selbst sind nicht Teil dieses Flusses; sie liegen in
 `authorized_keys` bzw. `TrustedUserCAKeys` auf den Hosts.
 
