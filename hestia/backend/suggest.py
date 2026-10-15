@@ -105,13 +105,29 @@ def _benchmarks_block(models: list) -> tuple:
     header = " | ".join(label for _, label in cols)
     unknown = " | ".join(["—"] * len(cols))
     rows = {}
+    # Effort-Kurve je Modell: AA fuehrt jede Stufe als eigenen Datensatz. Der Preis
+    # ist ueber alle Stufen gleich — es entscheiden Intelligenz und Antwortzeit.
+    effort = {}
+    for m in models:
+        e = entries.get(m["ref"]) or {}
+        curve = e.get(bench_mod.VARIANT_FIELD) or {}
+        parts = []
+        for eff in bench_mod.EFFORT_SUFFIXES:
+            c = curve.get(eff)
+            if not isinstance(c, dict):
+                continue
+            iq = _fmt(c.get("intelligence_index"))
+            tt = c.get("ttft")
+            parts.append(f"{eff} {iq}/{_fmt(tt)}s" if tt is not None else f"{eff} {iq}")
+        if parts:
+            effort[m["ref"]] = " · ".join(parts)
     for m in models:
         e = entries.get(m["ref"])
         if not e:
             continue
         rows[m["ref"]] = " | ".join(_fmt(e.get(f)) for f, _ in cols)
-    if not rows:
-        return {}, None
+    if not rows and not effort:
+        return {}, None, {}
     sources = st.get("sources") or {}
     ok = [k for k, v in sources.items() if isinstance(v, dict) and v.get("ok")]
     source = " + ".join(_sources_name(k) for k in ok) or st.get("source") or "openrouter"
@@ -128,15 +144,23 @@ def _benchmarks_block(models: list) -> tuple:
         "Fehlt zu einem Modell die ganze Benchmark-Spalte ('—'), darfst du Qualitätsaussagen\n"
         "für dieses Modell nur aus Preis, Varianten und Modellnamen begründen.\n"
         f"Die Werte stammen aus {st.get('attribution') or 'den oben genannten Quellen'} "
-        "(Attribution Pflicht) — gib sie als solche weiter."
+        "(Attribution Pflicht) — gib sie als solche weiter.\n"
+        "EFFORT-REGEL (wichtig): Steht hinter einem Modell eine Zeile "
+        "'Effort (IQ/Antwortzeit)', so ist der Preis über ALLE Stufen identisch — es "
+        "entscheidet allein Intelligenz gegen Antwortzeit. Wähle die Stufe, die die "
+        "Intelligenz nahe ans Maximum bringt, ohne unnötige Wartezeit zu erzeugen: suche "
+        "den Knick, also den letzten großen IQ-Sprung VOR einem Sprung in der Antwortzeit. "
+        "'max' hat die höchste Intelligenz, aber meist eine sehr lange Denkzeit; 'low' und "
+        "'medium' liegen deutlich darunter, ohne billiger zu sein. Fehlt die Zeile, hat "
+        "die Quelle für dieses Modell keine Stufen gemessen — dann gib 'variant' leer an."
     )
-    return rows, (header, instruction, note, unknown)
+    return rows, (header, instruction, note, unknown), effort
 
 
 def _build_prompt() -> str:
     models = [m for m in fetch_models()
               if m["providerID"] in PROVIDERS and m["status"] == "active"]
-    bench_rows, bench_meta = _benchmarks_block(models)
+    bench_rows, bench_meta, bench_effort = _benchmarks_block(models)
     bench_header = ""
     if bench_meta:
         bench_header = f" | Bench ({bench_meta[0]})"
@@ -154,6 +178,8 @@ def _build_prompt() -> str:
         if bench_header:
             vals = bench_rows.get(m["ref"])
             line += bench_header + (f" {vals}" if vals else f" {bench_meta[3]}")
+        if bench_effort.get(m["ref"]):
+            line += f" | Effort (IQ/1. Antwort): {bench_effort[m['ref']]}"
         lines.append(line)
     catalog = "\n".join(lines)
     from github_api import get_overrides

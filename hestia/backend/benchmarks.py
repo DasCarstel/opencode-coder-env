@@ -441,6 +441,46 @@ def _match(model: dict, idx: dict, aliases: dict) -> dict | None:
 # --- Artificial Analysis ---------------------------------------------------
 
 
+# Effort-Stufen, die AA als EIGENE Zeilen fuehrt ("claude-haiku-5-5-high" →
+# "Claude Haiku 5.5 (High)"). Eine Zeile gilt nur dann als Stufe, wenn die
+# Basis-Slug ebenfalls existiert — sonst traefe es echte Modellnamen wie
+# "mistral-medium" oder "devstral-medium".
+EFFORT_SUFFIXES = ("non-reasoning", "minimal", "low", "medium", "high", "xhigh", "max")
+# Traegt die Stufen-Kurve am Benchmark-Eintrag: {stufe: {intelligence_index, speed, ttft, …}}
+VARIANT_FIELD = "variants"
+
+
+def _aa_variants(rows: list) -> dict:
+    """{basis_slug: {stufe: eintrag}} aus den AA-Zeilen.
+
+    Der Preis ist ueber alle Effort-Stufen gleich; unterschiedlich sind
+    Intelligenz und Antwortzeit — genau das entscheidet die Wahl. Ohne diese
+    Kurve musste das Analysemodell die Stufe raten.
+    """
+    by_slug = {}
+    for row in rows or []:
+        if isinstance(row, dict):
+            slug = str(row.get("slug") or "").strip()
+            if slug:
+                by_slug[slug] = row
+    out: dict = {}
+    for slug, row in by_slug.items():
+        for suffix in EFFORT_SUFFIXES:
+            if not slug.endswith("-" + suffix):
+                continue
+            base = slug[: -(len(suffix) + 1)]
+            if base not in by_slug:      # echter Modellname, keine Stufe
+                break
+            entry = _aa_entry(row)
+            if entry is None:
+                break
+            entry["ttft"] = _num1(row.get("median_time_to_first_answer_token"))
+            entry["effort"] = suffix
+            out.setdefault(base, {})[suffix] = entry
+            break
+    return out
+
+
 def _aa_entry(row: dict) -> dict | None:
     """Einen AA-Datensatz auf unsere Felder eindampfen (oder None)."""
     ev = row.get("evaluations")
@@ -475,8 +515,8 @@ def _best(candidates: list) -> dict | None:
 
 
 def _aa_index(rows: list) -> dict:
-    """Suchindex über AA-Zeilen: slug / creator+slug / Name."""
-    idx: dict = {"slug": {}, "full": {}, "name": {}}
+    """Suchindex über AA-Zeilen: slug / creator+slug / Name (+ Stufen-Kurven)."""
+    idx: dict = {"slug": {}, "full": {}, "name": {}, "variants": _aa_variants(rows)}
     for row in rows or []:
         if not isinstance(row, dict):
             continue
@@ -749,6 +789,10 @@ def refresh(force: bool = False) -> dict:
                 _match(m, or_idx, settings["aliases"]) if sources[OR_KEY_NAME]["ok"] else None,
             )
             if merged:
+                # Stufen-Kurve des zugeordneten AA-Modells anhaengen (falls AA Stufen fuehrt).
+                curve = (aa_idx.get("variants") or {}).get(merged.get("aa_id") or "")
+                if curve:
+                    merged[VARIANT_FIELD] = curve
                 new_entries[ref] = merged
         payload = {
             "fetchedAt": int(time.time()),
@@ -793,6 +837,8 @@ def _select(entry: dict, fields: list) -> dict:
     out = {f: entry.get(f) for f in keep}
     for f in ID_FIELDS:
         out[f] = entry.get(f)
+    if entry.get(VARIANT_FIELD):
+        out[VARIANT_FIELD] = entry[VARIANT_FIELD]   # Effort-Kurve mitnehmen
     return out
 
 
@@ -807,6 +853,8 @@ def _select_all(entry: dict) -> dict:
     for f in ID_FIELDS:
         if entry.get(f) is not None:
             out[f] = entry[f]
+    if entry.get(VARIANT_FIELD):
+        out[VARIANT_FIELD] = entry[VARIANT_FIELD]
     return out
 
 
