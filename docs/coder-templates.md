@@ -149,8 +149,14 @@ bash ~/opencode-coder-env/coder-templates/datascience/uni-git-setup.sh
 ```
 
 Voraussetzung: `GITHUB_TOKEN` in der Umgebung oder in `/etc/opencode.env`
-(Start über `paperclip`-freies `startup.sh datascience`). Fehlt der Token,
-werden die Repos nur lokal angelegt (kein Push) — das Skript meldet das.
+(dort 0600, außerhalb von Repo und `~/uni`). Fehlt der Token, werden die Repos
+nur lokal angelegt (kein Push) — das Skript meldet das.
+
+**Grenze des Tokens (belegt 2026-10-15):** Scopes sind `repo` + `workflow`. Anlegen
+(`POST /user/repos`), Klonen und Pushen funktionieren; **Löschen geht nicht** —
+`DELETE /repos/<owner>/<name>` antwortet mit HTTP 403 „Must have admin rights to
+Repository." (Scope `delete_repo` fehlt). Repos müssen im Zweifel über die
+GitHub-UI gelöscht werden.
 
 ### FernUni-Stack starten (abgenommen 2026-10-15)
 
