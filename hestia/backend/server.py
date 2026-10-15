@@ -321,6 +321,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/catalog":
             try:
                 models = catalog.fetch_models()
+                # Budget (Go-Abo) + gültiger Preis inkl. Kontextstufe und Zeitfaktor
+                # je Modell — Quelle: .opencode/hestia-benchmarks.jsonc (budgets).
+                # Fehler dürfen den Katalog nie reißen (Panel zeigt dann "—").
+                try:
+                    import gobudget
+                    for m in models:
+                        if isinstance(m, dict):
+                            m["budget"] = gobudget.budget_for(m.get("ref") or "")
+                            m["price"] = gobudget.price_for(m)
+                except Exception as e:  # noqa: BLE001
+                    _log(f"catalog budget error: {e}")
                 payload = {"models": models, "providers": ALLOWED_PROVIDERS,
                            "presetProvider": PRESET_PROVIDER}
                 # Benchmarks dürfen den Katalog-Aufruf nie reißen (Quelle OpenRouter).

@@ -157,6 +157,62 @@ def _benchmarks_block(models: list) -> tuple:
     return rows, (header, instruction, note, unknown), effort
 
 
+def _fmt_price(p: dict) -> str:
+    """Preis eines Tarifs als Kurztext."""
+    return (f"in ${p.get('input')}/M, out ${p.get('output')}/M, "
+            f"cache r ${p.get('cacheRead')}/w ${p.get('cacheWrite')}")
+
+
+def _price_line(m: dict) -> str:
+    """Preis + Go-Budget eines Modells für den Katalog im Prompt.
+
+    Zeigt den GÜLTIGEN Tarif zuerst (die Kontextstufe, in der unsere Läufe
+    praktisch immer liegen), darunter den billigeren Grundtarif — und getrennt
+    davon das Monatsbudget dieses Modells im Go-Abo. Preis und Budget werden
+    bewusst NICHT zu einer Kennzahl verrechnet (siehe PRO-302-Notiz
+    "Hestia - Preise, Kontextstufen und Go-Budgets").
+    """
+    cost = m.get("cost") or {}
+    tiers = m.get("costTiers") or []
+    eff = m.get("costEffective") or cost
+    ref = m.get("ref") or ""
+    model_id = m.get("modelID") or ""
+    parts = []
+
+    if not cost.get("input") and not cost.get("output"):
+        parts.append("KOSTENLOS")
+    elif tiers:
+        parts.append(f"PREIS GÜLTIG ab {eff.get('from')} Kontexttoken: {_fmt_price(eff)}")
+        parts.append(f"Preis nur darunter: {_fmt_price(cost)}")
+    else:
+        parts.append(f"Preis: {_fmt_price(eff)}")
+
+    try:
+        import gobudget
+        b = gobudget.budget_for(ref)
+        if b is None:
+            parts.append("kein Go-Abo-Budget (zählt nicht ins Abo-Limit)")
+        elif b.get("unlimited"):
+            parts.append("Budget unbegrenzt (Go-Abo, Gratis-Modell)")
+        else:
+            parts.append(f"Budget ${b['month']:g}/Monat (5-h-Fenster ${b['h5']:g})")
+    except Exception:  # noqa: BLE001 — fehlende Budgets dürfen den Prompt nicht kippen
+        pass
+
+    try:
+        import gobudget
+        rule = gobudget.peak_rule(model_id, m.get("providerID"))
+        if rule:
+            spans = "/".join(rule.get("windows") or [])
+            jetzt = ("PEAK (doppelter Preis)" if gobudget.is_peak(model_id, None, m.get("providerID"))
+                     else "aktuell Off-Peak")
+            parts.append(f"Peak {spans} UTC Mo-Fr = {rule.get('factor', 2):g}x — {jetzt}")
+    except Exception:  # noqa: BLE001
+        pass
+
+    return " | " + " | ".join(parts) if parts else ""
+
+
 def _build_prompt() -> str:
     models = [m for m in fetch_models()
               if m["providerID"] in PROVIDERS and m["status"] == "active"]
@@ -166,14 +222,12 @@ def _build_prompt() -> str:
         bench_header = f" | Bench ({bench_meta[0]})"
     lines = []
     for m in models:
-        c = m["cost"]
         v = ",".join(v for v in m["variants"] if v) or "-"
         lim = m.get("limit") or {}
-        is_free = not c.get("input") and not c.get("output")
         line = (
             f"- {m['ref']} | {m['name']}"
-            + (" | KOSTENLOS" if is_free else f" | in ${c.get('input')}/M, out ${c.get('output')}/M")
-            + f" | cache r ${c.get('cacheRead')}/w ${c.get('cacheWrite')} | ctx {lim.get('context', '?')} | variants [{v}]"
+            + _price_line(m)
+            + f" | ctx {lim.get('context', '?')} | variants [{v}]"
         )
         if bench_header:
             vals = bench_rows.get(m["ref"])
@@ -240,7 +294,14 @@ BUDGET-STATUS der OpenCode-Go-Konten (je Fenster "% frei"; das AKTIVE Konto trä
 opencode-go-Aufrufe — @fast/@medium/@heavy laufen über dieses Abo):
 {budget}
 
-MODELL-KATALOG (nur erlaubte Provider, alle active; Preis = USD pro Mio Tokens):
+MODELL-KATALOG (nur erlaubte Provider, alle active; Preise = USD pro Mio Tokens).
+Zu den PREIS-Angaben: "PREIS GÜLTIG ab <n> Kontexttoken" ist der Tarif, der bei unserem
+Nutzungsprofil abgerechnet wird — unsere Läufe liegen fast immer weit über dieser Grenze
+(viel Verlauf und MCP-Tools). "Preis nur darunter" gilt ausschließlich für kleine Kontexte
+und ist die Ausnahme. Teuer sind vor allem die Cache-Writes (cache w), nicht Input/Output.
+Zu den BUDGET-Angaben: das ist das MONATSLIMIT des Go-Abos für genau dieses Modell; das
+5-h-Fenster ist nur 20 % davon (Woche 50 %). "kein Go-Abo-Budget" heißt: läuft nicht über
+das Abo und belastet es deshalb nicht.
 {catalog}
 
 {bench_instruction}
@@ -261,6 +322,13 @@ Variante) wirklich abdeckt; @heavy nie auf ein volatiles Gratis-Modell legen.
 BUDGET-REGEL: Wird beim aktiven Abo ein Fenster knapp (<25 % frei) oder ist ein Fenster
 erschöpft, empfiehl günstigere Modelle, weiche bevorzugt auf die "free"-Varianten aus und
 erwähne die Budget-Lage kurz im "reasoning"-Satz.
+MODELL-BUDGET-REGEL: Zusätzlich zählt das Limit des EINZELNEN Modells. Ist es klein
+(z. B. $15/Monat) und läuft der Tier mit vielen Aufrufen (@fast trägt die Masse der
+Dispatches), ist das Modell trotz niedrigem Tokenpreis ungeeignet — es ist dann nach
+wenigen Stunden gesperrt, obwohl der Tokenpreis günstig aussieht. @fast/@medium brauchen
+deshalb Modelle mit großem Monatslimit oder "Budget unbegrenzt"; ein kleines Modell-Limit
+ist höchstens für @heavy vertretbar (wenige Aufrufe). Vergleiche also IMMER Preis UND
+Monatslimit — bei knappem Budget der erste Blick, den du im reasoning nennst.
 
 ANTWORTE NUR MIT folgendem JSON (keine weiteren Worte, keine Backticks):
 {{"reasoning": "ein Satz Gesamtbegründung",
@@ -784,7 +852,9 @@ def read_settings() -> dict:
 def catalog_fingerprint() -> str:
     """Kurzer, stabiler Hash über die MATERIELLEN Felder des Modellkatalogs.
 
-    Erfasst: Modell-ID, Status, Varianten, Preise (input/output, inkl. Cache).
+    Erfasst: Modell-ID, Status, Varianten, Preise (input/output, inkl. Cache) und
+    die Kontext-Tarifstufen (costTiers) — eine neue oder geänderte Stufe IST eine
+    materielle Änderung, weil sie den abgerechneten Preis ändert.
     Erfasst NICHT: Namen, Beschreibungen, Limit-/Release-Angaben — reine Doku- oder
     Beschreibungsänderungen dürfen keinen Lauf auslösen. Rückgabe: 12 Hex-Zeichen.
     """
@@ -805,6 +875,12 @@ def catalog_fingerprint() -> str:
                 cost.get("output"),
                 (cost.get("cacheRead") if isinstance(cost, dict) else None),
                 (cost.get("cacheWrite") if isinstance(cost, dict) else None),
+            ],
+            [
+                [t.get("from"), t.get("input"), t.get("output"),
+                 t.get("cacheRead"), t.get("cacheWrite")]
+                for t in (m.get("costTiers") or [])
+                if isinstance(t, dict)
             ],
         ])
     rows.sort(key=lambda r: (r[0], r[1]))

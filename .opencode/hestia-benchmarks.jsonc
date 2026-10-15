@@ -41,5 +41,73 @@
     "opencode/gemini-3.1-pro": "google/gemini-3.1-pro-preview",
     "opencode/mistral-large-4": "mistralai/mistral-large-4-0",
     "opencode/nemotron-3-ultra-free": "nvidia/nemotron-3-ultra-550b-a55b"
+  },
+
+  // budgets: Monatslimits des OpenCode-Go-Abos in USD — NICHT per API abrufbar
+  // (geprüft 15.10.2026: https://opencode.ai/inference/go/v1/models liefert nur
+  // id/object/created/owned_by). Quelle und Prüfdatum bei jeder Änderung
+  // mitpflegen! Fenster laut Doku: 5 h = 20 %, Woche = 50 %, Monat = 100 %.
+  //
+  // Grundsatz: fehlt ein Modell hier, gilt es als OHNE Budget — das Panel zeigt
+  // dann "—" statt einer erfundenen Zahl. Gilt nur für den Provider
+  // "opencode-go"; die Zen-Modelle unter "opencode/..." haben KEIN Abo-Limit.
+  // "unlimited" = befristete Gratis-Modelle.
+  //
+  // Gelesen von hestia/backend/gobudget.py (Budget + Zeitpreis).
+  "budgets": {
+    "provider": "opencode-go",
+    "plan": "Go",
+    "source": "https://opencode.ai/v2/docs/console/go",
+    "checked": "2026-10-15",
+    "windows": { "h5": 0.20, "week": 0.50, "month": 1.00 },
+
+    "models": {
+      // $15/Monat — 5-h-Fenster $3
+      "claude-haiku-5-5": 15,
+      "gpt-6-luna": 15,
+      "gpt-5.6-luna": 15,
+      "grok-4.7": 15,
+      "grok-4.6": 15,
+      "kimi-k3": 15,
+      "glm-5.3": 15,
+      "qwen3.8-max": 15,
+      "deepseek-v4-pro": 15,
+      "mimo-v2.6-pro": 15,
+      "mimo-v2.5-pro": 15,
+      // $30/Monat — 5-h-Fenster $6
+      "space-bunny": 30,
+      "qwen3.8-flash": 30,
+      "hy4-preview": 30,
+      // $60/Monat — 5-h-Fenster $12
+      "glm-5.3-flash": 60,
+      "glm-5.2": 60,
+      "kimi-k2.7-code": 60,
+      "kimi-k2.6": 60,
+      "longcat-2.0": 60,
+      "mimo-v2.6-flash": 60,
+      "mimo-v2.5": 60,
+      "minimax-m3": 60,
+      "minimax-m2.7": 60,
+      "muse-spark-1.3-contributor": 60,
+      "muse-spark-1.2-contributor": 60,
+      "qwen3.7-plus": 60,
+      "hy3": 60,
+      "gemini-4-argon-contributor": 60,   // 2x befristet; regulär $30
+      // $80/Monat — 5-h-Fenster $16; das höchste bezahlte Limit im Go-Plan
+      "deepseek-v4.1-flash": 80,
+      // unbegrenzt (befristete Gratis-Modelle)
+      "longcat-2.5-preview-free": "unlimited",
+      "step-5-preview-free": "unlimited",
+      "cat-jam-free": "unlimited"
+    },
+
+    // DeepSeek rechnet zeitabhängig: in den Peak-Zeiten der DOPPELTE Preis.
+    // Fenster in UTC laut Doku; Sa/So ist immer Off-Peak. Der Modellkatalog
+    // liefert nur EINEN Preis (bei opencode-go den Off-Peak-Wert), deshalb
+    // steht der Faktor hier.
+    "peak": {
+      "deepseek-v4.1-flash": { "factor": 2, "windows": ["01:00-04:00", "06:00-10:00"], "days": "Mon-Fri", "tz": "UTC" },
+      "deepseek-v4-pro":    { "factor": 2, "windows": ["01:00-04:00", "06:00-10:00"], "days": "Mon-Fri", "tz": "UTC" }
+    }
   }
 }

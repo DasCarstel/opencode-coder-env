@@ -256,8 +256,8 @@ const bmStatusText = $derived.by(() => {
 // Sortierung per Klick auf den Spaltenkopf; fehlende Werte (null) immer ans Ende.
 function sortVal(m, key) {
   switch (key) {
-    case 'input': return Number(m.cost?.input ?? 0)
-    case 'output': return Number(m.cost?.output ?? 0)
+    case 'input': return Number(effPrice(m)?.input ?? 0)
+    case 'output': return Number(effPrice(m)?.output ?? 0)
     case 'context': return Number(m.limit?.context ?? 0)
     case 'released': return m.released ? Number(m.released) : null
     case 'variants': return (m.variants || []).length
@@ -526,12 +526,30 @@ function variantOptions(ref) {
   return ['(keine)', ...(m?.variants || [])]
 }
 
+// GÜLTIGER Preis: der Kontext-Tarif, in dem unsere Läufe praktisch immer liegen
+// (Backend-Feld `price` aus gobudget.py — inkl. Tarifstufe und DeepSeek-Zeitfaktor).
+// Ohne Stufe ist er identisch mit dem Listenpreis (`cost`).
+function effPrice(m) {
+  if (!m) return null
+  if (m.price && (m.price.input || m.price.output)) return m.price
+  return m.costEffective || m.cost || null
+}
+
 function priceText(ref) {
   const m = modelOf(ref)
   if (!m || !m.cost) return ''
-  const c = m.cost
-  if (!c.input && !c.output) return 'free'
-  return `$${c.input ?? '?'}/${c.output ?? '?'}`
+  if (!m.cost.input && !m.cost.output) return 'free'
+  const e = effPrice(m)
+  const p = `$${e?.input ?? '?'}/${e?.output ?? '?'}`
+  return (m.price?.peak ? `${p} ⚡` : p) + (e?.from ? ` (ab ${fmtCount(e.from)})` : '')
+}
+
+// Budget je Modell (Go-Abo, Monatslimit); '—' heißt: nicht im Budget-Block der SOT.
+function budgetText(m) {
+  const b = m?.budget
+  if (!b) return '—'
+  if (b.unlimited) return '∞'
+  return `$${b.month}/Mon · 5h $${b.h5}`
 }
 
 function tierNorm(tier) {
@@ -1507,7 +1525,7 @@ setInterval(loadSuggestStatus, 60000)
   {/if}
   <table class="priceTable">
     <colgroup>
-      <col class="cModel" /><col class="cCtx" /><col class="cPrice" /><col class="cPrice" />
+      <col class="cModel" /><col class="cCtx" /><col class="cPrice" /><col class="cPrice" /><col class="cBudget" />
       {#if showBenchmarks}{#each bmSelCols as c (c.key)}<col class="cMetric" />{/each}{/if}
     </colgroup>
     <thead>
@@ -1516,6 +1534,7 @@ setInterval(loadSuggestStatus, 60000)
         <th class="thSort num" onclick={() => sortBy('context')} title="Nach Kontextfenster sortieren">Kontext{sortMark('context')}</th>
         <th class="thSort num" onclick={() => sortBy('input')} title="Nach Eingabepreis sortieren">In $/M{sortMark('input')}</th>
         <th class="thSort num" onclick={() => sortBy('output')} title="Nach Ausgabepreis sortieren">Out $/M{sortMark('output')}</th>
+        <th class="num" title="Monatslimit im OpenCode-Go-Abo je Modell; das 5-h-Fenster ist 20 % davon. Quelle: SOT .opencode/hestia-benchmarks.jsonc (budgets)">Budget</th>
         {#if showBenchmarks}
           {#each bmSelCols as c (c.key)}
             <th class="thSort num" onclick={() => sortBy(c.key)} title="{c.label} — Quelle: {bmSource}">
@@ -1542,11 +1561,15 @@ setInterval(loadSuggestStatus, 60000)
           <td class="cModel" title="{m.name} · {m.modelID}">
             <span class="chev" aria-hidden="true">{open ? '▾' : '▸'}</span>
             <span class="modelName">{m.name}</span>
+            {#if m.costTiers?.length}
+              <span class="badge" title="Zwei Tarife: der gezeigte Preis gilt ab {fmtCount(m.costEffective?.from)} Kontexttoken">⩾{fmtCount(m.costEffective?.from)}</span>
+            {/if}
             {#if m.status && m.status !== 'active'}<span class="badge warn">{m.status}</span>{/if}
           </td>
           <td class="num">{fmtCount(m.limit?.context)}</td>
-          <td class="num">{m.cost.input ?? 0}</td>
-          <td class="num">{m.cost.output ?? 0}</td>
+          <td class="num" title="Gültiger Tarif (unsere Kontexte liegen über der Stufengrenze)">{effPrice(m)?.input ?? 0}</td>
+          <td class="num" title="Gültiger Tarif (unsere Kontexte liegen über der Stufengrenze)">{effPrice(m)?.output ?? 0}</td>
+          <td class="num muted" title="Go-Abo: Monatslimit · 5-h-Fenster">{budgetText(m)}</td>
           {#if showBenchmarks}
             {#each bmSelCols as c (c.key)}
               {@const v = bmNum(b, c.key)}
@@ -1565,7 +1588,7 @@ setInterval(loadSuggestStatus, 60000)
         </tr>
         {#if open}
           <tr class="detailRow">
-            <td colspan={4 + (showBenchmarks ? bmSelCols.length : 0)}>
+            <td colspan={5 + (showBenchmarks ? bmSelCols.length : 0)}>
               <div class="detailBox">
                 {#if showBenchmarks && bmFilledCols(b).length}
                   <div class="bmGrid">
@@ -1584,7 +1607,12 @@ setInterval(loadSuggestStatus, 60000)
                 <div class="metaRow">
                   <span><b>Kontext</b> {fmtCount(m.limit?.context)}</span>
                   <span><b>Max-Output</b> {fmtCount(mx)}</span>
-                  <span><b>Cache r/w</b> {m.cost.cacheRead ?? 0} / {m.cost.cacheWrite ?? 0}</span>
+                  <span><b>Preis gültig</b> in ${effPrice(m)?.input ?? '—'}/out ${effPrice(m)?.output ?? '—'} · cache r {effPrice(m)?.cacheRead ?? 0}/w {effPrice(m)?.cacheWrite ?? 0}{effPrice(m)?.from ? ` (ab ${fmtCount(effPrice(m).from)})` : ''}</span>
+                  {#if m.costTiers?.length}
+                    <span><b>Preis darunter</b> in ${m.cost.input ?? '—'}/out ${m.cost.output ?? '—'} · cache r {m.cost.cacheRead ?? 0}/w {m.cost.cacheWrite ?? 0}</span>
+                  {/if}
+                  <span><b>Budget</b> {#if m.budget}{m.budget.unlimited ? 'unbegrenzt (Go-Abo)' : `$${m.budget.month}/Monat · 5h $${m.budget.h5} · Woche $${m.budget.week}`}{m.budget.checked ? ` · Stand ${m.budget.checked}` : ''}{:else}nicht im Go-Abo-Budget (SOT){/if}</span>
+                  {#if m.price?.peak}<span class="badge warn" title="Peak-Zeit: DeepSeek rechnet jetzt den doppelten Preis">⚡ Peak ×{m.price.factor}</span>{/if}
                   <span><b>Varianten</b> {(m.variants || []).join(', ') || '—'}</span>
                   <span><b>Status</b> {m.status || '—'}</span>
                   <span><b>Release</b> {m.released ? new Date(m.released * 1000).toISOString().slice(0, 10) : '—'}</span>
@@ -1689,9 +1717,10 @@ setInterval(loadSuggestStatus, 60000)
 
   /* table-layout: fixed + Prozentbreiten → kein horizontales Scrollen */
   .priceTable { table-layout: fixed; width: 100%; }
-  .priceTable col.cModel { width: 30%; }
-  .priceTable col.cCtx { width: 12%; }
-  .priceTable col.cPrice { width: 12%; }
+  .priceTable col.cModel { width: 26%; }
+  .priceTable col.cCtx { width: 11%; }
+  .priceTable col.cPrice { width: 11%; }
+  .priceTable col.cBudget { width: 17%; }
   .priceTable col.cMetric { width: auto; }
   .priceTable td { overflow: hidden; }
   .detailRow td { overflow: visible; }

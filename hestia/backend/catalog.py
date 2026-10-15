@@ -45,15 +45,47 @@ TRAINING_SUFFIX = "-contributor"
 
 def fetch_models(force: bool = False) -> list:
     """Normalisierter Katalog: [{providerID, modelID, name, released, status,
-    enabled, variants[], cost{input,output,cacheRead,cacheWrite}, limit{context,output}}]"""
+    enabled, variants[], cost{input,output,cacheRead,cacheWrite}, limit{context,output},
+    costTiers[], costEffective}]
+
+    `cost` bleibt der GRUNDTARIF (Preis unterhalb der ersten Kontextstufe) — so
+    bleiben Panel und Fingerprint rückwärtskompatibel. `costTiers` sind die
+    offiziellen Kontextstufen und `costEffective` ist der Tarif, der bei unserem
+    Nutzungsprofil tatsächlich abgerechnet wird (siehe unten).
+    """
     if not force and _CACHE["data"] and time.time() - _CACHE["ts"] < CACHE_TTL:
         return _CACHE["data"]
     d = _get(f"{OC_SERVER_URL}/api/model")
     raw = d.get("data", d) if isinstance(d, dict) else d
     out = []
     for m in raw:
-        cost = (m.get("cost") or [{}])[0] if m.get("cost") else {}
+        raw_cost = m.get("cost") or []
+        cost = raw_cost[0] if raw_cost else {}
         cache = cost.get("cache", {}) or {}
+        tiers = []
+        for entry in raw_cost[1:]:
+            if not isinstance(entry, dict):
+                continue
+            ecache = entry.get("cache") or {}
+            tiers.append({
+                "from": (entry.get("tier") or {}).get("size"),
+                "input": entry.get("input"),
+                "output": entry.get("output"),
+                "cacheRead": ecache.get("read"),
+                "cacheWrite": ecache.get("write"),
+            })
+        base = {
+            "from": None,
+            "input": cost.get("input"),
+            "output": cost.get("output"),
+            "cacheRead": cache.get("read"),
+            "cacheWrite": cache.get("write"),
+        }
+        # Gültiger Tarif = Stufe mit der größten Kontextgrenze. In der Praxis liegt
+        # unsere Nutzung fast immer oberhalb der ersten Grenze (große Prompts mit
+        # MCP-Tools und Verlauf), deshalb ist das der Preis, der abgerechnet wird —
+        # ohne Stufe bleibt es der Grundtarif.
+        effective = max(tiers, key=lambda t: t.get("from") or 0) if tiers else base
         out.append({
             "modelID": m.get("modelID"),
             "providerID": m.get("providerID"),
@@ -69,6 +101,8 @@ def fetch_models(force: bool = False) -> list:
                 "cacheRead": cache.get("read"),
                 "cacheWrite": cache.get("write"),
             },
+            "costTiers": tiers,
+            "costEffective": effective,
             "limit": m.get("limit") or {},
         })
     out.sort(key=lambda x: (x["providerID"], x["released"] or 0), reverse=True)
