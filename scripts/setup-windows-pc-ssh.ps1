@@ -1,29 +1,32 @@
-# setup-windows-pc-ssh.ps1 – Einmal-Setup für den ssh-mcp-Zugang zum Carsten-PC
+# setup-windows-pc-ssh.ps1 - Einmal-Setup fuer den ssh-mcp-Zugang zum Carsten-PC
 #
-# Auf dem Windows-PC **als Administrator** ausführen, z. B.:
+# Auf dem Windows-PC ALS ADMINISTRATOR ausfuehren, z. B.:
 #
 #   powershell -ExecutionPolicy Bypass -File setup-windows-pc-ssh.ps1 `
 #     -PublicKey "ssh-ed25519 AAAA... ssh-mcp-carsten-pc" -SetDefaultShellPowerShell
 #
 # Den einzutragenden Public-Key liefert:
 #   bash scripts/bootstrap-hosts.sh   (Abschnitt "Secret ssh-mcp-pc")
-#   – oder der Public-Key des Keypairs, das du selbst erzeugt und in OpenBao
-#     unter secret/data/mcp/ssh-mcp-pc (Felder private_key/public_key) abgelegt hast.
+#   oder der Public-Key des Keypairs, das du in OpenBao unter
+#   secret/data/mcp/ssh-mcp-pc (Felder private_key/public_key) abgelegt hast.
 #
-# WICHTIG – wenn es bei "OpenSSH Server wird installiert..." hängt:
+# WICHTIG - wenn es bei "OpenSSH Server wird installiert..." haengt:
 #   "Add-WindowsCapability -Online" wartet intern auf Windows Update / die
-#   Features-on-Demand-Quelle und kann dadurch dauerhaft hängen. Dieses Skript
+#   Features-on-Demand-Quelle und kann dadurch dauerhaft haengen. Dieses Skript
 #   bricht den Capability-Weg nach -CapabilityTimeoutSec automatisch ab und
 #   installiert dann die Standalone-Variante von PowerShell/Win32-OpenSSH
-#   (unabhängig von Windows Update). Erzwingen: -SkipCapabilityInstall.
+#   (unabhaengig von Windows Update). Erzwingen: -SkipCapabilityInstall.
 #
 # Danach muss der Sanity-Check vom Workspace-Container aus gelingen:
 #   bash -c 'cat </dev/null >/dev/tcp/10.0.0.20/22'
 #
 # Hinweise:
-# - Ist der User Administrator, landet der Key pflichtgemäß in
-#   C:\ProgramData\ssh\administrators_authorized_keys (nicht in ~/.ssh).
-# - Ein DHCP-Reservat für 10.0.0.20 in UniFi hält die Profil-Adresse stabil.
+# - Der Public-Key wird an BEIDE moeglichen Stellen geschrieben:
+#   %ProgramData%\ssh\administrators_authorized_keys (fuer Administratorkonten)
+#   und %USERPROFILE%\.ssh\authorized_keys (fuer normale Konten). Damit ist es
+#   unabhaengig davon, ob der User Admin ist, und unabhaengig von der
+#   Windows-Sprache (Gruppennamen sind lokalisiert).
+# - Ein DHCP-Reservat fuer 10.0.0.20 in UniFi haelt die Profil-Adresse stabil.
 
 param(
   [Parameter(Mandatory = $true)][string]$PublicKey,
@@ -38,7 +41,7 @@ $ErrorActionPreference = "Stop"
 $principal = New-Object Security.Principal.WindowsPrincipal(
   [Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  throw "Bitte als Administrator ausführen."
+  throw "Bitte als Administrator ausfuehren."
 }
 
 $sshdExe = Join-Path $env:SystemRoot "System32\OpenSSH\sshd.exe"
@@ -62,7 +65,7 @@ if (-not (Test-SshdPresent)) {
     if (Wait-Job $job -Timeout $CapabilityTimeoutSec) {
       Write-Host "OK Capability-Status: $(Receive-Job $job)"
     } else {
-      Write-Warning "Add-WindowsCapability reagiert nicht (> ${CapabilityTimeoutSec}s) – Job wird beendet, Standalone-Fallback folgt."
+      Write-Warning "Add-WindowsCapability reagiert nicht (> ${CapabilityTimeoutSec}s) - Job wird beendet, Standalone-Fallback folgt."
     }
     Stop-Job $job -ErrorAction SilentlyContinue
     Remove-Job $job -Force -ErrorAction SilentlyContinue
@@ -95,12 +98,12 @@ if (-not (Test-SshdPresent)) {
       & (Join-Path $dest "install-sshd.ps1")
       Write-Host "OK Standalone-OpenSSH per ZIP installiert ($dest)"
     } else {
-      throw "Im GitHub-Release weder MSI noch ZIP gefunden – bitte OpenSSH manuell installieren."
+      throw "Im GitHub-Release weder MSI noch ZIP gefunden - bitte OpenSSH manuell installieren."
     }
   }
 }
 if (-not (Test-SshdPresent)) {
-  throw "OpenSSH Server konnte nicht installiert werden – bitte manuell prüfen."
+  throw "OpenSSH Server konnte nicht installiert werden - bitte manuell pruefen."
 }
 Write-Host "OK OpenSSH Server vorhanden"
 
@@ -109,21 +112,16 @@ Set-Service -Name sshd -StartupType Automatic
 if ((Get-Service sshd).Status -ne "Running") { Start-Service sshd }
 Write-Host "OK sshd-Dienst: $((Get-Service sshd).Status) (Autostart)"
 
-# 3. Firewall-Regel für TCP/22
+# 3. Firewall-Regel fuer TCP/22
 if (-not (Get-NetFirewallRule -Name sshd -ErrorAction SilentlyContinue)) {
   New-NetFirewallRule -Name sshd -DisplayName "OpenSSH Server (sshd)" `
     -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null
-  Write-Host "OK Firewall-Regel für Port 22 erstellt"
+  Write-Host "OK Firewall-Regel fuer Port 22 erstellt"
 } else {
-  Write-Host "OK Firewall-Regel für Port 22 existiert bereits"
+  Write-Host "OK Firewall-Regel fuer Port 22 existiert bereits"
 }
 
-# 4. Public-Key ablegen – an BEIDEN möglichen Stellen:
-#    - %ProgramData%\ssh\administrators_authorized_keys  (sshd nutzt das für
-#      Administratoren-Konten; die Datei im Benutzerprofil wird dann ignoriert)
-#    - %USERPROFILE%\.ssh\authorized_keys                (nicht-administrative Konten)
-#    Damit funktioniert es unabhängig davon, ob der User Admin ist – und ohne die
-#    lokalisierten Gruppennamen ("Administrators" vs. "Administratoren") zu raten.
+# 4. Public-Key ablegen - an BEIDEN moeglichen Stellen (siehe Kopfkommentar)
 $keyLine = $PublicKey.Trim()
 
 function Set-AuthorizedKey {
@@ -135,7 +133,7 @@ function Set-AuthorizedKey {
     Write-Host "OK Public-Key war bereits eingetragen: $Path"
   } else {
     if ($existing -and -not $existing.EndsWith("`n")) { $existing += "`n" }
-    # UTF-8 ohne BOM + LF-Zeilenenden: Windows-sshd lehnt CRLF in authorized_keys häufig ab.
+    # UTF-8 ohne BOM + LF-Zeilenenden: Windows-sshd lehnt CRLF in authorized_keys haeufig ab.
     [System.IO.File]::WriteAllText($Path, $existing + $keyLine + "`n", (New-Object System.Text.UTF8Encoding($false)))
     Write-Host "OK Public-Key eingetragen (UTF-8 ohne BOM, LF): $Path"
   }
@@ -148,10 +146,10 @@ Set-AuthorizedKey -Path $userKeys
 Set-AuthorizedKey -Path $adminKeys
 
 # administrators_authorized_keys braucht restriktive ACLs, sonst ignoriert sshd sie.
-# Grants über wohlbekannte SIDs -> lokalisierungsunabhängig (SYSTEM=S-1-5-18,
+# Grants ueber wohlbekannte SIDs -> lokalisierungsunabhaengig (SYSTEM=S-1-5-18,
 # Administratoren=S-1-5-32-544).
 icacls $adminKeys /inheritance:r /grant "*S-1-5-18:F" /grant "*S-1-5-32-544:F" | Out-Null
-Write-Host "OK ACLs für administrators_authorized_keys gesetzt (über SIDs)"
+Write-Host "OK ACLs fuer administrators_authorized_keys gesetzt (ueber SIDs)"
 
 # 5. Optional: PowerShell als Default-Shell (statt cmd.exe)
 if ($SetDefaultShellPowerShell) {
