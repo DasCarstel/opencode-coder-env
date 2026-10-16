@@ -236,37 +236,47 @@ resource "coder_app" "herdr" {
 }
 
 # Unser JupyterLab (ML/DL-Kernel) – bewusst auf 8890, weil der FernUni-Stack
-# sein eigenes Jupyter auf 127.0.0.1:8888 mitbringt.
-# `url = http://localhost:<port>` lässt den Coder-Agent den Port im Workspace
+# sein eigenes Jupyter auf 8888 mitbringt.
+# `url = http://127.0.0.1:<port>` lässt den Coder-Agent den Port im Workspace
 # proxyen (kein `port`-Argument im coder-Provider). subdomain = true, weil
 # JupyterLab/Hadoop absolute Pfade ausliefern (Wildcard-URL ist gesetzt).
+#
+# Bewusst 127.0.0.1 statt `localhost`: in diesem Workspace löst `localhost`
+# zuerst auf ::1 (IPv6) auf, die Listener hier sind aber reine IPv4-Bindungen
+# (JupyterLab 0.0.0.0:8890; FernUni-Compose veröffentlicht 8888 auf IPv4).
+# Der Agent erreicht IPv4 zwar auch über `localhost` (er probiert 127.0.0.1
+# und [::1] durch), die explizite IPv4-Adresse vermeidet die IPv6-Umleitung
+# aber von vornherein – u. a. für Clients, die ::1 zuerst versuchen.
 resource "coder_app" "jupyter" {
   agent_id     = coder_agent.main.id
   slug         = "jupyter"
   display_name = "JupyterLab (ML/DL)"
-  url          = "http://localhost:8890"
+  url          = "http://127.0.0.1:8890"
   subdomain    = true
   icon         = "/icon/terminal.svg"
   share        = "owner"
 }
 
-# Jupyter des FernUni-Compose-Stacks (erst nach ./Deploy-DeDs-*.sh erreichbar).
+# Jupyter des FernUni-Compose-Stacks (erst nach ./Deploy-DeDs-*.sh erreichbar !).
+# Der Stack veröffentlicht 8888 auf IPv4 (docker compose `- 8888:8888`, im
+# Container `--ip 0.0.0.0`) – deshalb hier ebenfalls explizit 127.0.0.1 und
+# nicht `localhost` (siehe Begründung bei coder_app.jupyter).
 resource "coder_app" "fernuni_jupyter" {
   agent_id     = coder_agent.main.id
   slug         = "fernuni-jupyter"
   display_name = "FernUni Jupyter (Stack)"
-  url          = "http://localhost:8888"
+  url          = "http://127.0.0.1:8888"
   subdomain    = true
   icon         = "/icon/terminal.svg"
   share        = "owner"
 }
 
-# Hadoop ResourceManager des FernUni-Stacks (Web-UI).
+# Hadoop ResourceManager des FernUni-Stacks (Web-UI, IPv4 wie oben).
 resource "coder_app" "hadoop_rm" {
   agent_id     = coder_agent.main.id
   slug         = "hadoop-rm"
   display_name = "Hadoop ResourceManager"
-  url          = "http://localhost:8088"
+  url          = "http://127.0.0.1:8088"
   subdomain    = true
   icon         = "/icon/terminal.svg"
   share        = "owner"
