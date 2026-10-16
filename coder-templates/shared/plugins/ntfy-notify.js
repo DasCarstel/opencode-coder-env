@@ -253,7 +253,7 @@ function questionBody(event) {
     if (!text) continue;
     const options = Array.isArray(q?.options) ? q.options : Array.isArray(q?.choices) ? q.choices : [];
     const rendered = options
-      .map((o) => oneLine(o?.label ?? o?.title ?? o?.value ?? o?.id ?? o ?? "", 28))
+      .map((o) => oneLine(o?.label ?? o?.title ?? o?.value ?? o?.id ?? o ?? "", 44))
       .filter(Boolean);
     lines.push(rendered.length ? `${text}\n→ ${rendered.join(" | ")}` : text);
   }
