@@ -30,6 +30,9 @@
 //   NTFY_DEBUG=1      Debug-Ausgaben ins OpenCode-Log
 //   NTFY_SELFTEST=1   sendet beim Laden genau eine Testnachricht (Diagnose),
 //                     unabhängig vom Prozess-Check
+//   NTFY_SESSION_PORT Port der laufenden `opencode serve`-Web-UI für den
+//                     Klick-Link (Default 49374)
+//   NTFY_SESSION_URL  feste Session-URL — schlägt die automatische Ableitung
 //
 // Installation: coder-templates/shared/plugins/ntfy-notify.js
 //               → ~/.config/opencode/plugins/ (dort automatisch geladen)
@@ -40,6 +43,11 @@ const DEFAULT_URL = "https://ntfy.mueller-nas.de";
 const DEFAULT_TOPIC = "ai";
 const MAX_TITLE = 90;
 const MAX_BODY = 500;
+// Frage- und Freigabe-Meldungen tragen eine mehrzeilige Optionsliste — ntfy
+// erlaubt bis 4096 Byte je Message, hier reichen 1500 Zeichen mit Puffer.
+const MAX_QUESTION_BODY = 1500;
+// Lange Optionstexte je Option kürzen, damit die Liste lesbar bleibt.
+const MAX_OPTION_LEN = 120;
 const COOLDOWN_MS = 15000;
 const PLUGIN_ID = "das.ntfy-notify";
 
@@ -139,6 +147,17 @@ export function subpathFromDirectory(dir) {
 function ownerFromDirectory(dir) {
   const m = /^\/home\/([^/]+)\//.exec(String(dir ?? ""));
   return m ? m[1] : "";
+}
+
+/** "https://coder.mueller-nas.de/" → "coder.mueller-nas.de" */
+function hostFromUrl(value) {
+  const s = String(value ?? "").trim();
+  if (!s) return "";
+  try {
+    return new URL(s).host;
+  } catch {
+    return "";
+  }
 }
 
 /** Kandidaten-Objekte eines Events — V2 liefert properties/data, wir sind tolerant. */
@@ -252,10 +271,13 @@ function questionBody(event) {
     const text = headline && detail ? `${headline}\n${detail}` : headline || detail;
     if (!text) continue;
     const options = Array.isArray(q?.options) ? q.options : Array.isArray(q?.choices) ? q.choices : [];
+    // Eine Option pro Zeile, nummeriert — auf dem Handy war in der
+    // Ein-Zeilen-Variante (" | ") nur die erste Option sichtbar.
     const rendered = options
-      .map((o) => oneLine(o?.label ?? o?.title ?? o?.value ?? o?.id ?? o ?? "", 44))
-      .filter(Boolean);
-    lines.push(rendered.length ? `${text}\n→ ${rendered.join(" | ")}` : text);
+      .map((o) => oneLine(o?.label ?? o?.title ?? o?.value ?? o?.id ?? o ?? "", MAX_OPTION_LEN))
+      .filter(Boolean)
+      .map((label, index) => `${index + 1}) ${label}`);
+    lines.push(rendered.length ? `${text}\n${rendered.join("\n")}` : text);
   }
   if (!lines.length) {
     const single = oneLine(data.prompt ?? data.message ?? data.text ?? data.title ?? "", 160);
@@ -276,8 +298,19 @@ function permissionBody(event) {
       "",
     160
   );
-  if (what && where) return `${what}: ${where}`;
-  return what || where;
+  // Optionen (falls die Freigabe welche mitbringt) wie bei Fragen: eine pro Zeile.
+  const options = Array.isArray(perm?.options)
+    ? perm.options
+    : Array.isArray(perm?.choices)
+      ? perm.choices
+      : [];
+  const rendered = options
+    .map((o) => oneLine(o?.label ?? o?.title ?? o?.value ?? o?.id ?? o ?? "", MAX_OPTION_LEN))
+    .filter(Boolean)
+    .map((label, index) => `${index + 1}) ${label}`);
+  const head = what && where ? `${what}: ${where}` : what || where;
+  if (!rendered.length) return head;
+  return head ? `${head}\n${rendered.join("\n")}` : rendered.join("\n");
 }
 
 function errorBody(event) {
@@ -370,13 +403,27 @@ export function createNtfyNotifier(options = {}) {
   }
 
   function linkFor(sessionID) {
+    // Escape-Hatch: eine fest konfigurierte URL gewinnt immer.
+    const fixed = String(env.NTFY_SESSION_URL ?? "").trim();
+    if (fixed) return fixed;
+
     const parsed = parseSubpath(metaFor(sessionID).subpath);
     const owner =
       ownerFromDirectory(metaFor(sessionID).directory) || ownerFromDirectory(contextDirectory);
     if (parsed.workspace && owner) {
-      // Coder-Wildcard-App-URL, z. B.
-      // herdr--infrastructure--carstenmueller2002-coder.mueller-nas.de
-      return `https://herdr--${parsed.workspace}--${owner}-coder.mueller-nas.de`;
+      // Link auf die Port-App der laufenden `opencode serve`-Instanz (die
+      // OpenCode-Web-UI). Muster wie VSCODE_PROXY_URI im Container:
+      //   https://<port>--<agent>--<workspace>--<owner>-<coder-host>
+      // Der Agent ist das Workspace-Agent-Segment (meist "main"), der Port
+      // gehört zur Web-UI (49374). Der Domain-Teil wird aus CODER_AGENT_URL
+      // abgeleitet, damit hier nichts hart kodiert ist. Die frühere App
+      // `herdr` ist defekt (HTTP 500) und wird bewusst nicht mehr verwendet.
+      const agent = env.CODER_WORKSPACE_AGENT_NAME || "main";
+      const workspace = env.CODER_WORKSPACE_NAME || parsed.workspace;
+      const user = env.CODER_WORKSPACE_OWNER_NAME || owner;
+      const port = env.NTFY_SESSION_PORT || "49374";
+      const coderHost = hostFromUrl(env.CODER_AGENT_URL) || "coder.mueller-nas.de";
+      return `https://${port}--${agent}--${workspace}--${user}-${coderHost}`;
     }
     return String(env.NTFY_FALLBACK_URL ?? "https://coder.mueller-nas.de/");
   }
@@ -422,9 +469,11 @@ export function createNtfyNotifier(options = {}) {
       logger("kein NTFY_TOKEN/NTFY_URL gesetzt – Nachricht verworfen");
       return false;
     }
+    // Fragen/Freigaben dürfen länger sein (Optionsliste) — payload.maxBody gewinnt.
+    const maxBody = Number(payload.maxBody) > 0 ? Number(payload.maxBody) : MAX_BODY;
     const body = {
       topic,
-      message: clampText(payload.message, MAX_BODY) || "…",
+      message: clampText(payload.message, maxBody) || "…",
       title: oneLine(payload.title, MAX_TITLE),
       priority: payload.priority ?? 3,
       tags: payload.tags ?? ["speech_balloon"],
@@ -621,6 +670,7 @@ export function createNtfyNotifier(options = {}) {
           priority: 4,
           tags: ["question"],
           click: linkFor(sessionID),
+          maxBody: MAX_QUESTION_BODY,
         });
         return;
       }
@@ -636,6 +686,7 @@ export function createNtfyNotifier(options = {}) {
           priority: 4,
           tags: ["lock"],
           click: linkFor(sessionID),
+          maxBody: MAX_QUESTION_BODY,
         });
         return;
       }

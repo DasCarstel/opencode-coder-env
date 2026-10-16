@@ -158,8 +158,8 @@ received.length = 0;
   ok(String(body.message).includes("Ablauf prüfen"), "Session-Titel ist enthalten");
   eq(
     body.click,
-    "https://herdr--infrastructure--carstenmueller2002-coder.mueller-nas.de",
-    "Click-URL zeigt auf die Coder-App"
+    "https://49374--main--infrastructure--carstenmueller2002-coder.mueller-nas.de",
+    "Click-URL zeigt auf die OpenCode-Port-App"
   );
   eq((received[0]?.headers ?? {}).authorization, "Bearer tk_test", "Bearer-Token im Header");
 }
@@ -495,7 +495,7 @@ console.log("\nV2-Eventform (durable/location/data)");
   ok(String(body.message).includes("Alles erledigt"), "TLDR stammt aus session.text.ended");
   eq(
     body.click,
-    "https://herdr--infrastructure--carstenmueller2002-coder.mueller-nas.de",
+    "https://49374--main--infrastructure--carstenmueller2002-coder.mueller-nas.de",
     "Click-URL aus location.directory"
   );
 }
@@ -525,7 +525,9 @@ console.log("\nFrage (form.created)");
   eq(body.title, "❓ Frage — server-management", "Titel der Frage");
   eq(body.priority, 4, "Priorität 4");
   ok(String(body.message).includes("Weiter mit Phase 4?"), "Fragetext enthalten");
-  ok(String(body.message).includes("Ja | Nein"), "Optionen enthalten");
+  ok(String(body.message).includes("1) Ja"), "Option 1 enthalten");
+  ok(String(body.message).includes("2) Nein"), "Option 2 enthalten");
+  ok(/\n2\) Nein/.test(String(body.message)), "Optionen stehen je in eigener Zeile");
 }
 {
   const n = makeNotifier();
@@ -707,6 +709,83 @@ console.log("\nSubagent-Filter");
   await n.handleEvent(v2("session.execution.succeeded", {}));
   eq(received.length, 1, "echte Session meldet trotz session.get");
   eq(received[0]?.body?.title, "✅ Fertig — server-management", "Titel der Hauptsession");
+}
+
+// ── 22. Session-Link (Port-App) und Frage-Optionen je Zeile ──────────────
+console.log("\nSession-Link und Frage-Optionen");
+{
+  // CODER_*-Variablen wie im Container: der Link zeigt auf die Port-App der
+  // laufenden `opencode serve`-Instanz (HTTP 303 → OpenCode-Web-UI).
+  const n = makeNotifier({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      CODER_WORKSPACE_NAME: "infrastructure",
+      CODER_WORKSPACE_OWNER_NAME: "carstenmueller2002",
+      CODER_WORKSPACE_AGENT_NAME: "main",
+      CODER_AGENT_URL: "https://coder.mueller-nas.de/",
+      NTFY_SESSION_PORT: "49374",
+    },
+  });
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  await n.handleEvent({
+    type: "question.asked",
+    properties: {
+      sessionID: SESSION,
+      questions: [
+        {
+          question: `Wie soll ich fortfahren? ${"Bitte ausführlich begründen. ".repeat(6)}`,
+          options: [
+            { label: `A: sofort deployen und danach die Verifikation nachziehen ${"x".repeat(60)}` },
+            { label: `B: erst Review abwarten und dann gemeinsam entscheiden ${"y".repeat(60)}` },
+            { label: `C: abbrechen und einen neuen Entwurf einreichen ${"z".repeat(60)}` },
+          ],
+        },
+      ],
+    },
+  });
+  eq(received.length, 1, "Frage mit drei Optionen meldet");
+  const body = received[0]?.body ?? {};
+  const message = String(body.message);
+  eq(
+    body.click,
+    "https://49374--main--infrastructure--carstenmueller2002-coder.mueller-nas.de",
+    "Klick-Link folgt dem Port-Agent-Workspace-Owner-Muster"
+  );
+  ok(message.includes("1) A: sofort deployen"), "Option 1 im Body");
+  ok(message.includes("2) B: erst Review abwarten"), "Option 2 im Body");
+  ok(message.includes("3) C: abbrechen und einen neuen Entwurf"), "Option 3 im Body");
+  ok(/1\) [^\n]+\n2\) [^\n]+\n3\) /.test(message), "zwischen den Optionen steht ein Zeilenumbruch");
+  ok(!message.includes(" | "), "kein ' | ' mehr in der Optionsliste");
+  ok(message.includes("Ablauf prüfen"), "Session-Titel bleibt in der Kopfzeile");
+  ok(message.length > 500, "Optionsliste wird nicht mehr bei 500 Zeichen abgeschnitten");
+  ok(body.actions?.[0]?.url === body.click, "'Session öffnen'-Action zeigt auf denselben Link");
+}
+{
+  // Escape-Hatch: NTFY_SESSION_URL schlägt die automatische Ableitung.
+  const n = makeNotifier({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_SESSION_URL: "https://beispiel.test/session/42",
+    },
+  });
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  await n.handleEvent({
+    type: "question.asked",
+    properties: {
+      sessionID: SESSION,
+      questions: [{ question: "Weiter?", options: [{ label: "Ja" }] }],
+    },
+  });
+  eq(received.length, 1, "Frage mit Override meldet");
+  eq(
+    received[0]?.body?.click,
+    "https://beispiel.test/session/42",
+    "NTFY_SESSION_URL überschreibt den Klick-Link"
+  );
 }
 
 sink.close();
