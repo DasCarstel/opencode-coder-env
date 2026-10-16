@@ -194,21 +194,37 @@ function fallbackBody(event) {
   }
 }
 
-// ── Gemeinsamer Zustand (ein Modul je Prozess, mehrere Instanzen) ──────────
+// ── Gemeinsamer Zustand (ein Zustand je Prozess, mehrere Instanzen) ────────
+//
+// OpenCode lädt das Plugin einmal je Location (im Infrastructure-Container
+// z. B. 6×: /, /root und je Workspace-Ordner). Jede Instanz abonniert den
+// öffentlichen Event-Stream und sieht daher dieselben Events. Der Zustand
+// hängt deshalb am Prozess (globalThis) und nicht am Modul: so erzeugt ein
+// Event genau eine Nachricht, egal wie viele Instanzen es beobachten.
 
-const SHARED = {
-  meta: new Map(), // sessionID → { title, subpath, directory, parentID }
-  children: new Map(), // Kind-Session → Eltern-Session
-  working: new Set(), // Sessions, die gerade arbeiten
-  lastText: new Map(), // letzter Assistenten-Text je Session
-  lastSent: new Map(), // Dedup: "sessionID:art" → Zeitstempel
-};
+const STATE_KEY = Symbol.for("das.ntfy-notify.state");
+
+function newState() {
+  return {
+    meta: new Map(), // sessionID → { title, subpath, directory, parentID }
+    children: new Map(), // Kind-Session → Eltern-Session
+    working: new Set(), // Sessions, die gerade arbeiten
+    lastText: new Map(), // letzter Assistenten-Text je Session
+    lastSent: new Map(), // Dedup: "sessionID:art" → Zeitstempel
+  };
+}
+
+function sharedState() {
+  if (!globalThis[STATE_KEY]) globalThis[STATE_KEY] = newState();
+  return globalThis[STATE_KEY];
+}
+
+const SHARED = sharedState();
 
 /** Nur für Tests: geteilten Zustand zurücksetzen. */
 export function resetSharedState() {
   for (const map of Object.values(SHARED)) {
-    if (map instanceof Map) map.clear();
-    else if (map instanceof Set) map.clear();
+    if (map instanceof Map || map instanceof Set) map.clear();
   }
 }
 
