@@ -2,13 +2,20 @@
 //
 // Meldet an das Topic "ai":
 //   session.idle      → Agent fertig (3) + TLDR der letzten Antwort
-//   question.asked    → Agent hat eine Frage (4), inkl. Optionen
+//   form.created      → Agent hat eine Frage (4), inkl. Optionen
 //   permission.asked  → Freigabe nötig (4)
-//   session.error     → Fehler (5)
+//   session.error / session.step.failed → Fehler (5/4)
 //
 // V2-Plugin (Plugin-Definition mit id + setup(ctx)); V1-Plugins laufen in
 // OpenCode 2.x nicht mehr. Events kommen aus ctx.event.subscribe(), das
-// "arbeitet gerade"-Signal aus dem ctx.session.hook("prompt")-Hook.
+// "arbeitet gerade"-Signal zusätzlich aus dem ctx.session.hook("prompt")-Hook.
+//
+// Echte V2-Event-Form (empirisch gegen OpenCode 2.0.29 verifiziert):
+//   { id, created, type, durable: { aggregateID: "ses_…" },
+//     location: { directory: "/home/…/workspaces/<ws>/<projekt>" },
+//     data: { sessionID: "ses_…", … } }
+// Also: Session-ID aus data.sessionID (Fallback durable.aggregateID),
+// Projekt-Label aus location.directory, Text aus session.text.ended.
 //
 // Aktiv NUR im Hintergrund-Service (`opencode serve …`): TUI-, `run`- und
 // Web-Prozesse laden dasselbe Plugin, würden aber dieselben Events doppelt
@@ -122,6 +129,12 @@ function parseSubpath(subpath) {
   return { workspace: parts[i + 1], project: parts[i + 2] };
 }
 
+/** "/home/x/opencode-coder-env/workspaces/a/b" → "workspaces/a/b" */
+export function subpathFromDirectory(dir) {
+  const m = /\/workspaces\/(.+)$/.exec(String(dir ?? "").replace(/\/+$/, ""));
+  return m ? `workspaces/${m[1]}` : "";
+}
+
 /** "/home/<owner>/opencode-coder-env/…" → owner */
 function ownerFromDirectory(dir) {
   const m = /^\/home\/([^/]+)\//.exec(String(dir ?? ""));
@@ -164,12 +177,19 @@ function sessionInfo(event) {
 function sessionIDOf(event, info) {
   const direct = pick(event, "sessionID");
   if (typeof direct === "string" && direct) return direct;
+  const aggregate = event?.durable?.aggregateID;
+  if (typeof aggregate === "string" && aggregate) return aggregate;
   if (info && typeof info.id === "string" && info.id) return info.id;
   return undefined;
 }
 
 /** Text einer Message-Part — nur Assistenten-Text, nie der User-Prompt. */
 function textFromEvent(event) {
+  // V2: die vollständige Antwort steht in session.text.ended (je Text-Teil).
+  if (event?.type === "session.text.ended") {
+    const text = event?.data?.text;
+    return typeof text === "string" ? text.trim() : "";
+  }
   const part = pick(event, "part");
   if (part && typeof part.text === "string" && part.text.trim()) {
     if (part.type && part.type !== "text") return "";
@@ -184,20 +204,44 @@ function textFromEvent(event) {
   return "";
 }
 
-/** Frage + Auswahloptionen als lesbarer Text. */
+/** Frage + Auswahloptionen als lesbarer Text (V2: Event `form.created`). */
 function questionBody(event) {
-  const raw = pick(event, "questions") ?? pick(event, "question");
-  const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  const data = pick(event, "data") ?? pick(event, "properties") ?? {};
+  const collected = [];
+  const add = (value) => {
+    if (!value) return;
+    if (Array.isArray(value)) value.forEach(add);
+    else if (typeof value === "object") collected.push(value);
+  };
+  for (const source of [
+    data.questions,
+    data.question,
+    data.fields,
+    data.items,
+    data.form?.questions,
+    data.form?.fields,
+    data.form?.items,
+  ]) {
+    add(source);
+  }
+  if (!collected.length && data.form && typeof data.form === "object") collected.push(data.form);
+
   const lines = [];
-  for (const q of list.slice(0, 3)) {
-    const text = oneLine(q?.question ?? q?.text ?? q?.title ?? q?.header ?? q?.label ?? "", 160);
+  for (const q of collected.slice(0, 3)) {
+    const text = oneLine(
+      q?.question ?? q?.text ?? q?.title ?? q?.label ?? q?.header ?? q?.name ?? "",
+      160
+    );
     if (!text) continue;
-    const options = Array.isArray(q?.options)
-      ? q.options
-          .map((o) => oneLine(o?.label ?? o?.title ?? o?.value ?? o ?? "", 28))
-          .filter(Boolean)
-      : [];
-    lines.push(options.length ? `${text}\n→ ${options.join(" | ")}` : text);
+    const options = Array.isArray(q?.options) ? q.options : Array.isArray(q?.choices) ? q.choices : [];
+    const rendered = options
+      .map((o) => oneLine(o?.label ?? o?.title ?? o?.value ?? o?.id ?? o ?? "", 28))
+      .filter(Boolean);
+    lines.push(rendered.length ? `${text}\n→ ${rendered.join(" | ")}` : text);
+  }
+  if (!lines.length) {
+    const single = oneLine(data.prompt ?? data.message ?? data.text ?? data.title ?? "", 160);
+    if (single) lines.push(single);
   }
   return lines.join("\n\n");
 }
@@ -227,7 +271,7 @@ function errorBody(event) {
 
 function fallbackBody(event) {
   try {
-    return oneLine(JSON.stringify(pick(event, "properties") ?? event), 180);
+    return oneLine(JSON.stringify(pick(event, "data") ?? pick(event, "properties") ?? event), 180);
   } catch {
     return "";
   }
@@ -327,8 +371,19 @@ export function createNtfyNotifier(options = {}) {
     if (typeof info.subpath === "string" && info.subpath) entry.subpath = info.subpath;
     const dir = info.location?.directory ?? info.location?.path ?? info.directory;
     if (typeof dir === "string" && dir) entry.directory = dir;
+    if (!entry.subpath && entry.directory) entry.subpath = subpathFromDirectory(entry.directory);
     if (info.parentID) entry.parentID = info.parentID;
     state.meta.set(info.id, entry);
+  }
+
+  /** Projekt-Kontext aus dem Event übernehmen (V2: location.directory). */
+  function absorbLocation(sessionID, directory) {
+    if (typeof sessionID !== "string" || !sessionID) return;
+    if (typeof directory !== "string" || !directory) return;
+    const entry = state.meta.get(sessionID) ?? {};
+    if (!entry.directory) entry.directory = directory;
+    if (!entry.subpath) entry.subpath = subpathFromDirectory(directory);
+    state.meta.set(sessionID, entry);
   }
 
   /** Metadaten bei Bedarf über den Server nachladen (Titel/Pfad fehlen oft). */
@@ -406,9 +461,13 @@ export function createNtfyNotifier(options = {}) {
     if (info) absorb(info);
     const sessionID = sessionIDOf(event, info);
 
+    // V2 liefert den Projekt-Kontext direkt mit: location.directory.
+    absorbLocation(sessionID, event?.location?.directory);
+
     // Subagent-Sessions (parentID gesetzt) melden nichts — die Eltern-Session tut es.
     if (sessionID && state.children.has(sessionID)) return;
 
+    // V2: vollständiger Antwort-Text je Text-Teil — der letzte gewinnt.
     const text = textFromEvent(event);
     if (sessionID && text) {
       state.lastText.set(sessionID, text);
@@ -424,6 +483,22 @@ export function createNtfyNotifier(options = {}) {
         }
         return;
       }
+      // ── „Arbeitet gerade": V2-Eventnamen (+ V1-Altlasten, tolerant) ────
+      case "session.step.started":
+      case "session.step.streamed":
+      case "session.reasoning.started":
+      case "session.reasoning.delta":
+      case "session.text.started":
+      case "session.text.delta":
+      case "session.tool.input.started":
+      case "session.tool.called":
+      case "session.tool.progress":
+      case "session.tool.success":
+      case "session.tool.failed":
+      case "session.shell.started":
+      case "session.retry.scheduled":
+      case "form.replied":
+      case "permission.replied":
       case "message.part.updated":
       case "message.updated":
       case "tool.execute.before":
@@ -431,6 +506,21 @@ export function createNtfyNotifier(options = {}) {
       case "session.compacted":
         if (sessionID) state.working.add(sessionID);
         return;
+      case "session.step.failed": {
+        // Ein fehlgeschlagener Schritt ist ein echter Fehler; ein einzelner
+        // Tool-Fehler (session.tool.failed) ist meist nur ein Zwischenschritt.
+        if (!sessionID) return;
+        state.working.add(sessionID);
+        await ensureMeta(sessionID);
+        await sendOnce(sessionID, "error", {
+          title: `⚠️ Fehler — ${projectFor(sessionID)}`,
+          message: withHeader(sessionID, errorBody(event) || fallbackBody(event)),
+          priority: 5,
+          tags: ["warning"],
+          click: linkFor(sessionID),
+        });
+        return;
+      }
       case "session.idle": {
         // Nur melden, wenn die Session wirklich gearbeitet hat — sonst würde
         // jede frisch angelegte/leere Session eine Meldung auslösen.
@@ -448,6 +538,8 @@ export function createNtfyNotifier(options = {}) {
         });
         return;
       }
+      case "form.created":
+      case "form.create":
       case "question.asked":
       case "question.requested": {
         if (!sessionID) return;
@@ -519,6 +611,7 @@ export function createNtfyNotifier(options = {}) {
     sendOnce,
     selfTest,
     absorb,
+    absorbLocation,
     ensureMeta,
     projectFor,
     linkFor,

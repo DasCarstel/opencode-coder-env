@@ -12,6 +12,7 @@ import {
   createPluginRuntime,
   isServiceProcess,
   resetSharedState,
+  subpathFromDirectory,
 } from "./ntfy-notify.js";
 
 let passed = 0;
@@ -72,9 +73,29 @@ function info(id, overrides = {}) {
   };
 }
 
+/**
+ * Echte V2-Event-Form (empirisch, OpenCode 2.0.29):
+ * { id, created, type, durable: { aggregateID }, location: { directory }, data }
+ */
+function v2(type, data = {}, opts = {}) {
+  const sessionID = opts.sessionID ?? SESSION;
+  const event = {
+    id: `evt_${type}`,
+    created: 1792168391528,
+    type,
+    durable: { aggregateID: sessionID, seq: 1, version: 1 },
+    location: {
+      directory: opts.directory ?? `${REPO_DIR}/workspaces/infrastructure/server-management`,
+    },
+    data: { ...(opts.noDataSessionID ? {} : { sessionID }), ...data },
+  };
+  if (opts.noDurable) delete event.durable;
+  if (opts.noLocation) delete event.location;
+  return event;
+}
+
 /** Eigener Zustand je Test (die echte Implementierung teilt ihn prozessweit). */
-function freshState() {
-  return {
+function freshState() {  return {
     meta: new Map(),
     children: new Map(),
     working: new Set(),
@@ -448,6 +469,105 @@ console.log("\nEnv-Datei-Fallback");
   eq(received[0]?.headers?.authorization, "Bearer tk_aus_datei", "Token aus Datei");
   eq(received[0]?.url, "/", "URL aus Datei (Sink)");
 }
+
+// ── 16. Echte V2-Event-Form (OpenCode 2.0.29) ─────────────────────────────
+console.log("\nV2-Eventform (durable/location/data)");
+{
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent(v2("session.step.started", { assistantMessageID: "msg_1", agent: "build" }));
+  await n.handleEvent(v2("session.step.streamed", { assistantMessageID: "msg_1" }));
+  await n.handleEvent(v2("session.reasoning.delta", { assistantMessageID: "msg_1", ordinal: 0, delta: "hm" }));
+  await n.handleEvent(v2("session.text.started", { assistantMessageID: "msg_1", ordinal: 0 }));
+  await n.handleEvent(v2("session.text.delta", { assistantMessageID: "msg_1", ordinal: 0, delta: "Alles " }));
+  await n.handleEvent(
+    v2("session.text.ended", {
+      assistantMessageID: "msg_1",
+      ordinal: 0,
+      text: "Alles erledigt: ntfy-Hub ist aktiv.",
+    })
+  );
+  await n.handleEvent(v2("session.idle", {}));
+
+  eq(received.length, 1, "V2-Folge ergibt genau eine Meldung");
+  const body = received[0]?.body ?? {};
+  eq(body.title, "✅ Fertig — server-management", "Projekt-Label aus location.directory");
+  ok(String(body.message).includes("Alles erledigt"), "TLDR stammt aus session.text.ended");
+  eq(
+    body.click,
+    "https://herdr--infrastructure--carstenmueller2002-coder.mueller-nas.de",
+    "Click-URL aus location.directory"
+  );
+}
+{
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent(v2("session.step.started", {}, { noDataSessionID: true }));
+  await n.handleEvent(v2("session.idle", {}, { noDataSessionID: true }));
+  eq(received.length, 1, "Session-ID aus durable.aggregateID genügt");
+}
+
+// ── 17. Frage (V2: form.created) ──────────────────────────────────────────
+console.log("\nFrage (form.created)");
+{
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent(
+    v2("form.created", {
+      formID: "frm_1",
+      questions: [
+        { question: "Weiter mit Phase 4?", options: [{ label: "Ja" }, { label: "Nein" }] },
+      ],
+    })
+  );
+  eq(received.length, 1, "form.created meldet");
+  const body = received[0]?.body ?? {};
+  eq(body.title, "❓ Frage — server-management", "Titel der Frage");
+  eq(body.priority, 4, "Priorität 4");
+  ok(String(body.message).includes("Weiter mit Phase 4?"), "Fragetext enthalten");
+  ok(String(body.message).includes("Ja | Nein"), "Optionen enthalten");
+}
+{
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent(v2("form.created", { form: { schema: "x", nested: { weird: true } } }));
+  eq(received.length, 1, "unbekannte Form-Struktur meldet trotzdem");
+  ok(String(received[0]?.body?.message ?? "").length > 10, "Fallback-Body ist gefüllt");
+}
+
+// ── 18. Freigabe und Fehler in V2-Form ────────────────────────────────────
+console.log("\nFreigabe und Fehler (V2)");
+{
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent(
+    v2("permission.asked", {
+      permission: { title: "Ausführen erlauben", metadata: { command: "sudo systemctl restart x" } },
+    })
+  );
+  eq(received.length, 1, "permission.asked meldet");
+  eq(received[0]?.body?.priority, 4, "Freigabe hat Priorität 4");
+  ok(String(received[0]?.body?.message ?? "").includes("systemctl restart"), "Kommando im Text");
+
+  received.length = 0;
+  await n.handleEvent(v2("session.step.failed", { error: { message: "Provider 500" } }));
+  eq(received.length, 1, "session.step.failed meldet");
+  eq(received[0]?.body?.priority, 5, "Fehler hat Priorität 5");
+  ok(String(received[0]?.body?.message ?? "").includes("Provider 500"), "Fehlertext enthalten");
+
+  received.length = 0;
+  await n.handleEvent(v2("session.tool.failed", { id: "call_1", error: { message: "exit 1" } }));
+  eq(received.length, 0, "einzelner Tool-Fehler meldet nicht");
+}
+
+// ── 19. Pfad-Hilfe ────────────────────────────────────────────────────────
+console.log("\nPfad-Hilfe");
+eq(
+  subpathFromDirectory("/home/a/opencode-coder-env/workspaces/infra/server-management"),
+  "workspaces/infra/server-management",
+  "Workspace-Pfad wird erkannt"
+);
+eq(subpathFromDirectory("/root"), "", "Nicht-Workspace-Pfad ergibt leer");
 
 sink.close();
 
