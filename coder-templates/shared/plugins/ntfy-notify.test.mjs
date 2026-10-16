@@ -111,7 +111,15 @@ function freshState() {  return {
 
 function makeNotifier(extra = {}) {
   return createNtfyNotifier({
-    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", ...(extra.env ?? {}) },
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      // Kopplungs-Button standardmäßig aus: diese Tests prüfen einzelne
+      // Meldungen und dürfen dafür keine echte lokale API anfragen. Der
+      // Kopplungs-Test unten schaltet ihn gezielt ein (gemocktes fetch).
+      NTFY_PAIR_BUTTON: "0",
+      ...(extra.env ?? {}),
+    },
     log: () => {},
     state: extra.state ?? freshState(),
     ...extra,
@@ -369,7 +377,13 @@ const wait = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
   const runtime = createPluginRuntime({
     // NTFY_REPLY_ENABLED=0: hier geht es nur um Events → Benachrichtigung; die
     // Antwort-Brücke hat eigene Tests und würde sonst den Sink abfragen.
-    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_REPLY_ENABLED: "0" },
+    // NTFY_PAIR_BUTTON=0: kein Kopplungslink, dieser Test hat kein fetch-Mock.
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_REPLY_ENABLED: "0",
+      NTFY_PAIR_BUTTON: "0",
+    },
     argv: ["serve", "--service"],
     log: () => {},
   });
@@ -407,7 +421,7 @@ const wait = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
     event: { subscribe: () => stream.iterator },
   };
   const runtime = createPluginRuntime({
-    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" },
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_PAIR_BUTTON: "0" },
     argv: ["tui"],
     log: () => {},
   });
@@ -422,7 +436,7 @@ const wait = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
 {
   received.length = 0;
   const runtime = createPluginRuntime({
-    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_dummy", NTFY_SELFTEST: "1" },
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_dummy", NTFY_SELFTEST: "1", NTFY_PAIR_BUTTON: "0" },
     argv: ["tui"],
     log: () => {},
   });
@@ -443,8 +457,14 @@ console.log("\nMehrere Plugin-Instanzen");
 {
   resetSharedState();
   received.length = 0;
-  const a = createNtfyNotifier({ env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" }, log: () => {} });
-  const b = createNtfyNotifier({ env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" }, log: () => {} });
+  const a = createNtfyNotifier({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_PAIR_BUTTON: "0" },
+    log: () => {},
+  });
+  const b = createNtfyNotifier({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_PAIR_BUTTON: "0" },
+    log: () => {},
+  });
   await a.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
   a.markWorking(SESSION);
   await a.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
@@ -463,7 +483,7 @@ console.log("\nEnv-Datei-Fallback");
     'BAO_TOKEN="x"\nNTFY_TOKEN="tk_aus_datei"\nNTFY_URL="' + SINK_URL + '"\n'
   );
   const runtime = createPluginRuntime({
-    env: { NTFY_SELFTEST: "1", NTFY_ENV_FILE: envFile },
+    env: { NTFY_SELFTEST: "1", NTFY_ENV_FILE: envFile, NTFY_PAIR_BUTTON: "0" },
     argv: ["tui"],
     log: () => {},
   });
@@ -1262,7 +1282,7 @@ console.log("\nAntwort-Brücke (Ende zu Ende)");
   };
 
   const runtime = createPluginRuntime({
-    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" },
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_PAIR_BUTTON: "0" },
     argv: ["serve", "--service"],
     fetch: fetchStub,
     log: () => {},
@@ -1877,6 +1897,237 @@ function makeFormBridge(extra = {}) {
     !String(received[0]?.body?.message ?? "").includes("Antwort direkt hier möglich"),
     "bei NTFY_FORM_REPLY=0 entfällt der Hinweis"
   );
+}
+
+// ── 33. Kopplungslink als Button (gemocktes fetch, kein Netz) ─────────────
+//
+// Jede Meldung trägt einen frisch erzeugten Kopplungslink (POST /api/pair
+// liefert einen einmaligen, 5 Minuten gültigen Code). Der Link wird ~120 s
+// zwischengespeichert, ist über NTFY_PAIR_BUTTON=0 abschaltbar und darf die
+// Meldung nie scheitern lassen. Alles hier läuft mit gemocktem fetch.
+console.log("\nKopplungslink");
+
+/** fetch-Ersatz: /api/pair liefert einen Code (oder wirft), alles andere ist Publish. */
+function pairFetchStub(options = {}) {
+  const requests = [];
+  const published = [];
+  const stub = async (input, init = {}) => {
+    const target = String(input);
+    requests.push({ url: target, init });
+    if (target.includes("/api/pair")) {
+      if (options.throwOnPair) throw new Error("Netzwerk weg");
+      const status = options.pairStatus ?? 200;
+      const code = `code_${requests.filter((request) => request.url.includes("/api/pair")).length}`;
+      return {
+        ok: status < 400,
+        status,
+        json: async () => options.pair ?? { code, expires_in: 300 },
+      };
+    }
+    published.push(JSON.parse(String(init.body ?? "{}")));
+    return { ok: true, status: 200, json: async () => ({ id: `msg_k${published.length}` }) };
+  };
+  const pairCalls = () => requests.filter((request) => request.url.includes("/api/pair"));
+  const pairActions = (index = 0) =>
+    (published[index]?.actions ?? []).filter((action) => action.label === "Koppeln (5 Min)");
+  return { stub, requests, published, pairCalls, pairActions };
+}
+
+const PAIR_BASE = "https://49374--main--infrastructure--carstenmueller2002-coder.mueller-nas.de";
+
+// a) Erfolgsfall: genau eine Koppeln-Aktion mit der Session-Basis; der
+//    API-Aufruf trägt Basic-Auth (Nutzer opencode), das Passwort bleibt aus dem Log.
+{
+  resetSharedState();
+  const { stub, published, pairCalls, pairActions } = pairFetchStub();
+  const logged = [];
+  const n = createNtfyNotifier({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_PAIR_BUTTON: "1",
+      OPENCODE_SERVER_PASSWORD: "pw_test",
+    },
+    state: freshState(),
+    fetch: stub,
+    log: (...args) => logged.push(args.join(" ")),
+  });
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  await n.sendOnce(SESSION, "idle", { title: "✅ Fertig", message: "Text", click: PAIR_BASE });
+
+  eq(published.length, 1, "genau eine Meldung geht raus");
+  eq(pairCalls().length, 1, "genau ein /api/pair-Aufruf");
+  eq(pairCalls()[0]?.url, "http://127.0.0.1:49374/api/pair", "Aufruf geht an die lokale API");
+  eq(pairCalls()[0]?.init?.method, "POST", "der Code wird per POST erzeugt");
+  eq(
+    pairCalls()[0]?.init?.headers?.Authorization,
+    `Basic ${Buffer.from("opencode:pw_test").toString("base64")}`,
+    "HTTP-Basic mit Nutzer opencode"
+  );
+  eq(pairActions().length, 1, "genau eine Koppeln-Aktion trägt die Meldung");
+  eq(pairActions()[0]?.action, "view", "Koppeln ist eine view-Aktion");
+  eq(
+    pairActions()[0]?.url,
+    `${PAIR_BASE}/auth/connect/code_1`,
+    "Kopplungs-URL nutzt die Basis der Session-Links"
+  );
+  eq(published[0]?.click, PAIR_BASE, "das Click-Ziel bleibt die Session-URL");
+  eq(published[0]?.actions?.[0]?.label, "Session öffnen", "die Session-Aktion steht zuerst");
+  ok(!logged.join("\n").includes("pw_test"), "das API-Passwort steht nicht im Log");
+}
+
+// b) Zwischenspeicher: zwei Meldungen kurz hintereinander → ein API-Aufruf und
+//    derselbe Link; erst nach ~120 s entsteht ein neuer Code.
+{
+  resetSharedState();
+  const { stub, published, pairCalls, pairActions } = pairFetchStub();
+  let clock = 1000000;
+  const n = createNtfyNotifier({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_PAIR_BUTTON: "1" },
+    apiPassword: "pw_test",
+    state: freshState(),
+    fetch: stub,
+    now: () => clock,
+    log: () => {},
+  });
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+
+  await n.sendOnce(SESSION, "idle", { title: "eins", message: "Text 1", click: PAIR_BASE });
+  clock += 50000; // 50 s später: der Zwischenspeicher gilt weiter
+  await n.sendOnce(SESSION, "error", { title: "zwei", message: "Text 2", click: PAIR_BASE });
+
+  eq(published.length, 2, "beide Meldungen gehen raus");
+  eq(pairCalls().length, 1, "zwei Meldungen kurz hintereinander → ein /api/pair-Aufruf");
+  ok(
+    pairActions(0)[0]?.url === pairActions(1)[0]?.url,
+    "beide Meldungen tragen denselben Kopplungslink"
+  );
+
+  clock += 100000; // zusammen 150 s: der Zwischenspeicher ist abgelaufen
+  await n.sendOnce(SESSION, "question", { title: "drei", message: "Text 3", click: PAIR_BASE });
+  eq(pairCalls().length, 2, "nach ~120 s entsteht ein neuer Code");
+  ok(pairActions(2)[0]?.url !== pairActions(0)[0]?.url, "der neue Link unterscheidet sich");
+}
+
+// c) Fehlerfall: die Meldung geht ohne Button raus, nichts wird geworfen, der
+//    Fehler landet im Diagnose-Log — erst bei HTTP 500, dann bei Netzfehler.
+{
+  resetSharedState();
+  const logPath = "/tmp/opencode/ntfy-pair-test.log";
+  rmSync(logPath, { force: true });
+  const { stub, published, pairCalls, pairActions } = pairFetchStub({ pairStatus: 500 });
+  const n = createNtfyNotifier({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_PAIR_BUTTON: "1",
+      NTFY_REPLY_LOG: logPath,
+    },
+    apiPassword: "pw_test",
+    state: freshState(),
+    fetch: stub,
+    log: () => {},
+  });
+  const sent = await n.sendOnce(SESSION, "idle", { title: "t", message: "m", click: PAIR_BASE });
+
+  eq(sent, true, "die Meldung geht trotz API-Fehler raus");
+  eq(published.length, 1, "genau eine Meldung");
+  eq(pairCalls().length, 1, "der Aufruf wurde versucht");
+  eq(pairActions().length, 0, "kein Koppeln-Button bei HTTP 500");
+  eq(published[0]?.actions?.[0]?.label, "Session öffnen", "die Session-Aktion bleibt erhalten");
+  ok(
+    readFileSync(logPath, "utf8").includes("pair-link-fehler"),
+    "der Fehler steht als pair-link-fehler im Diagnose-Log"
+  );
+  rmSync(logPath, { force: true });
+}
+{
+  resetSharedState();
+  const { stub, published, pairActions } = pairFetchStub({ throwOnPair: true });
+  const n = createNtfyNotifier({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_PAIR_BUTTON: "1" },
+    apiPassword: "pw_test",
+    state: freshState(),
+    fetch: stub,
+    log: () => {},
+  });
+  const sent = await n.sendOnce(SESSION, "idle", { title: "t", message: "m", click: PAIR_BASE });
+  eq(sent, true, "ein Netzfehler beim Kopplungslink lässt die Meldung unberührt");
+  eq(published.length, 1, "genau eine Meldung");
+  eq(pairActions().length, 0, "kein Koppeln-Button bei Netzfehler");
+}
+{
+  // Ohne API-Passwort wird die lokale API gar nicht erst gefragt.
+  resetSharedState();
+  const { stub, published, pairCalls, pairActions } = pairFetchStub();
+  const n = createNtfyNotifier({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_PAIR_BUTTON: "1" },
+    apiPassword: "",
+    state: freshState(),
+    fetch: stub,
+    log: () => {},
+  });
+  const sent = await n.sendOnce(SESSION, "idle", { title: "t", message: "m", click: PAIR_BASE });
+  eq(sent, true, "ohne Passwort geht die Meldung trotzdem raus");
+  eq(published.length, 1, "genau eine Meldung");
+  eq(pairCalls().length, 0, "ohne Passwort kein /api/pair-Aufruf");
+  eq(pairActions().length, 0, "ohne Passwort kein Koppeln-Button");
+}
+
+// d) NTFY_PAIR_BUTTON=0/"false": kein Button, kein API-Aufruf.
+{
+  resetSharedState();
+  const { stub, published, pairCalls, pairActions } = pairFetchStub();
+  const n = createNtfyNotifier({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_PAIR_BUTTON: "0" },
+    apiPassword: "pw_test",
+    state: freshState(),
+    fetch: stub,
+    log: () => {},
+  });
+  await n.sendOnce(SESSION, "idle", { title: "t", message: "m", click: PAIR_BASE });
+  eq(published.length, 1, "die Meldung geht trotzdem raus");
+  eq(pairCalls().length, 0, "NTFY_PAIR_BUTTON=0 → kein API-Aufruf");
+  eq(pairActions().length, 0, "NTFY_PAIR_BUTTON=0 → kein Koppeln-Button");
+  eq(published[0]?.click, PAIR_BASE, "das Click-Ziel bleibt unverändert");
+
+  const off = createNtfyNotifier({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_PAIR_BUTTON: "false" },
+    apiPassword: "pw_test",
+    state: freshState(),
+    fetch: stub,
+    log: () => {},
+  });
+  await off.sendOnce(SESSION, "idle", { title: "t", message: "m", click: PAIR_BASE });
+  eq(pairCalls().length, 0, "auch \"false\" schaltet den Button ab");
+}
+
+// e) Kein Doppel-Button und kein doppeltes Click-Ziel: trägt die Meldung die
+//    Aktionen schon, wird nichts ergänzt — das Click-Ziel bleibt unverändert.
+{
+  resetSharedState();
+  const { stub, published, pairActions } = pairFetchStub();
+  const n = createNtfyNotifier({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_PAIR_BUTTON: "1" },
+    apiPassword: "pw_test",
+    state: freshState(),
+    fetch: stub,
+    log: () => {},
+  });
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  await n.sendOnce(SESSION, "idle", {
+    title: "mit-aktionen",
+    message: "Text",
+    click: PAIR_BASE,
+    actions: [
+      { action: "view", label: "Session öffnen", url: PAIR_BASE },
+      { action: "view", label: "Koppeln (5 Min)", url: `${PAIR_BASE}/auth/connect/code_1` },
+    ],
+  });
+  eq(published.length, 1, "die Meldung geht raus");
+  eq(published[0]?.actions?.length, 2, "vorhandene Aktionen werden nicht verdoppelt");
+  eq(pairActions().length, 1, "genau eine Koppeln-Aktion (keine zweite)");
+  eq(published[0]?.click, PAIR_BASE, "das bestehende Click-Ziel bleibt unverändert");
 }
 
 sink.close();

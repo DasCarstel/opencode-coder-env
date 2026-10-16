@@ -33,6 +33,12 @@
 //   NTFY_SESSION_PORT Port der laufenden `opencode serve`-Web-UI für den
 //                     Klick-Link (Default 49374)
 //   NTFY_SESSION_URL  feste Session-URL — schlägt die automatische Ableitung
+//   NTFY_PAIR_BUTTON  "0"/"false" schaltet den Kopplungs-Button ab (Default:
+//                     an). Jede Meldung trägt dann einen frisch erzeugten,
+//                     5 Minuten gültigen Kopplungslink als view-Button mit
+//                     (POST /api/pair über die lokale API); der Link wird
+//                     ~120 s zwischengespeichert, damit nicht jede Meldung
+//                     einen neuen Code erzeugt.
 //
 // Antwort-Brücke (der Nutzer antwortet in der ntfy-App auf eine Meldung; diese
 // Antwort landet als normale Nachricht im Topic und wird hier abgeholt und als
@@ -63,6 +69,15 @@
 // http://127.0.0.1:${NTFY_SESSION_PORT} (Default 49374); das Passwort wird zur
 // Laufzeit aus OPENCODE_SERVER_PASSWORD, /etc/opencode.env oder der
 // Service-Datei gelesen und nie geloggt.
+//
+// Kopplungs-Button: jede Meldung trägt zusätzlich einen frisch erzeugten
+// Kopplungslink (POST /api/pair, der Code gilt 5 Minuten) als view-Aktion mit,
+// damit der Nutzer unterwegs direkt koppeln kann. Der fertige Link wird ~120 s
+// im geteilten Laufzeit-Zustand zwischengespeichert — es entsteht also nicht
+// für jede Meldung ein neuer Code. Schlägt die Erzeugung fehl (Netz, Status,
+// kein Passwort), geht die Meldung ohne Button raus und der Fehler landet als
+// "pair-link-fehler" im Diagnose-Log (NTFY_REPLY_LOG); die Meldung selbst
+// scheitert nie daran.
 //
 // Installation: coder-templates/shared/plugins/ntfy-notify.js
 //               → ~/.config/opencode/plugins/ (dort automatisch geladen)
@@ -107,6 +122,12 @@ const MAX_REPLY_TEXT = 2000;
 const MAX_SENT_IDS = 200;
 // Schon verarbeitete Fremd-IDs — gleiche Begrenzung wie bei den eigenen IDs.
 const MAX_PROCESSED_IDS = 200;
+// Kopplungslink: `opencode pair` erzeugt einen einmaligen Code, der 5 Minuten
+// gilt. Er hängt als view-Button an jeder Meldung; der fertige Link wird ~120 s
+// zwischengespeichert (Codes sind einmalig, aber so lange gültig).
+const PAIR_API_TIMEOUT_MS = 5000;
+const PAIR_LINK_TTL_MS = 120000;
+const PAIR_LINK_LABEL = "Koppeln (5 Min)";
 
 // ── Hilfsfunktionen ────────────────────────────────────────────────────────
 
@@ -151,6 +172,30 @@ function debug(...args) {
   if (process.env.NTFY_DEBUG === "1" || process.env.NTFY_SELFTEST === "1") {
     console.error("[ntfy-notify]", ...args);
   }
+}
+
+/**
+ * Diagnose-Zeile anhängen — nur wenn NTFY_REPLY_LOG gesetzt ist (dieselbe
+ * Datei wie die Antwort-Brücke, also eine Diagnose-Quelle). Wirft nie.
+ */
+function makeDiag(env) {
+  const path = String(env.NTFY_REPLY_LOG ?? "").trim();
+  return (event, detail = "") => {
+    if (!path) return;
+    try {
+      appendFileSync(path, `${new Date().toISOString()} ${event}${detail ? `: ${detail}` : ""}\n`);
+    } catch {
+      /* Diagnose darf die Meldung nie stören */
+    }
+  };
+}
+
+/** "0"/"false"/"no"/"off" schalten den Kopplungs-Button ab (Default: an). */
+function pairEnabled(env) {
+  const value = String(env.NTFY_PAIR_BUTTON ?? "1")
+    .trim()
+    .toLowerCase();
+  return !["0", "false", "no", "off"].includes(value);
 }
 
 /** Nur der Hintergrund-Service soll melden — sonst doppelte Events aus TUI/CLI. */
@@ -425,6 +470,11 @@ export function resetSharedState() {
   reply.lastSessionID = "";
   reply.lastActiveSession = "";
   reply.replySince = "";
+  // Zwischenspeicher des Kopplungslinks mit zurücksetzen: im Betrieb bleibt er
+  // absichtlich erhalten, Tests starten damit aber sauber.
+  reply.pairLink = "";
+  reply.pairLinkAt = 0;
+  reply.pairLinkTtl = PAIR_LINK_TTL_MS;
   // Eine noch laufende Schleife mit beenden — sonst würde sie nach dem
   // Zurücksetzen weiterpollen und wäre über stop() nicht mehr erreichbar.
   try {
@@ -462,6 +512,9 @@ function newReplyState() {
     replyAbort: null, // AbortController der aktuell laufenden Brücken-Schleife
     replyPromise: null, // Promise dieser Schleife (erledigt sich mit ihr)
     replySince: "", // letzter `since`-Zeiger; überlebt Schleifen-Neustarts
+    pairLink: "", // zwischengespeicherter Kopplungslink (5-Minuten-Code)
+    pairLinkAt: 0, // Zeitstempel der Erzeugung (ms)
+    pairLinkTtl: PAIR_LINK_TTL_MS, // Gültigkeit des Zwischenspeichers (ms)
   };
 }
 
@@ -481,6 +534,9 @@ export function replyRuntime() {
   if (typeof existing.lastSessionID !== "string") existing.lastSessionID = "";
   if (typeof existing.lastActiveSession !== "string") existing.lastActiveSession = "";
   if (typeof existing.replySince !== "string") existing.replySince = "";
+  if (typeof existing.pairLink !== "string") existing.pairLink = "";
+  if (typeof existing.pairLinkAt !== "number") existing.pairLinkAt = 0;
+  if (typeof existing.pairLinkTtl !== "number") existing.pairLinkTtl = PAIR_LINK_TTL_MS;
   if (!("replyAbort" in existing)) existing.replyAbort = null;
   if (!("replyPromise" in existing)) existing.replyPromise = null;
   return existing;
@@ -569,6 +625,17 @@ export function createNtfyNotifier(options = {}) {
   const state = options.state ?? SHARED;
   // Zustand der Antwort-Brücke: eigene Message-IDs + letzte Ziel-Session.
   const replyState = options.replyState ?? replyRuntime();
+  // Kopplungs-Button: Schalter, Diagnose-Ziel und API-Passwort. Die Test-Vorgabe
+  // (apiPassword) hat Vorrang; sonst wird das Passwort — wie bei der
+  // Antwort-Brücke — zur Laufzeit ermittelt und nie geloggt.
+  const pairButton = options.pairButton ?? pairEnabled(env);
+  const diag = options.diag ?? makeDiag(env);
+  let resolvedPassword;
+  function serverPassword() {
+    if (typeof options.apiPassword === "string") return options.apiPassword;
+    if (resolvedPassword === undefined) resolvedPassword = resolveServerPassword(env);
+    return resolvedPassword;
+  }
 
   function metaFor(sessionID) {
     return state.meta.get(sessionID) ?? {};
@@ -583,7 +650,12 @@ export function createNtfyNotifier(options = {}) {
     return oneLine(metaFor(sessionID).title ?? "", 120) || `Session ${shortId(sessionID)}`;
   }
 
-  function linkFor(sessionID) {
+  /**
+   * Basis der Session-Links — eine Quelle für den Klick-Link (linkFor) und den
+   * Kopplungslink. NTFY_SESSION_URL gewinnt immer, sonst wird die Port-App der
+   * laufenden `opencode serve`-Instanz abgeleitet.
+   */
+  function linkBase(sessionID) {
     // Escape-Hatch: eine fest konfigurierte URL gewinnt immer.
     const fixed = String(env.NTFY_SESSION_URL ?? "").trim();
     if (fixed) return fixed;
@@ -607,6 +679,73 @@ export function createNtfyNotifier(options = {}) {
       return `https://${port}--${agent}--${workspace}--${user}-${coderHost}`;
     }
     return String(env.NTFY_FALLBACK_URL ?? "https://coder.mueller-nas.de/");
+  }
+
+  function linkFor(sessionID) {
+    return linkBase(sessionID);
+  }
+
+  /**
+   * Kopplungslink über die lokale API erzeugen: POST /api/pair liefert einen
+   * einmaligen Code (5 Minuten gültig); daraus wird <basis>/auth/connect/<code>.
+   * Der Auth-Kopf wird nie geloggt. Rückgabe: { url, ttlMs } oder null — wirft
+   * nie, ein Fehler heißt schlicht "kein Button".
+   */
+  async function createPairingLink(base) {
+    if (typeof fetchImpl !== "function") return null;
+    const password = serverPassword();
+    if (!password) {
+      diag("pair-link-fehler", "kein API-Passwort");
+      return null;
+    }
+    const init = {
+      method: "POST",
+      headers: { Authorization: basicAuth(FORM_API_USER, password) },
+    };
+    const signal = timeoutSignal(PAIR_API_TIMEOUT_MS);
+    if (signal) init.signal = signal;
+    try {
+      const res = await fetchImpl(`${localApiUrl(env)}/api/pair`, init);
+      const status = Number(res?.status ?? 0);
+      if (res?.ok === false || (status && status >= 400)) throw new Error(`HTTP ${status || "?"}`);
+      const data = typeof res?.json === "function" ? await res.json() : undefined;
+      const code = typeof data?.code === "string" ? data.code.trim() : "";
+      if (!code) throw new Error("Antwort ohne code");
+      // expires_in der API vorsichtig auswerten: der Link gilt nie länger als
+      // der Zwischenspeicher, aber auch nie länger als der Code selbst.
+      const expires = Number(data?.expires_in) > 0 ? Number(data.expires_in) * 1000 : 0;
+      return {
+        url: `${base.replace(/\/+$/, "")}/auth/connect/${encodeURIComponent(code)}`,
+        ttlMs: expires > 0 ? Math.min(PAIR_LINK_TTL_MS, expires) : PAIR_LINK_TTL_MS,
+      };
+    } catch (error) {
+      logger("Kopplungslink nicht erzeugt:", error?.message ?? String(error));
+      diag("pair-link-fehler", error?.message ?? String(error));
+      return null;
+    }
+  }
+
+  /**
+   * Kopplungslink mit kurzem Zwischenspeicher: der Code ist einmalig, gilt aber
+   * 5 Minuten — deshalb wird der fertige Link ~120 s wiederverwendet, statt für
+   * jede Meldung einen neuen Code zu erzeugen. Der Zwischenspeicher liegt am
+   * geteilten Laufzeit-Zustand und überlebt damit auch einen Plugin-Reload.
+   */
+  async function pairLink(sessionID) {
+    const base = linkBase(sessionID).replace(/\/+$/, "");
+    const cached = typeof replyState.pairLink === "string" ? replyState.pairLink : "";
+    const at = Number(replyState.pairLinkAt ?? 0);
+    const stored = Number(replyState.pairLinkTtl ?? 0);
+    const ttl = stored > 0 ? stored : PAIR_LINK_TTL_MS;
+    // Nur Links zur selben Basis wiederverwenden: mehrere Locations teilen sich
+    // einen Prozess, können aber unterschiedliche Basen haben.
+    if (cached.startsWith(`${base}/auth/connect/`) && now() - at < ttl) return cached;
+    const fresh = await createPairingLink(base);
+    if (!fresh) return "";
+    replyState.pairLink = fresh.url;
+    replyState.pairLinkAt = now();
+    replyState.pairLinkTtl = fresh.ttlMs;
+    return fresh.url;
   }
 
   function absorb(info) {
@@ -645,7 +784,7 @@ export function createNtfyNotifier(options = {}) {
     }
   }
 
-  async function send(payload) {
+  async function send(payload, sessionID) {
     if (!url || !token) {
       logger("kein NTFY_TOKEN/NTFY_URL gesetzt – Nachricht verworfen");
       return false;
@@ -659,10 +798,38 @@ export function createNtfyNotifier(options = {}) {
       priority: payload.priority ?? 3,
       tags: payload.tags ?? ["speech_balloon"],
     };
+    // Aktionen aufbauen (ntfy erlaubt höchstens drei je Nachricht): vorhandene
+    // übernehmen, dann das Klick-Ziel, zuletzt den Kopplungslink. Das Klick-Ziel
+    // selbst bleibt unverändert.
+    const actions = Array.isArray(payload.actions)
+      ? payload.actions.filter((action) => action && typeof action === "object")
+      : [];
     if (payload.click) {
       body.click = payload.click;
-      body.actions = [{ action: "view", label: "Session öffnen", url: payload.click }];
+      if (!actions.some((action) => action.action === "view" && action.url === payload.click)) {
+        actions.push({ action: "view", label: "Session öffnen", url: payload.click });
+      }
     }
+    // Kopplungslink als view-Button — nur wenn die Erzeugung geklappt hat und
+    // dieselbe URL nicht schon als Aktion dranhängt. Fehler ändern die Meldung
+    // nicht: createPairingLink fängt alles ab und protokolliert nur; die
+    // Meldung selbst darf nie scheitern.
+    if (pairButton) {
+      try {
+        const pairUrl = await pairLink(sessionID);
+        if (
+          pairUrl &&
+          actions.length < 3 &&
+          !actions.some((action) => action.action === "view" && action.url === pairUrl)
+        ) {
+          actions.push({ action: "view", label: PAIR_LINK_LABEL, url: pairUrl });
+        }
+      } catch (error) {
+        logger("Kopplungslink fehlgeschlagen:", error?.message ?? String(error));
+        diag("pair-link-fehler", error?.message ?? String(error));
+      }
+    }
+    if (actions.length) body.actions = actions;
     const init = {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -700,7 +867,7 @@ export function createNtfyNotifier(options = {}) {
     if (t - (state.lastSent.get(key) ?? 0) < cooldownMs) return false;
     state.lastSent.set(key, t);
     prune();
-    const sent = await send(payload);
+    const sent = await send(payload, sessionID);
     // Ziel der Antwort-Brücke: die Session der zuletzt zugestellten Meldung.
     if (sent && typeof sessionID === "string" && sessionID) {
       replyState.lastSessionID = sessionID;
