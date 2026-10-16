@@ -461,6 +461,17 @@ export function createNtfyNotifier(options = {}) {
   }
 
   /**
+   * Subagent-Session? V2 liefert parentID ausschließlich über session.get,
+   * nicht in den Events — deshalb hier einmalig nachladen (danach gecacht).
+   */
+  async function isSubagent(sessionID) {
+    if (!sessionID) return false;
+    if (state.children.has(sessionID)) return true;
+    await ensureMeta(sessionID);
+    return state.children.has(sessionID);
+  }
+
+  /**
    * Turn-Ende melden. Ausgelöst von session.execution.succeeded (Turn-Ende in
    * V2), session.step.ended mit finish=stop (Vorgänger-Event) oder
    * session.idle (dokumentiert, in 2.0.29 aber nicht ausgelöst) — der
@@ -470,6 +481,12 @@ export function createNtfyNotifier(options = {}) {
     // Nur melden, wenn die Session wirklich gearbeitet hat — sonst würde jede
     // frisch angelegte/leere Session eine Meldung auslösen.
     if (!sessionID || !state.working.has(sessionID)) return;
+    // Subagenten melden nicht; das tut die Eltern-Session am Ende ihres Turns.
+    if (await isSubagent(sessionID)) {
+      state.working.delete(sessionID);
+      state.lastText.delete(sessionID);
+      return;
+    }
     state.working.delete(sessionID);
     const summary = clampText(state.lastText.get(sessionID) ?? "", 260);
     state.lastText.delete(sessionID);
@@ -485,6 +502,7 @@ export function createNtfyNotifier(options = {}) {
 
   async function reportError(sessionID, event) {
     if (!sessionID) return;
+    if (await isSubagent(sessionID)) return;
     state.working.add(sessionID);
     await ensureMeta(sessionID);
     await sendOnce(sessionID, "error", {
@@ -593,7 +611,8 @@ export function createNtfyNotifier(options = {}) {
       case "form.create":
       case "question.asked":
       case "question.requested": {
-        if (!sessionID) return;
+        // Subagenten fragen nicht über ntfy — das tut die Eltern-Session.
+        if (!sessionID || (await isSubagent(sessionID))) return;
         markWorking(sessionID);
         await ensureMeta(sessionID);
         await sendOnce(sessionID, "question", {
@@ -607,7 +626,8 @@ export function createNtfyNotifier(options = {}) {
       }
       case "permission.asked":
       case "permission.requested": {
-        if (!sessionID) return;
+        // Subagenten fordern keine Freigaben an, die der Nutzer sehen müsste.
+        if (!sessionID || (await isSubagent(sessionID))) return;
         markWorking(sessionID);
         await ensureMeta(sessionID);
         await sendOnce(sessionID, "permission", {

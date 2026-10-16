@@ -640,6 +640,75 @@ console.log("\nTurn-Ende (V2)");
   ok(String(received[0]?.body?.message).includes("Turn abgebrochen"), "Fehlertext enthalten");
 }
 
+// ── 21. Subagent-Sessions melden nicht (parentID nur via session.get) ─────
+console.log("\nSubagent-Filter");
+{
+  let calls = 0;
+  const client = {
+    session: {
+      get: async ({ sessionID }) => {
+        calls += 1;
+        return {
+          id: sessionID,
+          parentID: "ses_parent0000000000000000",
+          title: "Unteraufgabe",
+          subpath: "workspaces/infrastructure/server-management",
+          location: { directory: `${REPO_DIR}/workspaces/infrastructure/server-management` },
+        };
+      },
+    },
+  };
+  const n = makeNotifier({ client });
+  received.length = 0;
+  await n.handleEvent(v2("session.execution.started", {}));
+  await n.handleEvent(v2("session.text.ended", { text: "Unteraufgabe fertig" }));
+  await n.handleEvent(v2("session.execution.succeeded", {}));
+  eq(received.length, 0, "Subagent meldet kein Turn-Ende");
+  ok(calls > 0, "parentID wird über session.get nachgeladen");
+}
+{
+  const client = {
+    session: {
+      get: async ({ sessionID }) => ({
+        id: sessionID,
+        parentID: "ses_parent0000000000000000",
+        title: "Unteraufgabe",
+        subpath: "workspaces/infrastructure/server-management",
+      }),
+    },
+  };
+  const n = makeNotifier({ client });
+  received.length = 0;
+  await n.handleEvent(
+    v2("form.created", { questions: [{ question: "Weiter?", options: [{ label: "Ja" }] }] })
+  );
+  eq(received.length, 0, "Subagent-Frage meldet nicht");
+  await n.handleEvent(
+    v2("permission.asked", { permission: { title: "Bash", metadata: { command: "ls -la" } } })
+  );
+  eq(received.length, 0, "Subagent-Freigabe meldet nicht");
+}
+{
+  // Gegenprobe: eine Session ohne parentID meldet weiterhin.
+  const client = {
+    session: {
+      get: async ({ sessionID }) => ({
+        id: sessionID,
+        title: "Hauptsession",
+        subpath: "workspaces/infrastructure/server-management",
+        location: { directory: `${REPO_DIR}/workspaces/infrastructure/server-management` },
+      }),
+    },
+  };
+  const n = makeNotifier({ client });
+  received.length = 0;
+  await n.handleEvent(v2("session.execution.started", {}));
+  await n.handleEvent(v2("session.text.ended", { text: "Hauptsession fertig" }));
+  await n.handleEvent(v2("session.execution.succeeded", {}));
+  eq(received.length, 1, "echte Session meldet trotz session.get");
+  eq(received[0]?.body?.title, "✅ Fertig — server-management", "Titel der Hauptsession");
+}
+
 sink.close();
 
 console.log(`\n${passed} bestanden, ${failed} fehlgeschlagen`);
