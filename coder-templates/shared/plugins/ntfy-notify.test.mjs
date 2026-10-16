@@ -605,6 +605,41 @@ eq(
 );
 eq(subpathFromDirectory("/root"), "", "Nicht-Workspace-Pfad ergibt leer");
 
+// ── 20. Turn-Ende in V2 (execution.succeeded / step.ended stop) ───────────
+console.log("\nTurn-Ende (V2)");
+{
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent(v2("session.execution.started", {}));
+  await n.handleEvent(
+    v2("session.text.ended", { assistantMessageID: "msg_9", ordinal: 0, text: "Bericht steht." })
+  );
+  await n.handleEvent(v2("session.execution.succeeded", {}));
+  eq(received.length, 1, "execution.succeeded meldet das Turn-Ende");
+  eq(received[0]?.body?.title, "✅ Fertig — server-management", "Titel beim Turn-Ende");
+  ok(String(received[0]?.body?.message).includes("Bericht steht."), "TLDR beim Turn-Ende");
+}
+{
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent(v2("session.step.started", {}));
+  await n.handleEvent(v2("session.step.ended", { finish: "tool-calls" }));
+  eq(received.length, 0, "Zwischenschritt (finish=tool-calls) meldet nicht");
+  await n.handleEvent(v2("session.text.ended", { text: "Fertig." }));
+  await n.handleEvent(v2("session.step.ended", { finish: "stop" }));
+  await n.handleEvent(v2("session.execution.succeeded", {}));
+  eq(received.length, 1, "step.ended(stop) + execution.succeeded ergeben eine Meldung");
+}
+{
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent(v2("session.step.started", {}));
+  await n.handleEvent(v2("session.execution.failed", { error: { message: "Turn abgebrochen" } }));
+  eq(received.length, 1, "execution.failed meldet einen Fehler");
+  eq(received[0]?.body?.priority, 5, "Fehler mit Priorität 5");
+  ok(String(received[0]?.body?.message).includes("Turn abgebrochen"), "Fehlertext enthalten");
+}
+
 sink.close();
 
 console.log(`\n${passed} bestanden, ${failed} fehlgeschlagen`);

@@ -460,6 +460,42 @@ export function createNtfyNotifier(options = {}) {
     return send(payload);
   }
 
+  /**
+   * Turn-Ende melden. Ausgelöst von session.execution.succeeded (Turn-Ende in
+   * V2), session.step.ended mit finish=stop (Vorgänger-Event) oder
+   * session.idle (dokumentiert, in 2.0.29 aber nicht ausgelöst) — der
+   * Cooldown sorgt dafür, dass daraus nur eine Nachricht wird.
+   */
+  async function finishTurn(sessionID) {
+    // Nur melden, wenn die Session wirklich gearbeitet hat — sonst würde jede
+    // frisch angelegte/leere Session eine Meldung auslösen.
+    if (!sessionID || !state.working.has(sessionID)) return;
+    state.working.delete(sessionID);
+    const summary = clampText(state.lastText.get(sessionID) ?? "", 260);
+    state.lastText.delete(sessionID);
+    await ensureMeta(sessionID);
+    await sendOnce(sessionID, "idle", {
+      title: `✅ Fertig — ${projectFor(sessionID)}`,
+      message: withHeader(sessionID, summary),
+      priority: 3,
+      tags: ["white_check_mark"],
+      click: linkFor(sessionID),
+    });
+  }
+
+  async function reportError(sessionID, event) {
+    if (!sessionID) return;
+    state.working.add(sessionID);
+    await ensureMeta(sessionID);
+    await sendOnce(sessionID, "error", {
+      title: `⚠️ Fehler — ${projectFor(sessionID)}`,
+      message: withHeader(sessionID, errorBody(event) || fallbackBody(event)),
+      priority: 5,
+      tags: ["warning"],
+      click: linkFor(sessionID),
+    });
+  }
+
   function withHeader(sessionID, body) {
     const title = titleFor(sessionID);
     return body ? `${title}\n\n${body}` : title;
@@ -502,6 +538,7 @@ export function createNtfyNotifier(options = {}) {
         return;
       }
       // ── „Arbeitet gerade": V2-Eventnamen (+ V1-Altlasten, tolerant) ────
+      case "session.execution.started":
       case "session.step.started":
       case "session.step.streamed":
       case "session.reasoning.started":
@@ -524,36 +561,32 @@ export function createNtfyNotifier(options = {}) {
       case "session.compacted":
         if (sessionID) state.working.add(sessionID);
         return;
+      // ── Turn-Ende ─────────────────────────────────────────────────────
+      case "session.idle":
+      case "session.execution.succeeded":
+        await finishTurn(sessionID);
+        return;
+      case "session.step.ended": {
+        // In 2.0.29 das verlässliche Ende eines Turns: der letzte Schritt
+        // endet mit finish=stop. Zwischenschritte haben finish=tool-calls.
+        const finish = pick(event, "finish");
+        if (typeof finish === "string" && /^(stop|end_turn|end-turn|length)$/.test(finish)) {
+          await finishTurn(sessionID);
+        } else if (sessionID) {
+          state.working.add(sessionID);
+        }
+        return;
+      }
+      // ── Fehler ────────────────────────────────────────────────────────
+      case "session.error":
+      case "session.execution.failed":
+        await reportError(sessionID, event);
+        return;
       case "session.step.failed": {
         // Ein fehlgeschlagener Schritt ist ein echter Fehler; ein einzelner
         // Tool-Fehler (session.tool.failed) ist meist nur ein Zwischenschritt.
-        if (!sessionID) return;
         state.working.add(sessionID);
-        await ensureMeta(sessionID);
-        await sendOnce(sessionID, "error", {
-          title: `⚠️ Fehler — ${projectFor(sessionID)}`,
-          message: withHeader(sessionID, errorBody(event) || fallbackBody(event)),
-          priority: 5,
-          tags: ["warning"],
-          click: linkFor(sessionID),
-        });
-        return;
-      }
-      case "session.idle": {
-        // Nur melden, wenn die Session wirklich gearbeitet hat — sonst würde
-        // jede frisch angelegte/leere Session eine Meldung auslösen.
-        if (!sessionID || !state.working.has(sessionID)) return;
-        state.working.delete(sessionID);
-        const summary = clampText(state.lastText.get(sessionID) ?? "", 260);
-        state.lastText.delete(sessionID);
-        await ensureMeta(sessionID);
-        await sendOnce(sessionID, "idle", {
-          title: `✅ Fertig — ${projectFor(sessionID)}`,
-          message: withHeader(sessionID, summary),
-          priority: 3,
-          tags: ["white_check_mark"],
-          click: linkFor(sessionID),
-        });
+        await reportError(sessionID, event);
         return;
       }
       case "form.created":
@@ -582,18 +615,6 @@ export function createNtfyNotifier(options = {}) {
           message: withHeader(sessionID, permissionBody(event) || fallbackBody(event)),
           priority: 4,
           tags: ["lock"],
-          click: linkFor(sessionID),
-        });
-        return;
-      }
-      case "session.error": {
-        if (!sessionID) return;
-        await ensureMeta(sessionID);
-        await sendOnce(sessionID, "error", {
-          title: `⚠️ Fehler — ${projectFor(sessionID)}`,
-          message: withHeader(sessionID, errorBody(event) || fallbackBody(event)),
-          priority: 5,
-          tags: ["warning"],
           click: linkFor(sessionID),
         });
         return;
@@ -627,6 +648,8 @@ export function createNtfyNotifier(options = {}) {
     markWorking,
     send,
     sendOnce,
+    finishTurn,
+    reportError,
     selfTest,
     absorb,
     absorbLocation,
