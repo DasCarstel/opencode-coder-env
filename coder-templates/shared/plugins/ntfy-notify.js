@@ -41,15 +41,24 @@
 //   NTFY_REPLY_TOPIC        Topic zum Abholen (Default NTFY_TOPIC, also "ai")
 //   NTFY_REPLY_POLL_SECONDS Zeitlimit einer Abfrage in Sekunden (Default 60)
 //   NTFY_FORM_REPLY         "0"/"false" schaltet die direkte Antwort in eine
-//                           offene native Frage ab (Default: an)
+//                           offene native Frage ab (Default: an). Aus heißt:
+//                           kein Formular-Abruf, nur Prompt-Einspeisung — dann
+//                           bleibt nie ein Formular offen, das die Brücke hätte
+//                           schließen müssen (kein Deadlock-Risiko).
 //
-// Ist in der Ziel-Session genau eine native Frage offen (question-Tool =
-// serverseitiges Formular) und passt der Text eindeutig in das einzige Feld,
-// trägt die Brücke die Antwort über die lokale API direkt in das Formular ein
-// statt einen Prompt einzuspeisen — der blockierte Turn läuft dann weiter, als
-// hätte der Nutzer im Fragenfenster geantwortet. Jeder unklare Fall (kein
-// Treffer, mehrere Formulare/Felder, API-Fehler) fällt auf die gewohnte
-// Prompt-Einspeisung zurück. Das native Fragenfenster bleibt unverändert.
+// Ist in der Ziel-Session eine native Frage offen (question-Tool =
+// serverseitiges Formular), trägt die Brücke die Antwort über die lokale API
+// direkt in das Formular ein statt einen Prompt einzuspeisen — der blockierte
+// Turn läuft dann weiter, als hätte der Nutzer im Fragenfenster geantwortet.
+// Die Zuordnung ist bewusst streng: nur exakter Treffer auf Optionswert/-label
+// oder eine reine Zahl als Optionsindex — keine unscharfe Teilstring-Suche, die
+// ganze Sätze falsch zuordnen könnte. Ohne eindeutigen Treffer wird der Rohtext
+// dennoch versucht (falls das Feld Strings akzeptiert); lehnt die API ab, wird
+// die offene Frage abgebrochen (DELETE .../form/{id}) und der Text als Prompt
+// eingespeist, damit kein Turn blockiert zurückbleibt. Mehrere Fragen/Felder
+// werden konservativ ebenso abgebrochen; Freigabe-Dialoge bleiben dem nativen
+// Fenster vorbehalten. Jeder Fehler endet trotzdem in der Prompt-Einspeisung.
+// Das native Fragenfenster bleibt unverändert.
 // Zugang zur lokalen API: HTTP-Basic "opencode:<Passwort>" gegen
 // http://127.0.0.1:${NTFY_SESSION_PORT} (Default 49374); das Passwort wird zur
 // Laufzeit aus OPENCODE_SERVER_PASSWORD, /etc/opencode.env oder der
@@ -81,8 +90,11 @@ const REPLY_NO_SESSION_TITLE = "⚠️ Antwort ohne Ziel-Session";
 // Beginnt wie die normale Bestätigung mit "↩️", damit die Brücke die eigene
 // Nachricht im Poll wieder als eigene erkennt (REPLY_PREFIXES).
 const FORM_REPLY_ACK_TITLE = "↩️ Antwort in die offene Frage eingetragen";
+// Bestätigung, wenn die offene Frage abgebrochen und der Text als normale
+// Nachricht übergeben wurde (der Agent liest den Satz dann selbst).
+const FORM_CANCELLED_ACK_TITLE = "↩️ Frage aufgelöst, Antwort als Nachricht übergeben";
 // Hinweiszeile in der Frage-Meldung (die mit den nummerierten Optionen).
-const FORM_QUESTION_HINT = "Antwort direkt hier möglich: Nummer oder Text antworten.";
+const FORM_QUESTION_HINT = "Antwort direkt hier möglich: Nummer der Option oder freier Text.";
 // Zugang zur lokalen OpenCode-API (HTTP-Basic, Nutzer "opencode").
 const FORM_API_USER = "opencode";
 const FORM_API_TIMEOUT_MS = 5000;
@@ -955,9 +967,11 @@ function replyEnabled(env) {
 // Die native Frage ist serverseitig ein Formular (question-Tool). Offene
 // Formulare einer Session liefert GET /api/session/{id}/form, die Antwort geht
 // per POST /api/session/{id}/form/{formID}/reply mit { answer: { key: wert } }
-// raus (204 = angenommen). Alles hier ist bewusst fehlertolerant und kennt
-// keinen Zustand: schlägt irgendetwas fehl, wird nicht geraten, sondern wie
-// bisher ein Prompt eingespeist.
+// raus (204 = angenommen), der Abbruch per DELETE auf denselben Pfad ohne
+// /reply. Alles hier ist bewusst fehlertolerant und kennt keinen Zustand:
+// schlägt etwas fehl, wird nicht geraten — am Ende steht immer die
+// Prompt-Einspeisung, und eine offene Frage wird vorher abgebrochen, damit kein
+// Turn blockiert zurückbleibt.
 
 /** "0"/"false"/"no"/"off" schalten die Formular-Antwort ab (Default: an). */
 function formEnabled(env) {
@@ -1070,43 +1084,54 @@ function optionText(value) {
 }
 
 /**
- * Antworttext → Optionswert. Reihenfolge: exakt (Wert oder Label, ohne
- * Groß-/Kleinschreibung) → eindeutiger Teilstring-Treffer → reine Zahl n als
- * 1-basierter Optionsindex. Kein eindeutiger Treffer → null: dann wird nicht
- * geraten, sondern wie bisher ein Prompt eingespeist.
+ * Vergleichsform eines Antworttexts bzw. Optionswerts: Kleinschreibung,
+ * Mehrfach-Whitespace zusammengezogen, umschließende Anführungszeichen weg.
+ */
+function matchKey(value) {
+  return optionText(value)
+    .trim()
+    .replace(/^["'„“”‚‘’`´]+/, "")
+    .replace(/["'„“”‚‘’`´]+$/, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+/**
+ * Antworttext → Optionswert. Bewusst streng: (a) exakte Übereinstimmung mit
+ * Optionswert oder -label (ohne Groß-/Kleinschreibung) oder (b) eine reine
+ * Zahl n als 1-basierter Optionsindex, sofern 1 ≤ n ≤ Anzahl Optionen.
+ * Kein Treffer → null: es wird nicht geraten (eine unscharfe Teilstring-Suche
+ * könnte ganze Sätze falsch zuordnen, Stichwort Negation) — der Aufrufer
+ * versucht dann den Rohtext bzw. bricht die Frage ab.
  */
 function matchOption(options, text) {
-  const raw = String(text ?? "").trim();
   const entries = normalizeOptions(options);
-  if (!raw || !entries.length) return null;
-  const needle = raw.toLowerCase();
+  const needle = matchKey(text);
+  if (!needle || !entries.length) return null;
   const exact = entries.find(
-    (entry) =>
-      optionText(entry.value).toLowerCase() === needle || entry.label.toLowerCase() === needle
+    (entry) => matchKey(entry.value) === needle || matchKey(entry.label) === needle
   );
   if (exact) return exact.value;
-  const partial = entries.filter(
-    (entry) =>
-      optionText(entry.value).toLowerCase().includes(needle) ||
-      entry.label.toLowerCase().includes(needle)
-  );
-  if (partial.length === 1) return partial[0].value;
-  if (/^\d+$/.test(raw)) {
-    const index = Number(raw) - 1;
+  if (/^\d+$/.test(needle)) {
+    const index = Number(needle) - 1;
     if (index >= 0 && index < entries.length) return entries[index].value;
   }
   return null;
 }
 
 /**
- * Passt die Antwort in das einzige Feld des Formulars?
- * Rückgabe: { key, value } oder null (dann Prompt-Einspeisung).
+ * Beantwortungsplan für das einzige Feld des Formulars.
+ * Rückgabe:
+ *   { kind: "answer", key, value } — eindeutiger Treffer oder Freitext
+ *   { kind: "raw", key }           — Optionsfeld ohne Treffer, das Rohtext
+ *                                    akzeptieren könnte (type "string")
+ *   null                           — bewusst nicht beantworten
  *
  * Bewusst konservativ: mehrere Felder, unbekannte Feldtypen (number, integer,
- * boolean, external), versteckte/bedingte Felder und Optionsfelder ohne
- * eindeutigen Treffer werden nicht beantwortet.
+ * boolean, external), versteckte/bedingte Felder und mehrdeutige Optionsfelder
+ * führen nicht zu einer geratenen Antwort; der Aufrufer bricht dann ab.
  */
-function answerForForm(form, text) {
+function planForForm(form, text) {
   const fields = Array.isArray(form?.fields) ? form.fields : [];
   if (fields.length !== 1) return null;
   const field = fields[0];
@@ -1118,13 +1143,17 @@ function answerForForm(form, text) {
   const type = typeof field.type === "string" ? field.type : "";
   if (normalizeOptions(field.options).length) {
     const value = matchOption(field.options, text);
-    if (value === null || value === undefined) return null;
-    // multiselect erwartet laut Schema eine Liste (Form.Value: string[]).
-    return { key, value: type === "multiselect" ? [optionText(value)] : value };
+    if (value !== null && value !== undefined) {
+      // multiselect erwartet laut Schema eine Liste (Form.Value: string[]).
+      return { kind: "answer", key, value: type === "multiselect" ? [optionText(value)] : value };
+    }
+    // Kein eindeutiger Treffer: den Rohtext nur versuchen, wenn das Feld
+    // Strings akzeptiert (multiselect erwartet eine Liste).
+    return type === "string" ? { kind: "raw", key } : null;
   }
   // Freitext nur beim String-Typ — alles andere bleibt konservativ.
   if (type !== "string") return null;
-  return { key, value: String(text) };
+  return { kind: "answer", key, value: String(text) };
 }
 
 /**
@@ -1307,9 +1336,85 @@ export function createReplyBridge(options = {}) {
   }
 
   /**
-   * Versucht, die Antwort direkt in die eine offene native Frage der Session
-   * einzutragen. Rückgabe: Ergebnisobjekt (action "replied") oder null — dann
-   * übernimmt wie bisher die Prompt-Einspeisung. Wirft nie.
+   * Offene Frage abbrechen (Cancel-Endpunkt laut OpenAPI). Der optionale
+   * `message`-Query wird bewusst weggelassen: der Text geht anschließend als
+   * Prompt in die Session, ein zweiter Zustellweg wäre nur verwirrend.
+   */
+  async function deleteForm(sessionID, formID) {
+    const init = {
+      method: "DELETE",
+      headers: { Authorization: basicAuth(FORM_API_USER, apiPassword) },
+    };
+    const signal = timeoutSignal(FORM_API_TIMEOUT_MS);
+    if (signal) init.signal = signal;
+    return fetchImpl(
+      `${apiUrl}/api/session/${encodeURIComponent(sessionID)}/form/${encodeURIComponent(formID)}`,
+      init
+    );
+  }
+
+  /** 204 = angenommen; ein 2xx/ok gilt ebenfalls (tolerant je Version). */
+  function formAccepted(res) {
+    return res?.status === 204 || res?.ok === true;
+  }
+
+  /** Bestätigung, dass die Antwort in der offenen Frage gelandet ist. */
+  async function confirmFormReply(text) {
+    await publish({
+      title: FORM_REPLY_ACK_TITLE,
+      message: clampText(text, 200),
+      priority: 2,
+      tags: ["leftwards_arrow_with_hook"],
+    });
+  }
+
+  /** Formular-Reply mit Fehlerfang — die Brücke darf nie werfen. */
+  async function postFormReplyQuiet(sessionID, formID, answer) {
+    try {
+      return await postFormReply(sessionID, formID, answer);
+    } catch (error) {
+      log("Antwort konnte nicht ins Formular eingetragen werden:", error?.message ?? String(error));
+      diag("form-reply-fehler", error?.message ?? String(error));
+      return null;
+    }
+  }
+
+  /**
+   * Die offenen Frage-Formulare abbrechen. Rückgabe: { ok, formIDs } — ok ist
+   * nur true, wenn wirklich jedes Formular geschlossen werden konnte. Fehler
+   * werden protokolliert, nicht geworfen.
+   */
+  async function cancelQuestionForms(sessionID, questions) {
+    const formIDs = [];
+    let ok = true;
+    for (const form of questions) {
+      const formID = typeof form?.id === "string" ? form.id : "";
+      if (!formID) {
+        ok = false;
+        diag("form-abbruch-fehler", "Formular ohne ID");
+        continue;
+      }
+      formIDs.push(formID);
+      try {
+        const res = await deleteForm(sessionID, formID);
+        if (!formAccepted(res)) {
+          ok = false;
+          diag("form-abbruch-fehler", `${formID} HTTP ${res?.status ?? "?"}`);
+        }
+      } catch (error) {
+        ok = false;
+        log("Frage konnte nicht abgebrochen werden:", error?.message ?? String(error));
+        diag("form-abbruch-fehler", `${formID} ${error?.message ?? String(error)}`);
+      }
+    }
+    return { ok, formIDs };
+  }
+
+  /**
+   * Versucht, die Antwort auf die eine offene native Frage der Session
+   * anzuwenden. Rückgabe: Ergebnisobjekt ("replied" = direkt eingetragen,
+   * "cancelled" = Frage abgebrochen, der Aufrufer übergibt den Text als Prompt)
+   * oder null — dann übernimmt wie bisher die Prompt-Einspeisung. Wirft nie.
    */
   async function tryFormReply(sessionID, text) {
     if (!formReply) return null;
@@ -1323,52 +1428,63 @@ export function createReplyBridge(options = {}) {
     }
     if (!Array.isArray(forms) || !forms.length) return null;
     const questions = forms.filter(isQuestionForm);
-    if (questions.length !== 1) {
-      // Mehrere Formulare (oder nur Freigabe-Dialoge): nicht raten.
-      diag("form-uebersprungen", `${forms.length} offene Formulare`);
+    if (!questions.length) {
+      // Nur Fremdformulare (z. B. Freigabe-Dialoge): nicht anfassen.
+      diag("form-uebersprungen", `${forms.length} offene Formulare (keine Frage)`);
       return null;
     }
-    const form = questions[0];
-    const formID = typeof form?.id === "string" ? form.id : "";
-    const answer = formID ? answerForForm(form, text) : null;
-    if (!answer) {
-      diag("form-ohne-treffer", oneLine(form?.title ?? "", 60));
-      return null;
+    if (questions.length > 1) {
+      // Mehrdeutig: nicht raten, aber auch nicht offen lassen (Deadlock).
+      diag("form-mehrdeutig", `${questions.length} offene Fragen`);
     }
-    let res;
-    try {
-      res = await postFormReply(sessionID, formID, { [answer.key]: answer.value });
-    } catch (error) {
-      log("Antwort konnte nicht ins Formular eingetragen werden:", error?.message ?? String(error));
-      diag("form-reply-fehler", error?.message ?? String(error));
-      return null;
+
+    if (questions.length === 1) {
+      const form = questions[0];
+      const formID = typeof form?.id === "string" ? form.id : "";
+      const plan = formID ? planForForm(form, text) : null;
+
+      // 1. Eindeutiger Treffer (Wert/Label/Index) oder Freitext: eintragen.
+      if (plan?.kind === "answer") {
+        const res = await postFormReplyQuiet(sessionID, formID, { [plan.key]: plan.value });
+        if (formAccepted(res)) {
+          await confirmFormReply(text);
+          diag("form-reply", `${formID} feld=${plan.key}`);
+          return { action: "replied", sessionID, text, formID, field: plan.key, value: plan.value };
+        }
+        // Abgelehnt (400/404/409 …): wie bisher nicht raten — der Text kommt
+        // als Prompt an. Kein Abbruch, die Frage war ja klar zuordenbar.
+        diag("form-reply-fehler", `HTTP ${res?.status ?? "?"}`);
+        return null;
+      }
+
+      // 2. Kein eindeutiger Treffer, aber das Feld akzeptiert Strings: den
+      // Rohtext dennoch versuchen — der Agent liest den Satz dann selbst.
+      if (plan?.kind === "raw") {
+        const res = await postFormReplyQuiet(sessionID, formID, { [plan.key]: text });
+        if (formAccepted(res)) {
+          await confirmFormReply(text);
+          diag("form-reply-rohtext", `${formID} feld=${plan.key}`);
+          return { action: "replied", sessionID, text, formID, field: plan.key, value: text };
+        }
+        diag("form-reply-fehler", `HTTP ${res?.status ?? "?"}`);
+      } else {
+        diag("form-ohne-treffer", oneLine(form?.title ?? "", 60));
+      }
     }
-    // Vertrag: 204 = angenommen. 400/404/409 (oder alles andere) → Fallback.
-    if (res?.status !== 204 && res?.ok !== true) {
-      diag("form-reply-fehler", `HTTP ${res?.status ?? "?"}`);
-      return null;
-    }
-    // Bestätigung: leise (Priorität 2) und ohne Ton-Tag, wie die normale.
-    await publish({
-      title: FORM_REPLY_ACK_TITLE,
-      message: clampText(text, 200),
-      priority: 2,
-      tags: ["leftwards_arrow_with_hook"],
-    });
-    diag("form-reply", `${formID} feld=${answer.key}`);
-    return {
-      action: "replied",
-      sessionID,
-      text,
-      formID,
-      field: answer.key,
-      value: answer.value,
-    };
+
+    // 3. Kein eindeutiger Treffer: die Frage darf nicht offen bleiben — sonst
+    // blockiert der Turn, bis der Nutzer doch noch im Fenster antwortet
+    // (Deadlock). Also abbrechen und den Text danach als Prompt einspeisen.
+    const cancel = await cancelQuestionForms(sessionID, questions);
+    if (!cancel.ok) return null; // Aufrufer speist trotzdem ein (kein Datenverlust)
+    diag("form-abgebrochen", cancel.formIDs.join(","));
+    return { action: "cancelled", sessionID, text, formIDs: cancel.formIDs };
   }
 
   /**
    * Eine Nutzernachricht verarbeiten.
-   * Rückgabe: { action: "duplicate" | "skipped" | "ignored" | "injected" | "replied" | "no-session", … }
+   * Rückgabe: { action: "duplicate" | "skipped" | "ignored" | "injected" |
+   *             "replied" | "cancelled" | "no-session", … }
    */
   async function handleMessage(message) {
     // Zuerst die Idempotenz-Prüfung: ntfy löst `since=<id>` nur sekundengenau
@@ -1399,18 +1515,30 @@ export function createReplyBridge(options = {}) {
       await hint(text);
       return { action: "no-session", text };
     }
-    // Vor der Prompt-Einspeisung prüfen, ob die Antwort in der einen offenen
-    // nativen Frage der Session steckt: dann wird sie direkt dort eingetragen
-    // und der blockierte Turn läuft weiter (siehe tryFormReply). Jeder unklare
-    // Fall endet weiter unten in der gewohnten Prompt-Einspeisung.
-    const replied = await tryFormReply(sessionID, text);
-    if (replied) return replied;
+    // Vor der Prompt-Einspeisung prüfen, ob die Antwort in eine offene native
+    // Frage der Session gehört: eindeutige Treffer werden direkt eingetragen,
+    // ein nicht zuordenbarer Satz bricht die Frage ab (sonst bliebe der Turn
+    // blockiert) — siehe tryFormReply. Danach wird der Text immer als Prompt
+    // eingespeist; jeder Fehler endet in der gewohnten Prompt-Einspeisung.
+    const formResult = await tryFormReply(sessionID, text);
+    if (formResult?.action === "replied") return formResult;
     try {
       await client.session.prompt({ sessionID, text });
     } catch (error) {
       log("Antwort konnte nicht eingespeist werden:", error?.message ?? String(error));
       await hint(text);
       return { action: "no-session", text, reason: "prompt-fehler" };
+    }
+    // Nach dem Abbruch einer Frage bestätigt die Meldung, dass der Text als
+    // Nachricht angekommen ist — und dass kein Fenster mehr offen steht.
+    if (formResult?.action === "cancelled") {
+      await publish({
+        title: FORM_CANCELLED_ACK_TITLE,
+        message: clampText(text, 200),
+        priority: 2,
+        tags: ["leftwards_arrow_with_hook"],
+      });
+      return formResult;
     }
     // Bestätigung, damit der Nutzer weiß, dass die Antwort angekommen ist.
     await publish({

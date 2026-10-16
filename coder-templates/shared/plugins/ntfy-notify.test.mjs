@@ -1378,11 +1378,13 @@ console.log("\nAntwort-Brücke (Idempotenz)");
 
 // ── 32. Formular-Antwort: offene native Frage direkt beantworten ──────────
 //
-// Ist genau eine native Frage offen (question-Tool = serverseitiges Formular)
-// und passt der Handy-Text eindeutig in das einzige Feld, trägt die Brücke die
-// Antwort per POST …/reply ein, statt einen Prompt einzuspeisen. Jeder unklare
-// Fall (kein Treffer, mehrere Formulare/Felder, API-Fehler) fällt auf die
-// Prompt-Einspeisung zurück. Alles hier läuft mit gemocktem fetch: kein Netz.
+// Ist eine native Frage offen (question-Tool = serverseitiges Formular), trägt
+// die Brücke die Antwort per POST …/reply ein, sofern der Handy-Text eindeutig
+// zuordenbar ist (exakter Options-Treffer oder Optionsindex) oder das Feld
+// Freitext/Strings akzeptiert. Ohne eindeutigen Treffer wird die Frage
+// abgebrochen (DELETE …/form/{id}) und der Text als Prompt eingespeist — eine
+// Frage bleibt so nie offen stehen (kein blockierter Turn). Alles hier läuft
+// mit gemocktem fetch: kein Netz.
 console.log("\nFormular-Antwort (offene Frage)");
 
 /** Auswahlfeld laut Schema: StringField mit options ({ value, label }). */
@@ -1419,6 +1421,21 @@ function makeFormBridge(extra = {}) {
       const status = extra.replyStatus ?? 204;
       return { ok: status < 400, status, json: async () => ({}) };
     }
+    if (method === "DELETE") {
+      const status = extra.deleteStatus ?? 204;
+      // Abbrechen: bei Erfolg verschwindet das Formular aus der offenen Liste
+      // (in place, damit der Test dieselbe Liste weiterlesen kann) — so ist
+      // sichtbar, dass wirklich keine Frage mehr offen bleibt.
+      if (status < 400) {
+        const formID = decodeURIComponent(String(url).split("/form/")[1]?.split("/")[0] ?? "");
+        if (Array.isArray(extra.forms)) {
+          for (let i = extra.forms.length - 1; i >= 0; i -= 1) {
+            if (extra.forms[i]?.id === formID) extra.forms.splice(i, 1);
+          }
+        }
+      }
+      return { ok: status < 400, status, json: async () => ({}) };
+    }
     const status = extra.formsStatus ?? 200;
     return { ok: status < 400, status, json: async () => ({ data: extra.forms ?? [] }) };
   };
@@ -1450,13 +1467,14 @@ function makeFormBridge(extra = {}) {
   });
   const posts = () => requests.filter((request) => request.method === "POST");
   const gets = () => requests.filter((request) => request.method === "GET");
+  const deletes = () => requests.filter((request) => request.method === "DELETE");
   const bodyOf = (request) => JSON.parse(String(request?.init?.body ?? "{}"));
-  return { bridge, runtime, requests, prompts, published, posts, gets, bodyOf };
+  return { bridge, runtime, requests, prompts, published, posts, gets, deletes, bodyOf };
 }
 
 // a) Nummer als Optionsindex → Antwort landet im Formular, kein Prompt.
 {
-  const { bridge, prompts, published, posts, gets, bodyOf } = makeFormBridge({
+  const { bridge, prompts, published, posts, gets, deletes, bodyOf } = makeFormBridge({
     forms: [openForm("frm_1", [choiceField])],
   });
   const result = await bridge.handleMessage({ id: "msg_f1", title: "Nutzerantwort", message: "2" });
@@ -1492,11 +1510,12 @@ function makeFormBridge(extra = {}) {
     "Bestätigung nennt die eingetragene Antwort"
   );
   eq(published[0]?.priority, 2, "Bestätigung ist leise (Priorität 2)");
+  eq(deletes().length, 0, "kein Abbruch bei eindeutigem Treffer");
 }
 
 // b) Treffer über das Label (case-insensitive) und über den Wert.
 {
-  const { bridge, prompts, posts, bodyOf } = makeFormBridge({
+  const { bridge, prompts, posts, deletes, bodyOf } = makeFormBridge({
     forms: [openForm("frm_2", [choiceField])],
   });
   const byLabel = await bridge.handleMessage({ id: "msg_f2", title: "Nutzerantwort", message: "warten" });
@@ -1505,29 +1524,104 @@ function makeFormBridge(extra = {}) {
   const byValue = await bridge.handleMessage({ id: "msg_f2b", title: "Nutzerantwort", message: "a" });
   eq(byValue.action, "replied", "Treffer über den Optionswert");
   eq(bodyOf(posts()[1])?.answer?.q0, "a", "Wert 'a' wird direkt gesendet");
+  const byQuoted = await bridge.handleMessage({
+    id: "msg_f2c",
+    title: "Nutzerantwort",
+    message: '  "warten"  ',
+  });
+  eq(byQuoted.action, "replied", "umschließende Anführungszeichen und Leerraum werden entfernt");
+  eq(bodyOf(posts()[2])?.answer?.q0, "b", "auch die zitierte Antwort trifft die Option");
   eq(prompts.length, 0, "kein Prompt bei eindeutigem Treffer");
+  eq(deletes().length, 0, "kein Abbruch bei eindeutigem Treffer");
 }
 
-// c) Kein Treffer → nicht raten, sondern Prompt einspeisen.
+// c) Ganzer Satz ohne Treffer: der Rohtext wird versucht; lehnt die API ihn
+//    ab (400), wird die offene Frage abgebrochen und der Text als Prompt
+//    übergeben — sie bleibt nicht offen stehen (kein blockierter Turn).
 {
-  const { bridge, prompts, published, posts } = makeFormBridge({
-    forms: [openForm("frm_3", [choiceField])],
+  const forms = [openForm("frm_3", [choiceField])];
+  const { bridge, prompts, published, posts, deletes, bodyOf } = makeFormBridge({
+    forms,
+    replyStatus: 400,
   });
   const result = await bridge.handleMessage({
     id: "msg_f3",
     title: "Nutzerantwort",
     message: "vielleicht später",
   });
-  eq(result.action, "injected", "ohne Treffer bleibt es bei der Prompt-Einspeisung");
-  eq(posts().length, 0, "kein Reply-POST ohne eindeutigen Treffer");
-  eq(prompts.length, 1, "der Text kommt als Prompt an");
-  eq(published[0]?.title, "↩️ Antwort an Agenten weitergegeben", "normale Bestätigung");
+  eq(result.action, "cancelled", "ohne Treffer wird die Frage abgebrochen");
+  eq(posts().length, 1, "zuerst wird der Rohtext als Antwort versucht");
+  eq(bodyOf(posts()[0])?.answer?.q0, "vielleicht später", "der Rohtext geht als Antwort raus");
+  eq(deletes().length, 1, "die offene Frage wird abgebrochen (DELETE)");
+  eq(
+    deletes()[0]?.url,
+    `http://127.0.0.1:49374/api/session/${SESSION}/form/frm_3`,
+    "Abbruch geht an den Formular-Endpunkt (ohne /reply)"
+  );
+  eq(deletes()[0]?.init?.method, "DELETE", "Abbruch nutzt die DELETE-Methode");
+  eq(forms.length, 0, "kein offenes Formular mehr");
+  eq(prompts.length, 1, "der Text kommt zusätzlich als Prompt an");
+  eq(prompts[0]?.text, "vielleicht später", "der Prompt trägt den ganzen Satz");
+  eq(
+    published[0]?.title,
+    "↩️ Frage aufgelöst, Antwort als Nachricht übergeben",
+    "Bestätigung nennt das Auflösen der Frage"
+  );
+  eq(published[0]?.priority, 2, "Bestätigung ist leise (Priorität 2)");
 }
 {
-  const { bridge, posts } = makeFormBridge({ forms: [openForm("frm_3b", [choiceField])] });
+  // Akzeptiert die API den Rohtext (204), zählt er wie ein eindeutiger
+  // Treffer: die Frage ist direkt beantwortet, es wird nichts abgebrochen.
+  const { bridge, prompts, posts, deletes, bodyOf } = makeFormBridge({
+    forms: [openForm("frm_3a", [choiceField])],
+  });
+  const result = await bridge.handleMessage({
+    id: "msg_f3a",
+    title: "Nutzerantwort",
+    message: "vielleicht später",
+  });
+  eq(result.action, "replied", "akzeptierter Rohtext wird wie ein Treffer bestätigt");
+  eq(posts().length, 1, "genau ein Reply-POST");
+  eq(bodyOf(posts()[0])?.answer?.q0, "vielleicht später", "gesendet wird der Rohtext");
+  eq(deletes().length, 0, "kein Abbruch bei akzeptiertem Rohtext");
+  eq(prompts.length, 0, "kein Prompt — die Frage wurde direkt beantwortet");
+}
+{
+  // Zahl außerhalb des Optionsbereichs ist kein Index: es wird kein
+  // Optionswert geraten, sondern der Rohtext versucht (hier abgelehnt).
+  const { bridge, prompts, posts, deletes, bodyOf } = makeFormBridge({
+    forms: [openForm("frm_3b", [choiceField])],
+    replyStatus: 400,
+  });
   const result = await bridge.handleMessage({ id: "msg_f3b", message: "7" });
-  eq(result.action, "injected", "Optionsindex außerhalb der Liste wird nicht geraten");
-  eq(posts().length, 0, "kein Reply-POST bei ungültigem Index");
+  eq(result.action, "cancelled", "Optionsindex außerhalb der Liste wird nicht geraten");
+  eq(posts().length, 1, "der Rohtext wird versucht");
+  eq(bodyOf(posts()[0])?.answer?.q0, "7", "gesendet wird die Zahl als Rohtext, kein Optionswert");
+  eq(deletes().length, 1, "die Frage wird abgebrochen");
+  eq(prompts.length, 1, "der Text kommt als Prompt an");
+}
+{
+  // Reine Teilstring-Ähnlichkeit ist KEIN Treffer: „Kopplung“ passt nur
+  // zufällig in „Kopplung hakt noch“ — nicht raten, sondern abbrechen.
+  const { bridge, prompts, posts, deletes, bodyOf } = makeFormBridge({
+    forms: [
+      openForm("frm_3c", [
+        {
+          key: "q0",
+          type: "string",
+          title: "Wie weiter?",
+          options: [{ value: "hakt", label: "Kopplung hakt noch" }],
+        },
+      ]),
+    ],
+    replyStatus: 400,
+  });
+  const result = await bridge.handleMessage({ id: "msg_f3c", message: "Kopplung" });
+  eq(result.action, "cancelled", "Teilstring-Ähnlichkeit führt nicht zu einem Formular-Reply");
+  eq(posts().length, 1, "der Rohtext wird versucht");
+  eq(bodyOf(posts()[0])?.answer?.q0, "Kopplung", "gesendet wird der Rohtext, nicht der Optionswert");
+  eq(deletes().length, 1, "die Frage wird abgebrochen");
+  eq(prompts.length, 1, "der ganze Satz kommt als Prompt an");
 }
 
 // d) Freitext-Feld (String-Typ) → der Text wird als Wert gesendet.
@@ -1543,41 +1637,58 @@ function makeFormBridge(extra = {}) {
   eq(prompts.length, 0, "kein Prompt beim Freitext-Feld");
 }
 {
-  // Unbekannter Feldtyp (number) bleibt konservativ.
-  const { bridge, posts, prompts } = makeFormBridge({
-    forms: [openForm("frm_4b", [{ key: "q0", type: "number", title: "Wie viele?" }])],
-  });
+  // Unbekannter Feldtyp (number) bleibt konservativ: kein Reply-Versuch,
+  // aber die Frage wird abgebrochen — sie darf nicht offen bleiben.
+  const forms = [openForm("frm_4b", [{ key: "q0", type: "number", title: "Wie viele?" }])];
+  const { bridge, posts, prompts, deletes, published } = makeFormBridge({ forms });
   const result = await bridge.handleMessage({ id: "msg_f4b", message: "42" });
-  eq(result.action, "injected", "unbekannter Feldtyp → Prompt-Einspeisung");
+  eq(result.action, "cancelled", "unbekannter Feldtyp → die Frage wird abgebrochen");
   eq(posts().length, 0, "kein Reply-POST für unbekannte Feldtypen");
+  eq(deletes().length, 1, "der Abbruch geht raus");
+  eq(forms.length, 0, "kein offenes Formular mehr");
   eq(prompts.length, 1, "der Text kommt als Prompt an");
+  eq(
+    published[0]?.title,
+    "↩️ Frage aufgelöst, Antwort als Nachricht übergeben",
+    "Bestätigung nennt das Auflösen der Frage"
+  );
 }
 
-// e) Mehrere Felder bzw. mehrere Formulare → nicht raten.
+// e) Mehrere Felder bzw. mehrere Formulare → nicht raten, aber die offenen
+//    Fragen werden abgebrochen (sie dürfen den Turn nicht blockieren).
 {
-  const { bridge, prompts, posts } = makeFormBridge({
-    forms: [openForm("frm_5", [choiceField, { key: "q1", type: "string", title: "Warum?" }])],
-  });
+  const forms = [openForm("frm_5", [choiceField, { key: "q1", type: "string", title: "Warum?" }])];
+  const { bridge, prompts, posts, deletes, published } = makeFormBridge({ forms });
   const result = await bridge.handleMessage({ id: "msg_f5", message: "Warten" });
-  eq(result.action, "injected", "zwei Felder → keine Formular-Antwort");
+  eq(result.action, "cancelled", "zwei Felder → konservativ, die Frage wird abgebrochen");
   eq(posts().length, 0, "kein Reply-POST bei zwei Feldern");
+  eq(deletes().length, 1, "die Frage wird abgebrochen");
+  eq(forms.length, 0, "kein offenes Formular mehr");
   eq(prompts.length, 1, "stattdessen Prompt-Einspeisung");
+  eq(
+    published[0]?.title,
+    "↩️ Frage aufgelöst, Antwort als Nachricht übergeben",
+    "Bestätigung nennt das Auflösen der Frage"
+  );
 }
 {
-  const { bridge, prompts, posts } = makeFormBridge({
-    forms: [openForm("frm_6", [choiceField]), openForm("frm_7", [choiceField])],
-  });
+  const forms = [openForm("frm_6", [choiceField]), openForm("frm_7", [choiceField])];
+  const { bridge, prompts, posts, deletes } = makeFormBridge({ forms });
   const result = await bridge.handleMessage({ id: "msg_f6", message: "Warten" });
-  eq(result.action, "injected", "zwei offene Formulare → keine Formular-Antwort");
+  eq(result.action, "cancelled", "zwei offene Fragen → konservativ, beide werden abgebrochen");
   eq(posts().length, 0, "kein Reply-POST bei zwei Formularen");
+  eq(deletes().length, 2, "beide Fragen werden abgebrochen");
+  eq(forms.length, 0, "kein offenes Formular mehr");
   eq(prompts.length, 1, "stattdessen Prompt-Einspeisung");
 }
 
 // f) Reply wird abgelehnt (400) → Fallback auf Prompt + Diagnose-Log.
+//    (Die Antwort war eindeutig zuordenbar; bleibt der Reply trotzdem
+//    erfolglos, wird wie bisher nicht abgebrochen, sondern eingespeist.)
 {
   const logPath = "/tmp/opencode/ntfy-form-reply-test.log";
   rmSync(logPath, { force: true });
-  const { bridge, prompts, published, posts } = makeFormBridge({
+  const { bridge, prompts, published, posts, deletes } = makeFormBridge({
     forms: [openForm("frm_8", [choiceField])],
     replyStatus: 400,
     env: { NTFY_REPLY_LOG: logPath },
@@ -1585,6 +1696,7 @@ function makeFormBridge(extra = {}) {
   const result = await bridge.handleMessage({ id: "msg_f8", message: "Warten" });
   eq(result.action, "injected", "abgelehnter Reply (400) fällt auf den Prompt zurück");
   eq(posts().length, 1, "der Reply wurde versucht");
+  eq(deletes().length, 0, "kein Abbruch: die Antwort war eindeutig zuordenbar");
   eq(prompts.length, 1, "der Text wird als Prompt eingespeist");
   eq(published[0]?.title, "↩️ Antwort an Agenten weitergegeben", "normale Bestätigung");
   ok(
@@ -1708,6 +1820,35 @@ function makeFormBridge(extra = {}) {
   eq(posts().length, 1, "genau ein Reply-POST trotz Wiederholung");
 }
 
+// m) Der Abbruch scheitert (500): der Text wird trotzdem eingespeist und der
+//    Fehler landet im Diagnose-Log — die Brücke darf nie werfen.
+{
+  const logPath = "/tmp/opencode/ntfy-form-cancel-test.log";
+  rmSync(logPath, { force: true });
+  const forms = [openForm("frm_16", [choiceField])];
+  const { bridge, prompts, published, posts, deletes } = makeFormBridge({
+    forms,
+    replyStatus: 400,
+    deleteStatus: 500,
+    env: { NTFY_REPLY_LOG: logPath },
+  });
+  const result = await bridge.handleMessage({
+    id: "msg_f16",
+    message: "Kopplung prüfen bitte",
+  });
+  eq(result.action, "injected", "fehlgeschlagener Abbruch → trotzdem Prompt-Einspeisung");
+  eq(posts().length, 1, "der Rohtext wurde als Antwort versucht");
+  eq(deletes().length, 1, "der Abbruch wurde versucht");
+  eq(forms.length, 1, "die Frage bleibt in diesem Fall offen");
+  eq(prompts.length, 1, "kein Datenverlust: der Text kommt als Prompt an");
+  eq(published[0]?.title, "↩️ Antwort an Agenten weitergegeben", "normale Bestätigung");
+  ok(
+    readFileSync(logPath, "utf8").includes("form-abbruch-fehler"),
+    "der fehlgeschlagene Abbruch steht im Diagnose-Log"
+  );
+  rmSync(logPath, { force: true });
+}
+
 // l) Hinweiszeile in der Frage-Meldung.
 {
   const n = makeNotifier();
@@ -1719,10 +1860,10 @@ function makeFormBridge(extra = {}) {
   );
   const message = String(received[0]?.body?.message ?? "");
   ok(message.includes("Antwort direkt hier möglich"), "Frage-Meldung trägt die Antwort-Hinweiszeile");
-  ok(message.includes("Nummer oder Text"), "Hinweis nennt Nummer und Text");
+  ok(message.includes("Nummer der Option oder freier Text"), "Hinweis nennt Nummer und freien Text");
   eq(
     message.trim().split("\n").pop(),
-    "Antwort direkt hier möglich: Nummer oder Text antworten.",
+    "Antwort direkt hier möglich: Nummer der Option oder freier Text.",
     "Hinweis steht als eigene Zeile am Ende"
   );
 }
