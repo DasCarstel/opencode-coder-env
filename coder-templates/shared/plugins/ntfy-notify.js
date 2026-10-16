@@ -34,6 +34,13 @@
 //                     Klick-Link (Default 49374)
 //   NTFY_SESSION_URL  feste Session-URL — schlägt die automatische Ableitung
 //
+// Antwort-Brücke (der Nutzer antwortet in der ntfy-App auf eine Meldung; diese
+// Antwort landet als normale Nachricht im Topic und wird hier abgeholt und als
+// Prompt in die zuletzt benachrichtigte Session eingespeist):
+//   NTFY_REPLY_ENABLED      "0"/"false" schaltet die Brücke ab (Default: an)
+//   NTFY_REPLY_TOPIC        Topic zum Abholen (Default NTFY_TOPIC, also "ai")
+//   NTFY_REPLY_POLL_SECONDS Zeitlimit einer Abfrage in Sekunden (Default 60)
+//
 // Installation: coder-templates/shared/plugins/ntfy-notify.js
 //               → ~/.config/opencode/plugins/ (dort automatisch geladen)
 
@@ -50,6 +57,17 @@ const MAX_QUESTION_BODY = 1500;
 const MAX_OPTION_LEN = 120;
 const COOLDOWN_MS = 15000;
 const PLUGIN_ID = "das.ntfy-notify";
+// Antwort-Brücke: eigene Präfixe, Abfrage- und Wartezeiten.
+const REPLY_PREFIXES = ["❓", "✅", "⚠️", "🔐", "🔔", "↩️"];
+const REPLY_ACK_TITLE = "↩️ Antwort an Agenten weitergegeben";
+const REPLY_NO_SESSION_TITLE = "⚠️ Antwort ohne Ziel-Session";
+const REPLY_POLL_SECONDS = 60;
+// poll=1 liefert sofort zurück — zwischen zwei Abfragen kurz warten, damit
+// daraus kein Hot-Loop gegen den Hub wird.
+const REPLY_IDLE_MS = 5000;
+const REPLY_ERROR_MS = 5000;
+const MAX_REPLY_TEXT = 2000;
+const MAX_SENT_IDS = 200;
 
 // ── Hilfsfunktionen ────────────────────────────────────────────────────────
 
@@ -360,6 +378,67 @@ export function resetSharedState() {
   for (const map of Object.values(SHARED)) {
     if (map instanceof Map || map instanceof Set) map.clear();
   }
+  const reply = replyRuntime();
+  reply.sentIds.length = 0;
+  reply.lastSessionID = "";
+  reply.replyBridgeStarted = false;
+}
+
+// ── Prozessglobaler Zustand der Antwort-Brücke ────────────────────────────
+//
+// Dieselbe Begründung wie beim Event-Zustand: mehrere Plugin-Instanzen (eine
+// je Location) teilen sich einen Prozess, die Hintergrundschleife darf aber
+// nur einmal laufen. sentIds/lastSessionID liegen deshalb ebenfalls am
+// Prozess und werden vom Notifier (send/sendOnce) genauso benutzt wie von der
+// Brücke selbst.
+
+const REPLY_KEY = Symbol.for("ntfy.notify.runtime");
+
+function newReplyState() {
+  return {
+    sentIds: [], // IDs der selbst gesendeten ntfy-Nachrichten
+    lastSessionID: "", // Session der zuletzt gesendeten Benachrichtigung
+    replyBridgeStarted: false, // Schleife läuft bereits in diesem Prozess
+  };
+}
+
+/** Zustand der Antwort-Brücke (ein Objekt je Prozess, tolerant nachgerüstet). */
+export function replyRuntime() {
+  const existing = globalThis[REPLY_KEY];
+  if (!existing) {
+    globalThis[REPLY_KEY] = newReplyState();
+    return globalThis[REPLY_KEY];
+  }
+  if (!Array.isArray(existing.sentIds) && !(existing.sentIds instanceof Set)) {
+    existing.sentIds = [];
+  }
+  if (typeof existing.lastSessionID !== "string") existing.lastSessionID = "";
+  if (typeof existing.replyBridgeStarted !== "boolean") existing.replyBridgeStarted = false;
+  return existing;
+}
+
+function hasSentId(runtime, id) {
+  if (!id || !runtime?.sentIds) return false;
+  const list = runtime.sentIds;
+  if (typeof list.has === "function") return list.has(id);
+  return Array.isArray(list) && list.includes(id);
+}
+
+/** Eigene Message-ID merken (begrenzt, damit der Zustand nicht wächst). */
+function rememberSentId(id, runtime = replyRuntime()) {
+  if (typeof id !== "string" || !id) return;
+  if (!Array.isArray(runtime.sentIds) && !(runtime.sentIds instanceof Set)) {
+    runtime.sentIds = [];
+  }
+  const list = runtime.sentIds;
+  if (typeof list.add === "function") {
+    list.add(id);
+    while (list.size > MAX_SENT_IDS) list.delete(list.values().next().value);
+    return;
+  }
+  if (list.includes(id)) return;
+  list.push(id);
+  while (list.length > MAX_SENT_IDS) list.shift();
 }
 
 function prune() {
@@ -388,6 +467,8 @@ export function createNtfyNotifier(options = {}) {
   const contextDirectory = options.directory ?? "";
   const client = options.client;
   const state = options.state ?? SHARED;
+  // Zustand der Antwort-Brücke: eigene Message-IDs + letzte Ziel-Session.
+  const replyState = options.replyState ?? replyRuntime();
 
   function metaFor(sessionID) {
     return state.meta.get(sessionID) ?? {};
@@ -492,8 +573,21 @@ export function createNtfyNotifier(options = {}) {
     }
     try {
       const res = await fetchImpl(url, init);
-      if (!res?.ok) logger(`Publish fehlgeschlagen: HTTP ${res?.status ?? "?"}`);
-      return Boolean(res?.ok);
+      if (!res?.ok) {
+        logger(`Publish fehlgeschlagen: HTTP ${res?.status ?? "?"}`);
+        return false;
+      }
+      // Message-ID der eigenen Nachricht merken — daran erkennt die
+      // Antwort-Brücke später, dass die Nachricht von uns selbst stammt.
+      let id = "";
+      try {
+        const data = typeof res.json === "function" ? await res.json() : undefined;
+        if (data && typeof data.id === "string") id = data.id;
+      } catch {
+        /* Antwort ohne JSON-Body – dann gibt es eben keine ID */
+      }
+      rememberSentId(id, replyState);
+      return true;
     } catch (error) {
       logger("Publish-Fehler:", error?.message ?? String(error));
       return false;
@@ -506,7 +600,12 @@ export function createNtfyNotifier(options = {}) {
     if (t - (state.lastSent.get(key) ?? 0) < cooldownMs) return false;
     state.lastSent.set(key, t);
     prune();
-    return send(payload);
+    const sent = await send(payload);
+    // Ziel der Antwort-Brücke: die Session der zuletzt zugestellten Meldung.
+    if (sent && typeof sessionID === "string" && sessionID) {
+      replyState.lastSessionID = sessionID;
+    }
+    return sent;
   }
 
   /**
@@ -731,6 +830,224 @@ export function createNtfyNotifier(options = {}) {
   };
 }
 
+// ── Antwort-Brücke: ntfy-Nachricht → Prompt in die Session ────────────────
+//
+// Der Nutzer antwortet in der ntfy-App auf eine Meldung; die Antwort landet
+// als ganz normale Nachricht im Topic. Diese Brücke holt neue Nachrichten im
+// Hintergrund ab und speist sie als Prompt in die zuletzt benachrichtigte
+// Session ein. Eigene Nachrichten (Message-ID aus sentIds ODER eigener
+// Titel-Präfix) werden ignoriert — sonst würde das Plugin sich selbst
+// beantworten. Die reine Logik steckt in createReplyBridge() und ist damit
+// ohne Netzwerk testbar; startReplyBridge() hängt nur die Schleife dran.
+
+/** "0"/"false"/"no"/"off" schalten die Brücke ab (Default: an). */
+function replyEnabled(env) {
+  const value = String(env.NTFY_REPLY_ENABLED ?? "1")
+    .trim()
+    .toLowerCase();
+  return !["0", "false", "no", "off"].includes(value);
+}
+
+/** NDJSON-Zeilen des /json-Endpunkts lesen; since zeigt danach auf die letzte ID. */
+export function parseReplyStream(raw, since = "") {
+  const messages = [];
+  let nextSince = since;
+  for (const line of String(raw ?? "").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let entry;
+    try {
+      entry = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (!entry || typeof entry !== "object") continue;
+    // Auch open/keepalive-Zeilen tragen eine ID: sie rückt `since` weiter,
+    // damit dieselbe Stelle nicht immer wieder abgefragt wird.
+    if (typeof entry.id === "string" && entry.id) nextSince = entry.id;
+    // keepalive/open-Zeilen tragen keine Nutzlast.
+    if (entry.event && entry.event !== "message") continue;
+    messages.push(entry);
+  }
+  return { messages, nextSince };
+}
+
+/** Wartet ms Millisekunden; bricht sofort ab, wenn das Signal abbricht. */
+function sleep(ms, signal) {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    if (signal) signal.addEventListener("abort", done, { once: true });
+  });
+}
+
+export function createReplyBridge(options = {}) {
+  const env = options.env ?? process.env;
+  const client = options.client ?? {};
+  const runtime = options.runtime ?? replyRuntime();
+  const log = options.log ?? (() => {});
+  const publish = options.publish ?? (async () => false);
+  const config = options.config ?? resolveConfig(env);
+  const url = String(options.url ?? config.url ?? DEFAULT_URL).replace(/\/+$/, "");
+  const token = String(options.token ?? config.token ?? "");
+  const topic = String(options.topic ?? env.NTFY_REPLY_TOPIC ?? config.topic ?? DEFAULT_TOPIC);
+  const fetchImpl = options.fetch ?? globalThis.fetch;
+  const pollSeconds = Number(options.pollSeconds ?? env.NTFY_REPLY_POLL_SECONDS);
+  const pollMs = (pollSeconds > 0 ? pollSeconds : REPLY_POLL_SECONDS) * 1000;
+
+  /** "" = fremde Nachricht, "id"/"title" = eigene Nachricht. */
+  function ignoreReason(message) {
+    const id = typeof message?.id === "string" ? message.id : "";
+    if (id && hasSentId(runtime, id)) return "id";
+    const title = String(message?.title ?? "");
+    if (REPLY_PREFIXES.some((prefix) => title.startsWith(prefix))) return "title";
+    return "";
+  }
+
+  function shouldIgnore(message) {
+    return ignoreReason(message) !== "";
+  }
+
+  /**
+   * Neue Nachrichten abholen (eine Runde, ohne Schleife). `since` bleibt
+   * stehen, wenn die Antwort leer war — sonst würde dieselbe Nachricht bei
+   * jeder Abfrage erneut verarbeitet.
+   */
+  async function pollOnce(since = "", signal) {
+    if (!url || !token || typeof fetchImpl !== "function") {
+      return { messages: [], nextSince: since };
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), pollMs);
+    const onAbort = () => controller.abort();
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      const res = await fetchImpl(
+        `${url}/${encodeURIComponent(topic)}/json?poll=1&since=${encodeURIComponent(since)}`,
+        { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal }
+      );
+      if (!res?.ok) throw new Error(`HTTP ${res?.status ?? "?"}`);
+      const raw = typeof res.text === "function" ? await res.text() : "";
+      return parseReplyStream(raw, since);
+    } finally {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  async function hint(text) {
+    await publish({
+      title: REPLY_NO_SESSION_TITLE,
+      message: text || "Es gibt gerade keine Session, an die ich die Antwort geben könnte.",
+      priority: 2,
+      tags: ["warning"],
+    });
+  }
+
+  /**
+   * Eine Nutzernachricht verarbeiten.
+   * Rückgabe: { action: "skipped" | "ignored" | "injected" | "no-session", … }
+   */
+  async function handleMessage(message) {
+    const reason = ignoreReason(message);
+    if (reason === "id") return { action: "skipped", reason: "eigene-id" };
+    if (reason === "title") return { action: "ignored", reason: "eigener-titel" };
+
+    const text = clampText(message?.message ?? message?.text ?? "", MAX_REPLY_TEXT);
+    if (!text) return { action: "skipped", reason: "leer" };
+
+    const sessionID = typeof runtime.lastSessionID === "string" ? runtime.lastSessionID : "";
+    if (!sessionID || typeof client?.session?.prompt !== "function") {
+      await hint(text);
+      return { action: "no-session", text };
+    }
+    try {
+      await client.session.prompt({ sessionID, text });
+    } catch (error) {
+      log("Antwort konnte nicht eingespeist werden:", error?.message ?? String(error));
+      await hint(text);
+      return { action: "no-session", text, reason: "prompt-fehler" };
+    }
+    // Bestätigung, damit der Nutzer weiß, dass die Antwort angekommen ist.
+    await publish({
+      title: REPLY_ACK_TITLE,
+      message: clampText(text, 200),
+      priority: 2,
+      tags: ["leftwards_arrow_with_hook"],
+    });
+    return { action: "injected", sessionID, text };
+  }
+
+  /** Endlosschleife: abholen, verarbeiten, kurz warten. Wirft nie heraus. */
+  async function loop(signal, startSince) {
+    let since = String(startSince ?? Math.floor(Date.now() / 1000));
+    while (!signal?.aborted) {
+      try {
+        const round = await pollOnce(since, signal);
+        if (round.nextSince) since = round.nextSince;
+        for (const message of round.messages) {
+          if (signal?.aborted) break;
+          try {
+            await handleMessage(message);
+          } catch (error) {
+            log("Antwort konnte nicht verarbeitet werden:", error?.message ?? String(error));
+          }
+        }
+      } catch (error) {
+        if (signal?.aborted) break;
+        log("Antwort-Abfrage fehlgeschlagen:", error?.message ?? String(error));
+        await sleep(REPLY_ERROR_MS, signal);
+        continue;
+      }
+      await sleep(REPLY_IDLE_MS, signal);
+    }
+  }
+
+  return { shouldIgnore, ignoreReason, handleMessage, pollOnce, loop, url, topic };
+}
+
+/**
+ * Startet die Antwort-Brücke genau einmal je Prozess.
+ * Rückgabe: { bridge, stop } oder null (abgeschaltet/ohne Token/läuft schon).
+ */
+export function startReplyBridge(options = {}) {
+  const env = options.env ?? process.env;
+  const runtime = options.runtime ?? replyRuntime();
+  const log = options.log ?? (() => {});
+
+  if (!replyEnabled(env)) return null;
+  if (runtime.replyBridgeStarted) return null;
+  const config = options.config ?? resolveConfig(env);
+  if (!config.token) return null;
+  runtime.replyBridgeStarted = true;
+
+  const bridge = createReplyBridge({
+    ...options,
+    client: options.client ?? options.ctx,
+    env,
+    runtime,
+    log,
+    config,
+  });
+  const controller = options.controller ?? new AbortController();
+  const stop = () => controller.abort();
+  void (async () => {
+    try {
+      await bridge.loop(controller.signal, options.since);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        log("Antwort-Brücke beendet:", error?.message ?? String(error));
+      }
+    }
+  })();
+  return { bridge, controller, stop };
+}
+
 // ── V2-Plugin-Definition ───────────────────────────────────────────────────
 
 /**
@@ -784,6 +1101,18 @@ export function createPluginRuntime(options = {}) {
         console.error("[ntfy-notify] prompt-Hook nicht registriert:", error?.message ?? error);
       }
 
+      // Antwort-Brücke: Nutzerantworten aus dem Topic zurück in die Session.
+      const replyBridge = startReplyBridge({
+        ctx,
+        env: { ...env, NTFY_TOKEN: cfg.token, NTFY_URL: cfg.url, NTFY_TOPIC: cfg.topic },
+        publish: (payload) => notifier.send(payload),
+        log: options.log ?? debug,
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      });
+      if (replyBridge) {
+        debug(`Antwort-Brücke aktiv (topic ${cfg.topic})`);
+      }
+
       const controller = new AbortController();
       void (async () => {
         try {
@@ -801,7 +1130,10 @@ export function createPluginRuntime(options = {}) {
         }
       })();
 
-      return () => controller.abort();
+      return () => {
+        controller.abort();
+        replyBridge?.stop();
+      };
     },
   };
 }

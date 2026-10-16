@@ -10,8 +10,12 @@ import http from "node:http";
 import {
   createNtfyNotifier,
   createPluginRuntime,
+  createReplyBridge,
   isServiceProcess,
+  parseReplyStream,
+  replyRuntime,
   resetSharedState,
+  startReplyBridge,
   subpathFromDirectory,
 } from "./ntfy-notify.js";
 
@@ -362,7 +366,9 @@ const wait = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
   };
 
   const runtime = createPluginRuntime({
-    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" },
+    // NTFY_REPLY_ENABLED=0: hier geht es nur um Events → Benachrichtigung; die
+    // Antwort-Brücke hat eigene Tests und würde sonst den Sink abfragen.
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_REPLY_ENABLED: "0" },
     argv: ["serve", "--service"],
     log: () => {},
   });
@@ -786,6 +792,278 @@ console.log("\nSession-Link und Frage-Optionen");
     "https://beispiel.test/session/42",
     "NTFY_SESSION_URL überschreibt den Klick-Link"
   );
+}
+
+// ── 23. Antwort-Brücke: reine Logik (ohne Netzwerk) ──────────────────────
+console.log("\nAntwort-Brücke (Logik)");
+
+/** Wartet bis `check()` wahr ist (kurze Polls, damit Tests nicht schlafen). */
+async function until(check, timeoutMs = 2000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (check()) return true;
+    await wait(20);
+  }
+  return check();
+}
+
+{
+  const prompts = [];
+  const published = [];
+  const runtime = { sentIds: ["msg_eigen1"], lastSessionID: "", replyBridgeStarted: false };
+  const bridge = createReplyBridge({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai" },
+    runtime,
+    client: {
+      session: {
+        prompt: async (arg) => {
+          prompts.push(arg);
+          return {};
+        },
+      },
+    },
+    publish: async (payload) => {
+      published.push(payload);
+      return true;
+    },
+    log: () => {},
+  });
+
+  // a) Eigene Nachricht, erkannt an der Message-ID.
+  const byId = await bridge.handleMessage({
+    id: "msg_eigen1",
+    title: "Nutzertext",
+    message: "selbst gesendet",
+  });
+  eq(byId.action, "skipped", "eigene Nachricht (ID in sentIds) → skipped");
+  eq(prompts.length, 0, "eigene Nachricht löst keinen Prompt aus");
+  ok(bridge.shouldIgnore({ id: "msg_eigen1" }), "shouldIgnore erkennt die eigene ID");
+  ok(!bridge.shouldIgnore({ id: "msg_fremd", title: "Antwort" }), "fremde ID wird nicht ignoriert");
+
+  // b) Eigene Nachricht, erkannt am Titel-Präfix.
+  const byTitle = await bridge.handleMessage({
+    id: "msg_fremd0",
+    title: "✅ Fertig — server-management",
+    message: "Bin fertig.",
+  });
+  eq(byTitle.action, "ignored", "eigene Nachricht (Titel-Präfix) → ignored");
+  ok(bridge.shouldIgnore({ title: "⚠️ Fehler — x" }), "shouldIgnore erkennt eigene Titel");
+  ok(bridge.shouldIgnore({ title: "🔐 Freigabe — x" }), "shouldIgnore erkennt das Freigabe-Präfix");
+  eq(prompts.length, 0, "auch die Titel-Variante löst keinen Prompt aus");
+
+  // c) Leere Nachricht.
+  runtime.lastSessionID = SESSION;
+  const empty = await bridge.handleMessage({ id: "msg_leer", message: "   " });
+  eq(empty.action, "skipped", "leere Nachricht wird übersprungen");
+
+  // d) Fremde Nachricht mit Zielsession → Prompt + Ack.
+  published.length = 0;
+  const injected = await bridge.handleMessage({
+    id: "msg_user1",
+    title: "Antwort",
+    message: "  Bitte Variante B umsetzen  ",
+  });
+  eq(injected.action, "injected", "fremde Nachricht wird eingespeist");
+  eq(injected.sessionID, SESSION, "Ziel ist die zuletzt benachrichtigte Session");
+  eq(prompts.length, 1, "genau ein Prompt");
+  eq(prompts[0]?.sessionID, SESSION, "Prompt geht an die Zielsession");
+  eq(prompts[0]?.text, "Bitte Variante B umsetzen", "Text wird getrimmt übergeben");
+  eq(published.length, 1, "Ack wird veröffentlicht");
+  ok(String(published[0]?.title).startsWith("↩️"), "Ack trägt das Antwort-Präfix");
+  eq(published[0]?.priority, 2, "Ack ist leise (Priorität 2)");
+
+  // e) Sehr lange Nachricht wird gekürzt.
+  const long = await bridge.handleMessage({ id: "msg_lang", message: "A".repeat(5000) });
+  eq(long.action, "injected", "lange Nachricht wird eingespeist");
+  ok(long.text.length <= 2000, "Text wird auf ~2000 Zeichen gekürzt");
+  eq(prompts[1]?.text, long.text, "gekürzter Text geht in den Prompt");
+
+  // f) Fremde Nachricht ohne Zielsession → Hinweis, keine Injektion.
+  published.length = 0;
+  runtime.lastSessionID = "";
+  const orphan = await bridge.handleMessage({ id: "msg_user2", message: "Hallo?" });
+  eq(orphan.action, "no-session", "ohne Zielsession wird nichts eingespeist");
+  eq(prompts.length, 2, "kein weiterer Prompt");
+  eq(published.length, 1, "stattdessen kommt ein Hinweis");
+  ok(String(published[0]?.title).includes("ohne Ziel-Session"), "Hinweis nennt die fehlende Session");
+  eq(published[0]?.priority, 2, "Hinweis ist leise (Priorität 2)");
+}
+
+// ── 24. Antwort-Brücke: NDJSON-Abfrage (fetch gemockt) ───────────────────
+console.log("\nAntwort-Brücke (Abfrage)");
+{
+  const requests = [];
+  const runtime = { sentIds: [], lastSessionID: SESSION, replyBridgeStarted: false };
+  let calls = 0;
+  const fetchStub = async (input, init) => {
+    requests.push({ url: String(input), init });
+    calls += 1;
+    // Erste Abfrage liefert Nachrichten, danach ist das Topic leer.
+    const body =
+      calls === 1
+        ? [
+            JSON.stringify({ id: "msg_keep", event: "keepalive" }),
+            JSON.stringify({ id: "msg_a1", event: "message", title: "Antwort", message: "Weiter mit B" }),
+            "kein json",
+            JSON.stringify({ id: "msg_a2", event: "message", title: "Nachtrag", message: "Und danach C" }),
+            "",
+          ].join("\n")
+        : "";
+    return { ok: true, status: 200, text: async () => body };
+  };
+  const bridge = createReplyBridge({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" },
+    runtime,
+    client: { session: { prompt: async () => {} } },
+    publish: async () => true,
+    fetch: fetchStub,
+    log: () => {},
+  });
+
+  const round = await bridge.pollOnce("1700000000");
+  eq(round.messages.length, 2, "NDJSON wird zeilenweise gelesen (Nicht-JSON übersprungen)");
+  eq(round.nextSince, "msg_a2", "since zeigt danach auf die letzte Message-ID");
+  ok(String(requests[0]?.url).includes("/ai/json?poll=1"), "poll=1 wird abgefragt");
+  ok(String(requests[0]?.url).includes("since=1700000000"), "since wandert in die URL");
+  eq(requests[0]?.init?.headers?.Authorization, "Bearer tk_test", "Bearer-Token bei der Abfrage");
+
+  // Keepalive/open-Zeilen tragen keine Nachricht.
+  const parsed = parseReplyStream('{"id":"msg_open","event":"open"}\n\n');
+  eq(parsed.messages.length, 0, "open-Zeilen ergeben keine Nachricht");
+  eq(parsed.nextSince, "msg_open", "die ID wird trotzdem übernommen");
+
+  // Leere Abfrage lässt `since` stehen — sonst gäbe es Endlos-Wiederholungen.
+  const emptyRound = await bridge.pollOnce("msg_a2");
+  eq(emptyRound.messages.length, 0, "leere Abfrage liefert keine Nachrichten");
+  eq(emptyRound.nextSince, "msg_a2", "since bleibt bei leerer Abfrage stehen");
+}
+
+// ── 25. Antwort-Brücke: Start-Guard und Flag ─────────────────────────────
+console.log("\nAntwort-Brücke (Start)");
+{
+  resetSharedState();
+  const runtime = replyRuntime();
+  const client = { session: { prompt: async () => {} } };
+
+  const off = startReplyBridge({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_REPLY_ENABLED: "0" },
+    runtime,
+    client,
+    publish: async () => true,
+    log: () => {},
+  });
+  eq(off, null, "NTFY_REPLY_ENABLED=0 startet keine Brücke");
+  eq(runtime.replyBridgeStarted, false, "Flag bleibt ausgeschaltet");
+
+  const controller = new AbortController();
+  const started = startReplyBridge({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_REPLY_POLL_SECONDS: "1" },
+    runtime,
+    controller,
+    client,
+    publish: async () => true,
+    fetch: async () => ({ ok: true, status: 200, text: async () => "" }),
+    log: () => {},
+  });
+  ok(started !== null && typeof started.stop === "function", "Brücke startet und liefert stop()");
+  eq(runtime.replyBridgeStarted, true, "Flag verhindert weitere Schleifen");
+  const again = startReplyBridge({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" },
+    runtime,
+    client,
+    publish: async () => true,
+    log: () => {},
+  });
+  eq(again, null, "ein zweiter Start im selben Prozess wird verhindert");
+  started.stop();
+  eq(controller.signal.aborted, true, "stop() beendet die Schleife");
+  resetSharedState();
+}
+
+// ── 26. Antwort-Brücke: setup → Abfrage → Prompt → Ack ───────────────────
+console.log("\nAntwort-Brücke (Ende zu Ende)");
+{
+  resetSharedState();
+  received.length = 0;
+
+  const prompts = [];
+  const posts = [];
+  let releasePoll = null;
+  let pollBody = "";
+  const fetchStub = async (input, init = {}) => {
+    const method = String(init.method ?? "GET").toUpperCase();
+    if (method === "POST") {
+      posts.push(JSON.parse(String(init.body ?? "{}")));
+      return { ok: true, status: 200, json: async () => ({ id: `msg_post${posts.length}` }) };
+    }
+    await new Promise((resolve) => {
+      releasePoll = resolve;
+    });
+    return { ok: true, status: 200, text: async () => pollBody };
+  };
+
+  const stream = makeStream();
+  const ctx = {
+    location: { directory: REPO_DIR },
+    session: {
+      hook: async () => ({ dispose: async () => {} }),
+      prompt: async (arg) => {
+        prompts.push(arg);
+        return {};
+      },
+    },
+    event: {
+      subscribe: ({ signal } = {}) => {
+        if (signal) signal.addEventListener("abort", () => stream.close());
+        return stream.iterator;
+      },
+    },
+  };
+
+  const runtime = createPluginRuntime({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" },
+    argv: ["serve", "--service"],
+    fetch: fetchStub,
+    log: () => {},
+  });
+  const cleanup = await runtime.setup(ctx);
+  ok(await until(() => typeof releasePoll === "function"), "die Brücke fragt im Hintergrund ab");
+
+  // Eine echte Benachrichtigung setzt die Zielsession (letzte Meldung).
+  stream.push({ type: "session.created", properties: { info: info(SESSION) } });
+  stream.push({
+    type: "message.part.updated",
+    properties: { sessionID: SESSION, part: { type: "text", role: "assistant", text: "Fertig." } },
+  });
+  stream.push({ type: "session.idle", properties: { sessionID: SESSION } });
+  ok(
+    await until(() => posts.some((p) => String(p.title).startsWith("✅"))),
+    "Fertig-Meldung ist raus"
+  );
+
+  // Jetzt antwortet der Nutzer im Topic.
+  pollBody = JSON.stringify({
+    id: "msg_user9",
+    event: "message",
+    title: "Nutzerantwort",
+    message: "Bitte noch die Logs prüfen.",
+  });
+  releasePoll?.();
+  ok(await until(() => prompts.length === 1), "Antwort wird als Prompt eingespeist");
+  eq(prompts[0]?.sessionID, SESSION, "Prompt landet in der zuletzt benachrichtigten Session");
+  eq(prompts[0]?.text, "Bitte noch die Logs prüfen.", "Nachrichtentext wird übergeben");
+  ok(
+    await until(() => posts.some((p) => String(p.title).startsWith("↩️"))),
+    "Ack wird veröffentlicht"
+  );
+  ok(replyRuntime().sentIds.includes("msg_post1"), "eigene Message-ID wird gemerkt");
+
+  cleanup?.();
+  await wait();
+  ok(stream.closed, "Cleanup beendet den Event-Stream");
+  pollBody = "";
+  releasePoll?.();
+  resetSharedState();
 }
 
 sink.close();
