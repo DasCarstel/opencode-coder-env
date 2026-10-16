@@ -174,13 +174,32 @@ function sessionInfo(event) {
   return undefined;
 }
 
+/**
+ * Sucht begrenzt rekursiv nach einer Session-ID. Nötig für Events ohne
+ * data.sessionID/durable: `form.created` trägt sie z. B. in data.form.sessionID.
+ */
+function findSessionID(value, depth = 0) {
+  if (depth > 4 || !value || typeof value !== "object") return undefined;
+  for (const [key, child] of Object.entries(value)) {
+    if (typeof child === "string") {
+      if (!child) continue;
+      if (key === "sessionID" || key === "sessionId") return child;
+      if (/^ses_[A-Za-z0-9]+$/.test(child)) return child;
+    } else if (child && typeof child === "object") {
+      const found = findSessionID(child, depth + 1);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
 function sessionIDOf(event, info) {
   const direct = pick(event, "sessionID");
   if (typeof direct === "string" && direct) return direct;
   const aggregate = event?.durable?.aggregateID;
   if (typeof aggregate === "string" && aggregate) return aggregate;
   if (info && typeof info.id === "string" && info.id) return info.id;
-  return undefined;
+  return findSessionID(event?.data) ?? findSessionID(event);
 }
 
 /** Text einer Message-Part — nur Assistenten-Text, nie der User-Prompt. */
@@ -228,10 +247,9 @@ function questionBody(event) {
 
   const lines = [];
   for (const q of collected.slice(0, 3)) {
-    const text = oneLine(
-      q?.question ?? q?.text ?? q?.title ?? q?.label ?? q?.header ?? q?.name ?? "",
-      160
-    );
+    const headline = oneLine(q?.title ?? q?.header ?? q?.label ?? q?.name ?? "", 120);
+    const detail = oneLine(q?.question ?? q?.description ?? q?.text ?? q?.prompt ?? "", 200);
+    const text = headline && detail ? `${headline}\n${detail}` : headline || detail;
     if (!text) continue;
     const options = Array.isArray(q?.options) ? q.options : Array.isArray(q?.choices) ? q.choices : [];
     const rendered = options

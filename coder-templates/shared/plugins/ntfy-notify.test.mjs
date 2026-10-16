@@ -534,6 +534,42 @@ console.log("\nFrage (form.created)");
   eq(received.length, 1, "unbekannte Form-Struktur meldet trotzdem");
   ok(String(received[0]?.body?.message ?? "").length > 10, "Fallback-Body ist gefüllt");
 }
+// Echte Nutzlast (aus dem Event-Stream von 2.0.29 mitgeschrieben)
+{
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent(
+    v2(
+      "form.created",
+      {
+        form: {
+          id: "frm_14591f5e9001ag8YmC8x6DmaQs",
+          sessionID: SESSION,
+          title: "Questions",
+          metadata: { kind: "question" },
+          fields: [
+            {
+              key: "q0",
+              title: "Hermes-Meldungen",
+              description: "Für Hermes: was soll in den Hub gemeldet werden?",
+              options: [
+                { key: "a", label: "Antworten + Fragen + Fehler" },
+                { key: "b", label: "Nur fertige Antworten" },
+              ],
+            },
+          ],
+        },
+      },
+      { noDurable: true, noDataSessionID: true }
+    )
+  );
+  eq(received.length, 1, "echtes form.created (Session in data.form) meldet");
+  const body = received[0]?.body ?? {};
+  eq(body.title, "❓ Frage — server-management", "Titel trotz fehlender data.sessionID");
+  ok(String(body.message).includes("Hermes-Meldungen"), "Feld-Titel enthalten");
+  ok(String(body.message).includes("was soll in den Hub gemeldet werden?"), "Beschreibung enthalten");
+  ok(String(body.message).includes("Nur fertige Antworten"), "Optionen enthalten");
+}
 
 // ── 18. Freigabe und Fehler in V2-Form ────────────────────────────────────
 console.log("\nFreigabe und Fehler (V2)");
