@@ -424,6 +424,31 @@ console.log("\nMehrere Plugin-Instanzen");
   eq(received.length, 1, "zwei Instanzen erzeugen nur eine Nachricht");
 }
 
+// ── 15. Fallback über /etc/opencode.env (Service-Env kommt nicht immer an) ─
+console.log("\nEnv-Datei-Fallback");
+{
+  resetSharedState();
+  received.length = 0;
+  const envFile = "/tmp/ntfy-notify-test.env";
+  await (await import("node:fs/promises")).writeFile(
+    envFile,
+    'BAO_TOKEN="x"\nNTFY_TOKEN="tk_aus_datei"\nNTFY_URL="' + SINK_URL + '"\n'
+  );
+  const runtime = createPluginRuntime({
+    env: { NTFY_SELFTEST: "1", NTFY_ENV_FILE: envFile },
+    argv: ["tui"],
+    log: () => {},
+  });
+  await runtime.setup({
+    location: { directory: REPO_DIR },
+    session: { hook: async () => ({ dispose: async () => {} }) },
+    event: { subscribe: () => makeStream().iterator },
+  });
+  eq(received.length, 1, "Selbsttest nutzt den Token aus der Env-Datei");
+  eq(received[0]?.headers?.authorization, "Bearer tk_aus_datei", "Token aus Datei");
+  eq(received[0]?.url, "/", "URL aus Datei (Sink)");
+}
+
 sink.close();
 
 console.log(`\n${passed} bestanden, ${failed} fehlgeschlagen`);

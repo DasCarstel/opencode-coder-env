@@ -27,6 +27,8 @@
 // Installation: coder-templates/shared/plugins/ntfy-notify.js
 //               → ~/.config/opencode/plugins/ (dort automatisch geladen)
 
+import { readFileSync } from "node:fs";
+
 const DEFAULT_URL = "https://ntfy.mueller-nas.de";
 const DEFAULT_TOPIC = "ai";
 const MAX_TITLE = 90;
@@ -35,6 +37,43 @@ const COOLDOWN_MS = 15000;
 const PLUGIN_ID = "das.ntfy-notify";
 
 // ── Hilfsfunktionen ────────────────────────────────────────────────────────
+
+/**
+ * Token/URL auch aus der Workspace-Env-Datei lesen.
+ *
+ * `startup.sh` schreibt `NTFY_TOKEN`/`NTFY_URL` nach `/etc/opencode.env`
+ * (Mode 0600) — die Service-Umgebung über `opencode service set env` kommt
+ * nicht in jeder Installation im Service-Prozess an. Env-Variablen haben
+ * Vorrang, danach die Datei, dann die Defaults.
+ */
+function readEnvFile(path) {
+  const out = {};
+  try {
+    for (const line of readFileSync(path, "utf8").split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const index = trimmed.indexOf("=");
+      if (index < 1) continue;
+      out[trimmed.slice(0, index).trim()] = trimmed
+        .slice(index + 1)
+        .trim()
+        .replace(/^"(.*)"$/, "$1");
+    }
+  } catch {
+    /* Datei fehlt – dann bleiben nur die Env-Variablen */
+  }
+  return out;
+}
+
+function resolveConfig(env) {
+  const needsFile = !(env.NTFY_TOKEN && env.NTFY_URL);
+  const file = needsFile ? readEnvFile(env.NTFY_ENV_FILE ?? "/etc/opencode.env") : {};
+  return {
+    token: env.NTFY_TOKEN || file.NTFY_TOKEN || "",
+    url: env.NTFY_URL || file.NTFY_URL || DEFAULT_URL,
+    topic: env.NTFY_TOPIC || file.NTFY_TOPIC || DEFAULT_TOPIC,
+  };
+}
 
 function debug(...args) {
   if (process.env.NTFY_DEBUG === "1" || process.env.NTFY_SELFTEST === "1") {
@@ -504,8 +543,9 @@ export function createPluginRuntime(options = {}) {
       // Nur der Hintergrund-Service meldet; im Selbsttest auch ein Test-Server.
       if (!selftest && !isServiceProcess(argv)) return;
 
+      const cfg = resolveConfig(env);
       const notifier = createNtfyNotifier({
-        env,
+        env: { ...env, NTFY_TOKEN: cfg.token, NTFY_URL: cfg.url, NTFY_TOPIC: cfg.topic },
         ...(options.fetch ? { fetch: options.fetch } : {}),
         ...(options.log ? { log: options.log } : {}),
         directory: typeof ctx?.location?.directory === "string" ? ctx.location.directory : "",
@@ -518,18 +558,16 @@ export function createPluginRuntime(options = {}) {
         return;
       }
 
-      if (!env.NTFY_TOKEN) {
+      if (!cfg.token) {
         console.error(
-          `[ntfy-notify] NTFY_TOKEN fehlt (OpenBao secret/data/mcp/notify, Feld opencode_token) ` +
-            `– Benachrichtigungen deaktiviert`
+          `[ntfy-notify] NTFY_TOKEN fehlt (OpenBao secret/data/mcp/notify, Feld opencode_token, ` +
+            `oder /etc/opencode.env) – Benachrichtigungen deaktiviert`
         );
         return;
       }
 
       console.log(
-        `[ntfy-notify] aktiv (topic ${env.NTFY_TOPIC ?? DEFAULT_TOPIC}, location ${
-          ctx?.location?.directory ?? "?"
-        })`
+        `[ntfy-notify] aktiv (topic ${cfg.topic}, location ${ctx?.location?.directory ?? "?"})`
       );
 
       // "Arbeitet gerade": jeder abgeschickte Prompt markiert die Session.
