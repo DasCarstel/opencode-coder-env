@@ -284,6 +284,35 @@ löschen **nichts** außer State-Einträgen, die im Vault nachweislich fehlen.
 | Rocket (voller Stack) | `deds rocket` |
 | stoppen | `deds down` |
 
+**Laufzeit-Verhalten (2026-10-16 erstmals in diesem Workspace gestartet):**
+
+- **Start:** `deds candle` (nur Jupyter-/PySpark-Client-Node, Port 8888) oder
+  `deds firework` (kleiner Cluster). `deds` läuft **im Vordergrund** – der
+  Befehl kehrt nicht zurück, er hält Compose am Leben. Aus einem Skript/Agenten
+  heraus deshalb abgesetzt starten, z. B.:
+  `cd ~/uni/data-engineering-infrastructure && nohup env UID=1000 GID=1000 docker compose -f docker-compose.yml up client-node > ~/uni/logs/deds-candle.log 2>&1 &`
+  (im Workspace-Container `coder-carstenmueller2002-datascience`).
+- **Beenden:** `deds down` fährt Client-Node und ggf. Cluster herunter. Strg-C
+  beendet nur die Ausgabe, **nicht** den Container.
+- **Ein Workspace-Neustart überlebt der Stack nicht.** `docker compose up` ist
+  ein Vordergrundprozess im Container; Coder startet nur den Container neu, nicht
+  den Stack – nach Stop/Start oder Neustart des Workspace muss `deds candle`
+  erneut laufen. Erhalten bleiben nur die **Daten** (Notebooks unter
+  `~/uni/module/63123-data-engineering-fuer-data-science/workspace`, Host-Ordner
+  `/etc/coder/uni-data`) und das Docker-Volume `…-datascience-docker`.
+- **Kein Auto-Start:** Der Stack kommt beim Workspace-Start **nicht** von selbst
+  hoch. Ob er das soll, ist eine Abwägung: dauerhaft ~2 GiB (`candle`) bzw.
+  ~4 GiB (`firework`) RAM-Last im 8-GiB-Workspace gegen den Komfort, Jupyter auf
+  8888 sofort ohne manuellen Start zu haben. **Nicht** implementiert – Entscheidung
+  des Nutzers.
+- **`hadoop-rm--…` (Port 8088) bleibt bei `deds candle` korrekt 502:** `candle`
+  startet nur den Client-Node, es läuft kein Hadoop-ResourceManager. Erst
+  `deds firework` (oder `deds rocket`) bringt 9000/9870/8088 hoch.
+- Hinweis: Der Jupyter im Client-Node läuft **ohne eigene Authentifizierung**
+  („All authentication is disabled", so konfiguriert das FernUni-Image) –
+  erreichbar ist er über die Coder-App `fernuni-jupyter`, deren Zugriff Coder
+  selbst (Session-Token/SSO) prüft.
+
 **Warum der Wrapper `deds` (in `uni-bootstrap.sh` installiert)?** Die
 FernUni-Skripte `Deploy-DeDs-*.sh` setzen im Compose `user: ${UID}:${GID}` aus
 `id -u`. Im Workspace läuft alles als **root**, und Jupyter im
@@ -314,9 +343,14 @@ verwendeten Ordner `~/uni/workspace` (enthielt nur `probe.txt`) entfernt
 `uni-bootstrap.sh`; liegt dort echter Inhalt, wird **nicht** gelöscht, sondern
 gewarnt.
 
-Beim **ersten** Start zieht der Stack ~1,3 GiB anonym von
-`registry.dbis-pro1.fernuni-hagen.de` (dauert einige Minuten). Die Images liegen
-in `/var/lib/docker` = Volume `…-docker` und überstehen Workspace-Stop/Restart.
+Beim **ersten** Start – und nach jedem Verlust des Volumes (s. u.) – zieht der
+Stack anonym von `registry.dbis-pro1.fernuni-hagen.de` (dauert einige Minuten;
+2026-10-16 erneut gezogen: `pyspark-client-node:0.7.6-rootless`, **3,66 GB**
+laut `docker images`). Die Images liegen in `/var/lib/docker` = Volume
+`coder-carstenmueller2002-datascience-docker` und überstehen einen **Stop/Start
+desselben** Workspace – **nicht** aber ein Umbenennen oder Neuaufbauen des
+Workspace: dann greift Coder auf ein neues, leeres Volume zu. Genau das war am
+2026-10-16 der Fall (`docker images` leer, deshalb der erneute Pull).
 
 Voraussetzungen auf dem Coder-Host (CT 120):
 
