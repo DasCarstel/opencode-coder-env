@@ -68,6 +68,8 @@ const REPLY_IDLE_MS = 5000;
 const REPLY_ERROR_MS = 5000;
 const MAX_REPLY_TEXT = 2000;
 const MAX_SENT_IDS = 200;
+// Schon verarbeitete Fremd-IDs — gleiche Begrenzung wie bei den eigenen IDs.
+const MAX_PROCESSED_IDS = 200;
 
 // ── Hilfsfunktionen ────────────────────────────────────────────────────────
 
@@ -379,7 +381,9 @@ export function resetSharedState() {
     if (map instanceof Map || map instanceof Set) map.clear();
   }
   const reply = replyRuntime();
-  reply.sentIds.length = 0;
+  if (Array.isArray(reply.sentIds)) reply.sentIds.length = 0;
+  else if (reply.sentIds instanceof Set) reply.sentIds.clear();
+  if (Array.isArray(reply.processedIds)) reply.processedIds.length = 0;
   reply.lastSessionID = "";
   reply.replyBridgeStarted = false;
 }
@@ -397,6 +401,7 @@ const REPLY_KEY = Symbol.for("ntfy.notify.runtime");
 function newReplyState() {
   return {
     sentIds: [], // IDs der selbst gesendeten ntfy-Nachrichten
+    processedIds: [], // IDs der bereits verarbeiteten Fremd-Nachrichten (Idempotenz)
     lastSessionID: "", // Session der zuletzt gesendeten Benachrichtigung
     replyBridgeStarted: false, // Schleife läuft bereits in diesem Prozess
   };
@@ -411,6 +416,9 @@ export function replyRuntime() {
   }
   if (!Array.isArray(existing.sentIds) && !(existing.sentIds instanceof Set)) {
     existing.sentIds = [];
+  }
+  if (!Array.isArray(existing.processedIds) && !(existing.processedIds instanceof Set)) {
+    existing.processedIds = [];
   }
   if (typeof existing.lastSessionID !== "string") existing.lastSessionID = "";
   if (typeof existing.replyBridgeStarted !== "boolean") existing.replyBridgeStarted = false;
@@ -439,6 +447,37 @@ function rememberSentId(id, runtime = replyRuntime()) {
   if (list.includes(id)) return;
   list.push(id);
   while (list.length > MAX_SENT_IDS) list.shift();
+}
+
+function hasProcessedId(runtime, id) {
+  if (!id) return false;
+  const list = runtime?.processedIds;
+  if (typeof list?.has === "function") return list.has(id);
+  return Array.isArray(list) && list.includes(id);
+}
+
+/**
+ * Fremde Message-ID als verarbeitet merken (begrenzt wie sentIds).
+ *
+ * Grund: ntfy löst `since=<messageID>` nur sekundengenau auf. Zwei Nachrichten
+ * in derselben Sekunde (die Nutzerantwort und unsere eigene Antwort darauf)
+ * bekommen denselben Zeitstempel; ein Poll mit `since` der ersten liefert sie
+ * deshalb immer wieder aus. Der `since`-Zeiger allein kann das nicht lösen.
+ */
+function rememberProcessedId(id, runtime = replyRuntime()) {
+  if (typeof id !== "string" || !id) return;
+  if (!Array.isArray(runtime.processedIds) && !(runtime.processedIds instanceof Set)) {
+    runtime.processedIds = [];
+  }
+  const list = runtime.processedIds;
+  if (typeof list.add === "function") {
+    list.add(id);
+    while (list.size > MAX_PROCESSED_IDS) list.delete(list.values().next().value);
+    return;
+  }
+  if (list.includes(id)) return;
+  list.push(id);
+  while (list.length > MAX_PROCESSED_IDS) list.shift();
 }
 
 function prune() {
@@ -837,7 +876,9 @@ export function createNtfyNotifier(options = {}) {
 // Hintergrund ab und speist sie als Prompt in die zuletzt benachrichtigte
 // Session ein. Eigene Nachrichten (Message-ID aus sentIds ODER eigener
 // Titel-Präfix) werden ignoriert — sonst würde das Plugin sich selbst
-// beantworten. Die reine Logik steckt in createReplyBridge() und ist damit
+// beantworten. Bereits verarbeitete IDs werden gemerkt (processedIds), weil
+// `since=<id>` sekundengenau aufgelöst wird und dieselbe Nachricht sonst mehr-
+// fach im Poll auftaucht. Die reine Logik steckt in createReplyBridge() und ist damit
 // ohne Netzwerk testbar; startReplyBridge() hängt nur die Schleife dran.
 
 /** "0"/"false"/"no"/"off" schalten die Brücke ab (Default: an). */
@@ -951,9 +992,19 @@ export function createReplyBridge(options = {}) {
 
   /**
    * Eine Nutzernachricht verarbeiten.
-   * Rückgabe: { action: "skipped" | "ignored" | "injected" | "no-session", … }
+   * Rückgabe: { action: "duplicate" | "skipped" | "ignored" | "injected" | "no-session", … }
    */
   async function handleMessage(message) {
+    // Zuerst die Idempotenz-Prüfung: ntfy löst `since=<id>` nur sekundengenau
+    // auf, eine Nachricht aus derselben Sekunde kann also mehrfach im Poll
+    // auftauchen. Ohne diese Sperre würde jede Wiederholung erneut eingespeist
+    // (und jede Meldung ohne Ziel-Session erneut veröffentlicht).
+    const messageId = typeof message?.id === "string" ? message.id : "";
+    if (messageId && hasProcessedId(runtime, messageId)) {
+      return { action: "duplicate", reason: "schon-verarbeitet" };
+    }
+    if (messageId) rememberProcessedId(messageId, runtime);
+
     const reason = ignoreReason(message);
     if (reason === "id") return { action: "skipped", reason: "eigene-id" };
     if (reason === "title") return { action: "ignored", reason: "eigener-titel" };

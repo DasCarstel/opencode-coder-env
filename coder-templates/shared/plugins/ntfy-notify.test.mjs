@@ -1066,6 +1066,73 @@ console.log("\nAntwort-Brücke (Ende zu Ende)");
   resetSharedState();
 }
 
+// ── 27. Antwort-Brücke: Idempotenz (sekundengenaues `since`) ──────────────
+// ntfy löst `since=<id>` nur sekundengenau auf: Nachrichten aus derselben
+// Sekunde liefert ein Poll erneut aus. Dieselbe ID darf deshalb nur einmal
+// verarbeitet werden.
+console.log("\nAntwort-Brücke (Idempotenz)");
+{
+  const prompts = [];
+  const published = [];
+  const runtime = { sentIds: [], processedIds: [], lastSessionID: SESSION, replyBridgeStarted: false };
+  const bridge = createReplyBridge({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" },
+    runtime,
+    client: {
+      session: {
+        prompt: async (arg) => {
+          prompts.push(arg);
+          return {};
+        },
+      },
+    },
+    publish: async (payload) => {
+      published.push(payload);
+      return true;
+    },
+    log: () => {},
+  });
+
+  const first = await bridge.handleMessage({
+    id: "msg_dup1",
+    title: "Nutzerantwort",
+    message: "Bitte Variante B umsetzen",
+  });
+  eq(first.action, "injected", "erster Aufruf wird eingespeist");
+  eq(prompts.length, 1, "genau ein Prompt beim ersten Aufruf");
+  eq(published.length, 1, "genau eine Ack-Veröffentlichung beim ersten Aufruf");
+
+  const second = await bridge.handleMessage({
+    id: "msg_dup1",
+    title: "Nutzerantwort",
+    message: "Bitte Variante B umsetzen",
+  });
+  eq(second.action, "duplicate", "zweiter Aufruf mit gleicher ID → duplicate");
+  eq(prompts.length, 1, "kein weiterer Prompt bei der Wiederholung");
+  eq(published.length, 1, "keine weitere Veröffentlichung bei der Wiederholung");
+
+  // Ohne `id` gibt es keine Dedup-Basis — die Nachricht wird wie bisher verarbeitet.
+  const noId1 = await bridge.handleMessage({ title: "Nutzerantwort", message: "Ohne ID" });
+  const noId2 = await bridge.handleMessage({ title: "Nutzerantwort", message: "Ohne ID" });
+  eq(noId1.action, "injected", "Nachricht ohne id wird verarbeitet");
+  eq(noId2.action, "injected", "Nachricht ohne id gilt nicht als Duplikat");
+  eq(prompts.length, 3, "beide Aufrufe ohne id erzeugen einen Prompt");
+
+  // Der live beobachtete Fall: dieselbe Nachricht wird erneut ausgeliefert,
+  // während keine Zielsession existiert — der Hinweis darf nur einmal kommen.
+  published.length = 0;
+  runtime.lastSessionID = "";
+  const orphan1 = await bridge.handleMessage({ id: "msg_dup2", message: "Hallo?" });
+  const orphan2 = await bridge.handleMessage({ id: "msg_dup2", message: "Hallo?" });
+  eq(orphan1.action, "no-session", "erster Aufruf ohne Zielsession → Hinweis");
+  eq(orphan2.action, "duplicate", "Wiederholung wird verworfen");
+  eq(published.length, 1, "„ohne Ziel-Session“ erscheint genau einmal");
+  ok(
+    runtime.processedIds.includes("msg_dup1") && runtime.processedIds.includes("msg_dup2"),
+    "verarbeitete IDs werden gemerkt"
+  );
+}
+
 sink.close();
 
 console.log(`\n${passed} bestanden, ${failed} fehlgeschlagen`);
