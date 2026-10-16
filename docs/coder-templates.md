@@ -48,7 +48,7 @@ Hadoop-Edge + 2 Worker) hochzieht, und dazu alpine-/mongodb-Container aus Notebo
 | Storage-Treiber | Treiber-Probe in `uni-bootstrap.sh`: `overlay2` → `fuse-overlayfs` → `vfs`; Ergebnis + Compose-Version + cgroup-Check in `~/uni/logs/dockerd.log` |
 | Compose | `docker-compose-plugin` aus dem Docker-Repo (≥ 2.32) |
 | Ports | 8890 unser JupyterLab (Kernel „Python (ml)" / „Python (dl)"), 8888 Jupyter des FernUni-Stacks, 4040–4050 Spark-UI, 9000/9870/8088 Hadoop (Namenode/WebUI/ResourceManager – erst nach „Firework"/„Rocket") |
-| Volumes | `…-data` → `~/opencode-coder-env`, `…-uni` → `~/uni`, `…-docker` → `/var/lib/docker` (Images/Container überleben „Stop"/„Restart"), Sessions: `/etc/opencode-data/<user>-datascience` |
+| Volumes | `coder-<owner>-<ws>-data` → `~/opencode-coder-env` (reproduzierbar: Repo-Klon), **Host-Bind-Mount `/etc/coder/uni-data` → `~/uni`** (kein Volume, keine Terraform-Ressource – überlebt das Löschen/Neuanlegen des Workspace, siehe unten), `coder-<owner>-<ws>-docker` → `/var/lib/docker` (Images/Container überleben „Stop"/„Restart", **bewusst pro Workspace**), Sessions: `/etc/opencode-data/<user>-datascience` |
 | AppRole | `mcp-uni` (Least Privilege, fail-closed in `startup.sh`) — Secrets `secret/data/uni/fernuni-ocis` (user, token, password, space_id, url), `secret/data/uni/moodle` (username, password, base_url) und `secret/data/mcp/github` (`api_key`, nur für die privaten Modul-Repos; die Policy `mcp-server-uni` erlaubt genau diesen einen mcp-Pfad) |
 | Modul-Repos | vier private GitHub-Repos `fernuni-<modulnummer>-<slug>`, lokal in `~/uni/module/<modulnummer>-<slug>`; Abgleich per `uni-git-setup.sh` (Log `~/uni/logs/git-setup.log`) — Details unten |
 | MCP | nur FernUni-oCIS + pdf (`workspaces/uni/workspace-global.json`); das private/muellerconnect-oCIS-Token wird im Service aktiv `unset` |
@@ -65,7 +65,7 @@ Hadoop-Edge + 2 Worker) hochzieht, und dazu alpine-/mongodb-Container aus Notebo
   `pyspark-client-node` (~3,7 GiB entpackt/1,3 GiB Download).
 - **Der Material-Baum gehört dem Sync** (Regel seit Commit `0e91a25`,
   2026-10-15): kennt `~/uni/state/state.json` eine Datei nicht, die im
-  oCIS-Space schon liegt (z. B. State-Volume neu, Vault voll), wird sie
+  oCIS-Space schon liegt (z. B. Host-Ordner neu, Vault voll), wird sie
   **übernommen** (gleiche Größe = inhaltsgleich, kein Download) oder sonst
   **überschrieben** — nie mehr dupliziert. Vorher wich der Sync auf
   `…-generated-2.<ext>` aus; bei frischem State traf das auf **jede**
@@ -93,21 +93,33 @@ Hadoop-Edge + 2 Worker) hochzieht, und dazu alpine-/mongodb-Container aus Notebo
   `deds firework` (mit `docker-compose-small.yml`: 768M + 1408M + 1408M + 512M
   ≈ 4 GiB). Verifiziert 2026-10-15 im Workspace `ds-test`.
 - Ein Coder-`restart` baut das Workspace-Image neu (`CACHE_DATE` im `Dockerfile`)
-  — der Neustart dauert dadurch ~4–6 min. Die drei Volumes bleiben dabei
-  erhalten.
+  — der Neustart dauert dadurch ~4–6 min. Der Host-Ordner `~/uni` und die
+  beiden workspace-eigenen Volumes bleiben dabei erhalten.
+- **`~/uni` ist ein Host-Bind-Mount** auf `/etc/coder/uni-data` (seit 2026-10-16;
+  vorher ein festes Docker-Volume `coder-uni-<owner>-data` mit
+  `lifecycle { prevent_destroy = true }`): Löschen und Neuanlegen des Workspace
+  verlieren den Studienstand **nicht** mehr, ohne den Workspace unzerstörbar zu
+  machen (siehe „Was überlebt was" unten).
+- **`/var/lib/docker` bleibt bewusst pro Workspace** (`coder-<owner>-<ws>-docker`):
+  zwei gleichzeitig laufende Workspaces mit demselben Docker-`data-root` würden
+  sich gegenseitig zerstören (gemeinsamer Image-Store, gleiche Container-Namen,
+  gleiche Ports). Preis: ein **neuer** Workspace zieht die ~2,8 GiB
+  FernUni-Images einmal neu — reproduzierbar, kein Datenverlust.
 - `herdr ls` gibt es nicht (Herdr hat kein `ls`-Subkommando); Status über
   `herdr status server`, Workspaces über `herdr workspace <subcommand>`.
 
 Setup-Reihenfolge im Container: `entrypoint.sh` (Tools + Repo) →
 `uni-bootstrap.sh` im Hintergrund (dockerd → `~/uni`-Struktur →
-FernUni-Repo klonen → `~/uni/workspace`-Symlink im FernUni-Klon → uv-Umgebungen ml/dl →
-JupyterLab 8890 → `startup.sh datascience` → Modul-Repos).
+FernUni-Repo klonen → `workspace/`-Symlink im FernUni-Klon →
+uv-Umgebungen ml/dl → JupyterLab 8890 → `startup.sh datascience` →
+Modul-Repos).
 
 ### Modul-Repos (ein privates Git-Repo pro Studienmodul)
 
-Jedes Pflichtmodul hat ein **eigenes privates GitHub-Repo**. Zweck: Versionierung
-der eigenen Arbeiten, Zugriff vom PC — und vor allem **Wiederherstellung in einem
-neuen Workspace** (dessen `~/uni`-Volume ist leer).
+Jedes Pflichtmodul hat ein **eigener privates GitHub-Repo**. Zweck: Versionierung
+der eigenen Arbeiten, Zugriff vom PC — und vor allem **Wiederherstellung, falls
+das `~/uni`-Verzeichnis wirklich mal neu/leer ist** (fremder Owner, Host-Ordner
+von Hand geleert): dann klont `uni-git-setup.sh` alle vier Repos aus GitHub zurück.
 
 | Moodle-Kurs | Modulnummer | Modul | Lokaler Pfad (`~/uni/module/…`) | GitHub-Repo (privat) |
 |---|---|---|---|---|
@@ -121,6 +133,11 @@ Namensschema: `fernuni-<modulnummer>-<slug>`. Jedes Repo enthält eine
 `10-Semester/1-Semester/<…>`) und eine `.gitignore` (Python-Artefakte, Daten
 `*.csv`/`*.parquet`/…, `.env`; **Notebooks `.ipynb` werden versioniert**).
 Die **Moodle-Materialien liegen im Vault/oCIS und werden nicht hier versioniert.**
+
+**Sonderfall 63123 (Data Engineering):** der Ordner `workspace/` dieses Repos ist
+das **Bind-Mount-Ziel des FernUni-Compose-Stacks** (Details unten) — dort liegen
+die Notebooks, die im Stack entstehen. Er ist deshalb eingecheckt
+(`workspace/README.md`, `workspace/.gitkeep`) und **darf nicht gelöscht** werden.
 
 `coder-templates/datascience/uni-git-setup.sh` (idempotent, läuft im Hintergrund
 aus `uni-bootstrap.sh`, Log `~/uni/logs/git-setup.log`) stellt den Zustand her:
@@ -158,6 +175,82 @@ nur lokal angelegt (kein Push) — das Skript meldet das.
 Repository." (Scope `delete_repo` fehlt). Repos müssen im Zweifel über die
 GitHub-UI gelöscht werden.
 
+### Was liegt wo – und was überlebt ein Löschen des Workspace?
+
+`~/uni` ist ein **Host-Bind-Mount** auf den Ordner `/etc/coder/uni-data` des
+Coder-Hosts. Der Ordner ist **keine Terraform-Ressource**: Terraform erzeugt,
+verändert und löscht ihn nie. Ein `coder delete` (destroy) räumt nur Container
+und die workspace-eigenen Volumes ab und fasst ihn **nicht an**; ein neu
+angelegter Workspace mountet **denselben Studienstand** wieder ein (auch zwei
+gleichzeitig laufende Workspaces teilen sich dieses `~/uni` – eine bewusste
+Kopplung, weil nur ein Workspace gleichzeitig betrieben wird).
+
+Einmalig auf dem Coder-Host anzulegen:
+
+```bash
+install -d -m 0755 /etc/coder/uni-data   # Container läuft als uid 0 → schreibt direkt
+```
+
+Vorher lag `~/uni` in einem festen Docker-Volume `coder-uni-<owner>-data` mit
+`lifecycle { prevent_destroy = true }`. Das erreichte zwar „Daten überleben",
+brach aber jedes `coder delete` hart mit `Instance cannot be destroyed` ab. Der
+Host-Ordner leistet dasselbe, ohne den Workspace unzerstörbar zu machen.
+
+| Daten | Ort | git-versioniert? | überlebt Workspace-Löschen |
+|---|---|---|---|
+| Moodle-Material, Notizen | **oCIS-Vault** (FernUni-Space, `10-Semester/…`); lokal nur der Sync-**State** | nein (Vault statt Git) | **ja** — liegt nicht im Container-Volume |
+| Eigene Arbeiten je Modul | `~/uni/module/<modulnummer>-<slug>/` → private GitHub-Repos | **ja** (committen + pushen) | **ja** (GitHub) |
+| DE-Notebooks aus dem Stack | `~/uni/module/63123-…/workspace/` (Bind-Mount-Ziel) | **ja** (63123-Repo) | **ja**, sofern committet + gepusht |
+| uv-Umgebungen `~/uni/envs/{ml,dl}` (1,5 GiB) | Host-Ordner `/etc/coder/uni-data`, Marker `.ready` | nein | **ja** (Host-Ordner) – sonst reproduzierbar neu gebaut |
+| FernUni-Klon `~/uni/data-engineering-infrastructure` | Host-Ordner `/etc/coder/uni-data` | nein (öffentliches GitLab) | **ja** (Host-Ordner) – sonst neu geklont |
+| Sync-Zustand `~/uni/state/` (`state.json`, `fernuni-sync.config.json`, `fernuni-sync.env`) | Host-Ordner `/etc/coder/uni-data` | **nein** (enthält Zugangsdaten → gehört nie ins Repo) | **ja** (Host-Ordner) – sonst: erster Sync-Lauf baut ihn neu |
+| Docker-Images des inneren Daemons (~2,8 GiB) | `/var/lib/docker` = `coder-<owner>-<ws>-docker` | nein | **nein** – bewusst pro Workspace, ein neuer Workspace zieht sie neu |
+| OpenCode-Sessions/Chats | `/etc/opencode-data/<user>-datascience` (Host, kein Volume) | nein | ja (host-seitig) |
+| `~/uni/tools/` (`prune_state.py`, `sync-check.sh`) | Host-Ordner `/etc/coder/uni-data` | **ja** – seit 2026-10-16 versioniert in `fernuni-sync/tools/` (siehe unten) | **ja** (Host-Ordner) |
+
+Wenn der Host-Ordner doch einmal leer/neu ist, baut sich der Workspace selbst
+auf: Modul-Repos klonen (`uni-git-setup.sh`), Material mit dem oCIS-Space
+abgleichen (Sync), uv-Umgebungen und Images ziehen. Verloren ist nur, was
+**nirgends** versioniert/gesichert ist — deshalb Notebooks in `~/uni/module/…`
+committen und pushen.
+
+**Der Ordner liegt bewusst außerhalb von Terraform.** Er ist keine
+`docker_volume`-Ressource und trägt kein `prevent_destroy`; ein `coder delete`
+räumt den Container und die workspace-eigenen Volumes ab und blendet
+`/etc/coder/uni-data` dabei überhaupt nicht ein. Das ist genau der
+gewünschte Kompromiss: Der Studienstand überlebt ein Löschen des Workspace,
+aber der Workspace bleibt löschbar (der frühere `prevent_destroy`-Ansatz
+brach `coder delete` mit `Instance cannot be destroyed` ab). Zum endgültigen
+Entfernen der Uni-Daten bleibt nur der Griff auf dem Coder-Host:
+
+```bash
+rm -rf /etc/coder/uni-data   # Vorsicht: ohne Rückfrage, kein Papierkorb
+```
+
+Deshalb gilt weiter: alles, was nicht reproduzierbar ist, gehört in die
+privaten Modul-Repos (commit + push) oder in den oCIS-Vault.
+
+### Wartungs-Tools: `fernuni-sync/tools/`
+
+Zwei Helfer, die bisher **nur** im Ordner `~/uni/tools/` lagen (also im
+damaligen Docker-Volume) und damit nirgends versioniert waren — bei Verlust
+des Speichers wären sie weg gewesen. Sie liegen jetzt im Repo unter
+`fernuni-sync/tools/`, weil beide direkt auf der Sync-Subsystem-Logik
+(`fernuni-sync/sync.py`, `dav.py`) bzw. ihrem Zustand arbeiten; `scripts/` ist
+für Host-/Provisionierungs-Skripte reserviert. Beide sind keine
+Einmal-Wegwerf-Helfer: das Prune-Skript ist ein wiederkehrendes
+Reparatur-Werkzeug, das Check-Skript erzeugt den Idempotenz-Beleg.
+
+| Skript | Zweck | Aufruf im Workspace |
+|---|---|---|
+| `prune_state.py` | entfernt tote `-generated-2`-Einträge aus `~/uni/state/state.json` (nur die, deren Vault-Ziel per DAV-HEAD HTTP 404 liefert); Backup vor jeder Änderung | `python3 ~/opencode-coder-env/fernuni-sync/tools/prune_state.py` |
+| `sync-check.sh` | State aufräumen + zwei Sync-Läufe hintereinander; der zweite muss „0 Download(s) … Ergebnis: ok" melden (Idempotenz-Beleg) | `bash ~/opencode-coder-env/fernuni-sync/tools/sync-check.sh` |
+
+Pfade: `$UNI_DIR` schlägt alles andere, sonst `/home/$WORKSPACE_OWNER/uni`
+(`WORKSPACE_OWNER` setzt das Template als Container-Env). Beide Skripte
+schreiben nur nach `~/uni/logs/` (`state-prune.log`, `sync-check.log`) und
+löschen **nichts** außer State-Einträgen, die im Vault nachweislich fehlen.
+
 ### FernUni-Stack starten (abgenommen 2026-10-15)
 
 | Schritt | Befehl |
@@ -180,8 +273,22 @@ dbis-pyspark-client-node exited with code 1 (restarting)
 `deds` erzwingt deshalb UID/GID **1000** (User `pyspark-client` im Image).
 `uni-bootstrap.sh` setzt zusätzlich `chmod 666 /var/run/docker.sock` (nur der
 Sockel des **inneren** Daemons – der Host-Socket wird bewusst nicht gemountet)
-und Schreibrechte auf `~/uni/workspace`, sonst kann UID 1000 nicht in den
+und Schreibrechte auf das Bind-Mount-Ziel, sonst kann UID 1000 nicht in den
 Bind-Mount schreiben.
+
+**Ablage der DE-Notebooks (Bind-Mount-Ziel):**
+`~/uni/data-engineering-infrastructure/workspace` ist ein **Symlink** auf
+`~/uni/module/63123-data-engineering-fuer-data-science/workspace` – den
+`workspace/`-Ordner des **privaten 63123-Git-Repos**. Grund: ein Notebook, das
+im Stack entsteht, liegt damit in einem Git-Repo (committen + pushen) und hängt
+nicht mehr allein am `~/uni`-Host-Ordner; vorher zeigte der Symlink auf
+`~/uni/workspace` – einen Ordner in **keinem** Repo. `uni-bootstrap.sh` setzt
+und repariert den Symlink idempotent (`ln -sfn`), `uni-git-setup.sh` zieht ihn
+nach dem Klon nach (in einem frischen Host-Ordner existiert das Ziel erst mit dem
+Klon) und warnt, wenn dort uncommittete Dateien liegen. Den nicht mehr
+verwendeten Ordner `~/uni/workspace` (enthielt nur `probe.txt`) entfernt
+`uni-bootstrap.sh`; liegt dort echter Inhalt, wird **nicht** gelöscht, sondern
+gewarnt.
 
 Beim **ersten** Start zieht der Stack ~1,3 GiB anonym von
 `registry.dbis-pro1.fernuni-hagen.de` (dauert einige Minuten). Die Images liegen

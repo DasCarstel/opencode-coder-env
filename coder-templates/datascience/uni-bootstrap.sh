@@ -5,8 +5,12 @@
 #   1. /var/lib/docker vorbereiten + dockerd mit Treiber-Probe
 #      (overlay2 → fuse-overlayfs → vfs; KEIN Abbruch, wenn Docker scheitert)
 #   2. cgroup-Nachweis: "swap limit"-Warnung darf leer sein (Limits wirken)
-#   3. ~/uni-Struktur anlegen (persistentes Volume)
-#   4. workspace/-Symlink im FernUni-Klon auf ~/uni/workspace setzen
+#   3. ~/uni-Struktur anlegen (Host-Bind-Mount /etc/coder/uni-data, überlebt
+#      das Löschen + Neuanlegen des Workspace)
+#   4. workspace/-Symlink im FernUni-Klon auf
+#      ~/uni/module/63123-data-engineering-fuer-data-science/workspace setzen
+#      – die Data-Engineering-Notebooks liegen damit im 63123-Git-Repo und
+#      sind versioniert (vorher: ~/uni/workspace, in keinem Repo)
 #   5. uv-Umgebungen (ml/dl) im Hintergrund anstoßen (uni-envs-setup.sh)
 #   6. JupyterLab auf Port 8890 starten (8888 gehört dem FernUni-Stack)
 #   7. startup.sh datascience (letzter Schritt)
@@ -38,13 +42,27 @@ JUPYTER_BIN="/opt/jupyter/bin/jupyter-lab"
 KERNEL_DIR="/root/.local/share/jupyter/kernels"
 FERNUNI_REPO="$UNI_DIR/data-engineering-infrastructure"
 
+# Bind-Mount-Ziel des FernUni-Compose-Stacks (`./workspace` im Klon): liegt im
+# 63123-Modul-Repo, damit die Data-Engineering-Notebooks git-versioniert sind
+# (privates Remote: DasCarstel/fernuni-63123-data-engineering-fuer-data-science).
+# Vorher zeigte der Symlink auf ~/uni/workspace – ein Ordner in KEINEM Repo;
+# bei Verlust des ~/uni-Ordners wären die Notebooks unwiederbringlich weg.
+# Das Zielverzeichnis wird NICHT hier angelegt, sondern kommt aus dem Git-Klon
+# (uni-git-setup.sh) – sonst würde `git clone` in ein nicht-leeres Verzeichnis
+# laufen. Solange der Klon fehlt, ist der Symlink kurzzeitig „dangling“; der
+# Ordner entsteht mit dem Klon (workspace/ ist im Repo versioniert).
+DE_MODULE_REPO="$UNI_DIR/module/63123-data-engineering-fuer-data-science"
+DE_WORKSPACE_DIR="$DE_MODULE_REPO/workspace"
+
 export UNI_DIR WS_OWNER
 
 echo "=== $(date -Is) uni-bootstrap gestartet (owner=$WS_OWNER) ==="
 
-# ── 0. ~/uni-Struktur (persistentes Volume) ───────────────────────────────
+# ── 0. ~/uni-Struktur (Host-Bind-Mount, überlebt Workspace-Neuanlage) ────
+# Kein `workspace/` mehr: das Bind-Mount-Ziel liegt jetzt im 63123-Modul-Repo
+# (siehe DE_WORKSPACE_DIR) und entsteht durch den Git-Klon.
 mkdir -p "$UNI_DIR"/module "$UNI_DIR"/material "$UNI_DIR"/state \
-         "$UNI_DIR"/logs "$UNI_DIR"/workspace "$UNI_DIR"/envs/ml "$UNI_DIR"/envs/dl
+         "$UNI_DIR"/logs "$UNI_DIR"/envs/ml "$UNI_DIR"/envs/dl
 : >> "$ENV_LOG"; : >> "$SYNC_LOG"; : >> "$DOCKER_SUMMARY"; : >> "$GIT_LOG"
 
 log_docker() {
@@ -101,13 +119,20 @@ fi
 # (a) Socket: der pyspark-client-node läuft als UID 1000 und mountet den
 #     INNEREN Docker-Socket (DinD aus Notebooks). Der Socket gehört nur dem
 #     Daemon im Container – kein Host-Zugriff, deshalb 666 hier vertretbar.
-# (b) ~/uni/workspace ist das Bind-Mount-Ziel des Stacks; UID 1000 muss dort
-#     schreiben können (sonst startet Jupyter, aber Notebooks sind read-only).
+# (b) Das Bind-Mount-Ziel des Stacks (DE_WORKSPACE_DIR im 63123-Modul-Repo)
+#     braucht Schreibrechte für UID 1000 – sonst startet Jupyter, aber die
+#     Notebooks sind read-only. Der Ordner stammt aus dem Git-Klon; auf einem
+#     frischen Workspace gibt es ihn noch nicht, dann wird hier NICHTS
+#     angelegt (sonst scheitert der spätere `git clone` an einem nicht-leeren
+#     Verzeichnis). uni-git-setup.sh setzt Symlink + Rechte nach dem Klon.
 chmod 666 /var/run/docker.sock 2>/dev/null || true
-chmod -R a+rwX "$UNI_DIR/workspace" 2>/dev/null || true
+if [ -d "$DE_MODULE_REPO/.git" ]; then
+  mkdir -p "$DE_WORKSPACE_DIR"
+  chmod -R a+rwX "$DE_WORKSPACE_DIR" 2>/dev/null || true
+fi
 
 # ── 2b. FernUni-Repo sicherstellen (öffentliches GitLab, idempotent) ───────
-# Der Klon liegt im persistenten Volume ~/uni und übersteht Workspace-Neustarts.
+# Der Klon liegt im persistenten Host-Ordner ~/uni und übersteht Neustarts.
 # Fehlt er (frischer Workspace), wird er hier einmalig geholt.
 FERNUNI_URL="https://code.dbis-pro1.fernuni-hagen.de/pub-access/data-engineering-infrastructure.git"
 if [ ! -d "$FERNUNI_REPO/.git" ]; then
@@ -121,27 +146,47 @@ else
   echo "  ✓ FernUni-Repo vorhanden ($(git -C "$FERNUNI_REPO" tag | sort -V | tail -1))"
 fi
 
-# ── 3. workspace/-Symlink im FernUni-Klon (> ~/uni/workspace) ─────────────
+# ── 3. workspace/-Symlink im FernUni-Klon → 63123-Modul-Repo ──────────────
 # Das FernUni-Repo bringt einen eigenen workspace/-Ordner mit; der Compose-Stack
-# bind-mountet ihn. Er wird durch einen Symlink auf das persistente
-# ~/uni/workspace ersetzt – aber nur, wenn der Klon existiert und der Symlink
-# nicht schon passt.
+# bind-mountet ihn (`./workspace`). Er wird durch einen Symlink auf
+# DE_WORKSPACE_DIR ersetzt – den workspace/-Ordner des privaten 63123-Git-Repos.
+# Nur so sind Carstens Data-Engineering-Notebooks versioniert (Commit + Push)
+# und auch nach einem geleerten Host-Ordner wiederherstellbar.
+#
+# Idempotent: passt der Symlink schon, passiert nichts. Zeigt er noch auf das
+# ALTE Ziel ~/uni/workspace (ein Ordner außerhalb JEDES Repos), wird er
+# umgebogen und der Altbestand entfernt (Abschnitt 3a).
 if [ -d "$FERNUNI_REPO" ]; then
   if [ -L "$FERNUNI_REPO/workspace" ]; then
     ZIEL="$(readlink "$FERNUNI_REPO/workspace")"
-    if [ "$ZIEL" = "$UNI_DIR/workspace" ]; then
+    if [ "$ZIEL" = "$DE_WORKSPACE_DIR" ]; then
       echo "  ✓ workspace-Symlink vorhanden → $ZIEL"
     else
-      ln -sfn "$UNI_DIR/workspace" "$FERNUNI_REPO/workspace"
-      echo "  ✓ workspace-Symlink korrigiert ($ZIEL → $UNI_DIR/workspace)"
+      ln -sfn "$DE_WORKSPACE_DIR" "$FERNUNI_REPO/workspace"
+      echo "  ✓ workspace-Symlink umgebogen ($ZIEL → $DE_WORKSPACE_DIR)"
     fi
   else
     rm -rf "$FERNUNI_REPO/workspace"
-    ln -sfn "$UNI_DIR/workspace" "$FERNUNI_REPO/workspace"
-    echo "  ✓ workspace/ → $UNI_DIR/workspace (Symlink gesetzt)"
+    ln -sfn "$DE_WORKSPACE_DIR" "$FERNUNI_REPO/workspace"
+    echo "  ✓ workspace/ → $DE_WORKSPACE_DIR (Symlink gesetzt)"
   fi
 else
   echo "  ⚠ FernUni-Repo fehlt (Klon fehlgeschlagen?) – Deploy-DeDs-*.sh erst nach erfolgreichem Klon nutzbar"
+fi
+
+# ── 3a. Altbestand ~/uni/workspace entfernen ──────────────────────────────
+# Das war das frühere Symlink-Ziel des Compose-Stacks – ein Ordner in KEINEM
+# Git-Repo. Er wird nicht mehr verwendet; steht dort außer probe.txt nichts,
+# wird er gelöscht, damit niemand versehentlich Notebooks am falschen Ort
+# ablegt. Liegt echter Inhalt darin, wird NICHT gelöscht, sondern gewarnt.
+if [ -d "$UNI_DIR/workspace" ] && [ ! -L "$UNI_DIR/workspace" ]; then
+  REST="$(find "$UNI_DIR/workspace" -mindepth 1 ! -name probe.txt -print -quit 2>/dev/null)"
+  if [ -z "$REST" ]; then
+    rm -rf "$UNI_DIR/workspace"
+    echo "  ✓ Altbestand ~/uni/workspace entfernt (enthielt nur probe.txt; neues Ziel: $DE_WORKSPACE_DIR)"
+  else
+    echo "  ⚠ ~/uni/workspace enthält noch Dateien ($REST) – NICHT entfernt. Bitte nach $DE_WORKSPACE_DIR verschieben, dann Ordner löschen."
+  fi
 fi
 
 # ── 3b. Wrapper `deds` für die FernUni-Deploy-Skripte ──────────────────────

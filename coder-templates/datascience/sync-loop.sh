@@ -5,7 +5,7 @@
 #
 # Läuft einmal sofort und danach alle 6 Stunden (SYNC_INTERVALL überschreibbar).
 # Der Zustand liegt in der State-Datei aus der config.json — im persistenten
-# Volume ~/uni/state — deshalb ist ein Workspace-Neustart idempotent: der erste
+# Host-Ordner ~/uni/state — deshalb ist ein Neustart idempotent: der erste
 # Lauf nach dem Neustart meldet "0 Downloads".
 #
 # Der Loop schreibt nur nach <log>; Secrets stehen in <env-file> (600) und

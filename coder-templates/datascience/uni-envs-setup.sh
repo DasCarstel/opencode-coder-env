@@ -7,12 +7,12 @@
 #        scikit-learn 1.8.0, tensorflow 2.17.0 (+ ipykernel) → "Python (dl)"
 #
 # Idempotenz:
-#   * Die venvs liegen im persistenten Volume ~/uni/envs/<name>; ein
+#   * Die venvs liegen im persistenten Host-Ordner ~/uni/envs/<name>; ein
 #     Marker .ready verhindert das erneute Einrichten (die Installation darf
 #     den Workspace-Start nicht blockieren → Aufruf im Hintergrund).
 #   * Der Container wird bei Coder-"Stop" verworfen, ~/uni bleibt. Deshalb
 #     werden die Kernel-Specs bei JEDEM Start neu installiert (sie liegen in
-#     /root/.local/share/jupyter/kernels, also außerhalb des Volumes).
+#     /root/.local/share/jupyter/kernels, also außerhalb des Host-Ordners).
 #
 # Kein `set -e`: ein Netzfehler darf den Rest nicht abbrechen.
 
@@ -88,7 +88,7 @@ setup_env() {
     fi
   fi
 
-  # Kernel-Spec bei jedem Start setzen (liegt außerhalb des Volumes)
+  # Kernel-Spec bei jedem Start setzen (liegt außerhalb des Host-Ordners)
   if ! "$dir/bin/python" -m ipykernel install --user --name "$name" \
         --display-name "Python ($name)" >/dev/null 2>&1; then
     echo "  ⚠ ipykernel-Spec '$name' konnte nicht installiert werden"

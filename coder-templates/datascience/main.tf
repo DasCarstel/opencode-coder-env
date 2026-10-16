@@ -5,8 +5,13 @@
 #     – die Studierenden starten im Workspace ./Deploy-DeDs-*.sh, was per
 #       docker compose einen Stack (Jupyter/PySpark-Client + Hadoop-Edge +
 #       2 Worker) hochzieht, und zusätzlich alpine-/mongodb-Container.
-#   * Persistente Volumes: Repo, ~/uni und /var/lib/docker (Images überleben
-#     Coder-„Stop“/„Restart“ – ein Template-Push erzeugt den Container neu).
+#   * Persistenz: Repo und /var/lib/docker als Docker-Volumes (Images
+#     überleben Coder-„Stop“/„Restart“ – ein Template-Push erzeugt den
+#     Container neu); ~/uni dagegen als HOST-BIND-MOUNT auf
+#     /etc/coder/uni-data. Der Host-Ordner steht außerhalb jeder Terraform-
+#     Ressource und überlebt damit auch das Löschen und Neuanlegen des
+#     Workspace. Repo-Volume und /var/lib/docker bleiben bewusst pro
+#     Workspace (Begründung unten an den Volume-Ressourcen).
 #   * eigene, minimal berechtigte AppRole `mcp-uni` (fail-closed in startup.sh).
 #   * Ports: 8890 = unser JupyterLab (ML/DL-Kernel),
 #            8888 = Jupyter des FernUni-Compose-Stacks,
@@ -99,13 +104,40 @@ resource "docker_volume" "workspace_data" {
   name = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}-data"
 }
 
-# ~/uni: FernUni-Klon, workspace/-Bind-Mount-Ziel, Module, Material, envs, state.
-resource "docker_volume" "workspace_uni" {
-  name = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}-uni"
-}
+# ── ~/uni: HOST-BIND-MOUNT auf /etc/coder/uni-data ─────────────────────────
+# Der Uni-Fortschritt (Moodle-Material, Modul-Repos, uv-Umgebungen) muss das
+# Löschen und Neuanlegen des Workspace überleben. Er liegt deshalb NICHT in
+# einem Docker-Volume, sondern in einem echten Ordner auf dem Coder-Host:
+#     /etc/coder/uni-data
+# Dieser Pfad ist KEINE Terraform-Ressource. Terraform erzeugt, verwaltet und
+# löscht ihn nie – weder bei `apply` noch bei `destroy`. Ein `coder delete`
+# entfernt nur Container + die workspace-eigenen Volumes und lässt den Ordner
+# unangetastet; ein neu angelegter Workspace mountet denselben Stand wieder
+# ein (kein zweiter Voll-Sync, kein erneuter Image-Download, keine leeren
+# Modul-Repos).
+#
+# ⚠ EINE bewusste Kopplung: ALLE `datascience`-Workspaces eines Owners teilen
+#   sich denselben Ordner und damit dasselbe ~/uni. Zwei gleichzeitig laufende
+#   Workspaces schreiben also in denselben Studienstand. Das ist gewollt – der
+#   Nutzer betreibt nur einen Workspace gleichzeitig. Ein früherer Entwurf mit
+#   einem festen Docker-Volume (`coder-uni-<owner>-data`) plus
+#   `lifecycle.prevent_destroy` ist genau daran gescheitert: das Volume
+#   erreichte zwar „Daten überleben“, brach aber jedes `coder delete` hart mit
+#   „Instance cannot be destroyed“ ab. Der Host-Ordner leistet dasselbe, ohne
+#   den Workspace unzerstörbar zu machen.
+#
+# Anlegen (einmalig, außerhalb Terraform):
+#     install -d -m 0755 /etc/coder/uni-data
+# Der Container läuft als uid 0 und schreibt dort direkt.
 
 # /var/lib/docker: Images/Container des inneren Docker-Daemons (~2,8 GiB
 # FernUni-Images). Ohne dieses Volume wäre nach jedem Neustart alles weg.
+# BEWUSST pro Workspace (`…-docker`): zwei gleichzeitig laufende Workspaces
+# mit demselben data-root würden sich gegenseitig die Images/Container
+# zerstören (gemeinsamer Image-Store, gleiche Container-Namen, Port-Belegung).
+# Preis der Trennung: ein NEUER Workspace zieht die FernUni-Images einmal neu
+# (~2,8 GiB, registry.dbis-pro1.fernuni-hagen.de) – reproduzierbar, kein
+# Datenverlust. Deshalb wird dieses Volume nicht „fest“ gemacht.
 resource "docker_volume" "workspace_docker" {
   name = "coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}-docker"
 }
@@ -160,9 +192,13 @@ resource "docker_container" "workspace" {
     container_path = "/home/${data.coder_workspace_owner.me.name}/opencode-coder-env"
   }
 
-  # Persistentes Volume für die FernUni-Arbeit (~/uni)
+  # FernUni-Arbeit (~/uni) als HOST-BIND-MOUNT: /etc/coder/uni-data liegt
+  # außerhalb jeder Terraform-Ressource, wird beim `destroy` nie angefasst und
+  # überlebt damit das Löschen + Neuanlegen des Workspace. Alle
+  # `datascience`-Workspaces des Owners teilen sich diesen Ordner (gewollt,
+  # Begründung im Kommentar oben an den Volume-Ressourcen).
   volumes {
-    volume_name    = docker_volume.workspace_uni.name
+    host_path      = "/etc/coder/uni-data"
     container_path = "/home/${data.coder_workspace_owner.me.name}/uni"
   }
 

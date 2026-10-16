@@ -2,7 +2,7 @@
 # uni-git-setup.sh – Git-Repos der Studienmodule sicherstellen (idempotent).
 #
 # Pro Studienmodul ein eigenes Repo:
-#   lokal   ~/uni/module/<modulnummer>-<slug>/     (persistentes Volume)
+#   lokal   ~/uni/module/<modulnummer>-<slug>/     (persistenter Host-Ordner)
 #   remote  https://github.com/<owner>/fernuni-<modulnummer>-<slug>.git  (privat)
 #
 # Zweck: Versionierung der eigenen Modul-Arbeiten + Zugriff vom PC + Wieder-
@@ -25,7 +25,7 @@
 #     damit `.git/config` und `git remote -v` sauber bleiben.
 #   * Authentifiziert wird über `credential.helper store` mit
 #     /root/.git-credentials (0600) – außerhalb des Repos, außerhalb des
-#     Volumes ~/uni. Das entspricht scripts/setup-git-credentials.sh und ist
+#     Host-Ordners ~/uni. Das entspricht scripts/setup-git-credentials.sh und ist
 #     robuster als `url.insteadOf`, die den Token dauerhaft in ~/.gitconfig
 #     schreiben würde (mehr Leak-Flächen in jedem `git config --list`).
 #   * Fehlt das Token, wird KEIN Push versucht – das Skript meldet es nur.
@@ -273,6 +273,33 @@ for eintrag in "${MODULE[@]}"; do
     echo "   ⚠ kein GITHUB_TOKEN – Push übersprungen (nur lokal)"
   fi
 done
+
+# ── 3. workspace/-Symlink des FernUni-Stacks nachziehen ────────────────────
+# Das Bind-Mount-Ziel des FernUni-Compose-Stacks (`./workspace` im Klon von
+# data-engineering-infrastructure) ist der workspace/-Ordner des 63123-Repos –
+# damit sind die DE-Notebooks versioniert. uni-bootstrap.sh setzt den Symlink
+# bereits; auf einem FRISCHEN Workspace existiert das Ziel aber erst jetzt
+# (dieser Klon), deshalb hier der Nachlauf. Idempotent.
+DE_REPO="$MODULE_DIR/63123-data-engineering-fuer-data-science"
+DE_WS="$DE_REPO/workspace"
+FERNUNI_CLONE="$UNI_DIR/data-engineering-infrastructure"
+if [ -d "$DE_REPO/.git" ] && [ -d "$FERNUNI_CLONE" ]; then
+  mkdir -p "$DE_WS"
+  if [ "$(readlink "$FERNUNI_CLONE/workspace" 2>/dev/null || true)" = "$DE_WS" ]; then
+    echo "  ✓ workspace-Symlink im FernUni-Klon ok → $DE_WS"
+  else
+    rm -rf "$FERNUNI_CLONE/workspace"
+    ln -sfn "$DE_WS" "$FERNUNI_CLONE/workspace"
+    echo "  ✓ workspace-Symlink im FernUni-Klon gesetzt → $DE_WS"
+  fi
+  chmod -R a+rwX "$DE_WS" 2>/dev/null || true
+  DE_DIRTY="$(git -C "$DE_REPO" status --porcelain -- "$DE_WS" 2>/dev/null | wc -l)"
+  if [ "${DE_DIRTY:-0}" -gt 0 ]; then
+    echo "  ⚠ $DE_DIRTY uncommittete Änderung(en) in $DE_WS – Notebooks committen + pushen, sonst nicht versioniert"
+  fi
+else
+  echo "  ⚠ workspace-Symlink übersprungen (63123-Repo oder FernUni-Klon fehlt)"
+fi
 
 echo ""
 echo "=== $(date -Is) uni-git-setup ende ==="
