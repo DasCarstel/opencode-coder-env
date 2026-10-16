@@ -1,4 +1,4 @@
-// ntfy-notify.js — OpenCode → ntfy (selbst gehosteter Notification-Hub)
+// ntfy-notify.js — OpenCode V2 → ntfy (selbst gehosteter Notification-Hub)
 //
 // Meldet an das Topic "ai":
 //   session.idle      → Agent fertig (3) + TLDR der letzten Antwort
@@ -6,16 +6,23 @@
 //   permission.asked  → Freigabe nötig (4)
 //   session.error     → Fehler (5)
 //
-// Aktiv NUR im Hintergrund-Service (`opencode serve …`). TUI-, `run`- und
-// Mini-Prozesse sehen dieselben Events und würden alles doppelt melden.
+// V2-Plugin (Plugin-Definition mit id + setup(ctx)); V1-Plugins laufen in
+// OpenCode 2.x nicht mehr. Events kommen aus ctx.event.subscribe(), das
+// "arbeitet gerade"-Signal aus dem ctx.session.hook("prompt")-Hook.
+//
+// Aktiv NUR im Hintergrund-Service (`opencode serve …`): TUI-, `run`- und
+// Web-Prozesse laden dasselbe Plugin, würden aber dieselben Events doppelt
+// melden. Das Modul ist ein Singleton je Prozess — Zustand (working/Dedup)
+// wird über alle Plugin-Instanzen (eine je Location) geteilt, damit ein
+// Event, das mehrere Instanzen sehen, nur eine Nachricht erzeugt.
 //
 // Umgebungsvariablen:
 //   NTFY_URL    Basis-URL        (Default https://ntfy.mueller-nas.de)
 //   NTFY_TOKEN  Bearer-Token     (ohne Token bleibt das Plugin still)
 //   NTFY_TOPIC  Topic            (Default "ai")
-//   NTFY_DEBUG=1      Debug-Ausgaben ins Server-Log
-//   NTFY_SELFTEST=1   sendet beim Laden genau eine Testnachricht (Diagnose) und
-//                     meldet dann keine Events — für den gefahrlosen Funktionstest
+//   NTFY_DEBUG=1      Debug-Ausgaben ins OpenCode-Log
+//   NTFY_SELFTEST=1   sendet beim Laden genau eine Testnachricht (Diagnose),
+//                     unabhängig vom Prozess-Check
 //
 // Installation: coder-templates/shared/plugins/ntfy-notify.js
 //               → ~/.config/opencode/plugins/ (dort automatisch geladen)
@@ -25,13 +32,14 @@ const DEFAULT_TOPIC = "ai";
 const MAX_TITLE = 90;
 const MAX_BODY = 500;
 const COOLDOWN_MS = 15000;
+const PLUGIN_ID = "das.ntfy-notify";
 
-function debugEnabled(env = process.env) {
-  return env.NTFY_DEBUG === "1" || env.NTFY_SELFTEST === "1";
-}
+// ── Hilfsfunktionen ────────────────────────────────────────────────────────
 
 function debug(...args) {
-  if (debugEnabled()) console.error("[ntfy-notify]", ...args);
+  if (process.env.NTFY_DEBUG === "1" || process.env.NTFY_SELFTEST === "1") {
+    console.error("[ntfy-notify]", ...args);
+  }
 }
 
 /** Nur der Hintergrund-Service soll melden — sonst doppelte Events aus TUI/CLI. */
@@ -81,28 +89,65 @@ function ownerFromDirectory(dir) {
   return m ? m[1] : "";
 }
 
-/** Text einer Message-Part/Info — nur Assistenten-Text, nie der User-Prompt. */
-function textFromProperties(properties) {
-  const part = properties?.part;
+/** Kandidaten-Objekte eines Events — V2 liefert properties/data, wir sind tolerant. */
+function candidates(event) {
+  const out = [];
+  for (const value of [event?.properties, event?.data, event?.payload, event]) {
+    if (value && typeof value === "object") out.push(value);
+  }
+  return out;
+}
+
+function pick(event, key) {
+  for (const candidate of candidates(event)) {
+    const value = candidate[key];
+    if (value !== undefined && value !== null) return value;
+  }
+  return undefined;
+}
+
+/** Session-Metadaten (id, title, subpath, location.directory, parentID). */
+function sessionInfo(event) {
+  const list = [
+    event?.properties?.info,
+    event?.properties?.session,
+    event?.data?.info,
+    event?.data?.session,
+    event?.info,
+    event?.session,
+  ];
+  for (const value of list) {
+    if (value && typeof value === "object" && (value.id || value.sessionID)) return value;
+  }
+  return undefined;
+}
+
+function sessionIDOf(event, info) {
+  const direct = pick(event, "sessionID");
+  if (typeof direct === "string" && direct) return direct;
+  if (info && typeof info.id === "string" && info.id) return info.id;
+  return undefined;
+}
+
+/** Text einer Message-Part — nur Assistenten-Text, nie der User-Prompt. */
+function textFromEvent(event) {
+  const part = pick(event, "part");
   if (part && typeof part.text === "string" && part.text.trim()) {
     if (part.type && part.type !== "text") return "";
     if (part.role && part.role !== "assistant") return "";
     return part.text.trim();
   }
-  const info = properties?.info;
+  const info = pick(event, "info");
   if (info && typeof info.text === "string" && info.text.trim()) {
     if (info.role && info.role !== "assistant") return "";
     return info.text.trim();
-  }
-  if (typeof properties?.text === "string" && properties.text.trim()) {
-    return properties.text.trim();
   }
   return "";
 }
 
 /** Frage + Auswahloptionen als lesbarer Text. */
-function questionBody(properties) {
-  const raw = properties?.questions ?? properties?.question;
+function questionBody(event) {
+  const raw = pick(event, "questions") ?? pick(event, "question");
   const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
   const lines = [];
   for (const q of list.slice(0, 3)) {
@@ -118,8 +163,8 @@ function questionBody(properties) {
   return lines.join("\n\n");
 }
 
-function permissionBody(properties) {
-  const perm = properties?.permission ?? properties?.info ?? properties ?? {};
+function permissionBody(event) {
+  const perm = pick(event, "permission") ?? pick(event, "info") ?? {};
   const what = oneLine(perm?.title ?? perm?.name ?? perm?.type ?? "", 100);
   const where = oneLine(
     perm?.metadata?.command ??
@@ -134,25 +179,53 @@ function permissionBody(properties) {
   return what || where;
 }
 
-function errorBody(properties) {
-  const err = properties?.error ?? properties?.info?.error ?? properties?.message;
+function errorBody(event) {
+  const err = pick(event, "error") ?? pick(event, "message");
   const text =
     typeof err === "string" ? err : err?.message ?? err?.data?.message ?? err?.name ?? "";
   return oneLine(text, 200);
 }
 
-function fallbackBody(properties) {
+function fallbackBody(event) {
   try {
-    return oneLine(JSON.stringify(properties), 180);
+    return oneLine(JSON.stringify(pick(event, "properties") ?? event), 180);
   } catch {
     return "";
   }
 }
 
-/**
- * Kern des Plugins — als Fabrik exportiert, damit er ohne OpenCode-Server
- * getestet werden kann (siehe coder-templates/shared/plugins/ntfy-notify.test.mjs).
- */
+// ── Gemeinsamer Zustand (ein Modul je Prozess, mehrere Instanzen) ──────────
+
+const SHARED = {
+  meta: new Map(), // sessionID → { title, subpath, directory, parentID }
+  children: new Map(), // Kind-Session → Eltern-Session
+  working: new Set(), // Sessions, die gerade arbeiten
+  lastText: new Map(), // letzter Assistenten-Text je Session
+  lastSent: new Map(), // Dedup: "sessionID:art" → Zeitstempel
+};
+
+/** Nur für Tests: geteilten Zustand zurücksetzen. */
+export function resetSharedState() {
+  for (const map of Object.values(SHARED)) {
+    if (map instanceof Map) map.clear();
+    else if (map instanceof Set) map.clear();
+  }
+}
+
+function prune() {
+  const limit = 300;
+  for (const value of Object.values(SHARED)) {
+    if (!(value instanceof Map) || value.size <= limit) continue;
+    let excess = value.size - limit;
+    for (const key of value.keys()) {
+      value.delete(key);
+      if (--excess <= 0) break;
+    }
+  }
+}
+
+// ── Kern: Event → ntfy-Nachricht ──────────────────────────────────────────
+
 export function createNtfyNotifier(options = {}) {
   const env = options.env ?? process.env;
   const url = String(options.url ?? env.NTFY_URL ?? DEFAULT_URL).replace(/\/+$/, "");
@@ -163,15 +236,11 @@ export function createNtfyNotifier(options = {}) {
   const logger = options.log ?? debug;
   const cooldownMs = Number(options.cooldownMs ?? COOLDOWN_MS);
   const contextDirectory = options.directory ?? "";
-
-  const meta = new Map(); // sessionID → { title, subpath, directory }
-  const children = new Map(); // Kind-Session → Eltern-Session
-  const working = new Set(); // Sessions, die gerade arbeiten
-  const lastText = new Map(); // letzter Assistenten-Text je Session
-  const lastSent = new Map(); // Dedup: "sessionID:art" → Zeitstempel
+  const client = options.client;
+  const state = options.state ?? SHARED;
 
   function metaFor(sessionID) {
-    return meta.get(sessionID) ?? {};
+    return state.meta.get(sessionID) ?? {};
   }
 
   function projectFor(sessionID) {
@@ -195,16 +264,28 @@ export function createNtfyNotifier(options = {}) {
     return String(env.NTFY_FALLBACK_URL ?? "https://coder.mueller-nas.de/");
   }
 
-  function prune() {
-    const limit = 200;
-    for (const map of [meta, children, lastText, lastSent]) {
-      if (map.size <= limit) continue;
-      const excess = map.size - limit;
-      let i = 0;
-      for (const key of map.keys()) {
-        map.delete(key);
-        if (++i >= excess) break;
-      }
+  function absorb(info) {
+    if (!info || typeof info !== "object" || typeof info.id !== "string" || !info.id) return;
+    if (info.parentID) state.children.set(info.id, info.parentID);
+    const entry = state.meta.get(info.id) ?? {};
+    if (typeof info.title === "string" && info.title.trim()) entry.title = info.title.trim();
+    if (typeof info.subpath === "string" && info.subpath) entry.subpath = info.subpath;
+    const dir = info.location?.directory ?? info.location?.path ?? info.directory;
+    if (typeof dir === "string" && dir) entry.directory = dir;
+    if (info.parentID) entry.parentID = info.parentID;
+    state.meta.set(info.id, entry);
+  }
+
+  /** Metadaten bei Bedarf über den Server nachladen (Titel/Pfad fehlen oft). */
+  async function ensureMeta(sessionID) {
+    if (!sessionID) return;
+    const entry = metaFor(sessionID);
+    if (entry.title && entry.subpath) return;
+    if (!client?.session?.get) return;
+    try {
+      absorb(await client.session.get({ sessionID }));
+    } catch (error) {
+      logger("session.get fehlgeschlagen:", error?.message ?? String(error));
     }
   }
 
@@ -245,8 +326,8 @@ export function createNtfyNotifier(options = {}) {
   async function sendOnce(sessionID, kind, payload) {
     const key = `${sessionID ?? "?"}:${kind}`;
     const t = now();
-    if (t - (lastSent.get(key) ?? 0) < cooldownMs) return false;
-    lastSent.set(key, t);
+    if (t - (state.lastSent.get(key) ?? 0) < cooldownMs) return false;
+    state.lastSent.set(key, t);
     prune();
     return send(payload);
   }
@@ -256,58 +337,53 @@ export function createNtfyNotifier(options = {}) {
     return body ? `${title}\n\n${body}` : title;
   }
 
-  async function handleChatMessage(payload) {
-    const sessionID =
-      typeof payload?.sessionID === "string"
-        ? payload.sessionID
-        : payload?.event?.properties?.sessionID;
-    if (sessionID && !children.has(sessionID)) working.add(sessionID);
+  function markWorking(sessionID) {
+    if (typeof sessionID === "string" && sessionID && !state.children.has(sessionID)) {
+      state.working.add(sessionID);
+    }
   }
 
   async function handleEvent(event) {
     const type = event?.type;
     if (typeof type !== "string") return;
-    const properties = event?.properties ?? {};
-    const sessionID =
-      typeof properties.sessionID === "string" ? properties.sessionID : undefined;
 
-    const info = properties.info ?? properties.message?.info;
-    if (info?.id) {
-      if (info.parentID) children.set(info.id, info.parentID);
-      const entry = meta.get(info.id) ?? {};
-      if (typeof info.title === "string" && info.title.trim()) entry.title = info.title.trim();
-      if (typeof info.subpath === "string" && info.subpath) entry.subpath = info.subpath;
-      const dir = info.location?.directory ?? info.location?.path ?? info.directory;
-      if (typeof dir === "string" && dir) entry.directory = dir;
-      meta.set(info.id, entry);
-    }
+    const info = sessionInfo(event);
+    if (info) absorb(info);
+    const sessionID = sessionIDOf(event, info);
+
     // Subagent-Sessions (parentID gesetzt) melden nichts — die Eltern-Session tut es.
-    if (sessionID && children.has(sessionID)) return;
+    if (sessionID && state.children.has(sessionID)) return;
 
-    const text = textFromProperties(properties);
-    if (sessionID && text) lastText.set(sessionID, text);
+    const text = textFromEvent(event);
+    if (sessionID && text) {
+      state.lastText.set(sessionID, text);
+      state.working.add(sessionID);
+    }
 
     switch (type) {
       case "session.status": {
-        const kind =
-          typeof properties.status === "string" ? properties.status : properties.status?.type;
-        if (sessionID && typeof kind === "string" && kind.toLowerCase() !== "idle") {
-          working.add(sessionID);
+        const kind = pick(event, "status");
+        const value = typeof kind === "string" ? kind : kind?.type;
+        if (sessionID && typeof value === "string" && value.toLowerCase() !== "idle") {
+          state.working.add(sessionID);
         }
         return;
       }
+      case "message.part.updated":
+      case "message.updated":
       case "tool.execute.before":
       case "tool.execute.after":
       case "session.compacted":
-        if (sessionID) working.add(sessionID);
+        if (sessionID) state.working.add(sessionID);
         return;
       case "session.idle": {
         // Nur melden, wenn die Session wirklich gearbeitet hat — sonst würde
         // jede frisch angelegte/leere Session eine Meldung auslösen.
-        if (!sessionID || !working.has(sessionID)) return;
-        working.delete(sessionID);
-        const summary = clampText(lastText.get(sessionID) ?? "", 260);
-        lastText.delete(sessionID);
+        if (!sessionID || !state.working.has(sessionID)) return;
+        state.working.delete(sessionID);
+        const summary = clampText(state.lastText.get(sessionID) ?? "", 260);
+        state.lastText.delete(sessionID);
+        await ensureMeta(sessionID);
         await sendOnce(sessionID, "idle", {
           title: `✅ Fertig — ${projectFor(sessionID)}`,
           message: withHeader(sessionID, summary),
@@ -317,22 +393,28 @@ export function createNtfyNotifier(options = {}) {
         });
         return;
       }
-      case "question.asked": {
-        working.add(sessionID);
+      case "question.asked":
+      case "question.requested": {
+        if (!sessionID) return;
+        markWorking(sessionID);
+        await ensureMeta(sessionID);
         await sendOnce(sessionID, "question", {
           title: `❓ Frage — ${projectFor(sessionID)}`,
-          message: withHeader(sessionID, questionBody(properties) || fallbackBody(properties)),
+          message: withHeader(sessionID, questionBody(event) || fallbackBody(event)),
           priority: 4,
           tags: ["question"],
           click: linkFor(sessionID),
         });
         return;
       }
-      case "permission.asked": {
-        working.add(sessionID);
+      case "permission.asked":
+      case "permission.requested": {
+        if (!sessionID) return;
+        markWorking(sessionID);
+        await ensureMeta(sessionID);
         await sendOnce(sessionID, "permission", {
           title: `🔐 Freigabe — ${projectFor(sessionID)}`,
-          message: withHeader(sessionID, permissionBody(properties) || fallbackBody(properties)),
+          message: withHeader(sessionID, permissionBody(event) || fallbackBody(event)),
           priority: 4,
           tags: ["lock"],
           click: linkFor(sessionID),
@@ -340,9 +422,11 @@ export function createNtfyNotifier(options = {}) {
         return;
       }
       case "session.error": {
+        if (!sessionID) return;
+        await ensureMeta(sessionID);
         await sendOnce(sessionID, "error", {
           title: `⚠️ Fehler — ${projectFor(sessionID)}`,
-          message: withHeader(sessionID, errorBody(properties) || fallbackBody(properties)),
+          message: withHeader(sessionID, errorBody(event) || fallbackBody(event)),
           priority: 5,
           tags: ["warning"],
           click: linkFor(sessionID),
@@ -351,9 +435,9 @@ export function createNtfyNotifier(options = {}) {
       }
       case "session.deleted": {
         if (sessionID) {
-          meta.delete(sessionID);
-          working.delete(sessionID);
-          lastText.delete(sessionID);
+          state.meta.delete(sessionID);
+          state.working.delete(sessionID);
+          state.lastText.delete(sessionID);
         }
         return;
       }
@@ -366,7 +450,7 @@ export function createNtfyNotifier(options = {}) {
     const host = process.env.HOSTNAME ?? "workspace";
     return send({
       title: `🔔 ntfy-Plugin aktiv (${host})`,
-      message: `Selbsttest des OpenCode-Plugins.\nURL: ${url}\nTopic: ${topic}`,
+      message: `Selbsttest des OpenCode-V2-Plugins.\nURL: ${url}\nTopic: ${topic}`,
       priority: 2,
       tags: ["test_tube"],
       click: String(env.NTFY_FALLBACK_URL ?? "https://coder.mueller-nas.de/"),
@@ -375,59 +459,92 @@ export function createNtfyNotifier(options = {}) {
 
   return {
     handleEvent,
-    handleChatMessage,
+    markWorking,
     send,
     sendOnce,
     selfTest,
+    absorb,
+    ensureMeta,
     projectFor,
     linkFor,
-    _state: { meta, children, working, lastText, lastSent },
+    _state: state,
   };
 }
 
-export const NtfyNotifyPlugin = async (context) => {
-  const directory = typeof context?.directory === "string" ? context.directory : "";
-  const selftest = process.env.NTFY_SELFTEST === "1";
+// ── V2-Plugin-Definition ───────────────────────────────────────────────────
 
-  // Nur der Hintergrund-Service meldet; im Selbsttest auch ein Zweit-Server.
-  if (!selftest && !isServiceProcess()) return {};
-
-  if (!process.env.NTFY_TOKEN && !selftest) {
-    console.error(
-      "[ntfy-notify] NTFY_TOKEN fehlt (OpenBao secret/data/mcp/notify, Feld opencode_token) " +
-        "– Benachrichtigungen deaktiviert"
-    );
-    return {};
-  }
-
-  const notifier = createNtfyNotifier({ directory });
-
-  if (selftest) {
-    console.error("[ntfy-notify] Selbsttest wird gesendet …");
-    await notifier.selfTest();
-    return {};
-  }
+/**
+ * Baut die Plugin-Definition ({ id, setup }).
+ * Als Fabrik exportiert, damit Tests Umgebung, argv und fetch vorgeben können.
+ */
+export function createPluginRuntime(options = {}) {
+  const env = options.env ?? process.env;
+  const argv = options.argv ?? process.argv.slice(2);
+  const selftest = env.NTFY_SELFTEST === "1";
 
   return {
-    "chat.message": async (payload) => {
-      try {
-        await notifier.handleChatMessage(payload);
-      } catch (error) {
-        console.error("[ntfy-notify] chat.message-Fehler:", error?.message ?? error);
+    id: PLUGIN_ID,
+    async setup(ctx) {
+      // Nur der Hintergrund-Service meldet; im Selbsttest auch ein Test-Server.
+      if (!selftest && !isServiceProcess(argv)) return;
+
+      const notifier = createNtfyNotifier({
+        env,
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+        ...(options.log ? { log: options.log } : {}),
+        directory: typeof ctx?.location?.directory === "string" ? ctx.location.directory : "",
+        client: ctx,
+      });
+
+      if (selftest) {
+        if (!notifier) return;
+        await notifier.selfTest();
+        return;
       }
-    },
-    event: async ({ event }) => {
-      try {
-        await notifier.handleEvent(event);
-      } catch (error) {
-        console.error("[ntfy-notify] Event-Fehler:", error?.message ?? error);
+
+      if (!env.NTFY_TOKEN) {
+        console.error(
+          `[ntfy-notify] NTFY_TOKEN fehlt (OpenBao secret/data/mcp/notify, Feld opencode_token) ` +
+            `– Benachrichtigungen deaktiviert`
+        );
+        return;
       }
+
+      console.log(
+        `[ntfy-notify] aktiv (topic ${env.NTFY_TOPIC ?? DEFAULT_TOPIC}, location ${
+          ctx?.location?.directory ?? "?"
+        })`
+      );
+
+      // "Arbeitet gerade": jeder abgeschickte Prompt markiert die Session.
+      try {
+        await ctx.session.hook("prompt", (event) => {
+          notifier.markWorking(event?.sessionID ?? event?.session?.id);
+        });
+      } catch (error) {
+        console.error("[ntfy-notify] prompt-Hook nicht registriert:", error?.message ?? error);
+      }
+
+      const controller = new AbortController();
+      void (async () => {
+        try {
+          for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+            try {
+              await notifier.handleEvent(event);
+            } catch (error) {
+              console.error("[ntfy-notify] Event-Fehler:", error?.message ?? error);
+            }
+          }
+        } catch (error) {
+          if (!controller.signal.aborted) {
+            console.error("[ntfy-notify] Event-Stream beendet:", error?.message ?? error);
+          }
+        }
+      })();
+
+      return () => controller.abort();
     },
   };
-};
+}
 
-export default {
-  id: "das.ntfy-notify",
-  server: NtfyNotifyPlugin,
-  setup() {},
-};
+export default createPluginRuntime();

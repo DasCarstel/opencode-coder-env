@@ -1,11 +1,18 @@
-// Tests für ntfy-notify.js — läuft ohne OpenCode-Server:
+// Tests für ntfy-notify.js — laufen ohne OpenCode-Server:
 //   node coder-templates/shared/plugins/ntfy-notify.test.mjs
 //
 // Startet einen lokalen HTTP-Sink, spielt Events ein und prüft, was tatsächlich
 // als ntfy-Publish rausgeht (Topic, Titel, Priorität, Body, Click-URL).
+// Zusätzlich wird die V2-Anbindung (setup → ctx.event.subscribe) mit einem
+// Mock-Context getestet.
 
 import http from "node:http";
-import { createNtfyNotifier, isServiceProcess } from "./ntfy-notify.js";
+import {
+  createNtfyNotifier,
+  createPluginRuntime,
+  isServiceProcess,
+  resetSharedState,
+} from "./ntfy-notify.js";
 
 let passed = 0;
 let failed = 0;
@@ -50,27 +57,42 @@ function startSink() {
   });
 }
 
-const SESSION = "ses_test0001abcdef";
-const INFO = {
-  id: SESSION,
-  title: "Ablauf prüfen und Bericht schreiben",
-  subpath: "workspaces/infrastructure/server-management",
-  location: { directory: "/home/carstenmueller2002/opencode-coder-env/workspaces/infrastructure/server-management" },
-};
+const sink = await startSink();
+const SINK_URL = `http://127.0.0.1:${sink.address().port}`;
 
-function makeNotifier(sink, extra = {}) {
+const REPO_DIR = "/home/carstenmueller2002/opencode-coder-env";
+
+function info(id, overrides = {}) {
+  return {
+    id,
+    title: "Ablauf prüfen und Bericht schreiben",
+    subpath: "workspaces/infrastructure/server-management",
+    location: { directory: `${REPO_DIR}/workspaces/infrastructure/server-management` },
+    ...overrides,
+  };
+}
+
+/** Eigener Zustand je Test (die echte Implementierung teilt ihn prozessweit). */
+function freshState() {
+  return {
+    meta: new Map(),
+    children: new Map(),
+    working: new Set(),
+    lastText: new Map(),
+    lastSent: new Map(),
+  };
+}
+
+function makeNotifier(extra = {}) {
   return createNtfyNotifier({
-    env: {
-      NTFY_URL: `http://127.0.0.1:${sink.address().port}`,
-      NTFY_TOKEN: "tk_test",
-      ...(extra.env ?? {}),
-    },
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", ...(extra.env ?? {}) },
     log: () => {},
+    state: extra.state ?? freshState(),
     ...extra,
   });
 }
 
-const sink = await startSink();
+const SESSION = "ses_test0001abcdef";
 
 // ── 1. Prozesserkennung ───────────────────────────────────────────────────
 console.log("\nProzesserkennung");
@@ -84,8 +106,8 @@ ok(!isServiceProcess(["tui"]), "tui meldet nicht");
 console.log("\nKeine Meldung ohne Arbeit");
 received.length = 0;
 {
-  const n = makeNotifier(sink);
-  await n.handleEvent({ type: "session.created", properties: { info: INFO } });
+  const n = makeNotifier();
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
   await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
   eq(received.length, 0, "session.idle ohne vorherige Arbeit → keine Nachricht");
 }
@@ -94,12 +116,15 @@ received.length = 0;
 console.log("\nFertig-Meldung");
 received.length = 0;
 {
-  const n = makeNotifier(sink);
-  await n.handleEvent({ type: "session.created", properties: { info: INFO } });
-  await n.handleChatMessage({ sessionID: SESSION });
+  const n = makeNotifier();
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.markWorking(SESSION);
   await n.handleEvent({
     type: "message.part.updated",
-    properties: { sessionID: SESSION, part: { type: "text", role: "assistant", text: "Fertig: alle 3 Punkte umgesetzt." } },
+    properties: {
+      sessionID: SESSION,
+      part: { type: "text", role: "assistant", text: "Fertig: alle 3 Punkte umgesetzt." },
+    },
   });
   await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
 
@@ -121,9 +146,9 @@ received.length = 0;
 // ── 4. Zweites idle löst keine zweite Meldung aus ─────────────────────────
 console.log("\nDedup");
 {
-  const n = makeNotifier(sink);
+  const n = makeNotifier();
   received.length = 0;
-  await n.handleChatMessage({ sessionID: SESSION });
+  n.markWorking(SESSION);
   await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
   await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
   eq(received.length, 1, "idle ohne neue Arbeit → keine zweite Nachricht");
@@ -132,13 +157,17 @@ console.log("\nDedup");
 // ── 5. Subagent-Sessions werden geschluckt ────────────────────────────────
 console.log("\nSubagenten");
 {
-  const n = makeNotifier(sink);
+  const n = makeNotifier();
   received.length = 0;
   await n.handleEvent({
     type: "session.created",
     properties: { info: { id: "ses_child0001", parentID: SESSION, title: "Subagent" } },
   });
-  await n.handleEvent({ type: "session.status", properties: { sessionID: "ses_child0001", status: "active" } });
+  n.markWorking("ses_child0001");
+  await n.handleEvent({
+    type: "session.status",
+    properties: { sessionID: "ses_child0001", status: "active" },
+  });
   await n.handleEvent({ type: "session.idle", properties: { sessionID: "ses_child0001" } });
   eq(received.length, 0, "Kind-Session meldet nichts");
 }
@@ -146,14 +175,16 @@ console.log("\nSubagenten");
 // ── 6. Frage mit Optionen ─────────────────────────────────────────────────
 console.log("\nFrage");
 {
-  const n = makeNotifier(sink);
+  const n = makeNotifier();
   received.length = 0;
-  await n.handleEvent({ type: "session.created", properties: { info: INFO } });
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
   await n.handleEvent({
     type: "question.asked",
     properties: {
       sessionID: SESSION,
-      questions: [{ question: "Wie soll ich fortfahren?", options: [{ label: "A: deployen" }, { label: "B: warten" }] }],
+      questions: [
+        { question: "Wie soll ich fortfahren?", options: [{ label: "A: deployen" }, { label: "B: warten" }] },
+      ],
     },
   });
   const body = received[0]?.body ?? {};
@@ -174,12 +205,15 @@ console.log("\nFrage");
 // ── 7. Freigabe + Fehler ──────────────────────────────────────────────────
 console.log("\nFreigabe und Fehler");
 {
-  const n = makeNotifier(sink);
+  const n = makeNotifier();
   received.length = 0;
-  await n.handleEvent({ type: "session.created", properties: { info: INFO } });
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
   await n.handleEvent({
     type: "permission.asked",
-    properties: { sessionID: SESSION, permission: { title: "Bash", metadata: { command: "rm -rf /tmp/x" } } },
+    properties: {
+      sessionID: SESSION,
+      permission: { title: "Bash", metadata: { command: "rm -rf /tmp/x" } },
+    },
   });
   const perm = received[0]?.body ?? {};
   eq(perm.title, "🔐 Freigabe — server-management", "Freigabe-Titel");
@@ -200,9 +234,9 @@ console.log("\nFreigabe und Fehler");
 // ── 8. Ohne Token bleibt alles still ──────────────────────────────────────
 console.log("\nOhne Token");
 {
-  const n = makeNotifier(sink, { env: { NTFY_URL: `http://127.0.0.1:${sink.address().port}`, NTFY_TOKEN: "" } });
+  const n = makeNotifier({ env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "" } });
   received.length = 0;
-  await n.handleChatMessage({ sessionID: SESSION });
+  n.markWorking(SESSION);
   await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
   eq(received.length, 0, "ohne Token wird nichts gesendet");
 }
@@ -210,14 +244,184 @@ console.log("\nOhne Token");
 // ── 9. Unbekannter Session-Pfad fällt sauber zurück ───────────────────────
 console.log("\nFallback ohne Workspace-Pfad");
 {
-  const n = makeNotifier(sink);
+  const n = makeNotifier();
   received.length = 0;
-  await n.handleEvent({ type: "session.created", properties: { info: { id: SESSION, title: "Irgendwas" } } });
+  await n.handleEvent({
+    type: "session.created",
+    properties: { info: { id: SESSION, title: "Irgendwas" } },
+  });
   await n.handleEvent({ type: "session.status", properties: { sessionID: SESSION, status: "active" } });
   await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
   const body = received[0]?.body ?? {};
   eq(body.title, "✅ Fertig — opencode", "Projekt-Fallback");
   eq(body.click, "https://coder.mueller-nas.de/", "URL-Fallback");
+}
+
+// ── 10. Flache Event-Form (ohne properties) ───────────────────────────────
+console.log("\nFlache Event-Form");
+{
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", session: info(SESSION) });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", sessionID: SESSION });
+  eq(received.length, 1, "auch ohne properties-Wrapper wird gemeldet");
+  eq(received[0]?.body?.title, "✅ Fertig — server-management", "Titel aus session-Objekt");
+}
+
+// ── 11. V2-Anbindung: setup(subscribe) + prompt-Hook + Cleanup ────────────
+console.log("\nV2-Anbindung (setup)");
+
+function makeStream() {
+  const queue = [];
+  let resolver = null;
+  let closed = false;
+  const push = (value) => {
+    if (closed) return;
+    if (resolver) {
+      const resolve = resolver;
+      resolver = null;
+      resolve({ value, done: false });
+    } else queue.push(value);
+  };
+  const close = () => {
+    closed = true;
+    if (resolver) {
+      const resolve = resolver;
+      resolver = null;
+      resolve({ value: undefined, done: true });
+    }
+  };
+  return {
+    push,
+    close,
+    get closed() {
+      return closed;
+    },
+    iterator: {
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+      next() {
+        if (queue.length) return Promise.resolve({ value: queue.shift(), done: false });
+        if (closed) return Promise.resolve({ value: undefined, done: true });
+        return new Promise((resolve) => {
+          resolver = resolve;
+        });
+      },
+      return() {
+        close();
+        return Promise.resolve({ value: undefined, done: true });
+      },
+    },
+  };
+}
+
+const wait = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
+
+{
+  resetSharedState();
+  received.length = 0;
+  const stream = makeStream();
+  const hooks = [];
+  const ctx = {
+    location: { directory: REPO_DIR },
+    session: {
+      hook: async (name, callback) => {
+        hooks.push({ name, callback });
+        return { dispose: async () => {} };
+      },
+    },
+    event: {
+      subscribe: ({ signal } = {}) => {
+        if (signal) signal.addEventListener("abort", () => stream.close());
+        return stream.iterator;
+      },
+    },
+  };
+
+  const runtime = createPluginRuntime({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" },
+    argv: ["serve", "--service"],
+    log: () => {},
+  });
+  const cleanup = await runtime.setup(ctx);
+  eq(typeof cleanup, "function", "setup liefert eine Cleanup-Funktion");
+  eq(hooks.length, 1, "prompt-Hook registriert");
+  eq(hooks[0]?.name, "prompt", "Hook heißt 'prompt'");
+
+  // Prompt → markiert die Session als arbeitend (wie im echten Betrieb).
+  hooks[0].callback({ sessionID: SESSION });
+  stream.push({ type: "session.created", properties: { info: info(SESSION) } });
+  stream.push({
+    type: "message.part.updated",
+    properties: { sessionID: SESSION, part: { type: "text", text: "Bericht steht." } },
+  });
+  stream.push({ type: "session.idle", properties: { sessionID: SESSION } });
+  await wait();
+
+  eq(received.length, 1, "Event-Stream löst Fertig-Meldung aus");
+  ok(String(received[0]?.body?.message ?? "").includes("Bericht steht."), "TLDR aus dem Stream");
+
+  cleanup();
+  await wait();
+  ok(stream.closed, "Cleanup beendet den Event-Stream");
+}
+
+// ── 12. Kein Melden außerhalb des Service-Prozesses ───────────────────────
+{
+  received.length = 0;
+  resetSharedState();
+  const stream = makeStream();
+  const ctx = {
+    location: { directory: REPO_DIR },
+    session: { hook: async () => ({ dispose: async () => {} }) },
+    event: { subscribe: () => stream.iterator },
+  };
+  const runtime = createPluginRuntime({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" },
+    argv: ["tui"],
+    log: () => {},
+  });
+  const cleanup = await runtime.setup(ctx);
+  eq(cleanup, undefined, "im TUI-Prozess wird nichts registriert");
+  stream.push({ type: "session.idle", properties: { sessionID: SESSION } });
+  await wait();
+  eq(received.length, 0, "TUI-Prozess sendet keine Benachrichtigungen");
+}
+
+// ── 13. Selbsttest-Modus ──────────────────────────────────────────────────
+{
+  received.length = 0;
+  const runtime = createPluginRuntime({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_dummy", NTFY_SELFTEST: "1" },
+    argv: ["tui"],
+    log: () => {},
+  });
+  const result = await runtime.setup({
+    location: { directory: REPO_DIR },
+    session: { hook: async () => ({ dispose: async () => {} }) },
+    event: { subscribe: () => makeStream().iterator },
+  });
+  eq(received.length, 1, "Selbsttest sendet genau eine Nachricht");
+  ok(String(received[0]?.body?.title ?? "").includes("ntfy-Plugin aktiv"), "Selbsttest-Titel");
+  ok(String(received[0]?.body?.message ?? "").includes("Selbsttest"), "Selbsttest-Text");
+  eq(received[0]?.body?.tags?.[0], "test_tube", "Selbsttest-Tag");
+  eq(result, undefined, "Selbsttest registriert keine Hooks");
+}
+
+// ── 14. Geteilter Zustand: ein Event, eine Meldung (mehrere Instanzen) ────
+console.log("\nMehrere Plugin-Instanzen");
+{
+  resetSharedState();
+  received.length = 0;
+  const a = createNtfyNotifier({ env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" }, log: () => {} });
+  const b = createNtfyNotifier({ env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" }, log: () => {} });
+  await a.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  a.markWorking(SESSION);
+  await a.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  await b.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "zwei Instanzen erzeugen nur eine Nachricht");
 }
 
 sink.close();
