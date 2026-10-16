@@ -812,6 +812,31 @@ else
   echo "  ⚠ Config nicht gefunden: $GLOBAL_CFG_SRC"
 fi
 
+# ── ntfy: Benachrichtigungen aus OpenCode (alle Profile) ────────────────────
+# Das Plugin liegt in ~/.config/opencode/plugins/ und wird von OpenCode beim
+# Start des Dienstes automatisch geladen (wie das herdr-Plugin daneben).
+# Ohne Token bleibt es still — es blockiert also nichts, wenn das Secret fehlt.
+echo ""
+echo "=== ntfy: OpenCode-Benachrichtigungen ==="
+NTFY_PLUGIN_SRC="$REPO_DIR/coder-templates/shared/plugins/ntfy-notify.js"
+mkdir -p ~/.config/opencode/plugins
+if [ -f "$NTFY_PLUGIN_SRC" ]; then
+  install -m 600 "$NTFY_PLUGIN_SRC" ~/.config/opencode/plugins/ntfy-notify.js \
+    && echo "  ✓ ntfy-Plugin installiert (plugins/ntfy-notify.js)" \
+    || echo "  ⚠ ntfy-Plugin konnte nicht installiert werden"
+else
+  echo "  ⚠ ntfy-Plugin nicht gefunden: $NTFY_PLUGIN_SRC"
+fi
+read_secret "secret/data/mcp/notify" "opencode_token" "NTFY_TOKEN"
+read_secret "secret/data/mcp/notify" "url" "NTFY_URL"
+if [ -n "${NTFY_TOKEN:-}" ]; then
+  printf 'NTFY_TOKEN="%s"\n' "$NTFY_TOKEN" >> /etc/opencode.env
+  printf 'NTFY_URL="%s"\n' "${NTFY_URL:-https://ntfy.mueller-nas.de}" >> /etc/opencode.env
+  echo "  ✓ ntfy-Token erhalten"
+else
+  echo "  ⚠ ntfy-Token fehlt (OpenBao secret/data/mcp/notify, Feld 'opencode_token')"
+fi
+
 # ── OpenCode-Theme: dauerhaft hell (cli.json, idempotent) ───────────────────
 mkdir -p ~/.config/opencode
 python3 - <<'PY' >/dev/null 2>&1
@@ -847,6 +872,15 @@ if [ "$PROFILE" = "infrastructure" ]; then
       && echo "  ✓ AUTHENTIK_API_KEY im OpenCode-Service gesetzt" \
       || echo "  ⚠ AUTHENTIK_API_KEY konnte nicht gesetzt werden"
   fi
+fi
+
+# ntfy-Token (alle Profile): das Plugin liest NTFY_TOKEN/NTFY_URL aus der
+# Service-Umgebung — so überlebt die Konfiguration jeden Container-Neustart.
+if [ -n "${NTFY_TOKEN:-}" ]; then
+  opencode service set env NTFY_TOKEN "$NTFY_TOKEN" >/dev/null 2>&1 \
+    && echo "  ✓ NTFY_TOKEN im OpenCode-Service gesetzt" \
+    || echo "  ⚠ NTFY_TOKEN konnte nicht gesetzt werden"
+  opencode service set env NTFY_URL "${NTFY_URL:-https://ntfy.mueller-nas.de}" >/dev/null 2>&1 || true
 fi
 
 # ── Model-Router: Overrides GLOBAL ablegen (vor dem Service-Start!) ─────────
