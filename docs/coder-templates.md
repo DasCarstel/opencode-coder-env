@@ -208,18 +208,21 @@ Host-Ordner leistet dasselbe, ohne den Workspace unzerstörbar zu machen.
 | OpenCode-Sessions/Chats | `/etc/opencode-data/<user>-datascience` (Host, kein Volume) | nein | ja (host-seitig) |
 | `~/uni/tools/` (`prune_state.py`, `sync-check.sh`) | Host-Ordner `/etc/coder/uni-data` | **ja** – seit 2026-10-16 versioniert in `fernuni-sync/tools/` (siehe unten) | **ja** (Host-Ordner) |
 
-**End-to-End belegt am 2026-10-16 (echtes `coder delete` + Neuanlage im Workspace
-`carstenmueller2002/fernuni`):** `coder delete -y` zerstörte 9 Terraform-Ressourcen
-(Container, beide workspace-eigenen Volumes, das Image `workspace-datascience:v2`,
-Apps, Agent); danach war `fernuni` aus `coder list` verschwunden, ebenso Container
-und Fernuni-Volumes. Die Neuanlage (Template `datascience`, AppRole `mcp-uni` über
-die Parameter `openbao_role_id`/`openbao_approle_secret_id`) startete um 06:28 UTC,
-war um 06:30 `Started`/`healthy`. Werte vorher → nachher: `~/uni` **1,5 GiB /
+**End-to-End belegt am 2026-10-16 (echtes `coder delete` + Neuanlage als Workspace
+`carstenmueller2002/datascience` — der Workspace hieß davor
+`carstenmueller2002/fernuni` und wurde an diesem Tag endgültig umbenannt):**
+`coder delete -y` zerstörte 9 Terraform-Ressourcen (Container, beide
+workspace-eigenen Volumes, das Image `workspace-datascience:v2`, Apps, Agent);
+danach war der alte Name aus `coder list` verschwunden, ebenso der Container und
+die workspace-eigenen (Fernuni-)Volumes. Die Neuanlage als `datascience` (Template
+`datascience`, AppRole `mcp-uni` über die Parameter
+`openbao_role_id`/`openbao_approle_secret_id`) startete um 06:39 UTC,
+war um 06:42 `Started`/`healthy`. Werte vorher → nachher: `~/uni` **1,5 GiB /
 63 680 Einträge → 1,5 GiB / 63 680 Einträge**; die Marker `envs/{ml,dl}/.ready`
 trugen danach dieselben alten Zeitstempel (05:57:22 / 05:58:55 UTC) – es wurde
 nichts neu gebaut; `uni-git-setup` meldete für alle vier Modul-Repos
 „Repo vorhanden" (**kein** „klone"); der erste Sync-Lauf im neuen Container
-(06:31–06:33) endete mit „0 Download(s), 209 unveraendert, 0 Fehler/Warnung(en),
+(06:43–06:45) endete mit „0 Download(s), 209 unveraendert, 0 Fehler/Warnung(en),
 489 DAV-Aufrufe · Ergebnis: ok". `state.json` wurde von diesem Lauf neu geschrieben
 (md5 wechselte, Größe 82 633 B unverändert; Index: 188 Material- und 46 Notiz-
 Einträge) – das ist normal, der Vergleichsbeleg ist die unveränderte Gesamtzahl.
