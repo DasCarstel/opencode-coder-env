@@ -15,6 +15,9 @@
 #   * eigene, minimal berechtigte AppRole `mcp-uni` (fail-closed in startup.sh).
 #   * Ports: 8890 = unser JupyterLab (ML/DL-Kernel),
 #            8888 = Jupyter des FernUni-Compose-Stacks,
+#            8891 = On-Demand-Tor (fernuni-gate.py) – NUR darauf zeigt die
+#                   Coder-App `fernuni-jupyter`; es startet den Stack auf 8888
+#                   beim ersten Zugriff und stoppt ihn nach 3 h Leerlauf,
 #            8088 = Hadoop ResourceManager
 #            (8888/8088 erst erreichbar, nachdem der Student den Stack gestartet hat).
 #
@@ -261,11 +264,34 @@ resource "coder_app" "jupyter" {
 # Der Stack veröffentlicht 8888 auf IPv4 (docker compose `- 8888:8888`, im
 # Container `--ip 0.0.0.0`) – deshalb hier ebenfalls explizit 127.0.0.1 und
 # nicht `localhost` (siehe Begründung bei coder_app.jupyter).
+#
+# ── On-Demand-Tor (2026-10-16) ───────────────────────────────────────────
+# Die App zeigt NICHT mehr auf 8888, sondern auf das Tor
+#      8891 → 8888  (coder-templates/datascience/fernuni-gate.py)
+# Das Tor ist ein roher TCP-Proxy (stdlib/asyncio) und versteht deshalb auch
+# die JupyterLab-WebSockets:
+#   * Beim ersten Zugriff lauscht 8888 nicht → das Tor startet selbst
+#     `env UID=1000 GID=1000 docker compose -f docker-compose.yml up -d
+#     client-node` im Repo ~/uni/data-engineering-infrastructure und liefert
+#     währenddessen eine HTTP-503-Seite mit Auto-Refresh („Beim ersten Mal
+#     dauert es ein bis zwei Minuten“) aus. Eine Sperre verhindert, dass jede
+#     der vielen Browser-Anfragen einer JupyterLab-Seite einen eigenen Start
+#     auslöst.
+#   * Nach 3 h ohne Zugriff (--idle-seconds / FERNUNI_GATE_IDLE_SECONDS)
+#     stoppt es den Stack (`docker compose stop client-node`) – aber NUR,
+#     wenn es ihn selbst gestartet hat. Einen per `deds candle` im Terminal
+#     gestarteten Stack proxyt es nur und fasst ihn nie an.
+#   * Log: ~/uni/logs/fernuni-gate.log (eine Zeile je Ereignis).
+#   * Gestartet wird das Tor idempotent von uni-bootstrap.sh, es übersteht
+#     damit einen Workspace-Neustart.
+# Der Stack selbst bleibt UNVERÄNDERT auf Port 8888: kein Port-Remapping,
+# `deds candle`, docker-compose.yml und die Kursanleitung funktionieren
+# weiterhin genau wie gedruckt. Nur die Coder-App-URL hat sich geändert.
 resource "coder_app" "fernuni_jupyter" {
   agent_id     = coder_agent.main.id
   slug         = "fernuni-jupyter"
   display_name = "FernUni Jupyter (Stack)"
-  url          = "http://127.0.0.1:8888"
+  url          = "http://127.0.0.1:8891"
   subdomain    = true
   icon         = "/icon/terminal.svg"
   share        = "owner"

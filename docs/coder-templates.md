@@ -330,11 +330,67 @@ löschen **nichts** außer State-Einträgen, die im Vault nachweislich fehlen.
   erneut laufen. Erhalten bleiben nur die **Daten** (Notebooks unter
   `~/uni/module/63123-data-engineering-fuer-data-science/workspace`, Host-Ordner
   `/etc/coder/uni-data`) und das Docker-Volume `…-datascience-docker`.
-- **Kein Auto-Start:** Der Stack kommt beim Workspace-Start **nicht** von selbst
-  hoch. Ob er das soll, ist eine Abwägung: dauerhaft ~2 GiB (`candle`) bzw.
-  ~4 GiB (`firework`) RAM-Last im 8-GiB-Workspace gegen den Komfort, Jupyter auf
-  8888 sofort ohne manuellen Start zu haben. **Nicht** implementiert – Entscheidung
-  des Nutzers.
+- **On-Demand-Tor statt Dauerbetrieb (2026-10-16):** Der Stack kommt beim
+  Workspace-Start **nicht** von selbst hoch – er startet erst, wenn die
+  Coder-App `fernuni-jupyter` geöffnet wird, und geht nach 3 h ohne Zugriff
+  wieder aus. Details im gleichnamigen Abschnitt weiter unten.
+- Hinweis: Der Jupyter im Client-Node läuft **ohne eigene Authentifizierung**
+  („All authentication is disabled", so konfiguriert das FernUni-Image) –
+  erreichbar ist er über die Coder-App `fernuni-jupyter`, deren Zugriff Coder
+  selbst (Session-Token/SSO) prüft.
+
+### On-Demand-Tor (`fernuni-gate.py`, 2026-10-16)
+
+**Das Problem:** Der FernUni-Stack läuft als Vordergrundprozess im Workspace und
+blieb an, bis jemand ihn stoppt. `candle` sind dauerhaft ~2 GiB RAM in einem
+8-GiB-Workspace, `firework` ~4 GiB – den ganzen Tag, auch wenn niemand
+hineinschaut.
+
+**Die Lösung:** `coder-templates/datascience/fernuni-gate.py`, ein Tor aus
+reiner Python-Standardbibliothek (`asyncio`, kein pip). Es wird von
+`uni-bootstrap.sh` idempotent gestartet und lauscht auf **`127.0.0.1:8891`**;
+die Coder-App `fernuni-jupyter` zeigt jetzt auf **8891** statt auf 8888.
+
+| Eigenschaft | Verhalten |
+|---|---|
+| Art | **roher TCP-Byte-Proxy** (`asyncio.start_server` + `open_connection`, Daten in beide Richtungen durchgepumpt) |
+| Ports | Tor **8891** → Stack **8888** (Tor ist die einzige geänderte URL, siehe unten) |
+| WebSockets | gehen automatisch mit – das Tor kennt kein HTTP/WebSocket, es schiebt Bytes; JupyterLab merkt keinen Unterschied |
+| Zugriff, Stack tot | `docker compose … up -d client-node` im Repo `~/uni/data-engineering-infrastructure` starten |
+| Sperre | genau **ein** Start gleichzeitig (`start_laeuft`); alle weiteren Anfragen bekommen nur die 503-Seite – sonst würde jede der ~50 Anfragen einer JupyterLab-Seite einen eigenen `docker compose up` anstoßen |
+| Wartezeit-UI | `HTTP/1.1 503 Service Unavailable` + `Retry-After: 5` + `<meta http-equiv="refresh" content="5">` + deutscher Text („Beim ersten Mal dauert es ein bis zwei Minuten“); die Anfrage wird absichtlich **nicht** gelesen, nur beantwortet und geschlossen |
+| Leerlauf | Standard **3 h (10800 s)** ohne Zugriff → `docker compose … stop client-node`; änderbar per `--idle-seconds` bzw. `FERNUNI_GATE_IDLE_SECONDS` (`0` = nie stoppen) |
+| „Selbst gestartet“ | Das Tor stoppt **nur, was es selbst gestartet hat** (`selbst_gestartet`). Einen per `deds candle` im Terminal gestarteten Stack fasst es nicht an – es proxyt ihn nur |
+| Log | `~/uni/logs/fernuni-gate.log`, **eine Zeile je Ereignis** (Start angefordert / Stack oben (nach N s) / Zugriff / Leerlauf-Stopp / Fehler) – kein Byte-Spam |
+| Beenden | `SIGTERM`/`SIGINT` → Logzeile, Socket zu; das Tor stoppt dabei nichts |
+| Workspace-Neustart | übersteht ihn: `uni-bootstrap.sh` startet das Tor bei jedem Workspace-Start erneut (idempotent, Check per `ss` auf 127.0.0.1:8891). Nach dem Neustart ist der innere dockerd ohnehin neu, also auch ein zuvor vom Tor gestarteter Stack weg |
+| Testbarkeit | `--listen`, `--target`, `--repo`, `--start-cmd`, `--stop-cmd`, `--idle-seconds`, `--start-timeout`, `--cmd-timeout`, `--log` – damit lässt sich das Tor gegen ein Wegwerf-Ziel (`docker run … nginx`) prüfen, ohne den echten Stack anzufassen |
+
+**Der Stack selbst bleibt auf 8888 – unverändert.** Es gibt **kein**
+Port-Remapping und keine Änderung an `docker-compose.yml`: `deds candle`,
+`deds firework`, `deds rocket`, `deds down`, die Coder-App `hadoop-rm`
+(8088) und die Kursanleitung funktionieren weiter genau wie gedruckt. Nur die
+URL der App `fernuni-jupyter` hat sich geändert – von `http://127.0.0.1:8888`
+auf `http://127.0.0.1:8891`.
+
+**Was das Tor bewusst nicht tut:** Es kennt die Vergangenheit nicht. Wird nur
+das Tor neu gestartet (nicht der Workspace), gilt ein laufender Stack wieder
+als „nicht von mir gestartet“ und wird nie automatisch gestoppt – im Zweifel
+läuft er weiter, statt dass das Tor einen fremden Stack abräumt.
+
+**Zugriffszeitpunkt:** `letzter_zugriff` wird bei jeder neuen Verbindung **und**
+bei jedem tatsächlich fließenden Byte-Block gesetzt. Die Byte-Aktualisierung
+ist Absicht: Eine aktiv benutzte JupyterLab-Seite kann über eine einzige
+offene Keep-Alive-/WebSocket-Verbindung laufen – würde nur die Verbindung
+zählen, fiele der Stack nach 3 h Weiterarbeit unter den Händen weg. „3 h“
+heißt also: 3 h **ohne jeden Datenverkehr**. Eine im Hintergrund offene
+Registerkarte, in der JupyterLab weiter pollt, hält den Stack damit am Leben;
+wer ihn wirklich aus will, schließt die Seite, stoppt ihn mit `deds down` oder
+beendet das Tor.
+
+**Hadoop ResourceManager bleibt Handarbeit:** `hadoop-rm` (8088) hängt nicht am
+Tor. Der ResourceManager kommt nur mit `deds firework` (oder `rocket`) hoch –
+das Tor startet bewusst nur `client-node` (wie `candle`).
 - **`hadoop-rm--…` (Port 8088) bleibt bei `deds candle` korrekt 502:** `candle`
   startet nur den Client-Node, es läuft kein Hadoop-ResourceManager. Erst
   `deds firework` (oder `deds rocket`) bringt 9000/9870/8088 hoch.

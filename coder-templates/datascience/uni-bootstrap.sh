@@ -13,6 +13,8 @@
 #      sind versioniert (vorher: ~/uni/workspace, in keinem Repo)
 #   5. uv-Umgebungen (ml/dl) im Hintergrund anstoßen (uni-envs-setup.sh)
 #   6. JupyterLab auf Port 8890 starten (8888 gehört dem FernUni-Stack)
+#   6b. On-Demand-Tor für den FernUni-Stack auf 8891 starten (startet den
+#      Compose-Stack beim App-Aufruf, stoppt ihn nach 3 h Leerlauf)
 #   7. startup.sh datascience (letzter Schritt)
 #   8. Modul-Repos (Git) abgleichen (uni-git-setup.sh im Hintergrund) – läuft
 #      bewusst NACH startup.sh, weil erst dort GITHUB_TOKEN aus OpenBao kommt
@@ -249,6 +251,50 @@ if [ -x "$JUPYTER_BIN" ]; then
   jupyter_supervisor &
 else
   echo "  ⚠ $JUPYTER_BIN fehlt – JupyterLab wird nicht gestartet"
+fi
+
+# ── 5b. On-Demand-Tor für den FernUni-Stack (8891 → 8888) ─────────────────
+# Die Coder-App `fernuni-jupyter` zeigt NICHT mehr direkt auf 8888, sondern auf
+# dieses Tor. Es startet den Compose-Stack beim ersten Zugriff, liefert
+# währenddessen eine 503-Seite mit Auto-Refresh aus und stoppt ihn nach 3 h
+# ohne Zugriff – aber nur, wenn es ihn selbst gestartet hat (ein per
+# `deds candle` im Terminal gestarteter Stack wird nur geproxyt, nie gestoppt).
+# Der Stack selbst bleibt unverändert auf Port 8888.
+#
+# Idempotent: Läuft das Tor schon, wird nichts doppelt gestartet. Der Check
+# geht über `ss` auf den LISTEN-Socket – eine TCP-Probe (curl) würde im Tor
+# selbst einen „Zugriff“ samt Startversuch auslösen und den Leerlauf-Zähler
+# zurücksetzen. `pgrep` wäre unpräzise, weil eine Testinstanz auf einem
+# anderen Port denselben Skriptnamen trägt.
+#
+# `setsid` + `nohup` wie bei den anderen Hintergrunddiensten: das Tor muss den
+# Bootstrap überleben (der läuft bei jedem Workspace-Start erneut) und darf
+# keinen SIGHUP abbekommen. Es schreibt selbst in ~/uni/logs/fernuni-gate.log;
+# stdout/stderr gehen in dieselbe Datei, damit ein Python-Traceback nicht
+# verloren geht (Log-Zeilen schreibt das Tor nur, wenn stdout ein TTY ist –
+# so steht keine Zeile doppelt).
+#
+# Workspace-Neustart: Der Container (inkl. innerem dockerd) wird neu gebaut,
+# damit ist auch ein zuvor vom Tor gestarteter Stack weg – das Tor kennt dann
+# wieder „selbst gestartet = nein“ und startet beim nächsten App-Aufruf frisch.
+GATE_PY="$REPO_DIR/coder-templates/datascience/fernuni-gate.py"
+GATE_LOG="$LOG_DIR/fernuni-gate.log"
+GATE_LISTEN="127.0.0.1:8891"
+if [ ! -f "$GATE_PY" ]; then
+  echo "  ⚠ fernuni-gate.py fehlt ($GATE_PY) – die FernUni-App startet den Stack nicht mehr von selbst"
+elif ss -tln 2>/dev/null | grep -qE '(^|[^0-9])127\.0\.0\.1:8891([^0-9]|$)'; then
+  echo "  ✓ FernUni-Tor läuft bereits auf $GATE_LISTEN"
+else
+  echo "  → FernUni-Tor starten ($GATE_LISTEN → 127.0.0.1:8888, Log: $GATE_LOG)"
+  ( umask 022; setsid nohup python3 "$GATE_PY" \
+      --listen "$GATE_LISTEN" --target 127.0.0.1:8888 --repo "$FERNUNI_REPO" \
+      >> "$GATE_LOG" 2>&1 & )
+  sleep 1
+  if ss -tln 2>/dev/null | grep -qE '(^|[^0-9])127\.0\.0\.1:8891([^0-9]|$)'; then
+    echo "  ✓ FernUni-Tor läuft (Stack startet bei App-Aufruf, Stopp nach 3 h Leerlauf)"
+  else
+    echo "  ⚠ FernUni-Tor konnte nicht starten (siehe $GATE_LOG) – Stack weiterhin nur per 'deds candle'"
+  fi
 fi
 
 # ── 6. startup.sh (Profil datascience) ────────────────────────────────────
