@@ -815,6 +815,9 @@ async function until(check, timeoutMs = 2000) {
   const bridge = createReplyBridge({
     env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai" },
     runtime,
+    // Ohne API-Passwort bleibt der Formular-Weg inaktiv: dieser Test prüft die
+    // Prompt-Brücke und darf dafür nie die lokale API anfassen.
+    apiPassword: "",
     client: {
       session: {
         prompt: async (arg) => {
@@ -1124,6 +1127,8 @@ console.log("\nAntwort-Brücke (Fallback)");
   const bridge = createReplyBridge({
     env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai" },
     runtime,
+    // Kein API-Passwort: der Formular-Weg bleibt hier inaktiv (kein Netz im Test).
+    apiPassword: "",
     client: {
       session: {
         prompt: async (arg) => {
@@ -1185,6 +1190,8 @@ console.log("\nAntwort-Brücke (Diagnose-Log)");
       NTFY_REPLY_LOG: logPath,
     },
     runtime,
+    // Kein API-Passwort: dieser Test prüft Poll-Log + Prompt (kein Formular).
+    apiPassword: "",
     controller: new AbortController(),
     client: {
       session: {
@@ -1222,6 +1229,10 @@ console.log("\nAntwort-Brücke (Ende zu Ende)");
   let pollBody = "";
   const fetchStub = async (input, init = {}) => {
     const method = String(init.method ?? "GET").toUpperCase();
+    // Formular-Abruf der Antwort-Brücke: in diesem Test ist keine Frage offen.
+    if (method === "GET" && String(input).includes("/api/session/")) {
+      return { ok: true, status: 200, json: async () => ({ data: [] }) };
+    }
     if (method === "POST") {
       posts.push(JSON.parse(String(init.body ?? "{}")));
       return { ok: true, status: 200, json: async () => ({ id: `msg_post${posts.length}` }) };
@@ -1308,6 +1319,8 @@ console.log("\nAntwort-Brücke (Idempotenz)");
   const bridge = createReplyBridge({
     env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" },
     runtime,
+    // Kein API-Passwort: hier geht es nur um Idempotenz (kein Netz im Test).
+    apiPassword: "",
     client: {
       session: {
         prompt: async (arg) => {
@@ -1360,6 +1373,368 @@ console.log("\nAntwort-Brücke (Idempotenz)");
   ok(
     runtime.processedIds.includes("msg_dup1") && runtime.processedIds.includes("msg_dup2"),
     "verarbeitete IDs werden gemerkt"
+  );
+}
+
+// ── 32. Formular-Antwort: offene native Frage direkt beantworten ──────────
+//
+// Ist genau eine native Frage offen (question-Tool = serverseitiges Formular)
+// und passt der Handy-Text eindeutig in das einzige Feld, trägt die Brücke die
+// Antwort per POST …/reply ein, statt einen Prompt einzuspeisen. Jeder unklare
+// Fall (kein Treffer, mehrere Formulare/Felder, API-Fehler) fällt auf die
+// Prompt-Einspeisung zurück. Alles hier läuft mit gemocktem fetch: kein Netz.
+console.log("\nFormular-Antwort (offene Frage)");
+
+/** Auswahlfeld laut Schema: StringField mit options ({ value, label }). */
+const choiceField = {
+  key: "q0",
+  type: "string",
+  title: "Wie weiter?",
+  options: [
+    { value: "a", label: "Deployen" },
+    { value: "b", label: "Warten" },
+  ],
+};
+
+/** Formular wie in der echten Nutzlast (metadata.kind = "question"). */
+function openForm(id, fields, metadata = { kind: "question" }) {
+  return { id, sessionID: SESSION, title: "Questions", metadata, fields };
+}
+
+/**
+ * Brücke mit gemocktem fetch: GET …/form liefert `forms`, POST …/reply
+ * antwortet mit `replyStatus`. Das API-Passwort kommt aus der Umgebung — also
+ * genau der Weg, den die Brücke auch im Betrieb nimmt.
+ */
+function makeFormBridge(extra = {}) {
+  const requests = [];
+  const prompts = [];
+  const published = [];
+  const fetchStub = async (input, init = {}) => {
+    const url = String(input);
+    const method = String(init.method ?? "GET").toUpperCase();
+    requests.push({ url, method, init });
+    if (extra.throwOnForms) throw new Error("Netzwerk weg");
+    if (method === "POST") {
+      const status = extra.replyStatus ?? 204;
+      return { ok: status < 400, status, json: async () => ({}) };
+    }
+    const status = extra.formsStatus ?? 200;
+    return { ok: status < 400, status, json: async () => ({ data: extra.forms ?? [] }) };
+  };
+  const runtime = { sentIds: [], processedIds: [], lastSessionID: SESSION };
+  const bridge = createReplyBridge({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_TOPIC: "ai",
+      NTFY_SESSION_PORT: "49374",
+      OPENCODE_SERVER_PASSWORD: "pw_test",
+      ...(extra.env ?? {}),
+    },
+    runtime,
+    client: {
+      session: {
+        prompt: async (arg) => {
+          prompts.push(arg);
+          return {};
+        },
+      },
+    },
+    publish: async (payload) => {
+      published.push(payload);
+      return true;
+    },
+    fetch: fetchStub,
+    log: () => {},
+  });
+  const posts = () => requests.filter((request) => request.method === "POST");
+  const gets = () => requests.filter((request) => request.method === "GET");
+  const bodyOf = (request) => JSON.parse(String(request?.init?.body ?? "{}"));
+  return { bridge, runtime, requests, prompts, published, posts, gets, bodyOf };
+}
+
+// a) Nummer als Optionsindex → Antwort landet im Formular, kein Prompt.
+{
+  const { bridge, prompts, published, posts, gets, bodyOf } = makeFormBridge({
+    forms: [openForm("frm_1", [choiceField])],
+  });
+  const result = await bridge.handleMessage({ id: "msg_f1", title: "Nutzerantwort", message: "2" });
+  eq(result.action, "replied", "Antwort '2' landet in der offenen Frage");
+  eq(prompts.length, 0, "kein Prompt — der blockierte Turn läuft über das Formular weiter");
+  eq(gets().length, 1, "offene Formulare werden genau einmal abgefragt");
+  eq(
+    gets()[0]?.url,
+    `http://127.0.0.1:49374/api/session/${SESSION}/form`,
+    "Abruf geht an die lokale API (Port aus NTFY_SESSION_PORT)"
+  );
+  eq(
+    gets()[0]?.init?.headers?.Authorization,
+    `Basic ${Buffer.from("opencode:pw_test").toString("base64")}`,
+    "HTTP-Basic mit dem API-Passwort aus der Umgebung"
+  );
+  eq(posts().length, 1, "genau ein Reply-POST");
+  eq(
+    posts()[0]?.url,
+    `http://127.0.0.1:49374/api/session/${SESSION}/form/frm_1/reply`,
+    "Reply geht an den Formular-Endpunkt"
+  );
+  eq(
+    String(posts()[0]?.init?.headers?.["Content-Type"] ?? "").includes("application/json"),
+    true,
+    "Reply trägt einen JSON-Body"
+  );
+  eq(bodyOf(posts()[0])?.answer?.q0, "b", "gesendet wird der Wert der 2. Option");
+  eq(published.length, 1, "genau eine Bestätigung");
+  eq(
+    published[0]?.title,
+    "↩️ Antwort in die offene Frage eingetragen",
+    "Bestätigung nennt die eingetragene Antwort"
+  );
+  eq(published[0]?.priority, 2, "Bestätigung ist leise (Priorität 2)");
+}
+
+// b) Treffer über das Label (case-insensitive) und über den Wert.
+{
+  const { bridge, prompts, posts, bodyOf } = makeFormBridge({
+    forms: [openForm("frm_2", [choiceField])],
+  });
+  const byLabel = await bridge.handleMessage({ id: "msg_f2", title: "Nutzerantwort", message: "warten" });
+  eq(byLabel.action, "replied", "Label-Treffer ohne Rücksicht auf Groß-/Kleinschreibung");
+  eq(bodyOf(posts()[0])?.answer?.q0, "b", "Label 'warten' → Optionswert 'b'");
+  const byValue = await bridge.handleMessage({ id: "msg_f2b", title: "Nutzerantwort", message: "a" });
+  eq(byValue.action, "replied", "Treffer über den Optionswert");
+  eq(bodyOf(posts()[1])?.answer?.q0, "a", "Wert 'a' wird direkt gesendet");
+  eq(prompts.length, 0, "kein Prompt bei eindeutigem Treffer");
+}
+
+// c) Kein Treffer → nicht raten, sondern Prompt einspeisen.
+{
+  const { bridge, prompts, published, posts } = makeFormBridge({
+    forms: [openForm("frm_3", [choiceField])],
+  });
+  const result = await bridge.handleMessage({
+    id: "msg_f3",
+    title: "Nutzerantwort",
+    message: "vielleicht später",
+  });
+  eq(result.action, "injected", "ohne Treffer bleibt es bei der Prompt-Einspeisung");
+  eq(posts().length, 0, "kein Reply-POST ohne eindeutigen Treffer");
+  eq(prompts.length, 1, "der Text kommt als Prompt an");
+  eq(published[0]?.title, "↩️ Antwort an Agenten weitergegeben", "normale Bestätigung");
+}
+{
+  const { bridge, posts } = makeFormBridge({ forms: [openForm("frm_3b", [choiceField])] });
+  const result = await bridge.handleMessage({ id: "msg_f3b", message: "7" });
+  eq(result.action, "injected", "Optionsindex außerhalb der Liste wird nicht geraten");
+  eq(posts().length, 0, "kein Reply-POST bei ungültigem Index");
+}
+
+// d) Freitext-Feld (String-Typ) → der Text wird als Wert gesendet.
+{
+  const { bridge, prompts, posts, bodyOf } = makeFormBridge({
+    forms: [
+      openForm("frm_4", [{ key: "q0", type: "string", title: "Wie lautet der Zweck?" }]),
+    ],
+  });
+  const result = await bridge.handleMessage({ id: "msg_f4", message: "  produktiv  " });
+  eq(result.action, "replied", "Freitext-Feld wird mit dem Text beantwortet");
+  eq(bodyOf(posts()[0])?.answer?.q0, "produktiv", "getrimmter Text wird als Wert gesendet");
+  eq(prompts.length, 0, "kein Prompt beim Freitext-Feld");
+}
+{
+  // Unbekannter Feldtyp (number) bleibt konservativ.
+  const { bridge, posts, prompts } = makeFormBridge({
+    forms: [openForm("frm_4b", [{ key: "q0", type: "number", title: "Wie viele?" }])],
+  });
+  const result = await bridge.handleMessage({ id: "msg_f4b", message: "42" });
+  eq(result.action, "injected", "unbekannter Feldtyp → Prompt-Einspeisung");
+  eq(posts().length, 0, "kein Reply-POST für unbekannte Feldtypen");
+  eq(prompts.length, 1, "der Text kommt als Prompt an");
+}
+
+// e) Mehrere Felder bzw. mehrere Formulare → nicht raten.
+{
+  const { bridge, prompts, posts } = makeFormBridge({
+    forms: [openForm("frm_5", [choiceField, { key: "q1", type: "string", title: "Warum?" }])],
+  });
+  const result = await bridge.handleMessage({ id: "msg_f5", message: "Warten" });
+  eq(result.action, "injected", "zwei Felder → keine Formular-Antwort");
+  eq(posts().length, 0, "kein Reply-POST bei zwei Feldern");
+  eq(prompts.length, 1, "stattdessen Prompt-Einspeisung");
+}
+{
+  const { bridge, prompts, posts } = makeFormBridge({
+    forms: [openForm("frm_6", [choiceField]), openForm("frm_7", [choiceField])],
+  });
+  const result = await bridge.handleMessage({ id: "msg_f6", message: "Warten" });
+  eq(result.action, "injected", "zwei offene Formulare → keine Formular-Antwort");
+  eq(posts().length, 0, "kein Reply-POST bei zwei Formularen");
+  eq(prompts.length, 1, "stattdessen Prompt-Einspeisung");
+}
+
+// f) Reply wird abgelehnt (400) → Fallback auf Prompt + Diagnose-Log.
+{
+  const logPath = "/tmp/opencode/ntfy-form-reply-test.log";
+  rmSync(logPath, { force: true });
+  const { bridge, prompts, published, posts } = makeFormBridge({
+    forms: [openForm("frm_8", [choiceField])],
+    replyStatus: 400,
+    env: { NTFY_REPLY_LOG: logPath },
+  });
+  const result = await bridge.handleMessage({ id: "msg_f8", message: "Warten" });
+  eq(result.action, "injected", "abgelehnter Reply (400) fällt auf den Prompt zurück");
+  eq(posts().length, 1, "der Reply wurde versucht");
+  eq(prompts.length, 1, "der Text wird als Prompt eingespeist");
+  eq(published[0]?.title, "↩️ Antwort an Agenten weitergegeben", "normale Bestätigung");
+  ok(
+    readFileSync(logPath, "utf8").includes("form-reply-fehler"),
+    "der API-Fehler steht im Diagnose-Log"
+  );
+  rmSync(logPath, { force: true });
+}
+{
+  // 409 = die Frage ist schon beantwortet → ebenfalls Prompt-Fallback.
+  const { bridge, prompts, posts } = makeFormBridge({
+    forms: [openForm("frm_8b", [choiceField])],
+    replyStatus: 409,
+  });
+  const result = await bridge.handleMessage({ id: "msg_f8b", message: "Warten" });
+  eq(result.action, "injected", "409 (schon beantwortet) fällt auf den Prompt zurück");
+  eq(posts().length, 1, "der Reply wurde versucht");
+  eq(prompts.length, 1, "der Text wird als Prompt eingespeist");
+}
+
+// g) Formular-Abruf scheitert (Netzfehler bzw. 500) → wie bisher.
+{
+  const { bridge, prompts } = makeFormBridge({
+    forms: [openForm("frm_9", [choiceField])],
+    throwOnForms: true,
+  });
+  const result = await bridge.handleMessage({ id: "msg_f9", message: "Warten" });
+  eq(result.action, "injected", "fetch-Fehler beim Abruf → Prompt-Einspeisung");
+  eq(prompts.length, 1, "der Text kommt als Prompt an");
+}
+{
+  const { bridge, prompts } = makeFormBridge({
+    forms: [openForm("frm_10", [choiceField])],
+    formsStatus: 500,
+  });
+  const result = await bridge.handleMessage({ id: "msg_f10", message: "Warten" });
+  eq(result.action, "injected", "HTTP 500 beim Abruf → Prompt-Einspeisung");
+  eq(prompts.length, 1, "der Text kommt als Prompt an");
+}
+
+// h) NTFY_FORM_REPLY=0 → die lokale API wird nie gefragt.
+{
+  const { bridge, requests, prompts } = makeFormBridge({
+    forms: [openForm("frm_11", [choiceField])],
+    env: { NTFY_FORM_REPLY: "0" },
+  });
+  const result = await bridge.handleMessage({ id: "msg_f11", message: "Warten" });
+  eq(result.action, "injected", "NTFY_FORM_REPLY=0 → immer Prompt-Einspeisung");
+  eq(requests.length, 0, "kein Formular-Abruf, wenn der Schalter aus ist");
+  eq(prompts.length, 1, "der Text kommt als Prompt an");
+}
+
+// i) Ohne API-Passwort bleibt die lokale API unangetastet.
+{
+  const requests = [];
+  const prompts = [];
+  const bridge = createReplyBridge({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai" },
+    runtime: { sentIds: [], processedIds: [], lastSessionID: SESSION },
+    client: {
+      session: {
+        prompt: async (arg) => {
+          prompts.push(arg);
+          return {};
+        },
+      },
+    },
+    publish: async () => true,
+    apiPassword: "",
+    fetch: async (input, init = {}) => {
+      requests.push({ url: String(input), method: init.method });
+      throw new Error("ohne Passwort darf gar nicht gefragt werden");
+    },
+    log: () => {},
+  });
+  const result = await bridge.handleMessage({ id: "msg_f12", message: "Warten" });
+  eq(result.action, "injected", "ohne Passwort bleibt es bei der Prompt-Einspeisung");
+  eq(requests.length, 0, "ohne Passwort wird die lokale API gar nicht gefragt");
+  eq(prompts.length, 1, "der Text kommt als Prompt an");
+}
+
+// j) multiselect bekommt laut Schema eine Liste; Freigabe-Dialoge bleiben
+//    dem nativen Fenster vorbehalten.
+{
+  const { bridge, posts, bodyOf } = makeFormBridge({
+    forms: [
+      openForm("frm_13", [
+        {
+          key: "q0",
+          type: "multiselect",
+          title: "Welche Varianten?",
+          options: [
+            { value: "x", label: "Variante X" },
+            { value: "y", label: "Variante Y" },
+          ],
+        },
+      ]),
+    ],
+  });
+  const result = await bridge.handleMessage({ id: "msg_f13", message: "1" });
+  eq(result.action, "replied", "Auswahl per Index auch beim multiselect-Feld");
+  eq(bodyOf(posts()[0])?.answer?.q0?.[0], "x", "multiselect bekommt eine Liste mit dem Wert");
+}
+{
+  const { bridge, prompts, posts } = makeFormBridge({
+    forms: [openForm("frm_14", [choiceField], { kind: "permission" })],
+  });
+  const result = await bridge.handleMessage({ id: "msg_f14", message: "Warten" });
+  eq(result.action, "injected", "Freigabe-Formular wird nicht per Handy-Text beantwortet");
+  eq(posts().length, 0, "kein Reply-POST für Freigaben");
+  eq(prompts.length, 1, "der Text kommt als Prompt an");
+}
+
+// k) Idempotenz bleibt die erste Prüfung — auch als Formular-Antwort.
+{
+  const { bridge, posts } = makeFormBridge({ forms: [openForm("frm_15", [choiceField])] });
+  const first = await bridge.handleMessage({ id: "msg_f15", message: "Warten" });
+  const second = await bridge.handleMessage({ id: "msg_f15", message: "Warten" });
+  eq(first.action, "replied", "erster Aufruf landet in der offenen Frage");
+  eq(second.action, "duplicate", "derselbe Text wird kein zweites Mal beantwortet");
+  eq(posts().length, 1, "genau ein Reply-POST trotz Wiederholung");
+}
+
+// l) Hinweiszeile in der Frage-Meldung.
+{
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent(
+    v2("form.created", {
+      questions: [{ question: "Weiter mit Phase 4?", options: [{ label: "Ja" }, { label: "Nein" }] }],
+    })
+  );
+  const message = String(received[0]?.body?.message ?? "");
+  ok(message.includes("Antwort direkt hier möglich"), "Frage-Meldung trägt die Antwort-Hinweiszeile");
+  ok(message.includes("Nummer oder Text"), "Hinweis nennt Nummer und Text");
+  eq(
+    message.trim().split("\n").pop(),
+    "Antwort direkt hier möglich: Nummer oder Text antworten.",
+    "Hinweis steht als eigene Zeile am Ende"
+  );
+}
+{
+  const n = makeNotifier({ env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_FORM_REPLY: "0" } });
+  received.length = 0;
+  await n.handleEvent(
+    v2("form.created", { questions: [{ question: "Weiter?", options: [{ label: "Ja" }] }] })
+  );
+  ok(
+    !String(received[0]?.body?.message ?? "").includes("Antwort direkt hier möglich"),
+    "bei NTFY_FORM_REPLY=0 entfällt der Hinweis"
   );
 }
 

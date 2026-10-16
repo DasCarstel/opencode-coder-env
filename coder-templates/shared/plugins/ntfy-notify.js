@@ -40,11 +40,27 @@
 //   NTFY_REPLY_ENABLED      "0"/"false" schaltet die Brücke ab (Default: an)
 //   NTFY_REPLY_TOPIC        Topic zum Abholen (Default NTFY_TOPIC, also "ai")
 //   NTFY_REPLY_POLL_SECONDS Zeitlimit einer Abfrage in Sekunden (Default 60)
+//   NTFY_FORM_REPLY         "0"/"false" schaltet die direkte Antwort in eine
+//                           offene native Frage ab (Default: an)
+//
+// Ist in der Ziel-Session genau eine native Frage offen (question-Tool =
+// serverseitiges Formular) und passt der Text eindeutig in das einzige Feld,
+// trägt die Brücke die Antwort über die lokale API direkt in das Formular ein
+// statt einen Prompt einzuspeisen — der blockierte Turn läuft dann weiter, als
+// hätte der Nutzer im Fragenfenster geantwortet. Jeder unklare Fall (kein
+// Treffer, mehrere Formulare/Felder, API-Fehler) fällt auf die gewohnte
+// Prompt-Einspeisung zurück. Das native Fragenfenster bleibt unverändert.
+// Zugang zur lokalen API: HTTP-Basic "opencode:<Passwort>" gegen
+// http://127.0.0.1:${NTFY_SESSION_PORT} (Default 49374); das Passwort wird zur
+// Laufzeit aus OPENCODE_SERVER_PASSWORD, /etc/opencode.env oder der
+// Service-Datei gelesen und nie geloggt.
 //
 // Installation: coder-templates/shared/plugins/ntfy-notify.js
 //               → ~/.config/opencode/plugins/ (dort automatisch geladen)
 
 import { appendFileSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 const DEFAULT_URL = "https://ntfy.mueller-nas.de";
 const DEFAULT_TOPIC = "ai";
@@ -61,6 +77,15 @@ const PLUGIN_ID = "das.ntfy-notify";
 const REPLY_PREFIXES = ["❓", "✅", "⚠️", "🔐", "🔔", "↩️"];
 const REPLY_ACK_TITLE = "↩️ Antwort an Agenten weitergegeben";
 const REPLY_NO_SESSION_TITLE = "⚠️ Antwort ohne Ziel-Session";
+// Bestätigung, wenn die Antwort direkt in der offenen Frage gelandet ist.
+// Beginnt wie die normale Bestätigung mit "↩️", damit die Brücke die eigene
+// Nachricht im Poll wieder als eigene erkennt (REPLY_PREFIXES).
+const FORM_REPLY_ACK_TITLE = "↩️ Antwort in die offene Frage eingetragen";
+// Hinweiszeile in der Frage-Meldung (die mit den nummerierten Optionen).
+const FORM_QUESTION_HINT = "Antwort direkt hier möglich: Nummer oder Text antworten.";
+// Zugang zur lokalen OpenCode-API (HTTP-Basic, Nutzer "opencode").
+const FORM_API_USER = "opencode";
+const FORM_API_TIMEOUT_MS = 5000;
 const REPLY_POLL_SECONDS = 60;
 // poll=1 liefert sofort zurück — zwischen zwei Abfragen kurz warten, damit
 // daraus kein Hot-Loop gegen den Hub wird.
@@ -832,9 +857,15 @@ export function createNtfyNotifier(options = {}) {
         if (!sessionID || (await isSubagent(sessionID))) return;
         markWorking(sessionID);
         await ensureMeta(sessionID);
+        // Hinweiszeile: der Text kann direkt aus ntfy in die offene Frage
+        // eingetragen werden (siehe Formular-Antwort in der Antwort-Brücke).
+        const hint = formEnabled(env) ? FORM_QUESTION_HINT : "";
         await sendOnce(sessionID, "question", {
           title: `❓ Frage — ${projectFor(sessionID)}`,
-          message: withHeader(sessionID, questionBody(event) || fallbackBody(event)),
+          message: withHeader(
+            sessionID,
+            [questionBody(event) || fallbackBody(event), hint].filter(Boolean).join("\n\n")
+          ),
           priority: 4,
           tags: ["question"],
           click: linkFor(sessionID),
@@ -919,6 +950,192 @@ function replyEnabled(env) {
   return !["0", "false", "no", "off"].includes(value);
 }
 
+// ── Formular-Antwort: Handy-Text → offene native Frage ────────────────────
+//
+// Die native Frage ist serverseitig ein Formular (question-Tool). Offene
+// Formulare einer Session liefert GET /api/session/{id}/form, die Antwort geht
+// per POST /api/session/{id}/form/{formID}/reply mit { answer: { key: wert } }
+// raus (204 = angenommen). Alles hier ist bewusst fehlertolerant und kennt
+// keinen Zustand: schlägt irgendetwas fehl, wird nicht geraten, sondern wie
+// bisher ein Prompt eingespeist.
+
+/** "0"/"false"/"no"/"off" schalten die Formular-Antwort ab (Default: an). */
+function formEnabled(env) {
+  const value = String(env.NTFY_FORM_REPLY ?? "1")
+    .trim()
+    .toLowerCase();
+  return !["0", "false", "no", "off"].includes(value);
+}
+
+/** Basis-URL der lokalen API (die laufende `opencode serve`-Instanz). */
+function localApiUrl(env) {
+  const fixed = String(env.OPENCODE_SERVER_URL ?? "").trim();
+  if (fixed) return fixed.replace(/\/+$/, "");
+  return `http://127.0.0.1:${env.NTFY_SESSION_PORT || "49374"}`;
+}
+
+/** HTTP-Basic-Header-Wert ("opencode:<Passwort>"). Wirft nie. */
+function basicAuth(user, password) {
+  const raw = `${user}:${password}`;
+  try {
+    const buffer = globalThis.Buffer;
+    if (buffer?.from) return `Basic ${buffer.from(raw, "utf8").toString("base64")}`;
+    return `Basic ${btoa(raw)}`;
+  } catch {
+    return "";
+  }
+}
+
+/** AbortSignal mit Zeitlimit; fehlt die Unterstützung, dann ohne Limit. */
+function timeoutSignal(ms) {
+  try {
+    return typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
+      ? AbortSignal.timeout(ms)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Erstes Passwort-Feld in einem (verschachtelten) Service-Objekt. */
+function findPasswordValue(value, depth = 0) {
+  if (depth > 4 || !value || typeof value !== "object") return "";
+  for (const [key, child] of Object.entries(value)) {
+    if (typeof child === "string") {
+      if (/password/i.test(key) && child.trim()) return child.trim();
+    } else if (child && typeof child === "object") {
+      const found = findPasswordValue(child, depth + 1);
+      if (found) return found;
+    }
+  }
+  return "";
+}
+
+/**
+ * Passwort der lokalen API zur Laufzeit ermitteln: Umgebung → Env-Datei
+ * (/etc/opencode.env) → Service-Datei der laufenden Instanz. Der Feldname in
+ * der Service-Datei variiert je Version, deshalb wird tolerant gesucht. Der
+ * Wert wird nirgends geloggt.
+ */
+export function resolveServerPassword(env = process.env) {
+  const direct = String(env.OPENCODE_SERVER_PASSWORD ?? "").trim();
+  if (direct) return direct;
+  const fromFile = String(
+    readEnvFile(env.NTFY_ENV_FILE ?? "/etc/opencode.env").OPENCODE_SERVER_PASSWORD ?? ""
+  ).trim();
+  if (fromFile) return fromFile;
+  let home = "";
+  try {
+    home = homedir();
+  } catch {
+    home = "";
+  }
+  for (const file of [
+    env.OPENCODE_SERVICE_FILE,
+    home ? join(home, ".config/opencode/service.json") : "",
+    "/root/.config/opencode/service.json",
+  ]) {
+    if (!file) continue;
+    try {
+      const found = findPasswordValue(JSON.parse(readFileSync(file, "utf8")));
+      if (found) return found;
+    } catch {
+      /* Datei fehlt / kein JSON – nächster Kandidat */
+    }
+  }
+  return "";
+}
+
+/**
+ * Optionsliste tolerant normalisieren: laut Schema { value, label }, aber auch
+ * einfache Strings sind erlaubt. Einträge ohne Wert fallen raus.
+ */
+function normalizeOptions(options) {
+  const out = [];
+  for (const option of Array.isArray(options) ? options : []) {
+    if (option === null || option === undefined) continue;
+    if (typeof option === "object") {
+      const value = option.value ?? option.key ?? option.label ?? option.title;
+      if (value === undefined || value === null || value === "") continue;
+      out.push({ value, label: String(option.label ?? option.title ?? option.value ?? value) });
+      continue;
+    }
+    out.push({ value: option, label: String(option) });
+  }
+  return out;
+}
+
+function optionText(value) {
+  return value === undefined || value === null ? "" : String(value);
+}
+
+/**
+ * Antworttext → Optionswert. Reihenfolge: exakt (Wert oder Label, ohne
+ * Groß-/Kleinschreibung) → eindeutiger Teilstring-Treffer → reine Zahl n als
+ * 1-basierter Optionsindex. Kein eindeutiger Treffer → null: dann wird nicht
+ * geraten, sondern wie bisher ein Prompt eingespeist.
+ */
+function matchOption(options, text) {
+  const raw = String(text ?? "").trim();
+  const entries = normalizeOptions(options);
+  if (!raw || !entries.length) return null;
+  const needle = raw.toLowerCase();
+  const exact = entries.find(
+    (entry) =>
+      optionText(entry.value).toLowerCase() === needle || entry.label.toLowerCase() === needle
+  );
+  if (exact) return exact.value;
+  const partial = entries.filter(
+    (entry) =>
+      optionText(entry.value).toLowerCase().includes(needle) ||
+      entry.label.toLowerCase().includes(needle)
+  );
+  if (partial.length === 1) return partial[0].value;
+  if (/^\d+$/.test(raw)) {
+    const index = Number(raw) - 1;
+    if (index >= 0 && index < entries.length) return entries[index].value;
+  }
+  return null;
+}
+
+/**
+ * Passt die Antwort in das einzige Feld des Formulars?
+ * Rückgabe: { key, value } oder null (dann Prompt-Einspeisung).
+ *
+ * Bewusst konservativ: mehrere Felder, unbekannte Feldtypen (number, integer,
+ * boolean, external), versteckte/bedingte Felder und Optionsfelder ohne
+ * eindeutigen Treffer werden nicht beantwortet.
+ */
+function answerForForm(form, text) {
+  const fields = Array.isArray(form?.fields) ? form.fields : [];
+  if (fields.length !== 1) return null;
+  const field = fields[0];
+  if (!field || typeof field !== "object") return null;
+  const key = typeof field.key === "string" ? field.key : "";
+  if (!key) return null;
+  if (field.hidden === true) return null;
+  if (Array.isArray(field.when) && field.when.length) return null;
+  const type = typeof field.type === "string" ? field.type : "";
+  if (normalizeOptions(field.options).length) {
+    const value = matchOption(field.options, text);
+    if (value === null || value === undefined) return null;
+    // multiselect erwartet laut Schema eine Liste (Form.Value: string[]).
+    return { key, value: type === "multiselect" ? [optionText(value)] : value };
+  }
+  // Freitext nur beim String-Typ — alles andere bleibt konservativ.
+  if (type !== "string") return null;
+  return { key, value: String(text) };
+}
+
+/**
+ * Nur echte Fragen beantworten: Formulare mit anderem Zweck (z. B.
+ * Freigabe-Dialoge) bleiben dem nativen Fenster vorbehalten.
+ */
+function isQuestionForm(form) {
+  const kind = form?.metadata?.kind;
+  return typeof kind !== "string" || kind === "" || /^question/i.test(kind);
+}
+
 /** NDJSON-Zeilen des /json-Endpunkts lesen; since zeigt danach auf die letzte ID. */
 export function parseReplyStream(raw, since = "") {
   const messages = [];
@@ -975,6 +1192,13 @@ export function createReplyBridge(options = {}) {
   const idleMs = Number(options.idleMs ?? REPLY_IDLE_MS);
   const errorMs = Number(options.errorMs ?? REPLY_ERROR_MS);
   const diagPath = String(env.NTFY_REPLY_LOG ?? "").trim();
+  // Formular-Antwort: Schalter, Basis-URL und API-Passwort. Das Passwort
+  // (Option apiPassword) hat Vorrang, damit Tests ohne Dateizugriff und ohne
+  // Netz laufen können; sonst wird es zur Laufzeit ermittelt. Fehlt es, ist
+  // der Formular-Weg still inaktiv und es bleibt bei der Prompt-Einspeisung.
+  const formReply = options.formReply ?? formEnabled(env);
+  const apiUrl = String(options.apiUrl ?? localApiUrl(env)).replace(/\/+$/, "");
+  const apiPassword = String(options.apiPassword ?? resolveServerPassword(env));
 
   /**
    * Diagnose-Log: hängt nur dann Zeilen an NTFY_REPLY_LOG (Pfad) an, wenn die
@@ -1039,8 +1263,112 @@ export function createReplyBridge(options = {}) {
   }
 
   /**
+   * Offene Formulare (native Fragen) einer Session abrufen.
+   * Rückgabe: Liste oder null, wenn sie nicht ermittelbar ist. Wirft nur bei
+   * HTTP-/Netzfehlern — der Aufrufer behandelt das als „kein Formular“.
+   */
+  async function fetchOpenForms(sessionID) {
+    if (!apiPassword || typeof fetchImpl !== "function") return null;
+    const init = {
+      method: "GET",
+      headers: { Authorization: basicAuth(FORM_API_USER, apiPassword) },
+    };
+    const signal = timeoutSignal(FORM_API_TIMEOUT_MS);
+    if (signal) init.signal = signal;
+    const res = await fetchImpl(
+      `${apiUrl}/api/session/${encodeURIComponent(sessionID)}/form`,
+      init
+    );
+    const status = Number(res?.status ?? 0);
+    if (res?.ok === false || (status && status >= 400)) throw new Error(`HTTP ${status || "?"}`);
+    const data = typeof res?.json === "function" ? await res.json() : undefined;
+    // Die API antwortet mit { data: [...] }; eine nackte Liste ist auch ok.
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data?.data)) return data.data;
+    return [];
+  }
+
+  /** Antwort in ein Formular eintragen; Rückgabe: die HTTP-Antwort. */
+  async function postFormReply(sessionID, formID, answer) {
+    const init = {
+      method: "POST",
+      headers: {
+        Authorization: basicAuth(FORM_API_USER, apiPassword),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ answer }),
+    };
+    const signal = timeoutSignal(FORM_API_TIMEOUT_MS);
+    if (signal) init.signal = signal;
+    return fetchImpl(
+      `${apiUrl}/api/session/${encodeURIComponent(sessionID)}/form/${encodeURIComponent(formID)}/reply`,
+      init
+    );
+  }
+
+  /**
+   * Versucht, die Antwort direkt in die eine offene native Frage der Session
+   * einzutragen. Rückgabe: Ergebnisobjekt (action "replied") oder null — dann
+   * übernimmt wie bisher die Prompt-Einspeisung. Wirft nie.
+   */
+  async function tryFormReply(sessionID, text) {
+    if (!formReply) return null;
+    let forms;
+    try {
+      forms = await fetchOpenForms(sessionID);
+    } catch (error) {
+      log("Offene Formulare nicht abrufbar:", error?.message ?? String(error));
+      diag("form-abruf-fehler", error?.message ?? String(error));
+      return null;
+    }
+    if (!Array.isArray(forms) || !forms.length) return null;
+    const questions = forms.filter(isQuestionForm);
+    if (questions.length !== 1) {
+      // Mehrere Formulare (oder nur Freigabe-Dialoge): nicht raten.
+      diag("form-uebersprungen", `${forms.length} offene Formulare`);
+      return null;
+    }
+    const form = questions[0];
+    const formID = typeof form?.id === "string" ? form.id : "";
+    const answer = formID ? answerForForm(form, text) : null;
+    if (!answer) {
+      diag("form-ohne-treffer", oneLine(form?.title ?? "", 60));
+      return null;
+    }
+    let res;
+    try {
+      res = await postFormReply(sessionID, formID, { [answer.key]: answer.value });
+    } catch (error) {
+      log("Antwort konnte nicht ins Formular eingetragen werden:", error?.message ?? String(error));
+      diag("form-reply-fehler", error?.message ?? String(error));
+      return null;
+    }
+    // Vertrag: 204 = angenommen. 400/404/409 (oder alles andere) → Fallback.
+    if (res?.status !== 204 && res?.ok !== true) {
+      diag("form-reply-fehler", `HTTP ${res?.status ?? "?"}`);
+      return null;
+    }
+    // Bestätigung: leise (Priorität 2) und ohne Ton-Tag, wie die normale.
+    await publish({
+      title: FORM_REPLY_ACK_TITLE,
+      message: clampText(text, 200),
+      priority: 2,
+      tags: ["leftwards_arrow_with_hook"],
+    });
+    diag("form-reply", `${formID} feld=${answer.key}`);
+    return {
+      action: "replied",
+      sessionID,
+      text,
+      formID,
+      field: answer.key,
+      value: answer.value,
+    };
+  }
+
+  /**
    * Eine Nutzernachricht verarbeiten.
-   * Rückgabe: { action: "duplicate" | "skipped" | "ignored" | "injected" | "no-session", … }
+   * Rückgabe: { action: "duplicate" | "skipped" | "ignored" | "injected" | "replied" | "no-session", … }
    */
   async function handleMessage(message) {
     // Zuerst die Idempotenz-Prüfung: ntfy löst `since=<id>` nur sekundengenau
@@ -1071,6 +1399,12 @@ export function createReplyBridge(options = {}) {
       await hint(text);
       return { action: "no-session", text };
     }
+    // Vor der Prompt-Einspeisung prüfen, ob die Antwort in der einen offenen
+    // nativen Frage der Session steckt: dann wird sie direkt dort eingetragen
+    // und der blockierte Turn läuft weiter (siehe tryFormReply). Jeder unklare
+    // Fall endet weiter unten in der gewohnten Prompt-Einspeisung.
+    const replied = await tryFormReply(sessionID, text);
+    if (replied) return replied;
     try {
       await client.session.prompt({ sessionID, text });
     } catch (error) {
