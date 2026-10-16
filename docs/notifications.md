@@ -106,15 +106,39 @@ genau eine Testnachricht und registriert keine Hooks — für Diagnose).
 
 #### Aktivieren
 
-1. OpenBao: `secret/data/mcp/notify` mit `url` und `opencode_token`
-   (Token des Nutzers `src-opencode`) anlegen — siehe
-   [`secrets.md`](secrets.md); die AppRole braucht Lesezugriff auf den Pfad.
-2. Container bzw. OpenCode-Service neu starten: `startup.sh` installiert das
-   Plugin nach `~/.config/opencode/plugins/ntfy-notify.js` und setzt
-   `NTFY_TOKEN`/`NTFY_URL` als Service-Env.
+1. OpenBao: `secret/data/mcp/notify` mit `url` und `opencode_token` (Token des
+   Nutzers `src-opencode`) — **angelegt am 16.10.2026**; die AppRole `mcp-server`
+   liest `secret/data/mcp/*` und deckt den Pfad ab. Weitere Felder für später:
+   `hestia_token`, `ha_token`, `monitoring_token`.
+2. `startup.sh` installiert das Plugin nach `~/.config/opencode/plugins/` und
+   schreibt `NTFY_TOKEN`/`NTFY_URL` nach `/etc/opencode.env` (0600).
 3. Prüfen: in einer Session eine Aufgabe laufen lassen — beim Fertigwerden kommt
-   die Push-Nachricht. Ohne Neustart passiert nichts, weil die Service-Umgebung
-   nur beim Start gelesen wird.
+   die Push-Nachricht.
+
+**Reihenfolge der Token-Auflösung:** `NTFY_TOKEN`/`NTFY_URL` (Prozess-Env) →
+sonst `/etc/opencode.env` (Pfad über `NTFY_ENV_FILE` änderbar) → Default-URL.
+
+> **Fallstrick (empirisch):** `opencode service set env NTFY_TOKEN …` schreibt den
+> Wert zwar in `service.json`, aber im laufenden `serve --service`-Prozess kam er
+> **nicht** im environ an — deshalb liest das Plugin zusätzlich die Env-Datei.
+> Der Token muss also nicht mehr im Service-Env stehen.
+
+**Plugin-Datei ändern genügt:** der Service lädt Plugins bei Aktivität neu
+(kein Neustart nötig); nur Änderungen an `/etc/opencode.env` bzw. am Secret
+brauchen einen Neustart des Containers/Service, weil die Datei nur von
+`startup.sh` geschrieben wird.
+
+Diagnose im Container (Token aus der Env-Datei, echte Nachricht):
+
+```bash
+# 1. Beweis über den ntfy-Cache (Admin-Login carsten, auf dem Docker-Host)
+PW=$(sed -n 's/^NTFY_PASSWORD_CARSTEN=//p' /etc/docker/ntfy/credentials.env)
+curl -sS -u "carsten:$PW" "https://ntfy.mueller-nas.de/ai/json?poll=1&since=1h"
+
+# 2. Selbsttest gegen einen lokalen Sink statt ntfy
+NTFY_SELFTEST=1 NTFY_URL=http://127.0.0.1:8789 NTFY_TOKEN=tk_dummy \
+  timeout 20 opencode serve --port 49399     # braucht Aktivität, sonst lädt kein Plugin
+```
 
 Schnelle Diagnose ohne Neustart (im Container, mit lokalem HTTP-Sink statt ntfy):
 
@@ -187,8 +211,6 @@ Empirisch im Container (OpenCode 2.0.29) geprüft:
 
 ## Noch offen
 
-- [ ] OpenBao-Migration aller ntfy-Tokens nach `secret/data/mcp/notify`
-      (braucht Admin-Token; heute liegt alles in `/etc/docker/ntfy/credentials.env`).
 - [ ] Hermes-Webhook → ntfy (Hermes läuft auf dem Coder-Host).
 - [ ] HA-Routinenmeldungen (26) auf ntfy umstellen und `mobile_app`-Duplikate entfernen.
 - [ ] Phase 5: eigener `notify-gateway` (Antworten A/B/C), Windows-Desktop-Client,
