@@ -110,6 +110,23 @@ Coder-Parameter openbao_approle_secret_id
 
 Details und Pfadliste: [`secrets.md`](secrets.md).
 
+## Benachrichtigungen (ntfy)
+
+Ein zentraler, selbst gehosteter Notification-Hub auf dem Docker-Host
+(`https://ntfy.mueller-nas.de`) nimmt Meldungen aller Quellen entgegen; Phone
+(S25 Ultra) und Windows-PC abonnieren gefiltert nach Topics (`crit`, `ai`,
+`infra`, `home`, `print`, `digest`). Jede Quelle nutzt einen eigenen
+ntfy-Nutzer mit Topic-ACL statt Forward-Auth — native Apps bleiben so nutzbar.
+
+- Stack: `/opt/docker-compose/ntfy/` (CT 100), Credentials unter `/etc/docker/ntfy/`.
+- Home Assistant publiziert über `rest_command.ntfy`.
+- OpenCode meldet fertige Sessions, Fragen, Freigaben und Fehler automatisch
+  über das V2-Plugin `coder-templates/shared/plugins/ntfy-notify.js` (Token aus
+  `secret/data/mcp/notify`).
+
+Topics, Prioritäten, Aktivierung und V2-Plugin-Fallstricke:
+[`notifications.md`](notifications.md).
+
 ## Persistenz
 
 | Was | Host-Pfad | Container-Pfad |

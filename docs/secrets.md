@@ -45,6 +45,7 @@ ausschließlich in `/etc/opencode.env` (Mode 0600) ab.
 | `secret/data/mcp/github` | GitHub-PAT (via `scripts/setup-git-credentials.sh`) |
 | `secret/data/mcp/hermes-opencode-service` | `OPENCODE_SERVER_PASSWORD` |
 | `secret/data/mcp/artificialanalysis` | `AA_API_KEY` (Artificial Analysis, **optional** — ohne Key laufen die Benchmarks nur über OpenRouter) |
+| `secret/data/mcp/notify` | `NTFY_TOKEN` (`opencode_token`), `url` — Zugang zum ntfy-Hub, siehe [`notifications.md`](notifications.md). **Noch nicht angelegt** (Stand: ntfy ist live, Token liegt in `/etc/docker/ntfy/credentials.env`); bis dahin bleibt das OpenCode-Plugin still |
 | `secret/data/uni/fernuni-ocis` | `user`, `token`, `password`, `space_id`, `url` – oCIS App-Token des Service-Accounts `fernuni-obsidian` für den Space „FernUni" (FernUni/Obsidian-Second-Brain) |
 | `secret/data/uni/moodle` | `username`, `password`, `base_url` – FernUni-Moodle-Zugang für die Sync-Pipeline (lokaler Login, kein SSO/2FA) |
 
