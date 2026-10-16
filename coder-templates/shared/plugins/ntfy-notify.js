@@ -44,7 +44,7 @@
 // Installation: coder-templates/shared/plugins/ntfy-notify.js
 //               → ~/.config/opencode/plugins/ (dort automatisch geladen)
 
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 
 const DEFAULT_URL = "https://ntfy.mueller-nas.de";
 const DEFAULT_TOPIC = "ai";
@@ -384,17 +384,35 @@ export function resetSharedState() {
   if (Array.isArray(reply.sentIds)) reply.sentIds.length = 0;
   else if (reply.sentIds instanceof Set) reply.sentIds.clear();
   if (Array.isArray(reply.processedIds)) reply.processedIds.length = 0;
+  else if (reply.processedIds instanceof Set) reply.processedIds.clear();
   reply.lastSessionID = "";
-  reply.replyBridgeStarted = false;
+  reply.lastActiveSession = "";
+  reply.replySince = "";
+  // Eine noch laufende Schleife mit beenden — sonst würde sie nach dem
+  // Zurücksetzen weiterpollen und wäre über stop() nicht mehr erreichbar.
+  try {
+    reply.replyAbort?.abort();
+  } catch {
+    /* Zurücksetzen darf nie werfen */
+  }
+  reply.replyAbort = null;
+  reply.replyPromise = null;
 }
 
 // ── Prozessglobaler Zustand der Antwort-Brücke ────────────────────────────
 //
 // Dieselbe Begründung wie beim Event-Zustand: mehrere Plugin-Instanzen (eine
-// je Location) teilen sich einen Prozess, die Hintergrundschleife darf aber
-// nur einmal laufen. sentIds/lastSessionID liegen deshalb ebenfalls am
-// Prozess und werden vom Notifier (send/sendOnce) genauso benutzt wie von der
-// Brücke selbst.
+// je Location) teilen sich einen Prozess. sentIds/lastSessionID liegen deshalb
+// am Prozess und werden vom Notifier (send/sendOnce) genauso benutzt wie von
+// der Brücke selbst.
+//
+// Die Schleife darf je Prozess nur einmal laufen — aber NICHT über ein
+// dauerhaftes „läuft schon"-Flag: das überlebte den Plugin-Reload, die
+// Schleife selbst aber nicht, und danach lief gar keine mehr. Stattdessen
+// hält replyAbort/replyPromise die aktuelle Schleife fest; jeder setup()-
+// Aufruf bricht die vorherige ab und startet eine frische. replySince (letzter
+// `since`-Zeiger) und lastActiveSession (Fallback-Ziel) überleben den Wechsel
+// bewusst.
 
 const REPLY_KEY = Symbol.for("ntfy.notify.runtime");
 
@@ -403,7 +421,10 @@ function newReplyState() {
     sentIds: [], // IDs der selbst gesendeten ntfy-Nachrichten
     processedIds: [], // IDs der bereits verarbeiteten Fremd-Nachrichten (Idempotenz)
     lastSessionID: "", // Session der zuletzt gesendeten Benachrichtigung
-    replyBridgeStarted: false, // Schleife läuft bereits in diesem Prozess
+    lastActiveSession: "", // zuletzt gesehene Session ohne Benachrichtigung (Fallback-Ziel)
+    replyAbort: null, // AbortController der aktuell laufenden Brücken-Schleife
+    replyPromise: null, // Promise dieser Schleife (erledigt sich mit ihr)
+    replySince: "", // letzter `since`-Zeiger; überlebt Schleifen-Neustarts
   };
 }
 
@@ -421,7 +442,10 @@ export function replyRuntime() {
     existing.processedIds = [];
   }
   if (typeof existing.lastSessionID !== "string") existing.lastSessionID = "";
-  if (typeof existing.replyBridgeStarted !== "boolean") existing.replyBridgeStarted = false;
+  if (typeof existing.lastActiveSession !== "string") existing.lastActiveSession = "";
+  if (typeof existing.replySince !== "string") existing.replySince = "";
+  if (!("replyAbort" in existing)) existing.replyAbort = null;
+  if (!("replyPromise" in existing)) existing.replyPromise = null;
   return existing;
 }
 
@@ -726,6 +750,12 @@ export function createNtfyNotifier(options = {}) {
     // Subagent-Sessions (parentID gesetzt) melden nichts — die Eltern-Session tut es.
     if (sessionID && state.children.has(sessionID)) return;
 
+    // Fallback-Ziel der Antwort-Brücke: die zuletzt gesehene Session, die kein
+    // Subagent ist (die Prüfung darüber ist synchron). So kommt eine Antwort
+    // auch dann an, wenn die Session keine eigene Meldung ausgelöst hat.
+    // lastSessionID (aus Benachrichtigungen) hat in der Brücke Vorrang.
+    if (sessionID) replyState.lastActiveSession = sessionID;
+
     // V2: vollständiger Antwort-Text je Text-Teil — der letzte gewinnt.
     const text = textFromEvent(event);
     if (sessionID && text) {
@@ -940,6 +970,24 @@ export function createReplyBridge(options = {}) {
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const pollSeconds = Number(options.pollSeconds ?? env.NTFY_REPLY_POLL_SECONDS);
   const pollMs = (pollSeconds > 0 ? pollSeconds : REPLY_POLL_SECONDS) * 1000;
+  // Wartezeiten sind übersteuerbar (Tests laufen damit schnell); die Defaults
+  // bleiben die 5 s aus REPLY_IDLE_MS/REPLY_ERROR_MS.
+  const idleMs = Number(options.idleMs ?? REPLY_IDLE_MS);
+  const errorMs = Number(options.errorMs ?? REPLY_ERROR_MS);
+  const diagPath = String(env.NTFY_REPLY_LOG ?? "").trim();
+
+  /**
+   * Diagnose-Log: hängt nur dann Zeilen an NTFY_REPLY_LOG (Pfad) an, wenn die
+   * Variable gesetzt ist. Ohne sie keine Datei-Ein-/Ausgabe. Wirft nie.
+   */
+  function diag(event, detail = "") {
+    if (!diagPath) return;
+    try {
+      appendFileSync(diagPath, `${new Date().toISOString()} ${event}${detail ? `: ${detail}` : ""}\n`);
+    } catch {
+      /* Diagnose darf die Brücke nie stören */
+    }
+  }
 
   /** "" = fremde Nachricht, "id"/"title" = eigene Nachricht. */
   function ignoreReason(message) {
@@ -1012,7 +1060,13 @@ export function createReplyBridge(options = {}) {
     const text = clampText(message?.message ?? message?.text ?? "", MAX_REPLY_TEXT);
     if (!text) return { action: "skipped", reason: "leer" };
 
-    const sessionID = typeof runtime.lastSessionID === "string" ? runtime.lastSessionID : "";
+    // Ziel der Antwort: vorrangig die Session der letzten Benachrichtigung
+    // (lastSessionID wird in send/sendOnce gesetzt, Subagenten sind dort schon
+    // gefiltert) — sie ist die präziseste Zuordnung. Nur wenn es keine
+    // Benachrichtigung gab, greift die zuletzt gesehene Session als Fallback.
+    const sessionID =
+      (typeof runtime.lastSessionID === "string" ? runtime.lastSessionID : "") ||
+      (typeof runtime.lastActiveSession === "string" ? runtime.lastActiveSession : "");
     if (!sessionID || typeof client?.session?.prompt !== "function") {
       await hint(text);
       return { action: "no-session", text };
@@ -1037,34 +1091,56 @@ export function createReplyBridge(options = {}) {
   /** Endlosschleife: abholen, verarbeiten, kurz warten. Wirft nie heraus. */
   async function loop(signal, startSince) {
     let since = String(startSince ?? Math.floor(Date.now() / 1000));
+    runtime.replySince = since;
+    diag("start", `since=${since} topic=${topic}`);
     while (!signal?.aborted) {
       try {
         const round = await pollOnce(since, signal);
-        if (round.nextSince) since = round.nextSince;
+        // Zeiger fortschreiben: er liegt am Prozess und überlebt deshalb den
+        // nächsten Plugin-Reload — sonst würde dieselbe Nachricht erneut
+        // abgeholt (oder eine verpasste ganz übersprungen).
+        if (round.nextSince) {
+          since = round.nextSince;
+          runtime.replySince = since;
+        }
+        diag("runde", `${round.messages.length} neue Nachricht(en), since=${since}`);
         for (const message of round.messages) {
           if (signal?.aborted) break;
           try {
-            await handleMessage(message);
+            const result = await handleMessage(message);
+            diag("aktion", `${result?.action ?? "?"}${result?.reason ? ` (${result.reason})` : ""}`);
           } catch (error) {
             log("Antwort konnte nicht verarbeitet werden:", error?.message ?? String(error));
+            diag("fehler", `verarbeiten: ${error?.message ?? String(error)}`);
           }
         }
       } catch (error) {
+        // Ein Fehler beendet die Schleife nicht: kurz warten, weiterlaufen.
         if (signal?.aborted) break;
         log("Antwort-Abfrage fehlgeschlagen:", error?.message ?? String(error));
-        await sleep(REPLY_ERROR_MS, signal);
+        diag("fehler", `abfrage: ${error?.message ?? String(error)}`);
+        await sleep(errorMs, signal);
         continue;
       }
-      await sleep(REPLY_IDLE_MS, signal);
+      await sleep(idleMs, signal);
     }
+    diag("ende", `since=${since}`);
   }
 
   return { shouldIgnore, ignoreReason, handleMessage, pollOnce, loop, url, topic };
 }
 
 /**
- * Startet die Antwort-Brücke genau einmal je Prozess.
- * Rückgabe: { bridge, stop } oder null (abgeschaltet/ohne Token/läuft schon).
+ * Startet die Antwort-Brücke und löst dabei eine eventuell laufende Schleife ab.
+ *
+ * Bewusst KEIN dauerhaftes „läuft schon"-Flag mehr: das überlebte den
+ * Plugin-Reload, die Schleife selbst aber nicht — danach lief gar keine mehr.
+ * Stattdessen gilt: jeder Aufruf (also jedes setup()) bricht die vorherige
+ * Schleife ab und startet eine frische. Damit lebt immer genau eine Schleife,
+ * und zwar die der neuesten Instanz; auch beim Erststart mehrerer Locations
+ * ersetzt jede die vorherige.
+ *
+ * Rückgabe: { bridge, controller, stop } oder null (abgeschaltet/ohne Token).
  */
 export function startReplyBridge(options = {}) {
   const env = options.env ?? process.env;
@@ -1072,10 +1148,12 @@ export function startReplyBridge(options = {}) {
   const log = options.log ?? (() => {});
 
   if (!replyEnabled(env)) return null;
-  if (runtime.replyBridgeStarted) return null;
   const config = options.config ?? resolveConfig(env);
   if (!config.token) return null;
-  runtime.replyBridgeStarted = true;
+
+  // Vorherige Schleife ablösen. Deren stop() bleibt danach folgenlos (siehe
+  // unten), eine veraltete Instanz kann die neue also nicht mehr töten.
+  runtime.replyAbort?.abort();
 
   const bridge = createReplyBridge({
     ...options,
@@ -1086,16 +1164,37 @@ export function startReplyBridge(options = {}) {
     config,
   });
   const controller = options.controller ?? new AbortController();
-  const stop = () => controller.abort();
-  void (async () => {
+  runtime.replyAbort = controller;
+
+  // Zeiger aus dem Prozesszustand: eine neue Instanz setzt dort an, wo die
+  // vorherige aufgehört hat. Mit dem Startwert würde sie alte Nachrichten
+  // erneut verarbeiten.
+  const startSince = runtime.replySince ? runtime.replySince : options.since;
+
+  const promise = (async () => {
     try {
-      await bridge.loop(controller.signal, options.since);
+      await bridge.loop(controller.signal, startSince);
     } catch (error) {
       if (!controller.signal.aborted) {
         log("Antwort-Brücke beendet:", error?.message ?? String(error));
       }
     }
   })();
+
+  // Das Promise bleibt als erledigt erkennbar (replyPromise wird dann wieder
+  // frei), damit ein späteres setup() sicher erneut starten kann — auch wenn
+  // die Schleife vorher durch einen Fehler geendet hat.
+  const settled = promise
+    .catch(() => {})
+    .finally(() => {
+      if (runtime.replyPromise === settled) runtime.replyPromise = null;
+    });
+  runtime.replyPromise = settled;
+
+  /** Beendet nur die eigene Schleife — nicht die einer neueren Instanz. */
+  const stop = () => {
+    if (runtime.replyAbort === controller) controller.abort();
+  };
   return { bridge, controller, stop };
 }
 

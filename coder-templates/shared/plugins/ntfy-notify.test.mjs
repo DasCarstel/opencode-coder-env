@@ -6,6 +6,7 @@
 // Zusätzlich wird die V2-Anbindung (setup → ctx.event.subscribe) mit einem
 // Mock-Context getestet.
 
+import { readFileSync, rmSync } from "node:fs";
 import http from "node:http";
 import {
   createNtfyNotifier,
@@ -810,7 +811,7 @@ async function until(check, timeoutMs = 2000) {
 {
   const prompts = [];
   const published = [];
-  const runtime = { sentIds: ["msg_eigen1"], lastSessionID: "", replyBridgeStarted: false };
+  const runtime = { sentIds: ["msg_eigen1"], lastSessionID: "" };
   const bridge = createReplyBridge({
     env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai" },
     runtime,
@@ -893,7 +894,7 @@ async function until(check, timeoutMs = 2000) {
 console.log("\nAntwort-Brücke (Abfrage)");
 {
   const requests = [];
-  const runtime = { sentIds: [], lastSessionID: SESSION, replyBridgeStarted: false };
+  const runtime = { sentIds: [], lastSessionID: SESSION };
   let calls = 0;
   const fetchStub = async (input, init) => {
     requests.push({ url: String(input), init });
@@ -938,49 +939,278 @@ console.log("\nAntwort-Brücke (Abfrage)");
   eq(emptyRound.nextSince, "msg_a2", "since bleibt bei leerer Abfrage stehen");
 }
 
-// ── 25. Antwort-Brücke: Start-Guard und Flag ─────────────────────────────
+// ── 25. Antwort-Brücke: Start, Ablösung und Cleanup ──────────────────────
 console.log("\nAntwort-Brücke (Start)");
+
+/**
+ * fetch-Ersatz für die Lebensdauer-Tests: die Abfrage bleibt offen, bis der
+ * Abort (Poll-Timeout ODER Ablösung durch die nächste Instanz) sie beendet —
+ * so ist sichtbar, welche Schleife gerade pollt.
+ */
+function hangFetch(calls) {
+  return (input, init = {}) => {
+    const entry = { url: String(input), done: false };
+    calls.push(entry);
+    return new Promise((resolve) => {
+      const finish = () => {
+        entry.done = true;
+        resolve({ ok: true, status: 200, text: async () => "" });
+      };
+      if (init.signal?.aborted) finish();
+      else init.signal?.addEventListener("abort", finish, { once: true });
+    });
+  };
+}
+
 {
   resetSharedState();
   const runtime = replyRuntime();
   const client = { session: { prompt: async () => {} } };
-
-  const off = startReplyBridge({
-    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_REPLY_ENABLED: "0" },
+  const base = (extra = {}) => ({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_TOPIC: "ai",
+      NTFY_REPLY_POLL_SECONDS: "60",
+    },
     runtime,
     client,
     publish: async () => true,
     log: () => {},
+    ...extra,
   });
+
+  const off = startReplyBridge(
+    base({ env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_REPLY_ENABLED: "0" } })
+  );
   eq(off, null, "NTFY_REPLY_ENABLED=0 startet keine Brücke");
-  eq(runtime.replyBridgeStarted, false, "Flag bleibt ausgeschaltet");
+  eq(runtime.replyAbort, null, "ohne Start läuft auch kein Controller");
 
-  const controller = new AbortController();
-  const started = startReplyBridge({
-    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_REPLY_POLL_SECONDS: "1" },
-    runtime,
-    controller,
-    client,
-    publish: async () => true,
-    fetch: async () => ({ ok: true, status: 200, text: async () => "" }),
-    log: () => {},
-  });
-  ok(started !== null && typeof started.stop === "function", "Brücke startet und liefert stop()");
-  eq(runtime.replyBridgeStarted, true, "Flag verhindert weitere Schleifen");
-  const again = startReplyBridge({
-    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" },
-    runtime,
-    client,
-    publish: async () => true,
-    log: () => {},
-  });
-  eq(again, null, "ein zweiter Start im selben Prozess wird verhindert");
-  started.stop();
-  eq(controller.signal.aborted, true, "stop() beendet die Schleife");
+  const calls = [];
+  const first = startReplyBridge(base({ fetch: hangFetch(calls), controller: new AbortController() }));
+  ok(first !== null && typeof first.stop === "function", "Brücke startet und liefert stop()");
+  eq(runtime.replyAbort, first.controller, "der Start setzt seinen Controller als aktuellen");
+  ok(await until(() => calls.length === 1), "die erste Schleife fragt im Hintergrund ab");
+
+  // Zweite Instanz (Plugin-Reload): sie löst die erste ab.
+  const second = startReplyBridge(base({ fetch: hangFetch(calls), controller: new AbortController() }));
+  ok(second !== null, "ein zweiter Start ist möglich (kein dauerhaftes „läuft schon“)");
+  eq(first.controller.signal.aborted, true, "der zweite Start bricht die vorherige Schleife ab");
+  eq(second.controller.signal.aborted, false, "die neue Schleife läuft");
+  eq(runtime.replyAbort, second.controller, "aktuelle Schleife ist die der neuesten Instanz");
+  ok(await until(() => calls.length === 2), "auch die neue Schleife fragt ab");
+  eq(
+    calls.filter((call) => !call.done).length,
+    1,
+    "genau eine Schleife pollt (die alte ist wirklich beendet)"
+  );
+
+  // Cleanup der alten Instanz darf die neue Schleife nicht töten.
+  first.stop();
+  eq(second.controller.signal.aborted, false, "Cleanup der alten Instanz tötet die neue Schleife nicht");
+  eq(runtime.replyAbort, second.controller, "der aktuelle Controller bleibt unverändert");
+
+  // stop() der aktuellen Instanz beendet sie; ihr Promise wird erledigt.
+  second.stop();
+  eq(second.controller.signal.aborted, true, "stop() beendet die aktuelle Schleife");
+  ok(
+    await until(() => runtime.replyPromise === null),
+    "der Schleifen-Promise ist erledigt (Neustart möglich)"
+  );
+
+  // Ein späterer setup() startet wieder — kein „läuft schon“-Zustand mehr.
+  const third = startReplyBridge(base({ fetch: hangFetch(calls), controller: new AbortController() }));
+  ok(third !== null, "nach dem Ende startet ein späterer setup() erneut");
+  third.stop();
+  await until(() => runtime.replyPromise === null);
   resetSharedState();
 }
 
-// ── 26. Antwort-Brücke: setup → Abfrage → Prompt → Ack ───────────────────
+// ── 26. Antwort-Brücke: since-Zeiger überlebt den Neustart ───────────────
+console.log("\nAntwort-Brücke (Neustart)");
+{
+  resetSharedState();
+  const runtime = replyRuntime();
+  const urls = [];
+  const fetchStub = async (input) => {
+    urls.push(decodeURIComponent(String(input)));
+    // keepalive-Zeile mit ID: der Zeiger rückt weiter, ohne dass eine
+    // Nutzernachricht verarbeitet werden muss.
+    return { ok: true, status: 200, text: async () => '{"id":"msg_keep9","event":"keepalive"}\n' };
+  };
+  const base = {
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai", NTFY_REPLY_POLL_SECONDS: "60" },
+    runtime,
+    client: { session: { prompt: async () => {} } },
+    publish: async () => true,
+    fetch: fetchStub,
+    idleMs: 20,
+    log: () => {},
+  };
+
+  const first = startReplyBridge({ ...base, since: "1700000000" });
+  ok(await until(() => urls.length >= 1), "die erste Schleife fragt ab");
+  ok(urls[0].includes("since=1700000000"), "der Startwert wird für die erste Abfrage benutzt");
+  ok(await until(() => runtime.replySince === "msg_keep9"), "der since-Zeiger wird fortgeschrieben");
+  first.stop();
+  await wait();
+  urls.length = 0;
+
+  const second = startReplyBridge({ ...base, since: "1700000000" });
+  ok(await until(() => urls.length >= 1), "die neue Schleife fragt wieder ab");
+  ok(urls[0].includes("since=msg_keep9"), "der fortgeschriebene Zeiger überlebt den Neustart");
+  ok(!urls[0].includes("1700000000"), "nicht der Startwert (keine Doppelverarbeitung)");
+  second.stop();
+  await until(() => runtime.replyPromise === null);
+  resetSharedState();
+}
+
+// ── 27. Antwort-Brücke: Fehler beenden die Schleife nicht ────────────────
+console.log("\nAntwort-Brücke (Robustheit)");
+{
+  resetSharedState();
+  const runtime = replyRuntime();
+  const requests = [];
+  let failFirst = true;
+  const fetchStub = async (input) => {
+    requests.push(String(input));
+    if (failFirst) {
+      failFirst = false;
+      throw new Error("Netzwerk weg");
+    }
+    return { ok: true, status: 200, text: async () => "" };
+  };
+  const started = startReplyBridge({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai", NTFY_REPLY_POLL_SECONDS: "60" },
+    runtime,
+    controller: new AbortController(),
+    client: { session: { prompt: async () => {} } },
+    publish: async () => true,
+    fetch: fetchStub,
+    errorMs: 20,
+    idleMs: 20,
+    log: () => {},
+  });
+  ok(await until(() => requests.length >= 2), "nach einem fetch-Fehler fragt die Schleife erneut ab");
+  eq(started.controller.signal.aborted, false, "der Fehler beendet die Schleife nicht");
+  started.stop();
+  await until(() => runtime.replyPromise === null);
+  resetSharedState();
+}
+
+// ── 28. Antwort-Brücke: Fallback-Session ohne vorherige Meldung ──────────
+console.log("\nAntwort-Brücke (Fallback)");
+{
+  const runtime = { sentIds: [], processedIds: [], lastSessionID: "", lastActiveSession: "" };
+  const prompts = [];
+  const notifier = makeNotifier({ replyState: runtime });
+
+  // Eine Session, die keine Meldung auslöst, ist trotzdem die „letzte
+  // gesehene“ — und damit das Fallback-Ziel der Brücke.
+  await notifier.handleEvent(
+    v2("message.part.updated", { part: { type: "text", role: "user", text: "Hallo" } })
+  );
+  eq(runtime.lastActiveSession, SESSION, "handleEvent merkt die zuletzt gesehene Session");
+  eq(runtime.lastSessionID, "", "eine Benachrichtigung gab es nicht");
+
+  // Als Kind bekannte (Subagent-)Sessions zählen nicht als Fallback-Ziel.
+  const childID = "ses_child0002abcdef";
+  notifier._state.children.set(childID, SESSION);
+  await notifier.handleEvent(
+    v2("message.part.updated", { part: { type: "text", role: "user", text: "Kind" } }, { sessionID: childID })
+  );
+  eq(runtime.lastActiveSession, SESSION, "Kind-Sessions ändern das Fallback-Ziel nicht");
+
+  const bridge = createReplyBridge({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai" },
+    runtime,
+    client: {
+      session: {
+        prompt: async (arg) => {
+          prompts.push(arg);
+          return {};
+        },
+      },
+    },
+    publish: async () => true,
+    log: () => {},
+  });
+  const injected = await bridge.handleMessage({
+    id: "msg_fb1",
+    title: "Nutzerantwort",
+    message: "Bitte weitermachen.",
+  });
+  eq(injected.action, "injected", "Antwort kommt auch ohne vorherige Meldung an");
+  eq(prompts[0]?.sessionID, SESSION, "Ziel ist die zuletzt gesehene Session");
+
+  // Die benachrichtigte Session hat immer Vorrang vor dem Fallback.
+  runtime.lastSessionID = "ses_benachrichtigt3";
+  await bridge.handleMessage({ id: "msg_fb2", title: "Nutzerantwort", message: "Und noch etwas." });
+  eq(prompts[1]?.sessionID, "ses_benachrichtigt3", "lastSessionID hat Vorrang vor dem Fallback");
+}
+
+// ── 29. Antwort-Brücke: Diagnose-Log (NTFY_REPLY_LOG) ────────────────────
+console.log("\nAntwort-Brücke (Diagnose-Log)");
+{
+  resetSharedState();
+  const logPath = "/tmp/opencode/ntfy-reply-bridge-test.log";
+  rmSync(logPath, { force: true });
+  const readLog = () => {
+    try {
+      return readFileSync(logPath, "utf8");
+    } catch {
+      return "";
+    }
+  };
+  const runtime = replyRuntime();
+  runtime.lastSessionID = SESSION;
+  const prompts = [];
+  const fetchStub = async () => ({
+    ok: true,
+    status: 200,
+    text: async () =>
+      `${JSON.stringify({
+        id: "msg_log1",
+        event: "message",
+        title: "Nutzerantwort",
+        message: "Bitte Log prüfen.",
+      })}\n`,
+  });
+  const started = startReplyBridge({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_TOPIC: "ai",
+      NTFY_REPLY_POLL_SECONDS: "60",
+      NTFY_REPLY_LOG: logPath,
+    },
+    runtime,
+    controller: new AbortController(),
+    client: {
+      session: {
+        prompt: async (arg) => {
+          prompts.push(arg);
+          return {};
+        },
+      },
+    },
+    publish: async () => true,
+    fetch: fetchStub,
+    idleMs: 20,
+    log: () => {},
+  });
+  ok(await until(() => readLog().includes("injected")), "die Aktion wird protokolliert");
+  ok(readLog().includes("start") && readLog().includes("since="), "der Start steht mit since im Log");
+  ok(readLog().includes("runde"), "jede Poll-Runde wird protokolliert");
+  ok(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /m.test(readLog()), "Zeilen tragen ISO-Zeitstempel");
+  eq(prompts.length, 1, "die Nachricht aus dem Test wird genau einmal eingespeist");
+  started.stop();
+  await until(() => runtime.replyPromise === null);
+  resetSharedState();
+  rmSync(logPath, { force: true });
+}
+
+// ── 30. Antwort-Brücke: setup → Abfrage → Prompt → Ack ───────────────────
 console.log("\nAntwort-Brücke (Ende zu Ende)");
 {
   resetSharedState();
@@ -1066,7 +1296,7 @@ console.log("\nAntwort-Brücke (Ende zu Ende)");
   resetSharedState();
 }
 
-// ── 27. Antwort-Brücke: Idempotenz (sekundengenaues `since`) ──────────────
+// ── 31. Antwort-Brücke: Idempotenz (sekundengenaues `since`) ──────────────
 // ntfy löst `since=<id>` nur sekundengenau auf: Nachrichten aus derselben
 // Sekunde liefert ein Poll erneut aus. Dieselbe ID darf deshalb nur einmal
 // verarbeitet werden.
@@ -1074,7 +1304,7 @@ console.log("\nAntwort-Brücke (Idempotenz)");
 {
   const prompts = [];
   const published = [];
-  const runtime = { sentIds: [], processedIds: [], lastSessionID: SESSION, replyBridgeStarted: false };
+  const runtime = { sentIds: [], processedIds: [], lastSessionID: SESSION };
   const bridge = createReplyBridge({
     env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" },
     runtime,
