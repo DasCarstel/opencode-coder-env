@@ -44,6 +44,11 @@
 //                     ~120 s zwischengespeichert, damit nicht jede Meldung
 //                     einen neuen Code erzeugt.
 //
+//   Alle NTFY_*-Einstellungen liest das Plugin zusätzlich aus der Env-Datei
+//   /etc/opencode.env (Pfad über NTFY_ENV_FILE änderbar): die Service-Umgebung
+//   kommt nicht in jeder Installation im Service-Prozess an. Vorrang hat immer
+//   die Prozess-Umgebung, danach die Datei, dann die Defaults.
+//
 // Antwort-Brücke (der Nutzer antwortet in der ntfy-App auf eine Meldung; diese
 // Antwort landet als normale Nachricht im Topic und wird hier abgeholt und als
 // Prompt in die zuletzt benachrichtigte Session eingespeist):
@@ -139,11 +144,14 @@ const PAIR_LINK_LABEL = "Koppeln (5 Min)";
 // ── Hilfsfunktionen ────────────────────────────────────────────────────────
 
 /**
- * Token/URL auch aus der Workspace-Env-Datei lesen.
+ * Die Workspace-Env-Datei einlesen (Schlüssel → Wert).
  *
- * `startup.sh` schreibt `NTFY_TOKEN`/`NTFY_URL` nach `/etc/opencode.env`
- * (Mode 0600) — die Service-Umgebung über `opencode service set env` kommt
- * nicht in jeder Installation im Service-Prozess an. Env-Variablen haben
+ * `startup.sh` schreibt dort ALLE `NTFY_*`-Einstellungen nach
+ * `/etc/opencode.env` (Mode 0600) — Token/URL/Topic, aber auch den
+ * Session-Link (`NTFY_SESSION_URL`), den Serverschlüssel (`NTFY_SERVER_KEY`)
+ * und die Schalter (`NTFY_PAIR_BUTTON`, `NTFY_FORM_REPLY` …). Die
+ * Service-Umgebung über `opencode service set env` kommt nicht in jeder
+ * Installation im Service-Prozess an. Beim Zusammenführen haben Env-Variablen
  * Vorrang, danach die Datei, dann die Defaults.
  */
 function readEnvFile(path) {
@@ -1857,8 +1865,15 @@ export function startReplyBridge(options = {}) {
  */
 export function createPluginRuntime(options = {}) {
   const env = options.env ?? process.env;
+  // Die Env-Datei gilt für ALLE NTFY_*-Einstellungen, nicht nur für
+  // Token/URL/Topic: auch Session-Link (NTFY_SESSION_URL), Serverschlüssel
+  // (NTFY_SERVER_KEY) und die Schalter kommen sonst nicht im Service-Prozess
+  // an. Einmal lesen (readEnvFile wirft nie) und als Basis mit der
+  // Prozess-Env zusammenführen — Priorität bleibt Env > Datei > Default.
+  const fileEnv = readEnvFile(env.NTFY_ENV_FILE ?? "/etc/opencode.env");
+  const merged = { ...fileEnv, ...env };
   const argv = options.argv ?? process.argv.slice(2);
-  const selftest = env.NTFY_SELFTEST === "1";
+  const selftest = merged.NTFY_SELFTEST === "1";
 
   return {
     id: PLUGIN_ID,
@@ -1866,9 +1881,9 @@ export function createPluginRuntime(options = {}) {
       // Nur der Hintergrund-Service meldet; im Selbsttest auch ein Test-Server.
       if (!selftest && !isServiceProcess(argv)) return;
 
-      const cfg = resolveConfig(env);
+      const cfg = resolveConfig(merged);
       const notifier = createNtfyNotifier({
-        env: { ...env, NTFY_TOKEN: cfg.token, NTFY_URL: cfg.url, NTFY_TOPIC: cfg.topic },
+        env: { ...merged, NTFY_TOKEN: cfg.token, NTFY_URL: cfg.url, NTFY_TOPIC: cfg.topic },
         ...(options.fetch ? { fetch: options.fetch } : {}),
         ...(options.log ? { log: options.log } : {}),
         directory: typeof ctx?.location?.directory === "string" ? ctx.location.directory : "",
@@ -1905,7 +1920,7 @@ export function createPluginRuntime(options = {}) {
       // Antwort-Brücke: Nutzerantworten aus dem Topic zurück in die Session.
       const replyBridge = startReplyBridge({
         ctx,
-        env: { ...env, NTFY_TOKEN: cfg.token, NTFY_URL: cfg.url, NTFY_TOPIC: cfg.topic },
+        env: { ...merged, NTFY_TOKEN: cfg.token, NTFY_URL: cfg.url, NTFY_TOPIC: cfg.topic },
         publish: (payload) => notifier.send(payload),
         log: options.log ?? debug,
         ...(options.fetch ? { fetch: options.fetch } : {}),

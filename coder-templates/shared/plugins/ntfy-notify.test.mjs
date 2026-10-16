@@ -501,6 +501,86 @@ console.log("\nEnv-Datei-Fallback");
   eq(received[0]?.url, "/", "URL aus Datei (Sink)");
 }
 
+// ── 15b. Alle NTFY_*-Einstellungen aus der Env-Datei (Session-Link) ───────
+console.log("\nEnv-Datei: Session-Link und Serverschlüssel");
+
+/**
+ * Plugin-Runtime starten und über den Event-Stream eine Fertig-Meldung
+ * auslösen (Session anlegen → Antwort-Text → idle). Rückgabe: Klick-Link.
+ */
+async function triggerFinish(runtime) {
+  const stream = makeStream();
+  const cleanup = await runtime.setup({
+    location: { directory: REPO_DIR },
+    session: { hook: async () => ({ dispose: async () => {} }) },
+    event: { subscribe: () => stream.iterator },
+  });
+  stream.push({ type: "session.created", properties: { info: info(SESSION) } });
+  stream.push({
+    type: "message.part.updated",
+    properties: { sessionID: SESSION, part: { type: "text", text: "Bericht steht." } },
+  });
+  stream.push({ type: "session.idle", properties: { sessionID: SESSION } });
+  ok(await until(() => received.length > 0, 1000), "Fertig-Meldung ist raus");
+  const click = String(received[0]?.body?.click ?? "");
+  cleanup?.();
+  await wait();
+  return click;
+}
+
+{
+  resetSharedState();
+  received.length = 0;
+  const envFile = "/tmp/opencode/ntfy-notify-test-session.env";
+  await (await import("node:fs/promises")).writeFile(
+    envFile,
+    "NTFY_SESSION_URL=https://beispiel.test/\nNTFY_SERVER_KEY=example.test\n"
+  );
+  const runtime = createPluginRuntime({
+    // NTFY_REPLY_ENABLED=0: hier geht es nur um die Event-Meldung; sonst würde
+    // die Antwort-Brücke zusätzlich den Sink abfragen (kein Netz im Test).
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_ENV_FILE: envFile,
+      NTFY_PAIR_BUTTON: "0",
+      NTFY_REPLY_ENABLED: "0",
+    },
+    argv: ["serve", "--service"],
+    log: () => {},
+  });
+  const click = await triggerFinish(runtime);
+  ok(
+    click.startsWith("https://beispiel.test/server/example.test/session/"),
+    `Klick-Ziel nutzt NTFY_SESSION_URL und NTFY_SERVER_KEY aus der Env-Datei (war: ${click})`
+  );
+  eq(click, `https://beispiel.test/server/example.test/session/${SESSION}`, "Klick-Ziel vollständig");
+}
+
+// ── 15c. Prozess-Env schlägt die Env-Datei ────────────────────────────────
+console.log("\nEnv-Datei: Prozess-Env hat Vorrang");
+{
+  resetSharedState();
+  received.length = 0;
+  const envFile = "/tmp/opencode/ntfy-notify-test-priority.env";
+  await (await import("node:fs/promises")).writeFile(envFile, "NTFY_SERVER_KEY=aus-datei\n");
+  const runtime = createPluginRuntime({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_ENV_FILE: envFile,
+      NTFY_SERVER_KEY: "aus-env",
+      NTFY_PAIR_BUTTON: "0",
+      NTFY_REPLY_ENABLED: "0",
+    },
+    argv: ["serve", "--service"],
+    log: () => {},
+  });
+  const click = await triggerFinish(runtime);
+  ok(click.includes("/server/aus-env/session/"), `Prozess-Env gewinnt (war: ${click})`);
+  ok(!click.includes("aus-datei"), "der Wert aus der Datei wird nicht benutzt");
+}
+
 // ── 16. Echte V2-Event-Form (OpenCode 2.0.29) ─────────────────────────────
 console.log("\nV2-Eventform (durable/location/data)");
 {
