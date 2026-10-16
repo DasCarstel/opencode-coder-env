@@ -33,6 +33,10 @@
 //   NTFY_SESSION_PORT Port der laufenden `opencode serve`-Web-UI für den
 //                     Klick-Link (Default 49374)
 //   NTFY_SESSION_URL  feste Session-URL — schlägt die automatische Ableitung
+//   NTFY_SERVER_KEY   Serverschlüssel der OpenCode-Oberfläche im Klick-Link
+//                     (<basis>/server/<schlüssel>/session/<id>); für den
+//                     lokalen Dienst "local" (Default). Der Kopplungslink
+//                     bleibt auf der Basis — ohne Session-Pfad.
 //   NTFY_PAIR_BUTTON  "0"/"false" schaltet den Kopplungs-Button ab (Default:
 //                     an). Jede Meldung trägt dann einen frisch erzeugten,
 //                     5 Minuten gültigen Kopplungslink als view-Button mit
@@ -88,6 +92,9 @@ import { join } from "node:path";
 
 const DEFAULT_URL = "https://ntfy.mueller-nas.de";
 const DEFAULT_TOPIC = "ai";
+// Serverschlüssel der OpenCode-Oberfläche im Klick-Link
+// (/server/<schlüssel>/session/<id>); der lokale Dienst heißt "local".
+const DEFAULT_SERVER_KEY = "local";
 const MAX_TITLE = 90;
 const MAX_BODY = 500;
 // Frage- und Freigabe-Meldungen tragen eine mehrzeilige Optionsliste — ntfy
@@ -651,9 +658,10 @@ export function createNtfyNotifier(options = {}) {
   }
 
   /**
-   * Basis der Session-Links — eine Quelle für den Klick-Link (linkFor) und den
-   * Kopplungslink. NTFY_SESSION_URL gewinnt immer, sonst wird die Port-App der
-   * laufenden `opencode serve`-Instanz abgeleitet.
+   * Basis der Session-Links — linkFor baut darauf den Session-Pfad auf, der
+   * Kopplungslink hängt direkt hier an (deshalb ohne Session-Pfad).
+   * NTFY_SESSION_URL gewinnt immer, sonst wird die Port-App der laufenden
+   * `opencode serve`-Instanz abgeleitet.
    */
   function linkBase(sessionID) {
     // Escape-Hatch: eine fest konfigurierte URL gewinnt immer.
@@ -681,8 +689,21 @@ export function createNtfyNotifier(options = {}) {
     return String(env.NTFY_FALLBACK_URL ?? "https://coder.mueller-nas.de/");
   }
 
+  /**
+   * Klick-Ziel jeder Meldung: Session-Deep-Link der OpenCode-Oberfläche
+   * (`/server/<serverKey>/session/<id>`, Solid-Router mit Path-Routing). Der
+   * Serverschlüssel kommt aus NTFY_SERVER_KEY (Default "local" — so heißt der
+   * lokale Dienst), die Session-ID wird URL-sicher eingesetzt. Ohne Session-ID
+   * bleibt es bei der Basis; der Kopplungslink (pairLink) nutzt weiterhin
+   * linkBase und bekommt keinen Session-Pfad.
+   */
   function linkFor(sessionID) {
-    return linkBase(sessionID);
+    const base = linkBase(sessionID);
+    const id = String(sessionID ?? "").trim();
+    if (!id) return base;
+    const serverKey = String(env.NTFY_SERVER_KEY ?? "").trim() || DEFAULT_SERVER_KEY;
+    const path = `/server/${encodeURIComponent(serverKey)}/session/${encodeURIComponent(id)}`;
+    return `${base.replace(/\/+$/, "")}${path}`;
   }
 
   /**
@@ -1088,7 +1109,8 @@ export function createNtfyNotifier(options = {}) {
       message: `Selbsttest des OpenCode-V2-Plugins.\nURL: ${url}\nTopic: ${topic}`,
       priority: 2,
       tags: ["test_tube"],
-      click: String(env.NTFY_FALLBACK_URL ?? "https://coder.mueller-nas.de/"),
+      // Wie der Klick-Link der Meldungen (kein zweiter Aufbau der Basis).
+      click: linkFor(""),
     });
   }
 

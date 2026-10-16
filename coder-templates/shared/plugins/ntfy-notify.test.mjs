@@ -171,8 +171,8 @@ received.length = 0;
   ok(String(body.message).includes("Ablauf prüfen"), "Session-Titel ist enthalten");
   eq(
     body.click,
-    "https://49374--main--infrastructure--carstenmueller2002-coder.mueller-nas.de",
-    "Click-URL zeigt auf die OpenCode-Port-App"
+    `https://49374--main--infrastructure--carstenmueller2002-coder.mueller-nas.de/server/local/session/${SESSION}`,
+    "Click-URL ist der Session-Deep-Link der Port-App"
   );
   eq((received[0]?.headers ?? {}).authorization, "Bearer tk_test", "Bearer-Token im Header");
 }
@@ -288,7 +288,11 @@ console.log("\nFallback ohne Workspace-Pfad");
   await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
   const body = received[0]?.body ?? {};
   eq(body.title, "✅ Fertig — opencode", "Projekt-Fallback");
-  eq(body.click, "https://coder.mueller-nas.de/", "URL-Fallback");
+  eq(
+    body.click,
+    `https://coder.mueller-nas.de/server/local/session/${SESSION}`,
+    "URL-Fallback plus Session-Deep-Link"
+  );
 }
 
 // ── 10. Flache Event-Form (ohne properties) ───────────────────────────────
@@ -522,8 +526,8 @@ console.log("\nV2-Eventform (durable/location/data)");
   ok(String(body.message).includes("Alles erledigt"), "TLDR stammt aus session.text.ended");
   eq(
     body.click,
-    "https://49374--main--infrastructure--carstenmueller2002-coder.mueller-nas.de",
-    "Click-URL aus location.directory"
+    `https://49374--main--infrastructure--carstenmueller2002-coder.mueller-nas.de/server/local/session/${SESSION}`,
+    "Click-URL aus location.directory (mit Session-Pfad)"
   );
 }
 {
@@ -777,8 +781,8 @@ console.log("\nSession-Link und Frage-Optionen");
   const message = String(body.message);
   eq(
     body.click,
-    "https://49374--main--infrastructure--carstenmueller2002-coder.mueller-nas.de",
-    "Klick-Link folgt dem Port-Agent-Workspace-Owner-Muster"
+    `https://49374--main--infrastructure--carstenmueller2002-coder.mueller-nas.de/server/local/session/${SESSION}`,
+    "Klick-Link folgt dem Port-Agent-Workspace-Owner-Muster (plus Session-Pfad)"
   );
   ok(message.includes("1) A: sofort deployen"), "Option 1 im Body");
   ok(message.includes("2) B: erst Review abwarten"), "Option 2 im Body");
@@ -810,8 +814,8 @@ console.log("\nSession-Link und Frage-Optionen");
   eq(received.length, 1, "Frage mit Override meldet");
   eq(
     received[0]?.body?.click,
-    "https://beispiel.test/session/42",
-    "NTFY_SESSION_URL überschreibt den Klick-Link"
+    `https://beispiel.test/session/42/server/local/session/${SESSION}`,
+    "NTFY_SESSION_URL überschreibt die Basis des Klick-Links"
   );
 }
 
@@ -2128,6 +2132,147 @@ const PAIR_BASE = "https://49374--main--infrastructure--carstenmueller2002-coder
   eq(published[0]?.actions?.length, 2, "vorhandene Aktionen werden nicht verdoppelt");
   eq(pairActions().length, 1, "genau eine Koppeln-Aktion (keine zweite)");
   eq(published[0]?.click, PAIR_BASE, "das bestehende Click-Ziel bleibt unverändert");
+}
+
+// ── 34. Klickziel: Session-Deep-Link der OpenCode-Oberfläche ─────────────
+//
+// Die Oberfläche hat die Route /server/<serverKey>/session/<id> (Solid-Router
+// mit Path-Routing); der lokale Dienst trägt den Serverschlüssel "local". Jeder
+// Klick zeigt deshalb auf den Deep-Link der Session statt nur auf die Basis —
+// der Schlüssel kommt aus NTFY_SERVER_KEY, die Session-ID wird URL-sicher
+// eingesetzt. Der Kopplungslink bleibt auf der Basis (kein Session-Pfad).
+console.log("\nKlickziel (Session-Deep-Link)");
+
+const UI_BASE = "https://49374--main--infrastructure--carstenmueller2002-coder.mueller-nas.de";
+/** Projekt-Kontext wie im Container — daraus leitet linkBase die Basis ab. */
+const UI_ENV = {
+  NTFY_URL: SINK_URL,
+  NTFY_TOKEN: "tk_test",
+  NTFY_PAIR_BUTTON: "0",
+  CODER_WORKSPACE_NAME: "infrastructure",
+  CODER_WORKSPACE_OWNER_NAME: "carstenmueller2002",
+  CODER_WORKSPACE_AGENT_NAME: "main",
+  CODER_AGENT_URL: "https://coder.mueller-nas.de/",
+  NTFY_SESSION_PORT: "49374",
+};
+
+// a) Default-Schlüssel "local": der Klick-Link ist der Session-Deep-Link.
+{
+  const n = makeNotifier({ env: UI_ENV });
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Fertig-Meldung geht raus");
+  eq(
+    received[0]?.body?.click,
+    `${UI_BASE}/server/local/session/${SESSION}`,
+    "das Klickziel ist der Session-Deep-Link (Schlüssel 'local')"
+  );
+  eq(
+    received[0]?.body?.actions?.[0]?.url,
+    received[0]?.body?.click,
+    "die Session-Aktion trägt denselben Deep-Link"
+  );
+}
+
+// b) NTFY_SERVER_KEY setzt den Serverschlüssel; leer → "local".
+{
+  const sidecar = makeNotifier({ env: { ...UI_ENV, NTFY_SERVER_KEY: "sidecar" } });
+  received.length = 0;
+  await sidecar.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  eq(
+    sidecar.linkFor(SESSION),
+    `${UI_BASE}/server/sidecar/session/${SESSION}`,
+    "NTFY_SERVER_KEY='sidecar' steht im Klick-Link"
+  );
+  sidecar.markWorking(SESSION);
+  await sidecar.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Meldung mit eigenem Schlüssel geht raus");
+  eq(
+    received[0]?.body?.click,
+    `${UI_BASE}/server/sidecar/session/${SESSION}`,
+    "der Schlüssel steht auch in der Meldung"
+  );
+
+  const blank = makeNotifier({ env: { ...UI_ENV, NTFY_SERVER_KEY: "   " } });
+  await blank.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  eq(
+    blank.linkFor(SESSION),
+    `${UI_BASE}/server/local/session/${SESSION}`,
+    "ein leerer Schlüssel fällt auf 'local' zurück"
+  );
+}
+
+// c) Sonderzeichen: Session-ID und Schlüssel werden URL-sicher eingesetzt.
+{
+  const weird = "ses_a/b c?d";
+  const n = makeNotifier({ env: UI_ENV });
+  await n.handleEvent({ type: "session.created", properties: { info: info(weird) } });
+  eq(
+    n.linkFor(weird),
+    `${UI_BASE}/server/local/session/ses_a%2Fb%20c%3Fd`,
+    "Sonderzeichen der Session-ID werden kodiert"
+  );
+  const keyed = makeNotifier({ env: { ...UI_ENV, NTFY_SERVER_KEY: "a/b" } });
+  await keyed.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  eq(
+    keyed.linkFor(SESSION),
+    `${UI_BASE}/server/a%2Fb/session/${SESSION}`,
+    "der Serverschlüssel wird ebenfalls kodiert"
+  );
+}
+
+// d) Ohne (bzw. mit leerer) Session-ID bleibt die Basis — ohne Session-Pfad.
+{
+  const n = makeNotifier({ env: { ...UI_ENV, NTFY_FALLBACK_URL: UI_BASE } });
+  eq(n.linkFor(""), UI_BASE, "ohne Session-ID bleibt die Basis");
+  eq(n.linkFor(undefined), UI_BASE, "eine fehlende Session-ID ergibt die Basis");
+  ok(!n.linkFor("   ").includes("/server/"), "nur Leerraum zählt als leere Session-ID");
+
+  const fixed = makeNotifier({
+    env: { ...UI_ENV, NTFY_SESSION_URL: "https://beispiel.test/base/" },
+  });
+  eq(
+    fixed.linkFor(SESSION),
+    `https://beispiel.test/base/server/local/session/${SESSION}`,
+    "die feste Basis wird ohne abschließenden Slash benutzt"
+  );
+  eq(fixed.linkFor(""), "https://beispiel.test/base/", "ohne Session-ID bleibt sie unverändert");
+}
+
+// e) Kopplungs-Button: weiterhin <basis>/auth/connect/<code> ohne Session-Pfad.
+{
+  resetSharedState();
+  const { stub, published, pairCalls, pairActions } = pairFetchStub();
+  const n = createNtfyNotifier({
+    env: { ...UI_ENV, NTFY_PAIR_BUTTON: "1", OPENCODE_SERVER_PASSWORD: "pw_test" },
+    apiPassword: "pw_test",
+    state: freshState(),
+    fetch: stub,
+    log: () => {},
+  });
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(published.length, 1, "die Meldung geht raus");
+  eq(pairCalls().length, 1, "der Kopplungscode wird erzeugt");
+  eq(pairActions().length, 1, "die Koppeln-Aktion hängt an der Meldung");
+  eq(
+    pairActions()[0]?.url,
+    `${UI_BASE}/auth/connect/code_1`,
+    "der Kopplungslink bleibt auf der Basis"
+  );
+  ok(
+    !String(pairActions()[0]?.url ?? "").includes("/server/"),
+    "der Kopplungslink trägt keinen Session-Pfad"
+  );
+  eq(
+    published[0]?.click,
+    `${UI_BASE}/server/local/session/${SESSION}`,
+    "das Klickziel derselben Meldung ist der Deep-Link"
+  );
+  resetSharedState();
 }
 
 sink.close();
