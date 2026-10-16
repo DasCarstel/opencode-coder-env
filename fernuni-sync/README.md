@@ -74,7 +74,8 @@ Nichts wird in Dateien, Logs oder das Repo geschrieben.
 | `--only <kursId>` | nur diesen Kurs verarbeiten, mehrfach angebbar; unbekannte ID → Exit 2 |
 | `--dry-run` | **keine Schreibzugriffe** (kein PUT/MKCOL, kein Log-Eintrag); liest aber Notiz-/Dateistände, damit der Report ehrlich ist |
 | `--limit-sections N` | nur die ersten `N` Abschnitte **mit Aktivitäten** je Kurs (leere Abschnitte wie „Allgemein" werden beim Limit übersprungen – so trifft `--limit-sections 1` bei Kurs 6556 den Abschnitt mit den 2 Aktivitäten) |
-| `--no-material` | nur Notizen, keine Datei-Downloads |
+| `--no-material` | nur Notizen, keine Datei-Downloads (schaltet auch die lokale Spiegelung ab) |
+| `--local-root DIR` | **Material-Baum zusätzlich lokal spiegeln** – siehe Abschnitt „Lokale Spiegelung (`--local-root`)" unten. Ohne Angabe: aus |
 | `--strict` | Exit 1, wenn Fehler/Warnungen auftraten |
 | `--verbose` | jede Aktivität (Typ, Name, Moodle-Detail) und jeden Download anzeigen |
 | `--env-file PATH` | optional `KEY=VALUE`-Datei laden; Werte aus der Datei haben Vorrang (schützt das `$`). Nur für manuelle Tests, nie ins Repo |
@@ -82,6 +83,40 @@ Nichts wird in Dateien, Logs oder das Repo geschrieben.
 **Exit-Codes:** `0` ok (auch „teilweise erfolgreich mit Fehlern“ ohne `--strict`),
 `1` Fehler mit `--strict`, `2` Konfiguration/Secrets/Auth (fehlende Variablen,
 nicht angemeldete Session, unbekannte Kurs-ID).
+
+## Lokale Spiegelung (`--local-root`)
+
+Der Sync schreibt den Material-Baum normalerweise nur in den oCIS-Vault. Mit
+`--local-root DIR` (bzw. `local_root` in der `config.json` oder
+`FERNUNI_LOCAL_ROOT`) wird er **zusätzlich ins lokale Dateisystem** gespiegelt —
+im Coder-Workspace nach `~/uni/workspace/Material/`, dem Ordner, den das
+Jupyter des FernUni-Stacks als Wurzel einbindet
+(`/home/pyspark-client/workspace/Material/…` im Container).
+
+```bash
+python3 fernuni-sync/sync.py --env-file ~/uni/state/fernuni-sync.env \
+        --config ~/uni/state/fernuni-sync.config.json \
+        --local-root ~/uni/workspace/Material
+```
+
+**Quelle ist der Vault, nicht Moodle:** nach dem Vault-Sync wird der Baum
+`<base>/<slug>/Moodle/Material/**` nach `DIR/<slug>/<restlicher Pfad>` kopiert:
+
+```
+DIR/63123-Data-Engineering-fuer-Data-Science/08-Lektion-1-Einfuehrung/Einfuehrung_Jupyter_Notebook.ipynb
+```
+
+| Punkt | Verhalten |
+|---|---|
+| Standard | **aus** (leerer Wert) – bestehende Aufrufe ändern sich nicht |
+| Reihenfolge | `--local-root` > `FERNUNI_LOCAL_ROOT` > `local_root` aus der `config.json` |
+| Zielordner | wird angelegt, muss also nicht vorher existieren |
+| Idempotenz | pro Datei Größenvergleich mit dem Vault: gleich groß → **überspringen** (kein Download), sonst per WebDAV (GET) holen und schreiben. 2. Lauf → **0 gespiegelt** |
+| **Löschen** | **nie** – im Zielordner liegen auch eigene Notebooks; gelöscht wird nur eine `.part`-Datei aus einem abgebrochenen Schreibvorgang |
+| Schreiben | atomar (`.fernuni-*.part` + `rename`), keine halben Dateien |
+| Fehler | pro Datei gezählt und gemeldet, der Lauf bricht nicht ab |
+| Ausgabe | Schlusszeile + Sync-Log: `N gespiegelt, M unveraendert, K Fehler` |
+| `--dry-run` | Spiegelung wird übersprungen (keine Schreibzugriffe ins Dateisystem) |
 
 ## State-Datei
 

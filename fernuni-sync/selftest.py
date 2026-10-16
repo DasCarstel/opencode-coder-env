@@ -11,6 +11,9 @@ FakeDav) mit synthetischem Moodle-HTML:
   * 1. Lauf laedt die Datei, 2. Lauf laedt nichts erneut, `created` bleibt.
   * Material-Datei liegt schon im Vault, aber nicht im State: gleiche Groesse ->
     uebernehmen, abweichende Groesse -> ueberschreiben (nie "-generated-2").
+  * Lokale Spiegelung (--local-root): 1. Lauf spiegelt den Material-Baum ins
+    Dateisystem, 2. Lauf spiegelt 0 (nur Groessenvergleich), eigene Dateien im
+    Zielordner werden nie angefasst oder geloescht.
 
 Aufruf: python3 fernuni-sync/selftest.py     (Exit 1 bei Fehlschlag)
 """
@@ -25,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moodle_parse as mp      # noqa: E402
 import obsidian as ob          # noqa: E402
 import sync as sy              # noqa: E402
-from dav import Dav            # noqa: E402
+from dav import Dav, DavError            # noqa: E402
 
 FEHLER = []
 OK = [0]
@@ -254,6 +257,39 @@ class FakeDav:
     def exists(self, path):
         return path in self.files
 
+    def base_path(self):
+        """WebDAV-Basis (fuer die Umrechnung der PROPFIND-hrefs)."""
+        return "https://ocis.test/dav/spaces/fake$space"
+
+    def propfind(self, path=""):
+        """PROPFIND Depth 1 ueber dem flachen Dateidict (Ordner abgeleitet)."""
+        self.calls += 1
+        basis = "/dav/spaces/fake$space"
+        p = path.strip("/")
+        ordner = set()
+        for k in self.files:
+            teile = k.split("/")
+            for i in range(1, len(teile)):
+                ordner.add("/".join(teile[:i]))
+        out = []
+        for k in sorted(set(self.files) | ordner):
+            if p:
+                if k == p:
+                    rest = ""
+                elif k.startswith(p + "/"):
+                    rest = k[len(p) + 1:]
+                else:
+                    continue
+            else:
+                rest = k
+            if "/" in rest:
+                continue                                  # nur direkte Kinder
+            props = {"collection": k in ordner}
+            if k in self.files:
+                props["getcontentlength"] = str(len(self.files[k]))
+            out.append((f"{basis}/{k}", props))
+        return out
+
 
 class FakeMoodle:
     """Moodle-Attrappe: liefert Fixture-HTML und 'Dateien' aus dem Speicher."""
@@ -292,7 +328,8 @@ class FakeMoodle:
 
 
 def args(**kw):
-    d = {"dry_run": False, "limit_sections": None, "no_material": False, "verbose": False}
+    d = {"dry_run": False, "limit_sections": None, "no_material": False,
+         "verbose": False, "local_root": None}
     d.update(kw)
     return types.SimpleNamespace(**d)
 
@@ -739,6 +776,84 @@ def test_material_kollision():
     shutil.rmtree(tmpdir)
 
 
+def test_spiegelung():
+    """Lokale Spiegelung des Material-Baums (--local-root).
+
+    Erwartung: 1. Lauf spiegelt den kompletten Material-Baum aus dem Vault,
+    2. Lauf spiegelt 0 (Groessenvergleich, kein Download), weicht eine lokale
+    Datei in der Groesse ab, wird sie neu geholt - und eine eigene Datei des
+    Nutzers daneben wird **nie** angefasst oder geloescht.
+    """
+    print("Lokale Spiegelung (--local-root)")
+    mat = f"{BASIS}/Material"
+    m8 = f"{mat}/08-Lektion-1-Einfuehrung"
+    m1 = f"{mat}/01-Data-Engineering-fuer-Data-Science"
+    nb = b'{"cells": [], "metadata": {"kernelspec": "python3"}}'
+    nb_l = b'{"cells": [{"cell_type": "code", "source": ["print(1)"]}]}'
+    pdf = b"%PDF-1.4 Folien Intro"
+    vault = {f"{m8}/Einfuehrung_Jupyter_Notebook.ipynb": nb,
+             f"{m8}/Einfuehrung_Jupyter_Notebook-loesung.ipynb": nb_l,
+             f"{m1}/Folien-Intro.pdf": pdf}
+    ziel = tempfile.mkdtemp()
+    kurs = dict(MODUL, _vault_root="")
+    lokal = os.path.join(ziel, MODUL["slug"])
+    nbf = os.path.join(lokal, "08-Lektion-1-Einfuehrung", "Einfuehrung_Jupyter_Notebook.ipynb")
+
+    check("ohne local_root: nichts spiegeln",
+          sy.spiegle_kurs_material(FakeDav(dict(vault)), kurs, "")["gespiegelt"] == 0)
+
+    s1 = sy.spiegle_kurs_material(FakeDav(dict(vault)), kurs, ziel)
+    check("1. Lauf: 3 gespiegelt", s1["gespiegelt"] == 3, s1)
+    check("1. Lauf: 0 unveraendert, 0 Fehler",
+          s1["unveraendert"] == 0 and s1["fehler"] == 0, s1)
+    check("Zielpfad <root>/<slug>/<Abschnitt>/<Datei>", os.path.isfile(nbf), nbf)
+    check("Inhalt wie im Vault", open(nbf, "rb").read() == nb)
+    check("Unterordner mitgespiegelt",
+          os.path.isfile(os.path.join(lokal, "01-Data-Engineering-fuer-Data-Science",
+                                      "Folien-Intro.pdf")))
+    check("Zaehlerzeile fuer Schlusszeile/Log",
+          "3 gespiegelt, 0 unveraendert, 0 Fehler" in sy.spiegel_text(s1, "/home/x/workspace/Material"),
+          sy.spiegel_text(s1, "/home/x/workspace/Material"))
+    check("ohne local_root: Text sagt 'aus'",
+          sy.spiegel_text(s1, "") == "lokale Spiegelung: aus (--local-root)",
+          sy.spiegel_text(s1, ""))
+
+    # Eigene Datei des Nutzers daneben - darf nie angefasst werden
+    eigen = os.path.join(lokal, "08-Lektion-1-Einfuehrung", "mein-eigenes.ipynb")
+    with open(eigen, "wb") as fh:
+        fh.write(b"meine eigene Arbeit")
+
+    s2 = sy.spiegle_kurs_material(FakeDav(dict(vault)), kurs, ziel)
+    check("2. Lauf: 0 gespiegelt", s2["gespiegelt"] == 0, s2)
+    check("2. Lauf: 3 unveraendert", s2["unveraendert"] == 3, s2)
+    check("2. Lauf: 0 Fehler", s2["fehler"] == 0, s2)
+    check("2. Lauf: 0 Byte geladen", s2["bytes"] == 0, s2)
+    check("eigene Datei unangetastet (nicht geloescht, nicht ueberschrieben)",
+          os.path.isfile(eigen) and open(eigen, "rb").read() == b"meine eigene Arbeit")
+
+    with open(nbf, "wb") as fh:                     # Groesse weicht ab
+        fh.write(b"kaputt")
+    s3 = sy.spiegle_kurs_material(FakeDav(dict(vault)), kurs, ziel)
+    check("abweichende Groesse -> 1 gespiegelt", s3["gespiegelt"] == 1, s3)
+    check("Rest bleibt unveraendert", s3["unveraendert"] == 2, s3)
+    check("Datei wieder wie im Vault", open(nbf, "rb").read() == nb)
+    check("eigene Datei weiterhin da",
+          open(eigen, "rb").read() == b"meine eigene Arbeit")
+    check("keine .part-Reste im Zielordner",
+          not [n for n in os.listdir(os.path.dirname(nbf)) if n.endswith(".part")],
+          os.listdir(os.path.dirname(nbf)))
+
+    # Nicht lesbarer Vault-Ordner -> Fehler zaehlen, Lauf bricht nicht ab
+    class KaputteDav(FakeDav):
+        def propfind(self, path=""):
+            raise DavError(f"PROPFIND {path}: Status 404")
+
+    kaputt = sy.spiegle_baum(KaputteDav({}), f"{mat}/gibt-es-nicht", os.path.join(ziel, "leer"))
+    check("nicht lesbarer Vault-Ordner: 1 Fehler, kein Abbruch",
+          kaputt["gespiegelt"] == 0 and kaputt["fehler"] == 1, kaputt)
+    shutil.rmtree(ziel)
+
+
 def test_gesperrter_ordner():
     """Verfuegbarkeitsbedingung: kein Abruf der gesperrten Seite, klarer Hinweis.
 
@@ -843,11 +958,30 @@ def test_cli():
     check("ungueltiges Limit -> Exit 2",
           sy.main(["--limit-sections", "0", "--dry-run"]) == 2)
 
+    # --local-root: CLI > Umgebung > config.json, ohne Angabe aus
+    check("--local-root aus der CLI", sy.parse_args(["--local-root", "/tmp/x"]).local_root == "/tmp/x")
+    check("ohne Angabe: Standard aus (leer)",
+          sy.local_root_aus({}, sy.parse_args([])) == ""
+          and sy.parse_args([]).local_root is None)
+    os.environ["FERNUNI_LOCAL_ROOT"] = "/tmp/env-root"
+    check("FERNUNI_LOCAL_ROOT als Fallback",
+          sy.local_root_aus({}, sy.parse_args([])) == "/tmp/env-root")
+    check("CLI schlaegt Umgebung + config",
+          sy.local_root_aus({"local_root": "/tmp/cfg"},
+                            sy.parse_args(["--local-root", "/tmp/cli"])) == "/tmp/cli")
+    os.environ.pop("FERNUNI_LOCAL_ROOT", None)
+    check("config.json als Fallback",
+          sy.local_root_aus({"local_root": "/tmp/cfg"}, sy.parse_args([])) == "/tmp/cfg")
+    check("leerer config-Wert = aus", sy.local_root_aus({"local_root": "  "}, sy.parse_args([])) == "")
+    check("~ wird expandiert",
+          sy.local_root_aus({"local_root": "~/uni/workspace/Material"},
+                            sy.parse_args([])).startswith("/"))
+
 
 if __name__ == "__main__":
     for t in (test_parser, test_slug, test_notiz, test_dav, test_state, test_lauf,
-              test_onetopic_tabs, test_material_kollision, test_gesperrter_ordner,
-              test_auth, test_cli):
+              test_onetopic_tabs, test_material_kollision, test_spiegelung,
+              test_gesperrter_ordner, test_auth, test_cli):
         t()
     print(f"\n{OK[0]} Pruefungen ok, {len(FEHLER)} fehlgeschlagen")
     if FEHLER:

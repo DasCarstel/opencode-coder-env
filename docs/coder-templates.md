@@ -175,6 +175,36 @@ nur lokal angelegt (kein Push) — das Skript meldet das.
 Repository." (Scope `delete_repo` fehlt). Repos müssen im Zweifel über die
 GitHub-UI gelöscht werden.
 
+### Materialien im Jupyter
+
+Das Jupyter des FernUni-Stacks sieht genau den Ordner, den der Sync als
+Spiegelung befüllt. `shared/startup.sh` setzt dafür `local_root` in
+`~/uni/state/fernuni-sync.config.json` und legt den Ordner vor dem ersten Lauf
+an (`fernuni-sync --local-root`):
+
+```
+~/uni/workspace/                     → Symlink auf den workspace/-Ordner des 63123-Repos
+ │                                     (= Bind-Mount-Ziel des Compose-Stacks)
+ └── Material/
+     └── <Modul-Slug>/               z. B. 63123-Data-Engineering-fuer-Data-Science/
+         └── <Abschnitt>/            z. B. 08-Lektion-1-Einfuehrung/
+             └── <Datei>             z. B. Einfuehrung_Jupyter_Notebook.ipynb
+```
+
+Im Container ist das `/home/pyspark-client/workspace/Material/…`.
+
+* **automatisch gepflegt:** Quelle ist der **Vault** (oCIS), nicht Moodle — nach
+  dem Vault-Sync spiegelt der Sync `<base>/<slug>/Moodle/Material/**` nach
+  `~/uni/workspace/Material/<slug>/**`. Pro Datei wird nur geladen, was lokal
+  fehlt oder eine andere Größe hat; gelöscht wird **nie** (dort liegen auch die
+  eigenen Notebooks). Zweiter Lauf: `0 gespiegelt`.
+* **nicht versioniert:** `Material/` steht in der `.gitignore` des 63123-Repos
+  (~40 MB Kursmaterial) — `git status` bleibt sauber, `uni-git-setup.sh` zählt es
+  nicht als „ungepusht".
+* **eigene Notebooks gehören daneben:** direkt in `~/uni/workspace/` (oder einen
+  eigenen Unterordner wie `loesungen/`), nicht in `Material/` — nur das ist
+  git-versioniert und überlebt einen neuen Workspace.
+
 ### Was liegt wo – und was überlebt ein Löschen des Workspace?
 
 `~/uni` ist ein **Host-Bind-Mount** auf den Ordner `/etc/coder/uni-data` des
@@ -198,7 +228,7 @@ Host-Ordner leistet dasselbe, ohne den Workspace unzerstörbar zu machen.
 
 | Daten | Ort | git-versioniert? | überlebt Workspace-Löschen |
 |---|---|---|---|
-| Moodle-Material, Notizen | **oCIS-Vault** (FernUni-Space, `10-Semester/…`); lokal nur der Sync-**State** | nein (Vault statt Git) | **ja** — liegt nicht im Container-Volume |
+| Moodle-Material, Notizen | **oCIS-Vault** (FernUni-Space, `10-Semester/…`); lokal nur der Sync-**State** + die Spiegelung `~/uni/workspace/Material/` | nein (Vault statt Git) | **ja** — liegt nicht im Container-Volume |
 | Eigene Arbeiten je Modul | `~/uni/module/<modulnummer>-<slug>/` → private GitHub-Repos | **ja** (committen + pushen) | **ja** (GitHub) |
 | DE-Notebooks aus dem Stack | `~/uni/module/63123-…/workspace/` (Bind-Mount-Ziel) | **ja** (63123-Repo) | **ja**, sofern committet + gepusht |
 | uv-Umgebungen `~/uni/envs/{ml,dl}` (1,5 GiB) | Host-Ordner `/etc/coder/uni-data`, Marker `.ready` | nein | **ja** (Host-Ordner) – sonst reproduzierbar neu gebaut |

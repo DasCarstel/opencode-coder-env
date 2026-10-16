@@ -9,11 +9,16 @@ Ablauf pro Kurs:
      zu gross und nicht schon im Vault), alles andere wird nur verlinkt.
   3. Abschnittsnotiz + Kursindex schreiben, Material in Material/<SS>-<Slug>/.
   4. Am Ende einen Block an 90-Meta/01-Sync-Log.md anhaengen.
+  5. Optional (--local-root / local_root / FERNUNI_LOCAL_ROOT): den eben
+     geschriebenen Material-Baum aus dem Vault zusaetzlich lokal spiegeln
+     (Jupyter-Wurzel des FernUni-Stacks). Standard: aus.
 
 Sicherheit/Idempotenz:
   * Secrets nur aus der Umgebung, niemals in Dateien oder Logs.
   * Notizen ohne 'generated: true' werden nie ueberschrieben.
   * Material wird ueber die State-Datei (Groesse/ETag) wiedererkannt.
+  * Die lokale Spiegelung loescht nie etwas (dort liegen auch Nutzerdateien)
+    und laedt nur, was lokal fehlt oder eine andere Groesse hat.
   * Exit 0 = ok, 1 = Fehler bei --strict, 2 = Konfigurations-/Secret-Fehler.
 """
 import argparse
@@ -167,6 +172,137 @@ def ist_unveraendert(eintrag, size, etag):
         return False
     alt = eintrag.get("etag")
     return not (alt and etag and alt != etag)
+
+
+# --------------------------------------------------------------------------- #
+# Lokale Spiegelung des Material-Baums (Jupyter-Wurzel des FernUni-Stacks)
+# --------------------------------------------------------------------------- #
+def spiegel_statistik():
+    """Frische Zaehler fuer einen Spiegel-Lauf."""
+    return {"gespiegelt": 0, "unveraendert": 0, "fehler": 0, "bytes": 0,
+            "fehlerliste": []}
+
+
+def addiere_spiegel(ziel, quelle):
+    """Spiegel-Zaehler aufsummieren (fuer die Schlusszeile)."""
+    for schluessel in ("gespiegelt", "unveraendert", "fehler", "bytes"):
+        ziel[schluessel] = ziel.get(schluessel, 0) + quelle.get(schluessel, 0)
+    ziel.setdefault("fehlerliste", []).extend(quelle.get("fehlerliste") or [])
+    return ziel
+
+
+def local_root_aus(cfg, args):
+    """Zielordner der lokalen Spiegelung: CLI > Umgebung > config.json.
+
+    Leer = aus (Standard), damit bestehende Aufrufe unveraendert bleiben.
+    """
+    roh = ((getattr(args, "local_root", None)
+            or os.environ.get("FERNUNI_LOCAL_ROOT")
+            or cfg.get("local_root") or "").strip())
+    return os.path.expanduser(roh) if roh else ""
+
+
+def spiegel_text(st, local_root=None):
+    """Text der lokalen Spiegelung fuer Schlusszeile und Sync-Log."""
+    if not local_root:
+        return "lokale Spiegelung: aus (--local-root)"
+    return (f"lokale Spiegelung ({local_root}): {st.get('gespiegelt', 0)} gespiegelt, "
+            f"{st.get('unveraendert', 0)} unveraendert, {st.get('fehler', 0)} Fehler")
+
+
+def relativ_zur_basis(dav, href):
+    """PROPFIND-``href`` in einen Pfad relativ zur WebDAV-Basis umrechnen."""
+    pfad = urllib.parse.unquote(href)
+    basis = urllib.parse.urlsplit(dav.base_path()).path.rstrip("/")
+    if basis and pfad.startswith(basis + "/"):
+        return pfad[len(basis) + 1:]
+    return pfad.strip("/")
+
+
+def schreibe_lokal_atomar(path, daten):
+    """Lokal ueber eine .part-Datei schreiben - nie einen halben Stand hinterlassen."""
+    ordner = os.path.dirname(path) or "."
+    os.makedirs(ordner, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".fernuni-", suffix=".part", dir=ordner)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(daten)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def spiegle_baum(dav, vault_dir, ziel_dir, verbose=False):
+    """Material-Baum ``vault_dir`` lokal nach ``ziel_dir`` spiegeln.
+
+    Regel pro Datei: existiert die lokale Datei und ist sie **genau so gross**
+    wie im Vault, wird sie uebersprungen; sonst per WebDAV (GET) geladen und
+    geschrieben. Es wird **nie** etwas lokal geloescht - im Zielordner liegen
+    auch die eigenen Notebooks des Nutzers.
+
+    Rueckgabe: Zaehlerdict aus :func:`spiegel_statistik`.
+    """
+    st = spiegel_statistik()
+    if not vault_dir or not ziel_dir:
+        return st
+    offen = [(vault_dir, ziel_dir)]
+    while offen:
+        vdir, ldir = offen.pop()
+        try:
+            eintraege = dav.propfind(vdir)
+        except DavError as e:
+            st["fehler"] += 1
+            st["fehlerliste"].append(f"{vdir}: {e}")
+            print(f"    ! Spiegelung: {vdir} nicht lesbar ({e})")
+            continue
+        for href, props in eintraege:
+            rel = relativ_zur_basis(dav, href)
+            if not rel or rel.rstrip("/") == vdir.strip("/"):
+                continue                                     # der Ordner selbst
+            name = rel.rstrip("/").rsplit("/", 1)[-1]
+            if props.get("collection"):
+                offen.append((rel, os.path.join(ldir, name)))
+                continue
+            ziel = os.path.join(ldir, name)
+            groesse = props.get("getcontentlength")
+            groesse = int(groesse) if groesse and groesse.isdigit() else None
+            if groesse is not None and os.path.isfile(ziel) \
+                    and os.path.getsize(ziel) == groesse:
+                st["unveraendert"] += 1
+                if verbose:
+                    print(f"      = lokal aktuell: {rel}")
+                continue
+            try:
+                status, daten = dav.get(rel)
+                if status != 200:
+                    raise DavError(f"GET {rel}: Status {status}")
+                schreibe_lokal_atomar(ziel, daten)
+            except (DavError, OSError) as e:
+                st["fehler"] += 1
+                st["fehlerliste"].append(f"{rel}: {e}")
+                print(f"      ! {name} nicht gespiegelt: {e}")
+                continue
+            st["gespiegelt"] += 1
+            st["bytes"] += len(daten)
+            print(f"      \u2b07 {rel} ({ob.fmt_size(len(daten))})")
+    return st
+
+
+def spiegle_kurs_material(dav, cfg, local_root, verbose=False):
+    """Material eines Kurses aus dem Vault lokal spiegeln.
+
+    Quelle ist der **Vault** (nicht Moodle): ``<base>/<slug>/Moodle/Material/**``
+    wird nach ``<local_root>/<slug>/<restlicher Pfad>`` gespiegelt.
+    """
+    material = join_path(cfg.get("_vault_root", ""), cfg.get("base", ""),
+                         cfg.get("slug", ""), "Moodle", "Material")
+    if not local_root:
+        return spiegel_statistik()               # leer = aus (Standard)
+    return spiegle_baum(dav, material, os.path.join(local_root, cfg["slug"]),
+                        verbose=verbose)
 
 
 # --------------------------------------------------------------------------- #
@@ -809,7 +945,8 @@ class Kurs:
 # --------------------------------------------------------------------------- #
 # Sync-Log
 # --------------------------------------------------------------------------- #
-def append_log(dav, args, statistik, gesamt_sek, fehler, kursinfos):
+def append_log(dav, args, statistik, gesamt_sek, fehler, kursinfos,
+               spiegel=None, local_root=""):
     tag = datetime.now().strftime("%Y-%m-%d")
     zeit = datetime.now().strftime("%H:%M:%S")
     zeilen = [f"", f"---", f"",
@@ -826,6 +963,9 @@ def append_log(dav, args, statistik, gesamt_sek, fehler, kursinfos):
                   f"Modus: {'dry-run' if args.dry_run else 'echt'}"
                   + (f" \u00b7 Limit: {args.limit_sections} Abschnitt(e)"
                      if args.limit_sections else ""))
+    if local_root:
+        zeilen.append("")
+        zeilen.append(spiegel_text(spiegel or spiegel_statistik(), local_root))
     if fehler:
         zeilen.append("")
         zeilen.append("Fehler/Warnungen:")
@@ -870,6 +1010,10 @@ def parse_args(argv):
                    help="nur die ersten N Abschnitte mit Inhalt je Kurs")
     p.add_argument("--no-material", action="store_true",
                    help="nur Notizen, keine Dateien aus Moodle laden")
+    p.add_argument("--local-root", metavar="DIR", default=None,
+                   help="Material-Baum zusaetzlich lokal nach DIR spiegeln "
+                        "(DIR/<kurs-slug>/<abschnitt>/<datei>); ohne Angabe: aus. "
+                        "Reihenfolge: --local-root > FERNUNI_LOCAL_ROOT > local_root")
     p.add_argument("--strict", action="store_true",
                    help="Exit 1, wenn Fehler aufgetreten sind")
     p.add_argument("--verbose", action="store_true", help="jede Aktivitaet anzeigen")
@@ -928,6 +1072,19 @@ def main(argv):
           + (" \u00b7 DRY-RUN (keine Schreibzugriffe)" if args.dry_run else "")
           + f" \u00b7 State: {state_path}")
 
+    # Lokale Spiegelung: Ziel muss vor dem Lauf stehen (das Jupyter des
+    # FernUni-Stacks bindet genau diesen Ordner ein).
+    local_root = local_root_aus(cfg, args)
+    spiegel_gesamt = spiegel_statistik()
+    if local_root and not args.dry_run:
+        try:
+            os.makedirs(local_root, exist_ok=True)
+            print(f"Lokale Spiegelung: {local_root}")
+        except OSError as e:
+            print(f"WARNUNG: --local-root {local_root} nicht nutzbar ({e}) - "
+                  f"lokale Spiegelung uebersprungen")
+            local_root = ""
+
     try:
         opener = ms.login(os.environ["MD_USER"], os.environ["MD_PW"])
     except Exception as e:                                   # noqa: BLE001
@@ -971,6 +1128,22 @@ def main(argv):
                 alle_fehler.append(f"State konnte nicht geschrieben werden: {e}")
                 print(f"WARNUNG: State nicht gespeichert ({e})")
 
+        # Nach dem Vault-Sync: den Material-Baum dieses Kurses lokal spiegeln.
+        if local_root and not args.dry_run and not args.no_material:
+            try:
+                st_spiegel = spiegle_kurs_material(dav, c, local_root,
+                                                   verbose=args.verbose)
+            except (DavError, OSError) as e:
+                st_spiegel = spiegel_statistik()
+                st_spiegel["fehler"] = 1
+                st_spiegel["fehlerliste"].append(str(e))
+            addiere_spiegel(spiegel_gesamt, st_spiegel)
+            print(f"  {c['id']}: {st_spiegel['gespiegelt']} gespiegelt, "
+                  f"{st_spiegel['unveraendert']} unveraendert, "
+                  f"{st_spiegel['fehler']} Fehler (lokal)")
+            alle_fehler += [f"Spiegelung {c['id']}: {f}"
+                            for f in st_spiegel["fehlerliste"]]
+
     for c, s in kursinfos:
         print(f"  {c['id']}: {s['abschnitte']} Abschnitt(e), {s['notizen']} Notiz(en), "
               f"{s['dateien']} Datei(en) geladen, {s['uebersprungen']} unveraendert, "
@@ -986,15 +1159,21 @@ def main(argv):
 
     if not args.dry_run:
         try:
-            append_log(dav, args, statistik, time.time() - t0, alle_fehler, kursinfos)
+            append_log(dav, args, statistik, time.time() - t0, alle_fehler, kursinfos,
+                       spiegel=spiegel_gesamt, local_root=local_root)
         except DavError as e:
             print(f"WARNUNG: Sync-Log nicht geschrieben: {e}")
             alle_fehler.append(f"Sync-Log: {e}")
 
+    if args.dry_run:
+        spiegel_zeile = "lokale Spiegelung: aus (dry-run)"
+    else:
+        spiegel_zeile = spiegel_text(spiegel_gesamt, local_root)
     print(f"fertig in {fmt_dauer(time.time() - t0)} \u00b7 "
           f"{sum(s['dateien'] for s in statistik.values())} Download(s), "
           f"{sum(s['uebersprungen'] for s in statistik.values())} unveraendert, "
-          f"{len(alle_fehler)} Fehler/Warnung(en), {dav.calls} DAV-Aufrufe")
+          f"{len(alle_fehler)} Fehler/Warnung(en), {dav.calls} DAV-Aufrufe \u00b7 "
+          f"{spiegel_zeile}")
     if auth_fehler:
         print(f"FEHLER: Moodle-Session nicht angemeldet - {auth_fehler}", file=sys.stderr)
         print("Es wurde nichts geschrieben.", file=sys.stderr)

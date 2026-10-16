@@ -1229,7 +1229,17 @@ if [ "$PROFILE" = "datascience" ]; then
   SYNC_CONFIG="$SYNC_STATE_DIR/fernuni-sync.config.json"
   SYNC_ENV="$SYNC_STATE_DIR/fernuni-sync.env"
   SYNC_LOG="$UNI_DIR/logs/sync.log"
-  mkdir -p "$SYNC_STATE_DIR" "$UNI_DIR/logs"
+  # Lokale Spiegelung: derselbe Ordner, den der FernUni-Compose-Stack als
+  # Jupyter-Wurzel einbindet (./workspace -> ~/uni/module/63123-.../workspace).
+  # Der Sync spiegelt dorthin <slug>/<Abschnitt>/<Datei> aus dem Vault.
+  SYNC_LOCAL_ROOT="${FERNUNI_LOCAL_ROOT:-$UNI_DIR/workspace/Material}"
+  # ~/uni/workspace ist der stabile Einstiegspunkt dorthin (uni-bootstrap.sh
+  # setzt denselben Symlink; hier nur der Nachlauf für einen frischen Workspace).
+  DE_WS_DIR="$UNI_DIR/module/63123-data-engineering-fuer-data-science/workspace"
+  if [ -d "$DE_WS_DIR" ] && [ ! -e "$UNI_DIR/workspace" ]; then
+    ln -sfn "$DE_WS_DIR" "$UNI_DIR/workspace"
+  fi
+  mkdir -p "$SYNC_STATE_DIR" "$UNI_DIR/logs" "$SYNC_LOCAL_ROOT"
 
   if [ -f "$SYNC_PY" ] && [ -f "$SYNC_LOOP" ]; then
     # Env-Datei (600) für --env-file. Bewusst UNQUOTED und KEIN `. datei`:
@@ -1246,12 +1256,15 @@ if [ "$PROFILE" = "datascience" ]; then
     umask 022
 
     # config.json mit state_file im persistenten Volume (Default wäre ~/.local/…)
-    python3 - "$REPO_DIR/fernuni-sync/config.json" "$SYNC_CONFIG" "$SYNC_STATE" << 'PY'
+    # und local_root = Jupyter-Wurzel des Stacks (leer/0 = Spiegelung aus).
+    python3 - "$REPO_DIR/fernuni-sync/config.json" "$SYNC_CONFIG" "$SYNC_STATE" \
+             "$SYNC_LOCAL_ROOT" << 'PY'
 import json, sys
-src, dst, state = sys.argv[1], sys.argv[2], sys.argv[3]
+src, dst, state, lokal = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 with open(src, encoding="utf-8") as fh:
     cfg = json.load(fh)
 cfg["state_file"] = state
+cfg["local_root"] = lokal          # Material-Baum zusaetzlich lokal spiegeln
 with open(dst, "w", encoding="utf-8") as fh:
     json.dump(cfg, fh, indent=2, ensure_ascii=False)
 PY

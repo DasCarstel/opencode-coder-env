@@ -186,6 +186,10 @@ venv/
 # Secrets
 .env
 
+# Moodle-Materialspiegelung des Jupyter-Workspace (fernuni-sync --local-root)
+# ~40 MB Kursmaterialien - liegen im Vault, nicht im Repo.
+Material/
+
 # Daten (gehören nicht ins Repo – Material liegt im Vault)
 *.csv
 *.parquet
@@ -293,9 +297,13 @@ if [ -d "$DE_REPO/.git" ] && [ -d "$FERNUNI_CLONE" ]; then
     echo "  ✓ workspace-Symlink im FernUni-Klon gesetzt → $DE_WS"
   fi
   chmod -R a+rwX "$DE_WS" 2>/dev/null || true
+  # Nur versionierbare Pfade zaehlen: `git status --porcelain` ueberspringt
+  # Ignoriertes bereits, und die automatisch gepflegte Moodle-Spiegelung
+  # (workspace/Material/, siehe .gitignore) ist nichts, was gepusht werden
+  # muesste - sie wuerde hier sonst faelschlich als "ungepusht" erscheinen.
   DE_DIRTY="$(git -C "$DE_REPO" status --porcelain -- "$DE_WS" 2>/dev/null | wc -l)"
   if [ "${DE_DIRTY:-0}" -gt 0 ]; then
-    echo "  ⚠ $DE_DIRTY uncommittete Änderung(en) in $DE_WS – Notebooks committen + pushen, sonst nicht versioniert"
+    echo "  ⚠ $DE_DIRTY uncommittete Änderung(en) in $DE_WS – eigene Notebooks committen + pushen, sonst nicht versioniert"
   fi
 else
   echo "  ⚠ workspace-Symlink übersprungen (63123-Repo oder FernUni-Klon fehlt)"
