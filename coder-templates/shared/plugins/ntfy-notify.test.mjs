@@ -1480,7 +1480,168 @@ console.log("\nAntwort-Brücke (Idempotenz)");
   );
 }
 
-// ── 32. Formular-Antwort: offene native Frage direkt beantworten ──────────
+// ── 32. Geteilter Zustand: Dedup über Modul-Instanzen (globalThis) ────────
+//
+// OpenCode V2 lädt das Plugin pro HTTP-Span — im Prozess leben also mehrere
+// Modul-Instanzen mit eigenem Scope. Der Zustand hängt deshalb an globalThis
+// (SHARED): dieselbe Fertig-Meldung geht auch dann nur einmal raus, wenn zwei
+// Instanzen denselben Ereignisstrom sehen. Beide Notifier benutzen bewusst
+// kein eigenes `state` — also genau den geteilten Zustand.
+console.log("\nGeteilter Zustand (mehrere Modul-Instanzen)");
+{
+  resetSharedState();
+  received.length = 0;
+  const env = { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_PAIR_BUTTON: "0" };
+  const first = createNtfyNotifier({ env, log: () => {} });
+  const second = createNtfyNotifier({ env, log: () => {} });
+  eq(first._state, second._state, "beide Instanzen teilen dasselbe Zustandsobjekt");
+
+  // Zweite Modul-Instanz (wie beim Laden pro HTTP-Span): eigener Modul-Scope,
+  // aber dasselbe Objekt an globalThis — nur dadurch greift die Dedup auch
+  // nach einem Plugin-Neuladen.
+  const secondModule = await import("./ntfy-notify.js?modul-instanz=2");
+  eq(secondModule.SHARED, first._state, "eine zweite Modul-Instanz teilt denselben Zustand");
+
+  // Beide Instanzen sehen denselben Ereignisstrom (je ein Abonnement) — ohne
+  // geteilten Zustand würde jede ihre eigene Fertig-Meldung senden.
+  const events = [
+    v2("session.execution.started", {}),
+    v2("session.text.ended", { text: "Bericht steht." }),
+    v2("session.execution.succeeded", {}),
+  ];
+  for (const event of events) await first.handleEvent(event);
+  for (const event of events) await second.handleEvent(event);
+  eq(received.length, 1, "zwei Instanzen erzeugen nur eine Fertig-Meldung");
+
+  // Auch die zweite Runde bleibt geblockt: die Dedup (lastSent) wirkt über
+  // die Instanzen hinweg, nicht nur innerhalb einer.
+  received.length = 0;
+  first.markWorking(SESSION);
+  await second.handleEvent(v2("session.idle", {}));
+  eq(received.length, 0, "die zweite Instanz bleibt im Dedup der ersten");
+}
+
+// ── 33. Selbstheilender Ereignisstrom (Wiederaufbau nach Ende/Fehler) ─────
+//
+// Endet der Ereignisstrom (z. B. nach einem Plugin-Neuladen) oder wirft er,
+// baut setup() ihn neu auf, statt still zu enden. Der Test zählt die
+// subscribe()-Aufrufe; options.eventRetryMs verkürzt die Wartezeit.
+console.log("\nEreignisstrom (Wiederaufbau)");
+{
+  resetSharedState();
+  received.length = 0;
+  let subscribes = 0;
+  const ctx = {
+    location: { directory: REPO_DIR },
+    session: { hook: async () => ({ dispose: async () => {} }) },
+    event: {
+      subscribe: () => {
+        subscribes += 1;
+        return {
+          [Symbol.asyncIterator]() {
+            return this;
+          },
+          next() {
+            return Promise.reject(new Error("Strom weg"));
+          },
+          return() {
+            return Promise.resolve({ value: undefined, done: true });
+          },
+        };
+      },
+    },
+  };
+  const runtime = createPluginRuntime({
+    // NTFY_REPLY_ENABLED=0: hier geht es nur um den Ereignisstrom.
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_REPLY_ENABLED: "0",
+      NTFY_PAIR_BUTTON: "0",
+    },
+    argv: ["serve", "--service"],
+    log: () => {},
+    eventRetryMs: 20,
+  });
+  const cleanup = await runtime.setup(ctx);
+  eq(typeof cleanup, "function", "setup liefert eine Cleanup-Funktion");
+  ok(await until(() => subscribes > 1, 2000), "nach einem Fehler wird neu abonniert");
+
+  cleanup?.();
+  await wait(100);
+  const settled = subscribes;
+  await wait(150);
+  eq(subscribes, settled, "nach teardown() endet die Schleife (kein weiteres Abonnement)");
+}
+
+// ── 34. Diagnose des Ereignisstroms (NTFY_REPLY_LOG) ─────────────────────
+//
+// Aufbau (event-strom-start), der erste Event je Typ (ereignis) und das Ende
+// (event-strom-ende) landen in der Diagnose-Datei — im Betrieb über
+// /etc/opencode.env als NTFY_REPLY_LOG gesetzt. Jeder Typ wird nur einmal
+// protokolliert, damit Deltas das Log nicht fluten.
+console.log("\nEreignisstrom (Diagnose)");
+{
+  resetSharedState();
+  received.length = 0;
+  const logPath = "/tmp/opencode/ntfy-event-strom-test.log";
+  rmSync(logPath, { force: true });
+  const readLog = () => {
+    try {
+      return readFileSync(logPath, "utf8");
+    } catch {
+      return "";
+    }
+  };
+  const stream = makeStream();
+  const ctx = {
+    location: { directory: REPO_DIR },
+    session: { hook: async () => ({ dispose: async () => {} }) },
+    event: {
+      subscribe: ({ signal } = {}) => {
+        if (signal) signal.addEventListener("abort", () => stream.close());
+        return stream.iterator;
+      },
+    },
+  };
+  const runtime = createPluginRuntime({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_REPLY_ENABLED: "0",
+      NTFY_PAIR_BUTTON: "0",
+      NTFY_REPLY_LOG: logPath,
+    },
+    argv: ["serve", "--service"],
+    log: () => {},
+  });
+  const cleanup = await runtime.setup(ctx);
+  ok(
+    await until(() => readLog().includes("event-strom-start")),
+    "der Strom-Aufbau wird protokolliert"
+  );
+  stream.push({ type: "session.created", properties: { info: info(SESSION) } });
+  ok(
+    await until(() => readLog().includes("ereignis: session.created")),
+    "der erste Ereignistyp wird protokolliert"
+  );
+  // Derselbe Typ noch einmal: die Diagnose bleibt gedrosselt.
+  stream.push({ type: "session.created", properties: { info: info(SESSION) } });
+  await wait(80);
+  eq(
+    readLog().split("\n").filter((line) => line.includes("ereignis: session.created")).length,
+    1,
+    "je Ereignistyp genau eine Diagnosezeile"
+  );
+  cleanup?.();
+  ok(
+    await until(() => readLog().includes("event-strom-ende"), 1000),
+    "das Strom-Ende wird protokolliert"
+  );
+  rmSync(logPath, { force: true });
+}
+
+// ── 35. Formular-Antwort: offene native Frage direkt beantworten ──────────
 //
 // Ist eine native Frage offen (question-Tool = serverseitiges Formular), trägt
 // die Brücke die Antwort per POST …/reply ein, sofern der Handy-Text eindeutig

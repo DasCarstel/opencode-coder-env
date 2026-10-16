@@ -19,9 +19,13 @@
 //
 // Aktiv NUR im Hintergrund-Service (`opencode serve …`): TUI-, `run`- und
 // Web-Prozesse laden dasselbe Plugin, würden aber dieselben Events doppelt
-// melden. Das Modul ist ein Singleton je Prozess — Zustand (working/Dedup)
-// wird über alle Plugin-Instanzen (eine je Location) geteilt, damit ein
-// Event, das mehrere Instanzen sehen, nur eine Nachricht erzeugt.
+// melden. OpenCode V2 lädt Plugins pro HTTP-Span — es leben also mehrere
+// Modul-Instanzen in einem Prozess. Der Zustand (working/Dedup) hängt deshalb
+// an globalThis und wird über alle Instanzen geteilt, damit ein Event, das
+// mehrere Instanzen sehen, nur eine Nachricht erzeugt. Der Ereignisstrom wird
+// nach einem Ende oder Fehler automatisch neu aufgebaut (siehe
+// createPluginRuntime.setup), damit ein Plugin-Neuladen die Meldungen nicht
+// still abreißen lässt.
 //
 // Umgebungsvariablen:
 //   NTFY_URL    Basis-URL        (Default https://ntfy.mueller-nas.de)
@@ -140,6 +144,12 @@ const MAX_PROCESSED_IDS = 200;
 const PAIR_API_TIMEOUT_MS = 5000;
 const PAIR_LINK_TTL_MS = 120000;
 const PAIR_LINK_LABEL = "Koppeln (5 Min)";
+// Ereignisstrom: endet er (z. B. Plugin-Neuladen) oder wirft er, wird er nach
+// einer kurzen Wartezeit neu aufgebaut; bei wiederholtem Sofort-Ende wächst die
+// Wartezeit bis EVENT_RETRY_MAX_MS. options.eventRetryMs übersteuert die
+// Startwartezeit nur in Tests.
+const EVENT_RETRY_MS = 1000;
+const EVENT_RETRY_MAX_MS = 5000;
 
 // ── Hilfsfunktionen ────────────────────────────────────────────────────────
 
@@ -193,7 +203,7 @@ function debug(...args) {
  * Diagnose-Zeile anhängen — nur wenn NTFY_REPLY_LOG gesetzt ist (dieselbe
  * Datei wie die Antwort-Brücke, also eine Diagnose-Quelle). Wirft nie.
  */
-function makeDiag(env) {
+export function makeDiag(env) {
   const path = String(env.NTFY_REPLY_LOG ?? "").trim();
   return (event, detail = "") => {
     if (!path) return;
@@ -447,13 +457,13 @@ function fallbackBody(event) {
 
 // ── Gemeinsamer Zustand (ein Zustand je Prozess, mehrere Instanzen) ────────
 //
-// OpenCode lädt das Plugin einmal je Location (im Infrastructure-Container
-// z. B. 6×: /, /root und je Workspace-Ordner). Jede Instanz abonniert den
-// öffentlichen Event-Stream und sieht daher dieselben Events. Der Zustand
-// hängt deshalb am Prozess (globalThis) und nicht am Modul: so erzeugt ein
-// Event genau eine Nachricht, egal wie viele Instanzen es beobachten.
-
-const STATE_KEY = Symbol.for("das.ntfy-notify.state");
+// OpenCode V2 lädt das Plugin pro HTTP-Span (Log: mehrere "loading plugin …
+// http.span=…"-Zeilen), zusätzlich je Location (im Infrastructure-Container
+// z. B. /, /root und je Workspace-Ordner). Jede Modul-Instanz hat dabei einen
+// eigenen Scope, jede Instanz abonniert den öffentlichen Event-Stream und
+// sieht daher dieselben Events. Der Zustand hängt deshalb an globalThis und
+// nicht am Modul-Scope: so erzeugt ein Event genau eine Nachricht, egal wie
+// viele Instanzen es beobachten.
 
 function newState() {
   return {
@@ -465,12 +475,15 @@ function newState() {
   };
 }
 
-function sharedState() {
-  if (!globalThis[STATE_KEY]) globalThis[STATE_KEY] = newState();
-  return globalThis[STATE_KEY];
-}
+/** Prozessweit geteilter Zustand — in jeder Modul-Instanz dasselbe Objekt. */
+export const SHARED = (globalThis.__ntfyNotifyShared ??= newState());
 
-const SHARED = sharedState();
+// Fehlende Felder defensiv nachfüllen: liegt im globalThis ein älteres oder
+// teilweise gefülltes Objekt, fehlt sonst z. B. lastSent — und die Dedup liefe
+// über Instanzen hinweg ins Leere.
+for (const [key, value] of Object.entries(newState())) {
+  if (SHARED[key] === undefined) SHARED[key] = value;
+}
 
 /** Nur für Tests: geteilten Zustand zurücksetzen. */
 export function resetSharedState() {
@@ -1930,19 +1943,61 @@ export function createPluginRuntime(options = {}) {
       }
 
       const controller = new AbortController();
+      // Diagnose des Ereignisstroms in dieselbe Datei wie die Antwort-Brücke
+      // (NTFY_REPLY_LOG): so ist im Betrieb sichtbar, ob überhaupt Events
+      // ankommen und ob der Strom neu aufgebaut wurde.
+      const diagStream = makeDiag({ ...merged });
+      // Wartezeit vor dem Wiederaufbau: 1 s, bei wiederholtem Fehlschlag bis
+      // 5 s (options.eventRetryMs übersteuert das nur in Tests).
+      const retryMs =
+        Number(options.eventRetryMs) > 0 ? Number(options.eventRetryMs) : EVENT_RETRY_MS;
+      // Ereignistypen, die diese Instanz schon diagnostiziert hat — eine Zeile
+      // je Typ genügt, sonst würde jeder Delta-Event das Log fluten.
+      const seenTypes = new Set();
+
+      /**
+       * Ereignisstrom abonnieren und selbst heilen: endet der Strom (z. B.
+       * nach einem Plugin-Neuladen) oder wirft er, wird er nach kurzer
+       * Wartezeit neu aufgebaut, statt still zu sterben. Ein Fehler beendet
+       * die Schleife also nie dauerhaft; nur der Abbruch des Controllers
+       * (teardown) beendet sie sauber.
+       */
       void (async () => {
-        try {
-          for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-            try {
-              await notifier.handleEvent(event);
-            } catch (error) {
-              console.error("[ntfy-notify] Event-Fehler:", error?.message ?? error);
+        let failures = 0;
+        while (!controller.signal.aborted) {
+          let gotEvents = false;
+          try {
+            diagStream("event-strom-start", "");
+            for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+              if (controller.signal.aborted) break;
+              gotEvents = true;
+              // Gedrosselte Diagnose: nur der erste Event je Typ (und Instanz).
+              const type = typeof event?.type === "string" && event.type ? event.type : "?";
+              if (!seenTypes.has(type)) {
+                seenTypes.add(type);
+                diagStream("ereignis", type);
+              }
+              try {
+                await notifier.handleEvent(event);
+              } catch (error) {
+                console.error("[ntfy-notify] Event-Fehler:", error?.message ?? error);
+              }
+            }
+            diagStream("event-strom-ende", "ende");
+          } catch (error) {
+            diagStream("event-strom-ende", error?.message ?? String(error));
+            if (!controller.signal.aborted) {
+              console.error("[ntfy-notify] Event-Stream beendet:", error?.message ?? error);
             }
           }
-        } catch (error) {
-          if (!controller.signal.aborted) {
-            console.error("[ntfy-notify] Event-Stream beendet:", error?.message ?? error);
-          }
+          if (controller.signal.aborted) break;
+          // Nach einem Strom mit Ereignissen wieder bei 1 s anfangen, sonst
+          // wächst die Wartezeit bei wiederholtem Sofort-Ende bis 5 s.
+          failures = gotEvents ? 0 : failures + 1;
+          await sleep(
+            Math.min(retryMs * Math.max(1, failures), EVENT_RETRY_MAX_MS),
+            controller.signal
+          );
         }
       })();
 
