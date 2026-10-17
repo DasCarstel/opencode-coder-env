@@ -25,34 +25,38 @@ Motive und ihre Abgrenzung (auch in Graustufen und auf Handygröße):
 * ``server-management``  **Proxmox** (echtes Logo, ``src/proxmox.png``): das
   Markenzeichen des Proxmox-Projekts. Wird nicht gezeichnet, sondern aus dem
   Quellbild auf die Zielfläche eingepasst und zentriert.
-* ``cleve``              **Container-Stapel**: drei schmalere Kisten mit je
-  vier senkrechten dunklen Rillen, treppenförmig nach rechts oben versetzt.
-  Ebenfalls Balken, aber Rillen statt Punkte und Versatz statt Flucht.
 * ``homeassistant``      **Home Assistant** (echtes Logo,
   ``src/home-assistant.png``): das Zeichen des Home-Assistant-Projekts,
   ebenfalls eingepasst statt gezeichnet.
-* ``svelte``             **Blitz**: gezacktes Sechseck. Einziges schräg
-  verlaufendes, spitzwinkliges Motiv ohne rechte Winkel.
-* ``general``            **Werkzeugkasten**: breiter Korpus, darüber ein
-  Bügel (Halbring), dunkle Deckelfuge mit Schloss. Balken MIT Aufsatz.
-* ``minijob``            **Münzenstapel**: vier waagerechte Ellipsen mit
-  dunklem Rand (oberste mit Innenring). Einziges Motiv aus reinen
-  Rundformen, ohne eine einzige gerade Kante.
+* ``cleve``              **Kisten-Stapel mit Standortnadel**: drei schmalere
+  Kisten mit je vier senkrechten dunklen Rillen, treppenförmig nach rechts
+  oben versetzt; oben rechts eine **Standortnadel** (Pin mit dunklem Loch)
+  als Kennzeichen für den Auswärtsstandort.
+* ``general``            **Kommandozeilen-Fenster**: Fenster mit Titelleiste
+  und drei Fensterknöpfen, im Inhalt ein Chevron ``>`` als
+  Eingabeaufforderung und ein Cursor-Balken.
+* ``minijob``            **Werkzeugkasten**: breiter Korpus, darüber ein
+  Bügel (Halbring), dunkle Deckelfuge mit Schloss in der Mitte.
 * ``uni``                **Doktorhut**: liegende Raute auf schmalerem
   Käppchen, dazu eine Quaste rechts. Vier schräge Kanten plus hängender
-  Faden — klar getrennt vom Blitz (spitzwinklig, ohne Faden).
-* ``hermes``             **Sprechblase**: abgerundetes Rechteck mit Schwanz
-  unten links und drei dunklen Punkten. Balken MIT Schwanz (der
-  Werkzeugkasten hat stattdessen den Bügel oben und das Schloss).
+  Faden — einzige spitze Silhouette neben den beiden Fenstern.
+* ``svelte``             **Browserfenster**: dasselbe Fenster wie
+  ``general``, im Inhalt aber eine **Erdkugel** (Kreis mit Meridian und
+  Äquator) statt der Eingabeaufforderung.
+* ``hermes``             **Geflügelter Stab**: senkrechter Stab mit Kugel
+  oben und je einem Flügel aus drei Federspitzen — das Boten-Attribut des
+  Hermes (Kerykeion, ohne Schlangen). Gewählt statt des geflügelten Helms,
+  weil der Stab auf 64 px drei getrennte Formen behält, während der Helm
+  klein zu einer Fläche verschmilzt.
 
-Gegenprobe der drei "Balken"-Motive: sie teilen die Grundsilhouette, sind
-aber über genau ein auffälliges Zusatzmerkmal unterscheidbar, das auch
-klein erhalten bleibt — Container: vier **Rillen** und
-**Treppenversatz**; Werkzeugkasten: **Bügel oben** und Schloss **in der
-Mitte**; Sprechblase: **Schwanz unten links** und drei Punkte **in einer
-Reihe über die ganze Breite**. Blitz, Münzen und Hut sind bereits in der
-Silhouette eindeutig; die beiden Logos tragen ihre eigenen Farben und sind
-damit ohnehin nicht zu verwechseln.
+Gegenprobe der beiden Fenster-Motive: ``general`` und ``svelte`` teilen
+sich Rahmen, Titelleiste und Fensterknöpfe und unterscheiden sich allein im
+Inhalt — links unten eine Prompt-Zeile aus Chevron und Cursor gegen eine
+Erdkugel, die den Innenraum füllt. Auf 64 px ist das der Unterschied
+zwischen "zwei kurze Striche" und "großer Kreis mit Kreuz". Kistenstapel
+(mit Standortnadel), Werkzeugkasten (Bügel mit Schloss) und Flügelstab
+(senkrechter Balken auf Kugel) haben eigene Silhouetten; die beiden Logos
+tragen ihre eigenen Farben und sind damit ohnehin nicht zu verwechseln.
 
 Aufruf:
 
@@ -253,39 +257,123 @@ def motiv_haus(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: 
     )
 
 
-def motiv_blitz(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
-    """Blitz: gezacktes Sechseck, mittig und spitzwinklig."""
-    del rgb, strich
-    cx = kante // 2
-    cy = kante // 2
-    halb_b = px(0.30, kante)
-    halb_h = px(0.345, kante)
+# Gemeinsames Fenster der Motive ``general`` (Kommandozeile) und ``svelte``
+# (Browser): Rahmen, Titelleiste und drei Fensterknöpfe sind identisch, nur der
+# Inhalt unterscheidet sich. Koordinaten als Anteil der Zeichenfläche.
+FENSTER_LINKS = 0.135
+FENSTER_RECHTS = 0.865
+FENSTER_OBEN = 0.195
+FENSTER_UNTEN = 0.805
+FENSTER_LEISTE = 0.355
 
-    umriss = [
-        (0.35, -1.00),
-        (-0.78, 0.10),
-        (-0.05, 0.10),
-        (-0.35, 1.00),
-        (0.78, -0.20),
-        (0.05, -0.20),
-    ]
-    punkte = [(cx + px(x, halb_b), cy + px(y, halb_h)) for x, y in umriss]
-    zeichner.polygon(punkte, fill=WEISS)
+
+def fenster_zeichnen(
+    zeichner: ImageDraw.ImageDraw,
+    kante: int,
+    strich: int,
+    detail: tuple[int, int, int, int],
+) -> tuple[int, int]:
+    """Zeichnet das Fenster (Rahmen, Titelleiste, drei Fensterknöpfe).
+
+    Die Knöpfe sitzen als dunkle Punkte im hellen Balken — dieselbe Technik
+    wie die Rillen der Kisten, nur rund. Rückgabe: Mitte des Innenraums
+    unterhalb der Titelleiste als (x, y).
+    """
+    links = px(FENSTER_LINKS, kante)
+    rechts = px(FENSTER_RECHTS, kante)
+    oben = px(FENSTER_OBEN, kante)
+    unten = px(FENSTER_UNTEN, kante)
+    leiste = px(FENSTER_LEISTE, kante)
+    radius = px(0.075, kante)
+
+    # Titelleiste: oben wie das Fenster gerundet, unten gerade abgeschlossen
+    zeichner.rounded_rectangle((links, oben, rechts, leiste), radius=radius, fill=WEISS)
+    zeichner.rectangle((links, leiste - radius, rechts, leiste), fill=WEISS)
+
+    # Fensterrahmen; seine obere Rundung liegt deckungsgleich unter der Leiste
+    zeichner.rounded_rectangle(
+        (links, oben, rechts, unten),
+        radius=radius,
+        outline=WEISS,
+        width=strich,
+    )
+
+    # drei Fensterknöpfe im hellen Balken
+    knopf_radius = px(0.028, kante)
+    knopf_cy = (oben + leiste) // 2
+    for knopf in range(3):
+        knopf_cx = links + px(0.10, kante) + knopf * px(0.075, kante)
+        zeichner.ellipse(
+            (knopf_cx - knopf_radius, knopf_cy - knopf_radius, knopf_cx + knopf_radius, knopf_cy + knopf_radius),
+            fill=detail,
+        )
+
+    return (links + rechts) // 2, (leiste + unten) // 2
+
+
+def motiv_kommandozeile(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
+    """Kommandozeilen-Fenster: Chevron als Eingabeaufforderung plus Cursor-Balken."""
+    detail = (*abdunkeln(rgb, 0.55), 255)
+    _, mitte_y = fenster_zeichnen(zeichner, kante, strich, detail)
+
+    halb = px(0.095, kante)
+    zeichner.line(
+        [
+            (px(0.245, kante), mitte_y - halb),
+            (px(0.375, kante), mitte_y),
+            (px(0.245, kante), mitte_y + halb),
+        ],
+        fill=WEISS,
+        width=max(2, px(0.042, kante)),
+        joint="curve",
+    )
+    zeichner.rectangle(
+        (px(0.475, kante), mitte_y - halb, px(0.535, kante), mitte_y + halb),
+        fill=WEISS,
+    )
+
+
+def motiv_browser(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
+    """Browserfenster: Erdkugel aus Kreis, Meridian und Äquator."""
+    detail = (*abdunkeln(rgb, 0.55), 255)
+    cx, cy = fenster_zeichnen(zeichner, kante, strich, detail)
+
+    radius = px(0.175, kante)
+    linie = max(2, px(0.038, kante))
+
+    # Umriss der Kugel
+    zeichner.ellipse(
+        (cx - radius, cy - radius, cx + radius, cy + radius),
+        outline=WEISS,
+        width=linie,
+    )
+    # Meridian (schmale Ellipse) und Äquator
+    zeichner.ellipse(
+        (cx - px(0.075, kante), cy - radius, cx + px(0.075, kante), cy + radius),
+        outline=WEISS,
+        width=linie,
+    )
+    zeichner.line((cx - radius, cy, cx + radius, cy), fill=WEISS, width=linie)
 
 
 def motiv_container(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
-    """Container-Stapel: drei versetzte Kisten mit senkrechten Rillen."""
+    """Kisten-Stapel mit Standortnadel: drei versetzte Kisten mit senkrechten
+    Rillen, oben rechts eine Nadel als Kennzeichen für den Auswärtsstandort.
+
+    Die Kisten rücken dafür etwas nach links unten; die Nadel steht frei
+    daneben, damit sich ihre Umrisse auf Handygröße nicht mit den Kisten zu
+    einer Fläche verbinden.
+    """
     del strich
     detail = (*abdunkeln(rgb, 0.45), 255)
 
-    breite = px(0.46, kante)
-    hoehe = px(0.18, kante)
-    luecke = px(0.032, kante)
-    versatz = px(0.055, kante)
-    gesamt = 3 * hoehe + 2 * luecke
+    breite = px(0.35, kante)
+    hoehe = px(0.135, kante)
+    luecke = px(0.025, kante)
+    versatz = px(0.045, kante)
 
-    x0 = (kante - (breite + 2 * versatz)) // 2
-    y0 = (kante - gesamt) // 2
+    x0 = px(0.085, kante)
+    y0 = px(0.425, kante)
 
     rillen_breite = max(2, px(0.035, breite))
     for kiste in range(3):
@@ -294,7 +382,7 @@ def motiv_container(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], ka
         oben = y0 + (2 - kiste) * (hoehe + luecke)
         zeichner.rounded_rectangle(
             (links, oben, links + breite, oben + hoehe),
-            radius=px(0.025, kante),
+            radius=px(0.02, kante),
             fill=WEISS,
         )
         # vier senkrechte Rillen (Containerprofil)
@@ -306,6 +394,33 @@ def motiv_container(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], ka
                 (rille_x - rillen_breite // 2, oben_rille, rille_x + rillen_breite // 2, unten_rille),
                 fill=detail,
             )
+
+    # Standortnadel: Kreis mit Spitze nach unten (Teardrop) und dunklem Loch
+    nadel_cx = px(0.75, kante)
+    nadel_cy = px(0.30, kante)
+    nadel_radius = px(0.10, kante)
+    zeichner.ellipse(
+        (
+            nadel_cx - nadel_radius,
+            nadel_cy - nadel_radius,
+            nadel_cx + nadel_radius,
+            nadel_cy + nadel_radius,
+        ),
+        fill=WEISS,
+    )
+    zeichner.polygon(
+        [
+            (nadel_cx - px(0.055, kante), nadel_cy + px(0.075, kante)),
+            (nadel_cx + px(0.055, kante), nadel_cy + px(0.075, kante)),
+            (nadel_cx, nadel_cy + px(0.20, kante)),
+        ],
+        fill=WEISS,
+    )
+    loch_radius = px(0.042, kante)
+    zeichner.ellipse(
+        (nadel_cx - loch_radius, nadel_cy - loch_radius, nadel_cx + loch_radius, nadel_cy + loch_radius),
+        fill=detail,
+    )
 
 
 def motiv_werkzeugkasten(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
@@ -349,36 +464,6 @@ def motiv_werkzeugkasten(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int
         (cx - schloss_halb, korpus_oben, cx + schloss_halb, korpus_oben + px(0.14, kante)),
         radius=px(0.02, kante),
         fill=detail,
-    )
-
-
-def motiv_muenzen(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
-    """Münzenstapel: vier gestapelte Ellipsen mit dunklem Rand."""
-    del strich
-    detail = (*abdunkeln(rgb, 0.5), 255)
-    cx = kante // 2
-
-    halb_b = px(0.235, kante)
-    halb_h = px(0.075, kante)
-    abstand = px(0.115, kante)
-    unten_mitte = px(0.775, kante)
-    rand = px(0.018, kante)
-
-    for muenze in range(4):  # von unten nach oben, jede höhere deckt die tiefere
-        cy = unten_mitte - muenze * abstand
-        zeichner.ellipse(
-            (cx - halb_b, cy - halb_h, cx + halb_b, cy + halb_h),
-            fill=WEISS,
-            outline=detail,
-            width=rand,
-        )
-
-    # Innenring auf der obersten Münze -> Münzbild statt bloßer Scheibe
-    oben_mitte = unten_mitte - 3 * abstand
-    zeichner.ellipse(
-        (cx - px(0.135, kante), oben_mitte - px(0.038, kante), cx + px(0.135, kante), oben_mitte + px(0.038, kante)),
-        outline=detail,
-        width=rand,
     )
 
 
@@ -430,38 +515,56 @@ def motiv_doktorhut(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], ka
     )
 
 
-def motiv_sprechblase(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
-    """Sprechblase: abgerundetes Rechteck mit Schwanz und drei Punkten."""
-    del strich
-    detail = (*abdunkeln(rgb, 0.55), 255)
+def motiv_hermes_stab(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
+    """Geflügelter Stab (Hermes, ohne Schlangen): senkrechter Stab mit Kugel
+    oben und je einem Flügel aus drei Federspitzen links und rechts.
 
-    links = px(0.17, kante)
-    rechts = px(0.83, kante)
-    oben = px(0.17, kante)
-    unten = px(0.68, kante)
-    radius = px(0.115, kante)
+    Gewählt wurde der Stab statt Helm oder Flügelschuh, weil er auf 64 px am
+    klarsten bleibt: Stab, Kugel und die drei Federspitzen sind drei getrennte
+    Formen. Der geflügelte Helm verschmilzt klein dagegen zu einer einzigen
+    weißen Fläche mit dunklem Querstrich und war in der Gegenprobe bei 64 px
+    deutlich schlechter zu erkennen.
+    """
+    del rgb, strich
+    cx = kante // 2
 
-    zeichner.rounded_rectangle((links, oben, rechts, unten), radius=radius, fill=WEISS)
+    kugel_cy = px(0.235, kante)
+    stab_halb = px(0.048, kante)
 
-    # Schwanz unten links: Oberkante liegt im Blasenkörper -> verschmilzt
-    zeichner.polygon(
-        [
-            (px(0.30, kante), unten - px(0.03, kante)),
-            (px(0.50, kante), unten - px(0.03, kante)),
-            (px(0.27, kante), px(0.86, kante)),
-        ],
+    # Stab mit gerundetem Ende, oben die Kugel als Abschluss. Der Stab ist
+    # bewusst kräftig: dünner gezeichnet zerfällt das Motiv auf 64 px zu einem
+    # Strich, und die Flügel lesen sich dann wie ein Insekt.
+    zeichner.rounded_rectangle(
+        (cx - stab_halb, kugel_cy, cx + stab_halb, px(0.84, kante)),
+        radius=px(0.045, kante),
+        fill=WEISS,
+    )
+    kugel_radius = px(0.085, kante)
+    zeichner.ellipse(
+        (cx - kugel_radius, kugel_cy - kugel_radius, cx + kugel_radius, kugel_cy + kugel_radius),
         fill=WEISS,
     )
 
-    # drei Punkte ("Nachricht") in einer Reihe über die Blasenmitte
-    punkt_radius = px(0.052, kante)
-    mitte_y = (oben + unten) // 2
-    for i in (-1, 0, 1):
-        cx = kante // 2 + i * px(0.165, kante)
-        zeichner.ellipse(
-            (cx - punkt_radius, mitte_y - punkt_radius, cx + punkt_radius, mitte_y + punkt_radius),
-            fill=detail,
-        )
+    # Flügel: geschlossene Silhouette mit glatter Oberkante und drei Federspitzen,
+    # seitlich am Stab sitzend. Einmal links, einmal gespiegelt rechts.
+    fluegel = [
+        (0.465, 0.300),  # Ansatz oben am Stab
+        (0.330, 0.240),
+        (0.200, 0.215),
+        (0.130, 0.205),  # vorderste Federspitze
+        (0.160, 0.275),  # Federspitze 1
+        (0.250, 0.300),  # Einkerbung
+        (0.190, 0.365),  # Federspitze 2
+        (0.280, 0.385),  # Einkerbung
+        (0.240, 0.450),  # Federspitze 3
+        (0.360, 0.440),
+        (0.465, 0.400),  # Ansatz unten am Stab
+    ]
+    for spiegel in (False, True):
+        punkte = [
+            (px(x if not spiegel else 1.0 - x, kante), px(y, kante)) for x, y in fluegel
+        ]
+        zeichner.polygon(punkte, fill=WEISS)
 
 
 # ---------------------------------------------------------------------------
@@ -474,12 +577,12 @@ def motiv_sprechblase(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], 
 ICONS: list[tuple[str, str, Motiv | None, str, str | None]] = [
     ("server-management", "#2563eb", None, "Proxmox-Zeichen (Quellbild)", "proxmox.png"),
     ("homeassistant", "#f59e0b", None, "Home-Assistant-Zeichen (Quellbild)", "home-assistant.png"),
-    ("cleve", "#16a34a", motiv_container, "Container-Stapel mit Rillen", None),
-    ("general", "#64748b", motiv_werkzeugkasten, "Werkzeugkasten mit Bügel und Schloss", None),
-    ("minijob", "#0d9488", motiv_muenzen, "Münzenstapel (4 Münzen)", None),
+    ("cleve", "#64748b", motiv_container, "Kisten-Stapel mit Standortnadel (Auswärtsstandort)", None),
+    ("general", "#334155", motiv_kommandozeile, "Kommandozeilen-Fenster mit Prompt und Cursor", None),
+    ("minijob", "#0d9488", motiv_werkzeugkasten, "Werkzeugkasten mit Bügel und Schloss", None),
     ("uni", "#7c3aed", motiv_doktorhut, "Doktorhut mit Quaste", None),
-    ("svelte", "#ea580c", motiv_blitz, "Blitz", None),
-    ("hermes", "#ca8a04", motiv_sprechblase, "Sprechblase mit drei Punkten", None),
+    ("svelte", "#ea580c", motiv_browser, "Browserfenster mit Erdkugel", None),
+    ("hermes", "#ca8a04", motiv_hermes_stab, "Geflügelter Stab mit Kugel (Boten-Attribut)", None),
 ]
 
 

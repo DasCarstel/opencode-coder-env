@@ -6,13 +6,17 @@ sofort erkennbar ist, **woher** eine Meldung kommt — je Workspace ein eigenes
 **Bildsymbol** in der Workspace-Farbe.
 
 Die Motive sind bewusst **Piktogramme**, keine Buchstaben oder Kürzel: „SM",
-„HA" usw. sind nicht selbsterklärend, ein Werkzeugkasten oder eine Sprechblase
-schon. Sechs der acht Symbole sind aus einfachen geometrischen Formen
-aufgebaut (nur Pillow, kein Netz) und nehmen rund zwei Drittel der Fläche ein,
-damit sie auch in der Handy-Vorschau erkennbar bleiben. Zwei Icons tragen das
-**echte Logo** des jeweiligen Projekts (Proxmox, Home Assistant): Diese
-Quellbilder liegen im Repo unter `src/` und werden vom Generator eingepasst —
-auch dafür braucht er kein Netz.
+„HA" usw. sind nicht selbsterklärend, ein Werkzeugkasten oder ein
+Kommandozeilen-Fenster schon. Sechs der acht Symbole sind aus einfachen
+geometrischen Formen aufgebaut (nur Pillow, kein Netz) und nehmen rund zwei
+Drittel der Fläche ein, damit sie auch in der Handy-Vorschau erkennbar
+bleiben. Zwei Icons tragen das **echte Logo** des jeweiligen Projekts
+(Proxmox, Home Assistant): Diese Quellbilder liegen im Repo unter `src/` und
+werden vom Generator eingepasst — auch dafür braucht er kein Netz.
+
+`uebersicht.png` ist **keine** Ausgabe des Generators, sondern nur eine
+selbst gebaute Übersicht (je Workspace 160 px und 56 px mit Namen) zum
+Vergleichen der Motive; sie wird zusammen mit den Icons aktualisiert.
 
 ## Aufbau
 
@@ -20,7 +24,7 @@ auch dafür braucht er kein Netz.
 |-------------|------|
 | Format | PNG, RGBA, 256×256 px, < 40 KB je Datei |
 | Motiv | abgerundetes Quadrat in der Workspace-Farbe, darin das weiße Bildsymbol — bei den beiden Logos stattdessen das Logo auf transparentem Grund |
-| Details | dunkle Farbtöne der Workspace-Farbe (Rillen, Punkte, Fugen) |
+| Details | dunkle Farbtöne der Workspace-Farbe (Rillen, Fensterknöpfe, Fugen, Nadel-Loch) |
 | Erzeuger | `tools/make-ntfy-icons.py` (Python 3 + Pillow) |
 | Quellbilder | `assets/ntfy-icons/src/<datei>.png` — nur für die beiden Logos, fest im Repo |
 | Ablage | `assets/ntfy-icons/<name>.png` |
@@ -35,19 +39,27 @@ Die Dateien sind **generiert**, aber eingecheckt: ntfy lädt sie über eine
 |-------|-------|--------------------|
 | `server-management.png` | **Proxmox-Zeichen** (Logo) | echtes Projektlogo, aus `src/proxmox.png` eingepasst — kein Piktogramm |
 | `homeassistant.png` | **Home-Assistant-Zeichen** (Logo) | echtes Projektlogo, aus `src/home-assistant.png` eingepasst — kein Piktogramm |
-| `cleve.png` | **Container-Stapel** | drei versetzt gestapelte Kisten mit je vier senkrechten Rillen |
-| `general.png` | **Werkzeugkasten** | Korpus, Bügel oben, dunkle Deckelfuge mit Schloss in der Mitte |
-| `minijob.png` | **Münzenstapel** | vier gestapelte Ellipsen mit dunklem Rand, oberste mit Innenring |
+| `cleve.png` | **Kisten-Stapel mit Standortnadel** | drei versetzt gestapelte Kisten mit je vier senkrechten Rillen, oben rechts eine Standortnadel (Pin mit dunklem Loch) für den Auswärtsstandort |
+| `general.png` | **Kommandozeilen-Fenster** | Fenster mit Titelleiste und drei Fensterknöpfen, im Inhalt ein Chevron `>` und ein Cursor-Balken |
+| `minijob.png` | **Werkzeugkasten** | Korpus, Bügel oben, dunkle Deckelfuge mit Schloss in der Mitte |
 | `uni.png` | **Doktorhut** | liegende Raute auf Käppchen, Quaste mit Kugel rechts |
-| `svelte.png` | **Blitz** | gezacktes Polygon (Tempo/Build) |
-| `hermes.png` | **Sprechblase** | Blase mit Schwanz unten links und drei Punkten (Bote/Nachricht) |
+| `svelte.png` | **Browserfenster** | dasselbe Fenster wie `general`, im Inhalt aber eine Erdkugel (Kreis mit Meridian und Äquator) |
+| `hermes.png` | **Geflügelter Stab** | senkrechter Stab mit Kugel oben, links und rechts je ein Flügel mit drei Federspitzen (Hermes’ Kerykeion ohne Schlangen) |
 
-Die drei „Balken“-Motive (Container, Werkzeugkasten, Sprechblase) sind über ihr
-Zusatzmerkmal getrennt — Rillen plus Treppenversatz, Bügel oben, Schwanz unten
-links. Blitz, Münzenstapel und Doktorhut sind schon an der Silhouette
-eindeutig; die beiden Logos tragen ihre eigenen Farben und sind damit ohnehin
-unverwechselbar. Auch in Graustufen und auf Handygröße (64 px) bleiben alle acht
-unterscheidbar.
+Die beiden Fenster-Motive `general` und `svelte` teilen sich Rahmen,
+Titelleiste und Fensterknöpfe; unterschieden werden sie allein durch den
+Inhalt — Prompt-Zeile (klein, links unten) gegen Erdkugel (füllt den
+Innenraum). Der Kistenstapel trägt als einziges Motiv ein Zusatzzeichen (die
+Nadel), der Werkzeugkasten ist an Bügel und Schloss zu erkennen, der
+Flügelstab ist das einzige senkrechte Motiv. Doktorhut und Flügelstab sind
+schon an der Silhouette eindeutig; die beiden Logos tragen ihre eigenen Farben
+und sind damit ohnehin unverwechselbar. Auch in Graustufen und auf Handygröße
+(64 px) bleiben alle acht unterscheidbar.
+
+Der geflügelte **Helm** wurde für `hermes` verworfen, obwohl er das bekanntere
+Boten-Attribut ist: Bei 64 px verschmelzen Kuppel, Krempe und Flügel zu einer
+einzigen Fläche, während Stab, Kugel und Federspitzen getrennte Formen
+bleiben.
 
 ## Herkunft der Quellbilder
 
@@ -82,6 +94,14 @@ Abweichender Zielordner ist optional als Argument möglich:
 python3 tools/make-ntfy-icons.py /tmp/opencode/ntfy-icons
 ```
 
+## Übersichtsbild
+
+`uebersicht.png` ist **nicht** Teil des Generators, sondern eine Sichtprüfung:
+je Workspace das Icon in 160 px und 56 px nebeneinander, darunter der Name, auf
+hellem Grund (`#f5f5f7`), vier Workspaces pro Zeile und zwei Zeilen. Nach jeder
+Motiv-Änderung einmal neu erzeugen und **ansehen** — auf 56 px muss das Motiv
+noch erkennbar und von den übrigen unterscheidbar sein.
+
 ## Roh-URLs
 
 Basis: `https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons/`
@@ -95,12 +115,17 @@ sonst weiter aus dem Cache zeigen.
 |------|-------|-------|---------|
 | `server-management` | Proxmox-Zeichen | `#2563eb` | https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons/server-management.png |
 | `homeassistant` | Home-Assistant-Zeichen | `#f59e0b` | https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons/homeassistant.png |
-| `cleve` | Container-Stapel | `#16a34a` | https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons/cleve.png |
-| `general` | Werkzeugkasten | `#64748b` | https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons/general.png |
-| `minijob` | Münzenstapel | `#0d9488` | https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons/minijob.png |
+| `cleve` | Kisten-Stapel mit Standortnadel | `#64748b` | https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons/cleve.png |
+| `general` | Kommandozeilen-Fenster | `#334155` | https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons/general.png |
+| `minijob` | Werkzeugkasten | `#0d9488` | https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons/minijob.png |
 | `uni` | Doktorhut | `#7c3aed` | https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons/uni.png |
-| `svelte` | Blitz | `#ea580c` | https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons/svelte.png |
-| `hermes` | Sprechblase | `#ca8a04` | https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons/hermes.png |
+| `svelte` | Browserfenster mit Erdkugel | `#ea580c` | https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons/svelte.png |
+| `hermes` | Geflügelter Stab | `#ca8a04` | https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons/hermes.png |
+
+Die beiden Schiefertöne sind bewusst getrennt: `cleve` liegt als
+Außenstandort in mittlerem Blau-grau (`#64748b`), das Kommandozeilen-Fenster
+von `general` in dunklem Schiefer (`#334155`), damit sich die beiden
+Fenster-Motive auch farblich unterscheiden.
 
 ## Neuen Workspace ergänzen
 
