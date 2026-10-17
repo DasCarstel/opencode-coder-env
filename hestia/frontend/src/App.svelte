@@ -781,7 +781,7 @@ function applyDcpPreset(preset) {
   const presets = {
     light: { max: 250000, min: 150000 },
     moderate: { max: 175000, min: 100000 },
-    max: { max: 10000, min: 5000 },
+    max: { max: 100000, min: 50000 },
   }
   const p = presets[preset]
   if (p) {
@@ -1200,7 +1200,7 @@ setInterval(loadSuggestStatus, 60000)
     <span class="muted">Presets:</span>
     <button onclick={() => applyDcpPreset('light')} disabled={dcpSaveBusy}>light (250k/150k)</button>
     <button onclick={() => applyDcpPreset('moderate')} disabled={dcpSaveBusy}>moderate (175k/100k)</button>
-    <button onclick={() => applyDcpPreset('max')} disabled={dcpSaveBusy}>max (10k/5k)</button>
+    <button onclick={() => applyDcpPreset('max')} disabled={dcpSaveBusy}>max (100k/50k)</button>
   </div>
   <div class="row" style="margin-top:8px">
     <button class="primary" onclick={saveDcpSettings} disabled={dcpSaveBusy}>
