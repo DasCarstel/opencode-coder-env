@@ -1180,17 +1180,17 @@ setInterval(loadSuggestStatus, 60000)
     Wirkt nach dem nächsten Container-Restart (Rollout). SOT: <span class="mono">.opencode/dcp.jsonc</span>.
   </p>
   <div class="row">
-    <label class="foCheck">
-      <input type="checkbox" bind:checked={dcpForm.enabled} disabled={dcpSaveBusy} />
-      DCP aktiv
+    <label class="foCheck" style="display:inline-flex; align-items:center; gap:6px; font-weight:600;">
+      <input type="checkbox" bind:checked={dcpForm.enabled} disabled={dcpSaveBusy} style="width:1.2rem; height:1.2rem;" />
+      DCP {dcpForm.enabled ? 'aktiv' : 'deaktiviert'}
     </label>
     <label>
       Hart (maxContextLimit)
-      <input type="number" min="0" step="1000" bind:value={dcpForm.maxContextLimit} disabled={dcpSaveBusy} style="width:120px" />
+      <input type="number" min="0" step="1000" bind:value={dcpForm.maxContextLimit} disabled={dcpSaveBusy} style="width:120px; font-size:.9rem;" />
     </label>
     <label>
       Weich (minContextLimit)
-      <input type="number" min="0" step="1000" bind:value={dcpForm.minContextLimit} disabled={dcpSaveBusy} style="width:120px" />
+      <input type="number" min="0" step="1000" bind:value={dcpForm.minContextLimit} disabled={dcpSaveBusy} style="width:120px; font-size:.9rem;" />
     </label>
     <span class="muted">
       Aktuell: {dcpStatus?.settings?.enabled === false ? 'aus' : 'an'} · max {dcpStatus?.settings?.maxContextLimit ?? '—'} · min {dcpStatus?.settings?.minContextLimit ?? '—'}
