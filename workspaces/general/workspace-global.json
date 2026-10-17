@@ -3,9 +3,12 @@
   "skills": [
     "../../skills/shared",
     "../../skills/general",
-    "../../skills/obsidian"
+    "../../skills/obsidian",
+    "../../skills/server"
   ],
-  "plugins": ["opencode-model-router"],
+  "plugins": [
+    "opencode-model-router"
+  ],
   "mcp": {
     "servers": {
       "ocis": {
@@ -21,7 +24,11 @@
       },
       "pdf": {
         "type": "local",
-        "command": ["npx", "-y", "@sylphx/anymd@8.5.1"]
+        "command": [
+          "npx",
+          "-y",
+          "@sylphx/anymd@8.5.1"
+        ]
       },
       "ssh-mcp": {
         "type": "local",
