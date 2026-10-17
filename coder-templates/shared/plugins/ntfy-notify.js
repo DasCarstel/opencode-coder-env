@@ -1059,7 +1059,8 @@ export function createNtfyNotifier(options = {}) {
     await sendOnce(sessionID, "error", {
       title: `⚠️ Fehler — ${projectFor(sessionID)}`,
       message: withHeader(sessionID, `${body}${hint}`),
-      priority: 5,
+      priority: 3,
+
       tags: ["warning"],
       click: linkFor(sessionID),
     });
@@ -1215,7 +1216,8 @@ export function createNtfyNotifier(options = {}) {
         await sendOnce(sessionID, "question", {
           title: `❓ Frage — ${projectFor(sessionID)}`,
           message: withHeader(sessionID, questionBody(event) || fallbackBody(event)),
-          priority: 4,
+          priority: 3,
+
           tags: ["question"],
           click: linkFor(sessionID),
           maxBody: MAX_QUESTION_BODY,
@@ -1231,7 +1233,8 @@ export function createNtfyNotifier(options = {}) {
         await sendOnce(sessionID, "permission", {
           title: `🔐 Freigabe — ${projectFor(sessionID)}`,
           message: withHeader(sessionID, permissionBody(event) || fallbackBody(event)),
-          priority: 4,
+          priority: 3,
+
           tags: ["lock"],
           click: linkFor(sessionID),
           maxBody: MAX_QUESTION_BODY,

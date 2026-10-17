@@ -290,7 +290,7 @@ console.log("\nFrage");
   const body = received[0]?.body ?? {};
   eq(received.length, 1, "eine Nachricht");
   eq(body.title, "[server-management] ❓ Frage — server-management", "Frage-Titel");
-  eq(body.priority, 4, "Priorität 4");
+  eq(body.priority, 3, "Priorität 3");
   ok(String(body.message).includes("Wie soll ich fortfahren?"), "Fragetext enthalten");
   ok(String(body.message).includes("A: deployen"), "Option A enthalten");
   ok(String(body.message).includes("B: warten"), "Option B enthalten");
@@ -317,7 +317,7 @@ console.log("\nFreigabe und Fehler");
   });
   const perm = received[0]?.body ?? {};
   eq(perm.title, "[server-management] 🔐 Freigabe — server-management", "Freigabe-Titel");
-  eq(perm.priority, 4, "Priorität 4");
+  eq(perm.priority, 3, "Priorität 3");
   ok(String(perm.message).includes("rm -rf /tmp/x"), "Befehl enthalten");
 
   received.length = 0;
@@ -328,7 +328,7 @@ console.log("\nFreigabe und Fehler");
   ok(await until(() => received.length >= 1), "die Fehlermeldung kommt nach dem Haltefenster");
   const err = received[0]?.body ?? {};
   eq(err.title, "[server-management] ⚠️ Fehler — server-management", "Fehler-Titel");
-  eq(err.priority, 5, "Priorität 5");
+  eq(err.priority, 3, "Priorität 3");
   ok(String(err.message).includes("Provider nicht erreichbar"), "Fehlermeldung enthalten");
 }
 
@@ -696,7 +696,7 @@ console.log("\nFrage (form.created)");
   eq(received.length, 1, "form.created meldet");
   const body = received[0]?.body ?? {};
   eq(body.title, "[server-management] ❓ Frage — server-management", "Titel der Frage");
-  eq(body.priority, 4, "Priorität 4");
+  eq(body.priority, 3, "Priorität 3");
   ok(String(body.message).includes("Weiter mit Phase 4?"), "Fragetext enthalten");
   ok(String(body.message).includes("1) Ja"), "Option 1 enthalten");
   ok(String(body.message).includes("2) Nein"), "Option 2 enthalten");
@@ -757,14 +757,14 @@ console.log("\nFreigabe und Fehler (V2)");
     })
   );
   eq(received.length, 1, "permission.asked meldet");
-  eq(received[0]?.body?.priority, 4, "Freigabe hat Priorität 4");
+  eq(received[0]?.body?.priority, 3, "Freigabe hat Priorität 3");
   ok(String(received[0]?.body?.message ?? "").includes("systemctl restart"), "Kommando im Text");
 
   received.length = 0;
   await n.handleEvent(v2("session.step.failed", { error: { message: "Provider 500" } }));
   ok(await until(() => received.length >= 1), "session.step.failed kommt nach dem Haltefenster");
   eq(received.length, 1, "session.step.failed meldet");
-  eq(received[0]?.body?.priority, 5, "Fehler hat Priorität 5");
+  eq(received[0]?.body?.priority, 3, "Fehler hat Priorität 3");
   ok(String(received[0]?.body?.message ?? "").includes("Provider 500"), "Fehlertext enthalten");
 
   received.length = 0;
@@ -813,7 +813,7 @@ console.log("\nTurn-Ende (V2)");
   await n.handleEvent(v2("session.execution.failed", { error: { message: "Turn abgebrochen" } }));
   ok(await until(() => received.length >= 1), "execution.failed kommt nach dem Haltefenster");
   eq(received.length, 1, "execution.failed meldet einen Fehler");
-  eq(received[0]?.body?.priority, 5, "Fehler mit Priorität 5");
+  eq(received[0]?.body?.priority, 3, "Fehler mit Priorität 3");
   ok(String(received[0]?.body?.message).includes("Turn abgebrochen"), "Fehlertext enthalten");
 }
 
@@ -867,7 +867,7 @@ console.log("\nFehlermeldungen (Dämpfung)");
   eq(received.length, 0, "im Fenster geht noch nichts raus");
   ok(await until(() => received.length >= 1), "nach dem Fenster kommt die Meldung");
   eq(received.length, 1, "drei Fehlschläge ergeben genau eine Meldung");
-  eq(received[0]?.body?.priority, 5, "Priorität 5 bleibt");
+  eq(received[0]?.body?.priority, 3, "Priorität 3 bleibt");
   ok(
     String(received[0]?.body?.message ?? "").includes("erster"),
     "der erste Fehlschlag liefert den Text"
@@ -886,7 +886,7 @@ console.log("\nFehlermeldungen (Dämpfung)");
   eq(received.length, 0, "gehalten, solange das Fenster läuft");
   ok(await until(() => received.length >= 1), "nach dem Fenster kommt die Meldung");
   eq(received[0]?.body?.title, "[server-management] ⚠️ Fehler — server-management", "Fehler-Titel");
-  eq(received[0]?.body?.priority, 5, "Priorität 5");
+  eq(received[0]?.body?.priority, 3, "Priorität 3");
   ok(String(received[0]?.body?.message ?? "").includes("echter Fehler"), "Fehlertext enthalten");
 }
 {
