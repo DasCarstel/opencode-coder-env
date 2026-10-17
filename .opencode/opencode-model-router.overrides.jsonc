@@ -26,7 +26,7 @@
         "variant": "low"
       },
       "medium": {
-        "model": "opencode/deepseek-v4.1-flash-free",
+        "model": "opencode-go/glm-5.3-flash",
         "costRatio": 5,
         "description": "DeepSeek V4 Flash für Implementation, Refactoring und Tests",
         "steps": 50,
@@ -36,8 +36,7 @@
           "Tests schreiben",
           "Code-Review",
           "Bug fixes"
-        ],
-        "variant": "max"
+        ]
       },
       "heavy": {
         "model": "opencode-go/glm-5.3",
