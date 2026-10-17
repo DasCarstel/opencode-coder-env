@@ -106,7 +106,7 @@ noch erkennbar und von den übrigen unterscheidbar sein.
 
 Basis: `https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons/`
 
-Das Plugin hängt `?v=<ICON_VERSION>` an (derzeit `?v=2`): ntfy und die Apps
+Das Plugin hängt `?v=<ICON_VERSION>` an (derzeit `?v=3`): ntfy und die Apps
 halten ein einmal geladenes Icon lokal im Zwischenspeicher (laut Doku bis zu 24
 Stunden, teils bis die Meldung gelöscht wird) und würden ein geändertes Bild
 sonst weiter aus dem Cache zeigen.

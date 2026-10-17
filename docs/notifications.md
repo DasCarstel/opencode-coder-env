@@ -5,10 +5,62 @@ Zentraler, selbst gehosteter Notification-Hub für das Home-Lab: alle Quellen
 **ntfy**; Phone (S25 Ultra, ntfy-App) und Windows-PC (ntfy als PWA) abonnieren
 nur die Topics, die sie interessieren.
 
-ntfy wurde Gotify vorgezogen: Antwort-Buttons/`actions`, Attachments und
+ntfy wurde Gotify vorgezogen: `actions`-Buttons, Attachments und
 verzögerte Zustellung sind eingebaut, und pro Quelle lässt sich ein eigener
 Nutzer mit Topic-ACL anlegen (Forward-Auth über Authentik hätte die nativen
 Clients der Apps gebrochen).
+
+## ntfy ist ausschließlich Meldeweg
+
+Seit **17.10.2026** ist ntfy nur noch **Meldeweg**: Das Plugin
+(`coder-templates/shared/plugins/ntfy-notify.js`) **veröffentlicht** Meldungen
+und **liest nichts** aus dem Topic. Aufs Handy geht
+
+- die Benachrichtigung mit dem Titel `[<workspace>] …` und dem **Icon** des
+  Arbeitsbereichs (`NTFY_ICON_BASE`), und
+- der Knopf/Deep-Link **„Session öffnen"** — er springt direkt in die
+  OpenCode-Session (`NTFY_LINK_STYLE=session`, Klickziel
+  `<basis>/server/<schlüssel>/session/<id>`).
+
+**Geantwortet wird in der OpenCode-Session** — im Chat, im Fragenfenster oder im
+Freigabe-Dialog. Es gibt keinen Weg zurück: keine Brücke, kein Einspeisen von
+Prompts, keine Kopplung, keine Formularantworten, keinen Zustandsspeicher und
+kein Antwortfenster. Fragen und Freigaben werden unverändert **gemeldet**; es
+fehlt nur der Antwortweg.
+
+### Fehlermeldungen
+
+Meldungen zu **echten** Fehlern bleiben (`⚠️ Fehler — <Projekt>`, Priorität `5`,
+Tag `warning`). Zwei Dämpfungen verhindern Fehlalarm:
+
+- **Kein Fehler beim eigenen Abbruch oder Dienst-Neustart.** `session.step.failed`
+  trifft **vor** dem Abbruch ein, deshalb hält das Plugin die Meldung kurz
+  zurück (rund 3 s) und verwirft sie, wenn in der Zwischenzeit
+  `session.execution.interrupted` (der Turn wurde im Chat selbst abgebrochen)
+  oder `location.shutdown` (der Dienst startet neu) eintrifft. Ein
+  Abbruch-Merkmal im Ereignis verwirft sofort.
+- **Eine Meldung je Session statt je Schritt.** Weitere fehlgeschlagene Schritte
+  derselben Session im selben Fenster landen in **derselben** Meldung; ab dem
+  zweiten Schritt steht der Zusatz `(n Fehlschläge zusammengefasst)`.
+
+Bewusst **nicht** verschickt wird also „⚠️ Fehler" für einen Turn, den man selbst
+abgebrochen hat, und für einen Neustart des Dienstes. Im Diagnose-Log
+(`NTFY_REPLY_LOG`) stehen solche Fälle als `fehler-verworfen`
+(`abbruch` / `dienst-neustart`).
+
+### Warum der Antwortweg entfernt wurde (17.10.2026)
+
+Wer in ein ntfy-Topic schreiben kann, hätte über die frühere Brücke **Prompts in
+Sessions mit MCP-Rechten** einspeisen können — in diesem Container bedeutet das
+SSH-Zugriff inklusive `sudo` und Authentik. Ein Topic ist kein vertrauenswürdiger
+Kanal: Die Zuordnung „Nachricht → Frage/Session" war schon ohne Angreifer
+unzuverlässig, und ein Schalter (`NTFY_REPLY_ENABLED`) hätte genau diesen Weg
+wieder geöffnet. Deshalb **kompletter Rückbau statt Schalter** — der Antwortweg
+ist aus dem Plugin entfernt, nicht bloß abgeschaltet.
+
+Der frühere Stand (Brücke, Kopplung, Formularantworten, Zustandsdatei,
+Antwortfenster, `NTFY_REPLY_ENABLED`/`NTFY_FORM_REPLY`) ist über die
+**Git-Historie** und den Tag **`ntfy-antwortweg-vor-rueckbau`** auffindbar.
 
 ## Bausteine
 
@@ -50,9 +102,8 @@ ntfy prüft den Zugriff **je Topic**: ein Token darf nur die Topics lesen und
 beschreiben, für die sein Nutzer freigeschaltet ist. Der Publish-/Lese-Token der
 Agenten gehört zum ntfy-Nutzer **`src-opencode`**, und sein Zugriff muss für
 **jedes** Topic gesetzt sein, das ein Workspace benutzt. Fehlt die Freigabe,
-schlägt der Publish mit `HTTP 403` fehl **und** die Antwort-Brücke kann nicht
-streamen (`fehler: strom: HTTP 403`): das Diagnose-Log füllt sich mit 403ern,
-und auf dem Handy kommt **gar nichts** mehr an.
+schlägt der Publish mit `HTTP 403` fehl: im Diagnose-Log (`NTFY_REPLY_LOG`)
+stehen dann die Fehlschläge, und auf dem Handy kommt **gar nichts** mehr an.
 
 Benötigt sind aktuell sechs Topics: `ai` (Rückfall-Topic, solange kein
 `NTFY_TOPIC_NAME` gesetzt ist), `oc-infrastructure`, `oc-general`, `oc-minijob`,
@@ -89,7 +140,7 @@ rutscht, das niemand abonniert hat.
 
 | Einstellung | Wirkung |
 |-------------|---------|
-| `NTFY_TOPIC_PREFIX` | Gesetzt **und** Arbeitsbereich bekannt → Topic `<prefix>-<workspace>`, z. B. `oc` + `server-management` → **`oc-server-management`**. Gilt einheitlich für den Versand **und** die Antwort-Brücke (die hört auf demselben Topic). Ohne Prefix oder ohne bekannten Arbeitsbereich bleibt es bei `NTFY_TOPIC`. |
+| `NTFY_TOPIC_PREFIX` | Gesetzt **und** Arbeitsbereich bekannt → Topic `<prefix>-<workspace>`, z. B. `oc` + `server-management` → **`oc-server-management`**. Gilt für den Versand. Ohne Prefix oder ohne bekannten Arbeitsbereich bleibt es bei `NTFY_TOPIC`. |
 | `NTFY_TOPIC_NAME` | Arbeitsbereichs-Teil des Topics, wenn das Verzeichnis keinen hergibt: der Dienst läuft im Repo-Wurzelverzeichnis, dessen Pfad enthält kein `/workspaces/`. Nur zusammen mit `NTFY_TOPIC_PREFIX`, z. B. `oc` + `infrastructure` → **`oc-infrastructure`**. Wirkt **nur** aufs Topic — `icon` und Titel-Kennung `[<name>] ` bleiben am Sitzungs-Verzeichnis. |
 | `NTFY_ICON_BASE` | Gesetzt **und** Arbeitsbereich bekannt → jede Meldung trägt das ntfy-Feld `icon` = `<basis>/<workspace>.png` (JSON-Feld `icon`, als Header `Icon`; Android/iOS zeigen das Bild als Benachrichtigungssymbol). Ohne Basis entfällt das Feld. |
 
@@ -97,18 +148,19 @@ Der Arbeitsbereich kommt aus `NTFY_WORKSPACE`, sonst aus dem letzten Pfadstück
 des Sitzungs-Verzeichnisses (`…/workspaces/infrastructure/server-management` →
 `server-management`) — dieselbe Kennung, die schon als `[<name>] …` im Titel
 steht. Beide Variablen werden wie alle `NTFY_*`-Werte von `startup.sh` in
-`/etc/opencode.env` abgelegt; die Prozess-Umgebung hat Vorrang. Die
-Diagnosezeile beim Start der Brücke und die Zeile `[ntfy-notify] aktiv (topic …)`
-nennen immer das tatsächlich verwendete Topic.
+`/etc/opencode.env` abgelegt; die Prozess-Umgebung hat Vorrang. Die Zeile
+`[ntfy-notify] aktiv (topic …)` beim Laden des Plugins nennt immer das
+tatsächlich verwendete Topic.
 
 **Topic und Icon sind getrennt:** `NTFY_TOPIC_NAME` setzt ausschließlich den
 Topic-Namen (zusammen mit `NTFY_TOPIC_PREFIX`) und wird gebraucht, weil der
 OpenCode-Dienst im Repo-Wurzelverzeichnis läuft — dessen Pfad enthält kein
 `/workspaces/`, aus dem Verzeichnis käme also kein Arbeitsbereich. `icon` und
 die Titel-Kennung `[<name>] …` hängen weiterhin am Sitzungs-Verzeichnis bzw. an
-`NTFY_WORKSPACE`; `NTFY_TOPIC_NAME` ändert daran nichts. Versand und
-Antwort-Brücke leiten das Topic über dieselbe Funktion ab und bleiben damit auf
-demselben Topic.
+`NTFY_WORKSPACE`; `NTFY_TOPIC_NAME` ändert daran nichts. Das Topic wird **je
+Dienst-Instanz** (also je Container) abgeleitet und gilt für alle Sessions
+dieses Containers — Unterordner wie `homeassistant` oder `svelte` ändern es
+nicht.
 
 **Topics:** Schema `oc-<workspace>` je Arbeitsbereich (`oc-server-management`,
 später z. B. `oc-cleve`); läuft der Dienst im Repo-Wurzelverzeichnis, gibt
@@ -187,89 +239,27 @@ Eigenschaften:
 - Ohne Token bleibt das Plugin still, es bricht nichts.
 - Dedup-Fenster 15 s je Session + Art.
 
-Umgebungsvariablen: `NTFY_URL`, `NTFY_TOKEN`, `NTFY_TOPIC`,
-`NTFY_DEBUG=1` (Debug ins OpenCode-Log), `NTFY_SELFTEST=1` (sendet beim Laden
-genau eine Testnachricht und registriert keine Hooks — für Diagnose).
+#### Umgebungsvariablen
 
-Ergänzend: `NTFY_WORKSPACE` (kurzer Name des Arbeitsbereichs, z. B.
-`server-management`) steht als `[<name>] ` vor jedem Meldungstitel — ohne die
-Variable wird der Name aus dem letzten Pfadstück des Sitzungs-Verzeichnisses
-abgeleitet, sonst bleibt der Titel unverändert. Den **Topic-Namen** setzt
-`NTFY_TOPIC_NAME` (nur zusammen mit `NTFY_TOPIC_PREFIX`); die Variable lässt
-Titel und Icon unberührt. Meldungen **ohne** Session
-(Antwort-Bestätigungen, „Antwort ohne Ziel-Session“) nutzen für den
-Kopplungslink zuerst die zuletzt abgeleitete Workspace-Basis (`lastBase` in
-`NTFY_STATE_FILE`, überlebt einen Dienst-Neustart) und erst danach
-`NTFY_FALLBACK_URL` — nur auf der App-Adresse des Workspace gilt das
-Kopplungs-Cookie.
+| Variable | Wirkung |
+|----------|---------|
+| `NTFY_URL` | Basis-URL des Hubs (Default `https://ntfy.mueller-nas.de`). |
+| `NTFY_TOKEN` | Bearer-Token des ntfy-Nutzers `src-opencode`; ohne Token bleibt das Plugin still. |
+| `NTFY_TOPIC_NAME` | Arbeitsbereichs-Teil des Topics (nur zusammen mit `NTFY_TOPIC_PREFIX`), z. B. `oc` + `infrastructure` → `oc-infrastructure`. Lässt Titel und Icon unberührt. |
+| `NTFY_TOPIC_PREFIX` | Opt-in Topic je Arbeitsbereich: `<prefix>-<workspace>`; ohne Prefix bleibt es beim festen Topic (Default `ai`). |
+| `NTFY_ICON_BASE` | Basis-URL der PNG-Symbole; jede Meldung bekommt `icon = <basis>/<workspace>.png?v=3`. |
+| `NTFY_LINK_STYLE` | `session` (Default) = Klickziel ist der Session-Deep-Link („Session öffnen"); `base` = nur die Startseite der Oberfläche. |
+| `NTFY_IGNORE_TITLES` | Kommagetrennte Titel-Teile, die stumm bleiben (z. B. `Ausfall-Probe`). |
+| `NTFY_REPLY_LOG` | Pfad des Diagnose-Logs (z. B. `/tmp/opencode/ntfy-diag.log`); leer = aus. |
 
-#### Antwort vom Handy (Antwort-Brücke)
-
-> **Standardmäßig abgeschaltet (seit 17.10.2026):** `NTFY_REPLY_ENABLED=0` und
-> `NTFY_FORM_REPLY=0` (Vorgabe aus `startup.sh`, gesetzt nur wenn der Schlüssel
-> in `/etc/opencode.env` noch fehlt). Die Meldung enthält weiter den
-> Knopf/Deep-Link **„Session öffnen"** — geantwortet wird dort, in der
-> OpenCode-Session. **Grund:** ntfy kennt keine verknüpfte Antwort; jede Antwort
-> ist eine freie Nachricht im Topic, und die Zuordnung zu Frage/Session war
-> unzuverlässig (derselbe Text wurde als Formularantwort *und* als Prompt
-> verarbeitet). **Wieder einschalten:** beide Variablen auf `1` setzen
-> (`NTFY_REPLY_ENABLED=1`, `NTFY_FORM_REPLY=1`) und den Dienst neu starten — dann
-> gelten wieder die Regeln aus `e8702a0`: es wird zuerst die nächste offene Frage
-> beantwortet, und ohne offene Frage gilt eine Nachricht 30 Minuten lang als neue
-> Anweisung an die zuletzt meldende Session (Details unten).
-
-Wenn die Brücke eingeschaltet ist (`NTFY_REPLY_ENABLED=1`), geht der Text, den
-man in der ntfy-App als Nachricht ins Topic schickt, an die
-Session, die zuletzt etwas gemeldet hat (`lastSessionId`, überlebt einen
-Dienst-Neustart in `NTFY_STATE_FILE`; Fallback: die zuletzt gesehene Session).
-
-**Offene Frage:** Steht im Agenten eine Frage offen, beantwortet der Text genau
-diese Frage — der blockierte Turn läuft weiter, als hätte man im Fragenfenster
-geantwortet.
-
-- Die Frage-Meldung trägt je Frage eine Kopfzeile `Frage i von n` und eine
-  eigene Optionsliste (`1) …`).
-- Bei mehreren offenen Fragen wird **der Reihe nach** beantwortet: immer die
-  **älteste** offene Frage, die übrigen bleiben offen — es wird nichts mehr
-  abgebrochen. Die Bestätigung nennt, welche Frage beantwortet wurde und welche
-  noch offen ist: `Antwort gespeichert (Frage 1 von 3). Offen: Frage 2 von 3.`
-- Passt der Text auf **keine** Option, gilt er als **Freitext-Antwort** auf diese
-  Frage — abgebrochen wird deswegen nichts.
-- Erst wenn die API die Antwort ablehnt (z. B. HTTP 409 „schon beantwortet“),
-  geht der Text zusätzlich als normale Nachricht an den Agenten; die Frage
-  bleibt offen.
-- Eine leere Nachricht löst nur einen Hinweis aus.
-
-**Ohne offene Frage:** Der Text gilt als **neue Anweisung** an die Session der
-letzten Meldung — aber nur, wenn beides stimmt:
-
-1. die Nachricht ist **nach** unserer letzten eigenen Meldung im Topic
-   eingegangen (deren Sendezeit steht als `lastSentTime` in `NTFY_STATE_FILE`), und
-2. sie liegt höchstens **`NTFY_REPLY_WINDOW_MIN`** Minuten danach (Default `30`).
-
-Sonst wird sie verworfen statt eingespeist. Unverändert scharf bleiben dabei die
-Schutzregeln: eigene Nachrichten (Titel-Präfix `❓ ✅ ⚠️ 🔐 🔔 ↩️`, eigene
-Message-IDs, eigener Wortlaut) werden ignoriert, der Wasserstand
-`lastHandledTime` hält alten Verlauf draußen und die Drossel erlaubt höchstens
-zwei Einspeisungen je Minute. Eine offene Frage hat immer Vorrang: solange eine
-Frage offen ist, gilt ein Text als Antwort darauf und nie als Prompt.
-
-Abgebrochene Fragen (`form.cancelled`, `question.cancelled`) räumen den Zustand
-auf: `openQuestionId`, `openQuestionAt` und `openFormId` werden geleert — sonst
-hielte die Brücke eine längst erledigte Frage für offen.
-
-| Einstellung | Wirkung |
-|-------------|---------|
-| `NTFY_REPLY_ENABLED` | `0` (Default, Vorgabe aus `startup.sh`) schaltet die Antwort-Brücke ab — die Meldung kommt weiter, aber es wird nur benachrichtigt. `1` schaltet sie ein. |
-| `NTFY_FORM_REPLY` | `0` (Default, Vorgabe aus `startup.sh`) entfernt den Hinweis „Antwort direkt hier möglich …“ aus Frage-Meldungen; gehört zur Brücke und ist nur zusammen mit `NTFY_REPLY_ENABLED=1` sinnvoll. |
-| `NTFY_REPLY_WINDOW_MIN` | Antwortfenster in Minuten (Default `30`): so lange gilt eine Nachricht ohne offene Frage noch als neue Anweisung an die letzte meldende Session. `0` schaltet die Zeitprüfung ab — dann zählt jede Nachricht nach der eigenen letzten Meldung. |
-
-Kürzel im Diagnose-Log der Brücke (`NTFY_REPLY_LOG`): `form-reihenfolge`
-(mehrere offene Fragen — die älteste wird beantwortet), `form-reply`
-(Optionsantwort), `form-reply-rohtext` (Freitext-Antwort), `form-ohne-treffer`
-(konservativ nicht beantwortbar, der Text geht als Nachricht weiter),
-`ohne-offene-frage` / `vor-eigener-meldung` / `antwortfenster` (ohne offene
-Frage verworfen).
+Alle Werte liest das Plugin zusätzlich aus der Env-Datei `/etc/opencode.env`
+(Pfad über `NTFY_ENV_FILE` änderbar); die Prozess-Umgebung hat Vorrang.
+`NTFY_WORKSPACE` (kurzer Name des Arbeitsbereichs, z. B. `server-management`)
+steht als `[<name>] ` vor jedem Meldungstitel — ohne die Variable wird der Name
+aus dem letzten Pfadstück des Sitzungs-Verzeichnisses abgeleitet, sonst bleibt
+der Titel unverändert. Nur für die Diagnose: `NTFY_DEBUG=1` (Debug ins
+OpenCode-Log), `NTFY_SELFTEST=1` (sendet beim Laden genau eine Testnachricht und
+registriert keine Hooks).
 
 #### Aktivieren
 
@@ -380,5 +370,6 @@ Empirisch im Container (OpenCode 2.0.29) geprüft:
 
 - [ ] Hermes-Webhook → ntfy (Hermes läuft auf dem Coder-Host).
 - [ ] HA-Routinenmeldungen (26) auf ntfy umstellen und `mobile_app`-Duplikate entfernen.
-- [ ] Phase 5: eigener `notify-gateway` (Antworten A/B/C), Windows-Desktop-Client,
-      Stream-Deck-Plugin.
+- [x] ~~Phase 5: eigener `notify-gateway` (Antworten A/B/C)~~ — **entfallen**
+      (17.10.2026, siehe „ntfy ist ausschließlich Meldeweg"). Offen bleiben:
+      Windows-Desktop-Client und Stream-Deck-Plugin.
