@@ -857,10 +857,32 @@ set_env_default NTFY_LINK_STYLE    "session"
 set_env_default NTFY_REPLY_LOG     "/tmp/opencode/ntfy-diag.log"
 echo "  ✓ ntfy-Standardoptionen in /etc/opencode.env sichergestellt"
 
-# NTFY_TOPIC_PREFIX wird hier bewusst NICHT gesetzt: Der Präfix trennt die Topics
-# mehrerer Workspaces und wird später je Workspace aktiviert (opt-in). Ohne
-# passendes Abo auf dem Gerät würden Meldungen sonst in einem Topic landen, das
-# niemand abonniert hat – sie verschwänden stillschweigend.
+# Topic je Workspace (opt-in über den Namen, siehe Tabelle):
+#   infrastructure → oc-infrastructure | general → oc-general
+#   muellerconnect → oc-minijob        | datascience → oc-datascience
+# NTFY_TOPIC_PREFIX trennt die Topics mehrerer Workspaces, NTFY_TOPIC_NAME ist
+# die Kategorie in der App. Unbekanntes Profil: nichts setzen, damit das Topic
+# unverändert bleibt ("ai"). Beide Schlüssel nur, wenn sie fehlen –
+# ein bereits vorhandener (manuell eingetragener) Wert gewinnt immer.
+#
+# WICHTIG – Trennung der Zuständigkeiten: NTFY_TOPIC_NAME bestimmt NUR das
+# Topic (die Kategorie in der App). Icon und Titel der Meldung kommen weiterhin
+# aus dem Session-Ordner – NTFY_WORKSPACE hier NICHT setzen, das würde die
+# Ordner-Icons überschreiben.
+NTFY_TOPIC_NAME_VALUE=""
+case "$PROFILE" in
+  infrastructure) NTFY_TOPIC_NAME_VALUE="infrastructure" ;;
+  general)        NTFY_TOPIC_NAME_VALUE="general" ;;
+  muellerconnect) NTFY_TOPIC_NAME_VALUE="minijob" ;;
+  datascience)    NTFY_TOPIC_NAME_VALUE="datascience" ;;
+esac
+if [ -n "$NTFY_TOPIC_NAME_VALUE" ]; then
+  set_env_default NTFY_TOPIC_PREFIX "oc"
+  set_env_default NTFY_TOPIC_NAME   "$NTFY_TOPIC_NAME_VALUE"
+  echo "  ✓ ntfy-Topic: oc-$NTFY_TOPIC_NAME_VALUE (Profil $PROFILE)"
+else
+  echo "  • ntfy-Topic: kein Eintrag für Profil '$PROFILE' – Topic bleibt unverändert"
+fi
 
 # ── OpenCode-Theme: dauerhaft hell (cli.json, idempotent) ───────────────────
 mkdir -p ~/.config/opencode
@@ -901,11 +923,17 @@ fi
 
 # ntfy-Token (alle Profile): das Plugin liest NTFY_TOKEN/NTFY_URL aus der
 # Service-Umgebung — so überlebt die Konfiguration jeden Container-Neustart.
+# Dasselbe gilt für das Topic (NTFY_TOPIC_PREFIX/NTFY_TOPIC_NAME); der Name
+# stammt aus der einen case-Auflösung weiter oben (keine zweite Wahrheitsquelle).
 if [ -n "${NTFY_TOKEN:-}" ]; then
   opencode service set env NTFY_TOKEN "$NTFY_TOKEN" >/dev/null 2>&1 \
     && echo "  ✓ NTFY_TOKEN im OpenCode-Service gesetzt" \
     || echo "  ⚠ NTFY_TOKEN konnte nicht gesetzt werden"
   opencode service set env NTFY_URL "${NTFY_URL:-https://ntfy.mueller-nas.de}" >/dev/null 2>&1 || true
+  if [ -n "${NTFY_TOPIC_NAME_VALUE:-}" ]; then
+    opencode service set env NTFY_TOPIC_PREFIX "oc" >/dev/null 2>&1 || true
+    opencode service set env NTFY_TOPIC_NAME "$NTFY_TOPIC_NAME_VALUE" >/dev/null 2>&1 || true
+  fi
 fi
 
 # ── Model-Router: Overrides GLOBAL ablegen (vor dem Service-Start!) ─────────
