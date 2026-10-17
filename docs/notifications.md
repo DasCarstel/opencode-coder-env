@@ -44,6 +44,46 @@ pro Quelle statt eines Sammel-Tokens.
 Topics entstehen beim ersten Publizieren automatisch; es gibt keine
 `topic allow`-Pflege. Der Schutz kommt aus Nutzer + ACL + `deny-all`.
 
+## Topics und Icons
+
+Das OpenCode-Plugin (`coder-templates/shared/plugins/ntfy-notify.js`) kann je
+Arbeitsbereich ein eigenes Topic bespielen und die Meldung mit dem Icon des
+Bereichs versehen. Beides ist **opt-in** — ohne die neuen Variablen bleibt alles
+wie bisher (`NTFY_TOPIC`, Default `ai`), damit keine Meldung in ein Topic
+rutscht, das niemand abonniert hat.
+
+| Einstellung | Wirkung |
+|-------------|---------|
+| `NTFY_TOPIC_PREFIX` | Gesetzt **und** Arbeitsbereich bekannt → Topic `<prefix>-<workspace>`, z. B. `oc` + `server-management` → **`oc-server-management`**. Gilt einheitlich für den Versand **und** die Antwort-Brücke (die hört auf demselben Topic). Ohne Prefix oder ohne bekannten Arbeitsbereich bleibt es bei `NTFY_TOPIC`. |
+| `NTFY_ICON_BASE` | Gesetzt **und** Arbeitsbereich bekannt → jede Meldung trägt das ntfy-Feld `icon` = `<basis>/<workspace>.png` (JSON-Feld `icon`, als Header `Icon`; Android/iOS zeigen das Bild als Benachrichtigungssymbol). Ohne Basis entfällt das Feld. |
+
+Der Arbeitsbereich kommt aus `NTFY_WORKSPACE`, sonst aus dem letzten Pfadstück
+des Sitzungs-Verzeichnisses (`…/workspaces/infrastructure/server-management` →
+`server-management`) — dieselbe Kennung, die schon als `[<name>] …` im Titel
+steht. Beide Variablen werden wie alle `NTFY_*`-Werte von `startup.sh` in
+`/etc/opencode.env` abgelegt; die Prozess-Umgebung hat Vorrang. Die
+Diagnosezeile beim Start der Brücke und die Zeile `[ntfy-notify] aktiv (topic …)`
+nennen immer das tatsächlich verwendete Topic.
+
+**Topics:** Schema `oc-<workspace>` je Arbeitsbereich (`oc-server-management`,
+später z. B. `oc-cleve`). Hermes hat ein **eigenes Topic `hermes`** und läuft
+**nicht** über dieses Plugin (eigene Quelle, eigenes Topic in ntfy). Neue
+Topics entstehen beim ersten Publizieren, brauchen aber vorher Nutzer/ACL —
+siehe „Topics und Scopes“.
+
+**Icons:** die PNGs liegen im Repo unter `assets/ntfy-icons/<name>.png`
+(256×256, generiert von `tools/make-ntfy-icons.py`, Details in
+`assets/ntfy-icons/README.md`). ntfy lädt sie über die öffentliche Roh-URL,
+deshalb als Basis:
+
+```
+NTFY_ICON_BASE=https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons
+```
+
+Damit wird z. B. `…/assets/ntfy-icons/server-management.png` als `icon`
+mitgeschickt (der Name muss dem Arbeitsbereich entsprechen; fehlt die Datei,
+zeigt die App kein Symbol).
+
 ## Publizieren
 
 ### Skript oder `curl`
@@ -103,6 +143,16 @@ Eigenschaften:
 Umgebungsvariablen: `NTFY_URL`, `NTFY_TOKEN`, `NTFY_TOPIC`,
 `NTFY_DEBUG=1` (Debug ins OpenCode-Log), `NTFY_SELFTEST=1` (sendet beim Laden
 genau eine Testnachricht und registriert keine Hooks — für Diagnose).
+
+Ergänzend: `NTFY_WORKSPACE` (kurzer Name des Arbeitsbereichs, z. B.
+`server-management`) steht als `[<name>] ` vor jedem Meldungstitel — ohne die
+Variable wird der Name aus dem letzten Pfadstück des Sitzungs-Verzeichnisses
+abgeleitet, sonst bleibt der Titel unverändert. Meldungen **ohne** Session
+(Antwort-Bestätigungen, „Antwort ohne Ziel-Session“) nutzen für den
+Kopplungslink zuerst die zuletzt abgeleitete Workspace-Basis (`lastBase` in
+`NTFY_STATE_FILE`, überlebt einen Dienst-Neustart) und erst danach
+`NTFY_FALLBACK_URL` — nur auf der App-Adresse des Workspace gilt das
+Kopplungs-Cookie.
 
 #### Aktivieren
 

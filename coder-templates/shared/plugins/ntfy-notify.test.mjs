@@ -178,7 +178,7 @@ received.length = 0;
   eq(received.length, 1, "genau eine Nachricht");
   const body = received[0]?.body ?? {};
   eq(body.topic, "ai", "Topic ai");
-  eq(body.title, "✅ Fertig — server-management", "Titel mit Projekt");
+  eq(body.title, "[server-management] ✅ Fertig — server-management", "Titel mit Projekt");
   eq(body.priority, 3, "Priorität 3");
   ok(String(body.message).includes("Fertig: alle 3 Punkte umgesetzt."), "TLDR ist enthalten");
   ok(String(body.message).includes("Ablauf prüfen"), "Session-Titel ist enthalten");
@@ -236,7 +236,7 @@ console.log("\nFrage");
   });
   const body = received[0]?.body ?? {};
   eq(received.length, 1, "eine Nachricht");
-  eq(body.title, "❓ Frage — server-management", "Frage-Titel");
+  eq(body.title, "[server-management] ❓ Frage — server-management", "Frage-Titel");
   eq(body.priority, 4, "Priorität 4");
   ok(String(body.message).includes("Wie soll ich fortfahren?"), "Fragetext enthalten");
   ok(String(body.message).includes("A: deployen"), "Option A enthalten");
@@ -263,7 +263,7 @@ console.log("\nFreigabe und Fehler");
     },
   });
   const perm = received[0]?.body ?? {};
-  eq(perm.title, "🔐 Freigabe — server-management", "Freigabe-Titel");
+  eq(perm.title, "[server-management] 🔐 Freigabe — server-management", "Freigabe-Titel");
   eq(perm.priority, 4, "Priorität 4");
   ok(String(perm.message).includes("rm -rf /tmp/x"), "Befehl enthalten");
 
@@ -273,7 +273,7 @@ console.log("\nFreigabe und Fehler");
     properties: { sessionID: SESSION, error: { message: "Provider nicht erreichbar" } },
   });
   const err = received[0]?.body ?? {};
-  eq(err.title, "⚠️ Fehler — server-management", "Fehler-Titel");
+  eq(err.title, "[server-management] ⚠️ Fehler — server-management", "Fehler-Titel");
   eq(err.priority, 5, "Priorität 5");
   ok(String(err.message).includes("Provider nicht erreichbar"), "Fehlermeldung enthalten");
 }
@@ -317,7 +317,11 @@ console.log("\nFlache Event-Form");
   n.markWorking(SESSION);
   await n.handleEvent({ type: "session.idle", sessionID: SESSION });
   eq(received.length, 1, "auch ohne properties-Wrapper wird gemeldet");
-  eq(received[0]?.body?.title, "✅ Fertig — server-management", "Titel aus session-Objekt");
+  eq(
+    received[0]?.body?.title,
+    "[server-management] ✅ Fertig — server-management",
+    "Titel aus session-Objekt"
+  );
 }
 
 // ── 11. V2-Anbindung: setup(subscribe) + prompt-Hook + Cleanup ────────────
@@ -615,7 +619,7 @@ console.log("\nV2-Eventform (durable/location/data)");
 
   eq(received.length, 1, "V2-Folge ergibt genau eine Meldung");
   const body = received[0]?.body ?? {};
-  eq(body.title, "✅ Fertig — server-management", "Projekt-Label aus location.directory");
+  eq(body.title, "[server-management] ✅ Fertig — server-management", "Projekt-Label aus location.directory");
   ok(String(body.message).includes("Alles erledigt"), "TLDR stammt aus session.text.ended");
   eq(
     body.click,
@@ -646,7 +650,7 @@ console.log("\nFrage (form.created)");
   );
   eq(received.length, 1, "form.created meldet");
   const body = received[0]?.body ?? {};
-  eq(body.title, "❓ Frage — server-management", "Titel der Frage");
+  eq(body.title, "[server-management] ❓ Frage — server-management", "Titel der Frage");
   eq(body.priority, 4, "Priorität 4");
   ok(String(body.message).includes("Weiter mit Phase 4?"), "Fragetext enthalten");
   ok(String(body.message).includes("1) Ja"), "Option 1 enthalten");
@@ -691,7 +695,7 @@ console.log("\nFrage (form.created)");
   );
   eq(received.length, 1, "echtes form.created (Session in data.form) meldet");
   const body = received[0]?.body ?? {};
-  eq(body.title, "❓ Frage — server-management", "Titel trotz fehlender data.sessionID");
+  eq(body.title, "[server-management] ❓ Frage — server-management", "Titel trotz fehlender data.sessionID");
   ok(String(body.message).includes("Hermes-Meldungen"), "Feld-Titel enthalten");
   ok(String(body.message).includes("was soll in den Hub gemeldet werden?"), "Beschreibung enthalten");
   ok(String(body.message).includes("Nur fertige Antworten"), "Optionen enthalten");
@@ -742,7 +746,7 @@ console.log("\nTurn-Ende (V2)");
   );
   await n.handleEvent(v2("session.execution.succeeded", {}));
   eq(received.length, 1, "execution.succeeded meldet das Turn-Ende");
-  eq(received[0]?.body?.title, "✅ Fertig — server-management", "Titel beim Turn-Ende");
+  eq(received[0]?.body?.title, "[server-management] ✅ Fertig — server-management", "Titel beim Turn-Ende");
   ok(String(received[0]?.body?.message).includes("Bericht steht."), "TLDR beim Turn-Ende");
 }
 {
@@ -832,7 +836,7 @@ console.log("\nSubagent-Filter");
   await n.handleEvent(v2("session.text.ended", { text: "Hauptsession fertig" }));
   await n.handleEvent(v2("session.execution.succeeded", {}));
   eq(received.length, 1, "echte Session meldet trotz session.get");
-  eq(received[0]?.body?.title, "✅ Fertig — server-management", "Titel der Hauptsession");
+  eq(received[0]?.body?.title, "[server-management] ✅ Fertig — server-management", "Titel der Hauptsession");
 }
 
 // ── 22. Session-Link (Port-App) und Frage-Optionen je Zeile ──────────────
@@ -1650,7 +1654,7 @@ console.log("\nAntwort-Brücke (Ende zu Ende)");
   });
   stream.push({ type: "session.idle", properties: { sessionID: SESSION } });
   ok(
-    await until(() => posts.some((p) => String(p.title).startsWith("✅"))),
+    await until(() => posts.some((p) => String(p.title).includes("✅"))),
     "Fertig-Meldung ist raus"
   );
 
@@ -2975,6 +2979,196 @@ console.log("\nZustandsdatei (Neustart)");
 // Teilzeichenketten (getrimmt, Groß-/Kleinschreibung egal): passt eine davon
 // auf den Titel der Session, geht gar nichts raus — weder Frage noch Fertig
 // noch Fehler. Leer/nicht gesetzt bleibt das Verhalten unverändert.
+// ── Letzte bekannte Basis (Kopplungs-Ersatzadresse, lastBase) ────────────
+//
+// Meldungen ohne Session (z. B. „Antwort an Agenten weitergegeben“, „Antwort
+// ohne Ziel-Session“) haben keine aus den Sitzungs-Metadaten abgeleitete Basis.
+// Statt der allgemeinen NTFY_FALLBACK_URL nutzen sie die zuletzt abgeleitete
+// Workspace-Basis — nur auf dieser App-Adresse gilt das Kopplungs-Cookie. Die
+// Basis liegt in NTFY_STATE_FILE und überlebt damit einen Dienst-Neustart;
+// kaputte oder fehlende Werte ändern nur die Basis, nie die Meldung.
+console.log("\nLetzte bekannte Basis");
+{
+  const statePath = "/tmp/opencode/ntfy-lastbase-test.json";
+  const FALLBACK = "https://fallback.test";
+  rmSync(statePath, { force: true });
+  rmSync(`${statePath}.tmp`, { force: true });
+  const store = createStateStore({ path: statePath, log: () => {} });
+  const env = { ...UI_ENV, NTFY_PAIR_BUTTON: "1", NTFY_FALLBACK_URL: `${FALLBACK}/` };
+  const notify = (extra) =>
+    createNtfyNotifier({
+      env,
+      apiPassword: "pw_test",
+      state: freshState(),
+      stateStore: store,
+      fetch: extra.fetch,
+      log: () => {},
+    });
+
+  // (b) Ohne vorherige Meldung greift weiterhin NTFY_FALLBACK_URL.
+  resetSharedState();
+  {
+    const { stub, pairCalls, pairActions } = pairFetchStub();
+    const n = notify({ fetch: stub });
+    await n.send({ title: "↩️ Antwort an Agenten weitergegeben", message: "Text" });
+    eq(store.get("ai", "lastBase"), "", "ohne Meldung mit Session wird keine Basis gemerkt");
+    eq(pairCalls().length, 1, "der Kopplungscode wird trotzdem erzeugt");
+    eq(
+      pairActions()[0]?.url,
+      `${FALLBACK}/auth/connect/code_1`,
+      "ohne gemerkte Basis bleibt es beim Rückfall (NTFY_FALLBACK_URL)"
+    );
+  }
+
+  // (a) Eine Meldung mit Session merkt die abgeleitete Basis; die nächste
+  //     Meldung ohne Session koppelt genau auf dieser Basis.
+  resetSharedState();
+  {
+    const { stub, published, pairActions, pairCalls } = pairFetchStub();
+    const n = notify({ fetch: stub });
+    await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+    n.markWorking(SESSION);
+    await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+    eq(published.length, 1, "die Meldung mit Session geht raus");
+    eq(store.get("ai", "lastBase"), UI_BASE, "die abgeleitete Basis steht im Zustandsspeicher");
+    eq(pairActions()[0]?.url, `${UI_BASE}/auth/connect/code_1`, "sie koppelt auf ihrer Basis");
+
+    await n.send({ title: "↩️ Antwort an Agenten weitergegeben", message: "Text" });
+    eq(published.length, 2, "die Meldung ohne Session geht raus");
+    eq(
+      pairActions(1)[0]?.url,
+      `${UI_BASE}/auth/connect/code_1`,
+      "die Meldung ohne Session koppelt auf der zuletzt gemerkten Basis"
+    );
+    eq(pairCalls().length, 1, "beide Meldungen nutzen dieselbe Basis (ein Code)");
+  }
+
+  // (c) Neustart: neuer Zustandsspeicher über derselben Datei.
+  store.flush(true);
+  resetSharedState();
+  {
+    const store2 = createStateStore({ path: statePath, log: () => {} });
+    eq(store2.get("ai", "lastBase"), UI_BASE, "die Basis überlebt in der Datei");
+    const { stub, pairActions } = pairFetchStub();
+    const n = createNtfyNotifier({
+      env,
+      apiPassword: "pw_test",
+      state: freshState(),
+      stateStore: store2,
+      fetch: stub,
+      log: () => {},
+    });
+    await n.send({ title: "⚠️ Antwort ohne Ziel-Session", message: "Text" });
+    eq(
+      pairActions()[0]?.url,
+      `${UI_BASE}/auth/connect/code_1`,
+      "auch nach dem Neustart koppelt sie auf der gemerkten Basis"
+    );
+  }
+  rmSync(statePath, { force: true });
+
+  // Robustheit: ein kaputter Zustandsspeicher fällt auf den Rückfall zurück und
+  // lässt die Meldung unberührt.
+  {
+    const broken = {
+      get() {
+        throw new Error("kaputt");
+      },
+      set() {},
+      flush() {},
+    };
+    const sent = [];
+    const n = createNtfyNotifier({
+      env: { ...env, NTFY_PAIR_BUTTON: "0" },
+      state: freshState(),
+      stateStore: broken,
+      fetch: async (input, init = {}) => {
+        sent.push(JSON.parse(String(init.body ?? "{}")));
+        return { ok: true, status: 200, json: async () => ({ id: "msg_kaputt1" }) };
+      },
+      log: () => {},
+    });
+    eq(n.linkFor(""), `${FALLBACK}/`, "ein kaputter Speicher fällt auf den Rückfall zurück");
+    const raus = await n.send({ title: "↩️ Antwort an Agenten weitergegeben", message: "Text" });
+    eq(raus, true, "die Meldung ohne Session geht trotzdem raus");
+    eq(sent[0]?.title, "↩️ Antwort an Agenten weitergegeben", "ihr Titel bleibt unverändert");
+  }
+}
+
+// ── Arbeitsbereichs-Kennung im Titel ("[<name>] …") ──────────────────────
+//
+// Bei mehreren Arbeitsbereichen soll auf dem Handy sofort erkennbar sein,
+// woher eine Meldung kommt: der Name steht als "[<name>] " vor dem Titel. Er
+// kommt aus NTFY_WORKSPACE, sonst aus dem letzten Pfadstück des
+// Sitzungs-Verzeichnisses; ohne bekannten Namen bleibt der Titel unverändert.
+// Klickziel und Aktionen bleiben unberührt.
+console.log("\nArbeitsbereich im Titel");
+{
+  // a) NTFY_WORKSPACE setzt die Kennung.
+  const n = makeNotifier({ env: { ...UI_ENV, NTFY_WORKSPACE: "infra" } });
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Fertig-Meldung geht raus");
+  eq(received[0]?.body?.title, "[infra] ✅ Fertig — server-management", "NTFY_WORKSPACE steht im Titel");
+  eq(
+    received[0]?.body?.click,
+    `${UI_BASE}/server/${UI_KEY}/session/${SESSION}`,
+    "das Klickziel bleibt unverändert"
+  );
+  eq(
+    received[0]?.body?.actions?.[0]?.url,
+    received[0]?.body?.click,
+    "die Aktionen bleiben unverändert"
+  );
+}
+{
+  // b) Ohne NTFY_WORKSPACE kommt der Name aus dem Sitzungs-Verzeichnis.
+  const n = makeNotifier({ env: UI_ENV });
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(
+    received[0]?.body?.title,
+    "[server-management] ✅ Fertig — server-management",
+    "der Name wird aus dem letzten Pfadstück des Verzeichnisses abgeleitet"
+  );
+  eq(n.projectFor(SESSION), "server-management", "das Projekt-Label im Titel bleibt wie bisher");
+}
+{
+  // c) Ohne bekannten Namen bleibt der Titel unverändert — bei einer Meldung
+  //    ohne Session ebenso wie bei einer Session ohne Verzeichnis.
+  const n = makeNotifier({ env: UI_ENV });
+  received.length = 0;
+  await n.send({ title: "⚠️ Antwort ohne Ziel-Session", message: "Text" });
+  eq(received[0]?.body?.title, "⚠️ Antwort ohne Ziel-Session", "ohne Session keine Kennung");
+
+  const ohne = makeNotifier();
+  received.length = 0;
+  await ohne.handleEvent({
+    type: "session.created",
+    properties: { info: { id: SESSION, title: "Irgendwas" } },
+  });
+  ohne.markWorking(SESSION);
+  await ohne.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received[0]?.body?.title, "✅ Fertig — opencode", "ohne Verzeichnis bleibt der Titel wie bisher");
+}
+{
+  // d) Längenbegrenzung: reicht MAX_TITLE nicht, wird der Name gekürzt — die
+  //    Kennung bleibt vorn stehen und der Titel wird nicht überschritten.
+  const n = makeNotifier({
+    env: { ...UI_ENV, NTFY_WORKSPACE: "ein-sehr-langer-arbeitsbereichsname" },
+  });
+  received.length = 0;
+  await n.send({ title: `✅ Fertig — ${"x".repeat(50)}`, message: "Text" });
+  const title = String(received[0]?.body?.title ?? "");
+  ok(title.length <= 90, "der Titel bleibt auf MAX_TITLE begrenzt");
+  ok(title.startsWith("[ein-sehr-langer"), "die Kennung steht weiterhin vorn");
+  ok(title.includes("…"), "bei Platzmangel wird der Name gekürzt");
+}
+
 console.log("\nStummschalten per Titel");
 {
   const n = makeNotifier({
@@ -3013,7 +3207,11 @@ console.log("\nStummschalten per Titel");
   n.markWorking(SESSION);
   await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
   eq(received.length, 1, "ein anderer Titel meldet wie bisher");
-  eq(received[0]?.body?.title, "✅ Fertig — server-management", "die Meldung ist die gewohnte");
+  eq(
+    received[0]?.body?.title,
+    "[server-management] ✅ Fertig — server-management",
+    "die Meldung ist die gewohnte"
+  );
 }
 {
   // Ohne NTFY_IGNORE_TITLES wird nichts gefiltert (unverändertes Verhalten).
@@ -3073,6 +3271,302 @@ console.log("\nKlickziel-Stil");
     received[0]?.body?.actions?.[0]?.url,
     received[0]?.body?.click,
     "'OpenCode öffnen' trägt denselben Link"
+  );
+}
+
+// ── 39. Topic je Arbeitsbereich (NTFY_TOPIC_PREFIX, opt-in) ───────────────
+//
+// Die Ableitung ist bewusst opt-in: ohne NTFY_TOPIC_PREFIX bleibt es exakt bei
+// NTFY_TOPIC ("ai") — sonst landeten Meldungen in Topics, die niemand abonniert
+// hat. Mit Prefix und bekanntem Arbeitsbereich gilt "<prefix>-<workspace>",
+// einheitlich für den Versand UND die Antwort-Brücke (die hört auf demselben
+// Topic). Ohne bekannten Arbeitsbereich greift wieder NTFY_TOPIC.
+console.log("\nTopic je Arbeitsbereich");
+{
+  // a) Ohne Prefix: alles unverändert.
+  const n = makeNotifier({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_PAIR_BUTTON: "0",
+      NTFY_TOPIC: "ai",
+      NTFY_WORKSPACE: "server-management",
+    },
+  });
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "ohne Prefix geht die Meldung raus");
+  eq(n.topic, "ai", "ohne NTFY_TOPIC_PREFIX bleibt das Topic bei NTFY_TOPIC");
+  eq(received[0]?.body?.topic, "ai", "die Meldung geht weiter ins Topic 'ai'");
+}
+{
+  // b) Prefix gesetzt, Arbeitsbereich aus dem Kontext-Verzeichnis (genau so
+  //    übergibt createPluginRuntime es): …/workspaces/infrastructure/server-management.
+  const n = createNtfyNotifier({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_PAIR_BUTTON: "0",
+      NTFY_TOPIC_PREFIX: "oc",
+    },
+    directory: `${REPO_DIR}/workspaces/infrastructure/server-management`,
+    state: freshState(),
+    log: () => {},
+  });
+  eq(n.topic, "oc-server-management", "Topic ist <prefix>-<workspace>");
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Meldung geht raus");
+  eq(
+    received[0]?.body?.topic,
+    "oc-server-management",
+    "der Versand nutzt das Topic des Arbeitsbereichs"
+  );
+  eq(
+    received[0]?.body?.title,
+    "[server-management] ✅ Fertig — server-management",
+    "der Titel bleibt unverändert"
+  );
+}
+{
+  // b2) NTFY_WORKSPACE genügt auch ohne passendes Verzeichnis.
+  const n = makeNotifier({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_PAIR_BUTTON: "0",
+      NTFY_TOPIC_PREFIX: "oc",
+      NTFY_WORKSPACE: "server-management",
+    },
+  });
+  eq(n.topic, "oc-server-management", "NTFY_WORKSPACE genügt für die Ableitung");
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received[0]?.body?.topic, "oc-server-management", "auch hier geht die Meldung ins Workspace-Topic");
+}
+{
+  // c) Prefix gesetzt, aber Arbeitsbereich unbekannt → Rückfall auf NTFY_TOPIC.
+  const n = makeNotifier({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_PAIR_BUTTON: "0",
+      NTFY_TOPIC: "ai",
+      NTFY_TOPIC_PREFIX: "oc",
+    },
+  });
+  eq(n.topic, "ai", "ohne bekannten Arbeitsbereich bleibt es bei NTFY_TOPIC");
+  received.length = 0;
+  await n.handleEvent({
+    type: "session.created",
+    properties: { info: { id: SESSION, title: "Ohne Pfad" } },
+  });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Meldung geht raus");
+  eq(received[0]?.body?.topic, "ai", "Rückfall auf NTFY_TOPIC");
+}
+{
+  // d) Antwort-Brücke: sie muss auf demselben Topic hören (Strom-URL und
+  //    Diagnosezeile beim Start) — sonst fände keine Antwort mehr zurück.
+  resetSharedState();
+  const runtime = replyRuntime();
+  const logPath = "/tmp/opencode/ntfy-topic-prefix-test.log";
+  rmSync(logPath, { force: true });
+  const readLog = () => {
+    try {
+      return readFileSync(logPath, "utf8");
+    } catch {
+      return "";
+    }
+  };
+  const calls = [];
+  const started = startReplyBridge({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_TOPIC: "ai",
+      NTFY_TOPIC_PREFIX: "oc",
+      NTFY_WORKSPACE: "server-management",
+      NTFY_REPLY_LOG: logPath,
+    },
+    runtime,
+    directory: `${REPO_DIR}/workspaces/infrastructure/server-management`,
+    controller: new AbortController(),
+    client: { session: { prompt: async () => {} } },
+    publish: async () => true,
+    fetch: openStreamFetch(calls),
+    reconnectMs: 20,
+    apiPassword: "",
+    log: () => {},
+  });
+  ok(await until(() => calls.length === 1), "die Brücke verbindet sich");
+  eq(started.bridge?.topic, "oc-server-management", "die Brücke hört auf dem Topic des Arbeitsbereichs");
+  ok(
+    decodeURIComponent(String(calls[0]?.url)).includes("/oc-server-management/json"),
+    `der Strom wird mit dem Topic des Arbeitsbereichs abgefragt (war: ${calls[0]?.url})`
+  );
+  ok(
+    await until(() => readLog().includes("topic=oc-server-management")),
+    "die Diagnosezeile beim Brücken-Start nennt das tatsächlich verwendete Topic"
+  );
+  started.stop();
+  await until(() => runtime.replyPromise === null);
+  resetSharedState();
+  rmSync(logPath, { force: true });
+}
+{
+  // Gegenprobe: ohne Prefix bleibt die Brücke bei NTFY_TOPIC.
+  resetSharedState();
+  const runtime = replyRuntime();
+  const calls = [];
+  const started = startReplyBridge({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai" },
+    runtime,
+    directory: `${REPO_DIR}/workspaces/infrastructure/server-management`,
+    controller: new AbortController(),
+    client: { session: { prompt: async () => {} } },
+    publish: async () => true,
+    fetch: openStreamFetch(calls),
+    reconnectMs: 20,
+    apiPassword: "",
+    log: () => {},
+  });
+  ok(await until(() => calls.length === 1), "die Brücke verbindet sich");
+  ok(
+    decodeURIComponent(String(calls[0]?.url)).includes("/ai/json"),
+    `ohne Prefix bleibt es beim Topic 'ai' (war: ${calls[0]?.url})`
+  );
+  started.stop();
+  await until(() => runtime.replyPromise === null);
+  resetSharedState();
+}
+{
+  // e) Die Aktiv-Zeile des Plugins nennt das tatsächlich verwendete Topic
+  //    (Konsole für diesen einen setup()-Lauf abgefangen).
+  resetSharedState();
+  received.length = 0;
+  const setupLines = [];
+  const originalLog = console.log;
+  let cleanup;
+  console.log = (...args) => setupLines.push(args.join(" "));
+  try {
+    const runtime = createPluginRuntime({
+      env: {
+        NTFY_URL: SINK_URL,
+        NTFY_TOKEN: "tk_test",
+        NTFY_TOPIC: "ai",
+        NTFY_TOPIC_PREFIX: "oc",
+        NTFY_WORKSPACE: "server-management",
+        NTFY_PAIR_BUTTON: "0",
+        NTFY_REPLY_ENABLED: "0",
+      },
+      argv: ["serve", "--service"],
+      log: () => {},
+    });
+    cleanup = await runtime.setup({
+      location: { directory: REPO_DIR },
+      session: { hook: async () => ({ dispose: async () => {} }) },
+      event: { subscribe: () => makeStream().iterator },
+    });
+  } finally {
+    console.log = originalLog;
+  }
+  const aktiv = setupLines.find((line) => line.includes("[ntfy-notify] aktiv")) ?? "keine Zeile";
+  ok(
+    aktiv.includes("topic oc-server-management"),
+    `die Aktiv-Zeile nennt das tatsächlich verwendete Topic (war: ${aktiv})`
+  );
+  cleanup?.();
+  await wait();
+}
+
+// ── 40. Symbol je Meldung (NTFY_ICON_BASE) ────────────────────────────────
+//
+// Ist NTFY_ICON_BASE gesetzt und der Arbeitsbereich bekannt, trägt die Meldung
+// das ntfy-Feld `icon` = "<basis>/<workspace>.png" (JSON-Feld `icon`, als
+// Header `Icon`; die Apps zeigen das Bild als Benachrichtigungssymbol). Ohne
+// die Basis oder ohne bekannten Arbeitsbereich entfällt das Feld — dann bleibt
+// das Verhalten unverändert.
+console.log("\nSymbol (icon)");
+const ICON_BASE =
+  "https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons";
+{
+  const n = makeNotifier({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_PAIR_BUTTON: "0", NTFY_ICON_BASE: ICON_BASE },
+  });
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Meldung geht raus");
+  eq(
+    received[0]?.body?.icon,
+    `${ICON_BASE}/server-management.png`,
+    "icon zeigt auf das PNG des Arbeitsbereichs"
+  );
+}
+{
+  // NTFY_WORKSPACE genügt, wenn die Session kein Verzeichnis mitbringt; ein
+  // abschließender Slash der Basis erzeugt kein doppeltes "//".
+  const n = makeNotifier({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_PAIR_BUTTON: "0",
+      NTFY_ICON_BASE: `${ICON_BASE}/`,
+      NTFY_WORKSPACE: "server-management",
+    },
+  });
+  received.length = 0;
+  await n.handleEvent({
+    type: "session.created",
+    properties: { info: { id: SESSION, title: "Ohne Pfad" } },
+  });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Meldung ohne Sitzungs-Verzeichnis geht raus");
+  eq(
+    received[0]?.body?.icon,
+    `${ICON_BASE}/server-management.png`,
+    "ein abschließender Slash der Basis ergibt kein doppeltes //"
+  );
+}
+{
+  // Ohne NTFY_ICON_BASE: kein icon-Feld (Verhalten unverändert).
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Meldung aus dem Workspace geht raus");
+  ok(
+    !Object.prototype.hasOwnProperty.call(received[0]?.body ?? {}, "icon"),
+    "ohne NTFY_ICON_BASE trägt die Meldung kein icon-Feld"
+  );
+}
+{
+  // Mit NTFY_ICON_BASE, aber ohne bekannten Arbeitsbereich: kein icon-Feld.
+  const n = makeNotifier({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_PAIR_BUTTON: "0", NTFY_ICON_BASE: ICON_BASE },
+  });
+  received.length = 0;
+  await n.handleEvent({
+    type: "session.created",
+    properties: { info: { id: SESSION, title: "Ohne Pfad" } },
+  });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Meldung geht raus");
+  ok(
+    !Object.prototype.hasOwnProperty.call(received[0]?.body ?? {}, "icon"),
+    "ohne bekannten Arbeitsbereich gibt es kein icon-Feld"
   );
 }
 

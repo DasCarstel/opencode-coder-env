@@ -31,6 +31,20 @@
 //   NTFY_URL    Basis-URL        (Default https://ntfy.mueller-nas.de)
 //   NTFY_TOKEN  Bearer-Token     (ohne Token bleibt das Plugin still)
 //   NTFY_TOPIC  Topic            (Default "ai")
+//   NTFY_TOPIC_PREFIX  Opt-in: Topic je Arbeitsbereich. Ist die Variable gesetzt
+//                     und ist der Arbeitsbereich bekannt, gilt
+//                     "<prefix>-<workspace>" (z. B. "oc" +
+//                     "server-management" → "oc-server-management") — einheitlich
+//                     für den Versand UND die Antwort-Brücke (die hört auf
+//                     demselben Topic). Ohne den Prefix bleibt es exakt bei
+//                     NTFY_TOPIC; die Ableitung ist bewusst opt-in, sonst
+//                     landeten Meldungen in Topics, die niemand abonniert hat.
+//   NTFY_ICON_BASE    Opt-in: Symbol-URL je Meldung. Ist die Variable gesetzt und
+//                     ist der Arbeitsbereich bekannt, trägt die Meldung das
+//                     ntfy-Feld "icon" = "<basis>/<workspace>.png" (im JSON
+//                     heißt das Feld `icon`, als Header `Icon` — die App zeigt
+//                     das Bild auf Android/iOS als Benachrichtigungssymbol).
+//                     Ohne die Basis entfällt das Feld (Verhalten unverändert).
 //   NTFY_DEBUG=1      Debug-Ausgaben ins OpenCode-Log
 //   NTFY_SELFTEST=1   sendet beim Laden genau eine Testnachricht (Diagnose),
 //                     unabhängig vom Prozess-Check
@@ -56,11 +70,20 @@
 //                     (<basis>/server/<schlüssel>/session/<id>); "base" = nur
 //                     die Basis (Startseite der Oberfläche, Übergangslösung).
 //                     Der Kopplungsknopf bleibt in beiden Fällen auf der Basis.
+//   NTFY_WORKSPACE    Kurzer Name des Arbeitsbereichs (z. B. "server-management").
+//                     Er steht als "[<name>] " vor jedem Meldungstitel, damit
+//                     bei mehreren Arbeitsbereichen auf dem Handy sofort
+//                     erkennbar ist, woher die Meldung kommt. Ist die Variable
+//                     nicht gesetzt, wird der Name aus dem letzten Pfadstück
+//                     des Sitzungs-Verzeichnisses abgeleitet; ist auch das nicht
+//                     möglich, bleibt der Titel unverändert.
 //   NTFY_STATE_FILE   JSON-Datei für die wenigen Angaben, die einen
 //                     Dienst-Neustart überleben müssen (Default
 //                     /tmp/opencode/ntfy-state.json): je Topic die zuletzt
 //                     benachrichtigte Session, die offene Frage/das offene
-//                     Formular und die Leseposition der Brücke (`since`).
+//                     Formular, die Leseposition der Brücke (`since`) und die
+//                     zuletzt abgeleitete Basis (`lastBase`) als Kopplungs-
+//                     Ersatzadresse für Meldungen ohne Session.
 //
 //   Alle NTFY_*-Einstellungen liest das Plugin zusätzlich aus der Env-Datei
 //   /etc/opencode.env (Pfad über NTFY_ENV_FILE änderbar): die Service-Umgebung
@@ -332,6 +355,103 @@ function parseSubpath(subpath) {
 export function subpathFromDirectory(dir) {
   const m = /\/workspaces\/(.+)$/.exec(String(dir ?? "").replace(/\/+$/, ""));
   return m ? `workspaces/${m[1]}` : "";
+}
+
+/**
+ * Letztes Pfadstück eines Verzeichnisses — daraus entsteht der kurze Name des
+ * Arbeitsbereichs im Titel: "/…/workspaces/infrastructure/server-management"
+ * → "server-management". Leere Pfade ergeben "".
+ */
+function lastPathSegment(dir) {
+  const parts = String(dir ?? "")
+    .split(/[\\/]+/)
+    .filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : "";
+}
+
+/**
+ * Kurzer Name des Arbeitsbereichs: NTFY_WORKSPACE gewinnt (die Env-Datei zählt
+ * mit, siehe createPluginRuntime); sonst das letzte Pfadstück des Verzeichnisses
+ * (/…/workspaces/infrastructure/server-management → server-management). Ist
+ * beides nicht zu ermitteln, bleibt es bei "" (wie beim Titel). Klammern fliegen
+ * raus, damit die Kennung eindeutig bleibt.
+ */
+export function workspaceNameFrom(env = {}, dir = "") {
+  const clean = (value) =>
+    String(value ?? "")
+      .replace(/[[\]]/g, "")
+      .trim();
+  return clean(env.NTFY_WORKSPACE) || clean(lastPathSegment(dir));
+}
+
+/**
+ * Arbeitsbereich für Topic und Symbol — strenger als workspaceNameFrom: es
+ * zählen nur echte Workspace-Pfade (…/workspaces/<bereich>/<name> → <name>).
+ * Das Kontext-Verzeichnis einer Plugin-Instanz kann auch "/", "/root" oder das
+ * Repo-Wurzelverzeichnis sein; daraus entstünde sonst ein Topic wie
+ * "oc-opencode-coder-env". NTFY_WORKSPACE gilt unabhängig davon.
+ */
+export function topicWorkspaceFrom(env = {}, dir = "") {
+  const clean = (value) =>
+    String(value ?? "")
+      .replace(/[[\]]/g, "")
+      .trim();
+  const fromEnv = clean(env.NTFY_WORKSPACE);
+  if (fromEnv) return fromEnv;
+  const path = String(dir ?? "");
+  if (!subpathFromDirectory(path)) return "";
+  return clean(lastPathSegment(path));
+}
+
+/**
+ * Topic mit Arbeitsbereich (NTFY_TOPIC_PREFIX). Die Ableitung ist opt-in: ohne
+ * Prefix oder ohne bekannten Arbeitsbereich kommt unverändert `base` zurück —
+ * sonst landeten Meldungen in Topics, die der Nutzer nicht abonniert hat. Mit
+ * Prefix und bekanntem Arbeitsbereich gilt "<prefix>-<workspace>", z. B. "oc" +
+ * "server-management" → "oc-server-management". Abschließende Bindestriche im
+ * Prefix werden entfernt, damit daraus kein "--" wird.
+ */
+export function topicWithWorkspace(base, env = {}, workspace = "") {
+  const prefix = String(env.NTFY_TOPIC_PREFIX ?? "")
+    .trim()
+    .replace(/-+$/, "");
+  const name = String(workspace ?? "").trim();
+  if (!prefix || !name) return base;
+  return `${prefix}-${name}`;
+}
+
+/**
+ * Symbol-URL einer Meldung: NTFY_ICON_BASE + "/<workspace>.png". Ohne Basis oder
+ * ohne bekannten Arbeitsbereich kommt "" zurück — dann setzt send() kein
+ * icon-Feld und das Verhalten bleibt wie bisher. Ein abschließender Slash der
+ * Basis wird entfernt, damit keine doppelten "//" entstehen.
+ */
+export function iconUrlFor(env = {}, workspace = "") {
+  const base = String(env.NTFY_ICON_BASE ?? "")
+    .trim()
+    .replace(/\/+$/, "");
+  const name = String(workspace ?? "").trim();
+  if (!base || !name) return "";
+  return `${base}/${name}.png`;
+}
+
+/**
+ * Titel mit Kennung des Arbeitsbereichs: "[<name>] <Titel>". Der Titel bleibt
+ * so vollständig wie möglich; reicht MAX_TITLE nicht, wird zuerst der Name
+ * gekürzt (er trägt die kürzere Information). Ohne bekannten Namen bleibt der
+ * Titel unverändert.
+ */
+function titleWithWorkspace(title, name) {
+  const tag = String(name ?? "").trim();
+  const text = oneLine(title, MAX_TITLE);
+  if (!tag) return text;
+  // "[" + "]" + Leerzeichen belegen drei Zeichen Rahmen; der Name bekommt den
+  // Rest. Reicht der Platz nicht für den ganzen Namen, wird er gekürzt.
+  const room = MAX_TITLE - text.length - 3;
+  if (room >= tag.length) return `[${tag}] ${text}`;
+  // Zu langer Titel: der Titel selbst wird am Ende gekürzt (send() begrenzt auf
+  // MAX_TITLE) — die Kennung bleibt in jedem Fall vorn stehen.
+  return oneLine(`[${tag.slice(0, Math.max(3, room - 1))}…] ${text}`, MAX_TITLE);
 }
 
 /** "/home/<owner>/opencode-coder-env/…" → owner */
@@ -761,6 +881,8 @@ function prune() {
 //   openQuestionId offene native Frage (ID des Formulars)
 //   openFormId     offenes Formular (z. B. Freigabe-Dialog)
 //   since          Leseposition der Antwort-Brücke (`since`-Zeiger)
+//   lastBase       zuletzt abgeleitete Basis (Port-App des Workspace) — sie
+//                  dient Meldungen ohne Session als Kopplungs-Ersatzadresse
 //
 // Geschrieben wird gedrosselt (höchstens einmal je Sekunde), gelesen einmal
 // beim Anlegen des Speichers. Eine fehlende, kaputte oder halb gefüllte Datei
@@ -776,7 +898,7 @@ function stateFilePath(env = {}) {
 }
 
 function emptyTopicState() {
-  return { lastSessionId: "", openQuestionId: "", openFormId: "", since: "" };
+  return { lastSessionId: "", openQuestionId: "", openFormId: "", since: "", lastBase: "" };
 }
 
 /** Tolerante Form: nur bekannte Felder mit String-Wert werden übernommen. */
@@ -958,7 +1080,15 @@ export function createNtfyNotifier(options = {}) {
   const env = options.env ?? process.env;
   const url = String(options.url ?? env.NTFY_URL ?? DEFAULT_URL).replace(/\/+$/, "");
   const token = String(options.token ?? env.NTFY_TOKEN ?? "");
-  const topic = String(options.topic ?? env.NTFY_TOPIC ?? DEFAULT_TOPIC);
+  // Arbeitsbereich dieser Instanz: NTFY_WORKSPACE oder der Workspace-Pfad des
+  // Kontext-Verzeichnisses. Daraus entsteht das Topic — aber nur mit
+  // NTFY_TOPIC_PREFIX (opt-in, siehe topicWithWorkspace). options.topic bleibt
+  // der ausdrückliche Override.
+  const contextWorkspace = topicWorkspaceFrom(env, options.directory ?? "");
+  const topic = String(
+    options.topic ??
+      topicWithWorkspace(String(env.NTFY_TOPIC ?? DEFAULT_TOPIC), env, contextWorkspace)
+  );
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const now = options.now ?? (() => Date.now());
   const logger = options.log ?? debug;
@@ -1000,34 +1130,104 @@ export function createNtfyNotifier(options = {}) {
     return oneLine(metaFor(sessionID).title ?? "", 120) || `Session ${shortId(sessionID)}`;
   }
 
+  /** Feste Session-Basis (NTFY_SESSION_URL) — "" solange sie nicht gesetzt ist. */
+  function fixedSessionUrl() {
+    return String(env.NTFY_SESSION_URL ?? "").trim();
+  }
+
+  /**
+   * Basis aus den Sitzungs-Metadaten: die Port-App der laufenden
+   * `opencode serve`-Instanz (die OpenCode-Web-UI). Muster wie
+   * VSCODE_PROXY_URI im Container:
+   *   https://<port>--<agent>--<workspace>--<owner>-<coder-host>
+   * Der Agent ist das Workspace-Agent-Segment (meist "main"), der Port gehört
+   * zur Web-UI (49374). Der Domain-Teil wird aus CODER_AGENT_URL abgeleitet,
+   * damit hier nichts hart kodiert ist. Die frühere App `herdr` ist defekt
+   * (HTTP 500) und wird bewusst nicht mehr verwendet. Ohne Workspace-Pfad und
+   * Inhaber lässt sich nichts ableiten — dann kommt "" zurück.
+   */
+  function derivedBase(sessionID) {
+    const parsed = parseSubpath(metaFor(sessionID).subpath);
+    const owner =
+      ownerFromDirectory(metaFor(sessionID).directory) || ownerFromDirectory(contextDirectory);
+    if (!parsed.workspace || !owner) return "";
+    const agent = env.CODER_WORKSPACE_AGENT_NAME || "main";
+    const workspace = env.CODER_WORKSPACE_NAME || parsed.workspace;
+    const user = env.CODER_WORKSPACE_OWNER_NAME || owner;
+    const port = env.NTFY_SESSION_PORT || "49374";
+    const coderHost = hostFromUrl(env.CODER_AGENT_URL) || "coder.mueller-nas.de";
+    return `https://${port}--${agent}--${workspace}--${user}-${coderHost}`;
+  }
+
+  /**
+   * Kurzer Name des Arbeitsbereichs für die Titel-Kennung ("[<name>] …"):
+   * NTFY_WORKSPACE gewinnt (die Env-Datei zählt mit, siehe
+   * createPluginRuntime); sonst das letzte Pfadstück des Sitzungs-Verzeichnisses
+   * (/…/workspaces/infrastructure/server-management → server-management). Ist
+   * beides nicht zu ermitteln, bleibt der Titel unverändert ("") — siehe
+   * workspaceNameFrom.
+   */
+  function workspaceName(sessionID) {
+    return workspaceNameFrom(env, metaFor(sessionID).directory);
+  }
+
+  /**
+   * Arbeitsbereich für Topic und Symbol: die Sitzung gewinnt (ihr Verzeichnis
+   * ist der echte Workspace-Pfad), sonst der Arbeitsbereich der Instanz. Ohne
+   * beides ist der Name unbekannt — dann gibt es kein icon-Feld.
+   */
+  function workspaceForIcon(sessionID) {
+    return topicWorkspaceFrom(env, metaFor(sessionID).directory) || contextWorkspace;
+  }
+
+  /** Persistierte Basis (Kopplungs-Ersatzadresse) — "" wenn (noch) keine da ist. */
+  function storedBase() {
+    try {
+      const value = stateStore.get(topic, "lastBase");
+      return typeof value === "string" ? value.trim() : "";
+    } catch {
+      return ""; // ein kaputter Speicher darf die Meldung nie stören
+    }
+  }
+
+  /**
+   * Die zuletzt abgeleitete Basis für spätere Meldungen ohne Session merken
+   * (siehe linkBase). Wirft nie: ein Schreibfehler ändert nur den gespeicherten
+   * Stand, nie die Meldung.
+   */
+  function rememberBase(base) {
+    if (!base) return;
+    try {
+      stateStore.set(topic, { lastBase: base });
+    } catch {
+      /* der Zustandsspeicher darf die Meldung nie stören */
+    }
+  }
+
   /**
    * Basis der Session-Links — linkFor baut darauf den Session-Pfad auf, der
    * Kopplungslink hängt direkt hier an (deshalb ohne Session-Pfad).
    * NTFY_SESSION_URL gewinnt immer, sonst wird die Port-App der laufenden
-   * `opencode serve`-Instanz abgeleitet.
+   * `opencode serve`-Instanz aus den Sitzungs-Metadaten abgeleitet.
+   *
+   * Meldungen ohne Session (Antwort-Bestätigungen, Hinweis „ohne Ziel-Session“)
+   * haben keine solche Basis: für sie gilt zuerst die zuletzt gemerkte
+   * `lastBase` — das Kopplungs-Cookie gilt nur für die App-Adresse des
+   * Workspace, auf der allgemeinen Rückfall-URL wäre der Kopplungsknopf also
+   * nutzlos — und erst danach NTFY_FALLBACK_URL. Meldungen mit Session behalten
+   * ihr bisheriges Verhalten.
    */
   function linkBase(sessionID) {
     // Escape-Hatch: eine fest konfigurierte URL gewinnt immer.
-    const fixed = String(env.NTFY_SESSION_URL ?? "").trim();
+    const fixed = fixedSessionUrl();
     if (fixed) return fixed;
 
-    const parsed = parseSubpath(metaFor(sessionID).subpath);
-    const owner =
-      ownerFromDirectory(metaFor(sessionID).directory) || ownerFromDirectory(contextDirectory);
-    if (parsed.workspace && owner) {
-      // Link auf die Port-App der laufenden `opencode serve`-Instanz (die
-      // OpenCode-Web-UI). Muster wie VSCODE_PROXY_URI im Container:
-      //   https://<port>--<agent>--<workspace>--<owner>-<coder-host>
-      // Der Agent ist das Workspace-Agent-Segment (meist "main"), der Port
-      // gehört zur Web-UI (49374). Der Domain-Teil wird aus CODER_AGENT_URL
-      // abgeleitet, damit hier nichts hart kodiert ist. Die frühere App
-      // `herdr` ist defekt (HTTP 500) und wird bewusst nicht mehr verwendet.
-      const agent = env.CODER_WORKSPACE_AGENT_NAME || "main";
-      const workspace = env.CODER_WORKSPACE_NAME || parsed.workspace;
-      const user = env.CODER_WORKSPACE_OWNER_NAME || owner;
-      const port = env.NTFY_SESSION_PORT || "49374";
-      const coderHost = hostFromUrl(env.CODER_AGENT_URL) || "coder.mueller-nas.de";
-      return `https://${port}--${agent}--${workspace}--${user}-${coderHost}`;
+    const derived = derivedBase(sessionID);
+    if (derived) return derived;
+
+    if (!String(sessionID ?? "").trim()) {
+      const remembered = storedBase();
+      if (remembered) return remembered;
     }
     return String(env.NTFY_FALLBACK_URL ?? "https://coder.mueller-nas.de/");
   }
@@ -1162,10 +1362,20 @@ export function createNtfyNotifier(options = {}) {
     const body = {
       topic,
       message: clampText(payload.message, maxBody) || "…",
-      title: oneLine(payload.title, MAX_TITLE),
+      // Kennung des Arbeitsbereichs im Titel ("[<name>] …"): bei mehreren
+      // Arbeitsbereichen ist auf dem Handy sofort sichtbar, woher die Meldung
+      // kommt. Klickziel und Aktionen bleiben davon unberührt.
+      title: oneLine(titleWithWorkspace(payload.title, workspaceName(sessionID)), MAX_TITLE),
       priority: payload.priority ?? 3,
       tags: payload.tags ?? ["speech_balloon"],
     };
+    // Symbol der Meldung: ntfy-Feld `icon` (als Header `Icon`), die URL zeigt auf
+    // das PNG des Arbeitsbereichs (NTFY_ICON_BASE, z. B. ein rohes
+    // GitHub-Verzeichnis). Android/iOS zeigen das Bild als
+    // Benachrichtigungssymbol. Ohne Basis oder ohne bekannten Arbeitsbereich
+    // entfällt das Feld — dann ist das Verhalten unverändert.
+    const icon = iconUrlFor(env, workspaceForIcon(sessionID));
+    if (icon) body.icon = icon;
     // Aktionen aufbauen (ntfy erlaubt höchstens drei je Nachricht): vorhandene
     // übernehmen, dann das Klick-Ziel, zuletzt den Kopplungslink. Das Klick-Ziel
     // selbst bleibt unverändert.
@@ -1227,6 +1437,11 @@ export function createNtfyNotifier(options = {}) {
         /* Antwort ohne JSON-Body – dann gibt es eben keine ID */
       }
       rememberSentId(id, replyState);
+      // Die Meldung ist raus: die abgeleitete Basis als Kopplungs-Ersatzadresse
+      // für spätere Meldungen ohne Session merken (gedrosseltes Schreiben wie
+      // beim übrigen Zustand). Eine feste NTFY_SESSION_URL ist keine abgeleitete
+      // Basis und ändert den gemerkten Stand deshalb nicht.
+      if (!fixedSessionUrl()) rememberBase(derivedBase(sessionID));
       return true;
     } catch (error) {
       logger("Publish-Fehler:", error?.message ?? String(error));
@@ -1513,6 +1728,9 @@ export function createNtfyNotifier(options = {}) {
     ensureMeta,
     projectFor,
     linkFor,
+    // Das tatsächlich verwendete Topic (ggf. mit NTFY_TOPIC_PREFIX): die
+    // Aktiv-Zeile in createPluginRuntime nennt damit den echten Wert.
+    topic,
     _state: state,
   };
 }
@@ -1797,7 +2015,17 @@ export function createReplyBridge(options = {}) {
   const config = options.config ?? resolveConfig(env);
   const url = String(options.url ?? config.url ?? DEFAULT_URL).replace(/\/+$/, "");
   const token = String(options.token ?? config.token ?? "");
-  const topic = String(options.topic ?? env.NTFY_REPLY_TOPIC ?? config.topic ?? DEFAULT_TOPIC);
+  // Topic zum Abholen: dieselbe Ableitung wie beim Versand — mit gesetztem
+  // NTFY_TOPIC_PREFIX und bekanntem Arbeitsbereich hört die Brücke also auf
+  // "<prefix>-<workspace>", genau dem Topic, in das die Meldungen gehen.
+  const topic = String(
+    options.topic ??
+      topicWithWorkspace(
+        String(env.NTFY_REPLY_TOPIC ?? config.topic ?? DEFAULT_TOPIC),
+        env,
+        topicWorkspaceFrom(env, options.directory ?? "")
+      )
+  );
   const fetchImpl = options.fetch ?? globalThis.fetch;
   // Wartezeiten: im Betrieb gelten die Defaults oben (1 s vor dem Neuverbinden,
   // verdoppelnd bis 30 s; nach HTTP 429 deutlich länger). Tests übersteuern sie
@@ -1843,7 +2071,10 @@ export function createReplyBridge(options = {}) {
   function ignoreReason(message) {
     const id = typeof message?.id === "string" ? message.id : "";
     if (id && hasSentId(runtime, id)) return "id";
-    const title = String(message?.title ?? "");
+    // Eine Kennung des Arbeitsbereichs ("[name] ") steht vor dem eigenen
+    // Präfix: ohne sie zu entfernen, hielte die Brücke ihre eigene Meldung für
+    // eine fremde Antwort und würde sie sich selbst einspeisen.
+    const title = String(message?.title ?? "").replace(/^\s*\[[^\]]*\]\s*/, "");
     if (REPLY_PREFIXES.some((prefix) => title.startsWith(prefix))) return "title";
     return "";
   }
@@ -2458,11 +2689,13 @@ export function createPluginRuntime(options = {}) {
       if (!selftest && !isServiceProcess(argv)) return;
 
       const cfg = resolveConfig(merged);
+      const contextDirectory =
+        typeof ctx?.location?.directory === "string" ? ctx.location.directory : "";
       const notifier = createNtfyNotifier({
         env: { ...merged, NTFY_TOKEN: cfg.token, NTFY_URL: cfg.url, NTFY_TOPIC: cfg.topic },
         ...(options.fetch ? { fetch: options.fetch } : {}),
         ...(options.log ? { log: options.log } : {}),
-        directory: typeof ctx?.location?.directory === "string" ? ctx.location.directory : "",
+        directory: contextDirectory,
         client: ctx,
       });
 
@@ -2480,8 +2713,11 @@ export function createPluginRuntime(options = {}) {
         return;
       }
 
+      // Das tatsächlich verwendete Topic nennen (mit NTFY_TOPIC_PREFIX kann es
+      // vom konfigurierten NTFY_TOPIC abweichen) — so ist im Log sofort
+      // sichtbar, wohin die Meldungen gehen.
       console.log(
-        `[ntfy-notify] aktiv (topic ${cfg.topic}, location ${ctx?.location?.directory ?? "?"})`
+        `[ntfy-notify] aktiv (topic ${notifier.topic}, location ${ctx?.location?.directory ?? "?"})`
       );
 
       // "Arbeitet gerade": jeder abgeschickte Prompt markiert die Session.
@@ -2497,15 +2733,22 @@ export function createPluginRuntime(options = {}) {
       const replyBridge = startReplyBridge({
         ctx,
         env: { ...merged, NTFY_TOKEN: cfg.token, NTFY_URL: cfg.url, NTFY_TOPIC: cfg.topic },
+        // Dasselbe Verzeichnis wie der Notifier: daraus leitet die Brücke
+        // dasselbe Topic ab (NTFY_TOPIC_PREFIX) — sie hört auf dem Topic, in
+        // das die Meldungen gehen.
+        directory: contextDirectory,
         publish: (payload) => notifier.send(payload),
         log: options.log ?? debug,
         ...(options.fetch ? { fetch: options.fetch } : {}),
       });
       if (replyBridge) {
+        // Immer das Topic der laufenden Brücke nennen (bei einer mitbenutzten
+        // Brücke kann es von dem dieser Instanz abweichen).
+        const bridgeTopic = replyBridge.bridge?.topic || cfg.topic;
         debug(
           replyBridge.shared
-            ? `Antwort-Brücke mitbenutzt (topic ${cfg.topic})`
-            : `Antwort-Brücke aktiv (topic ${cfg.topic})`
+            ? `Antwort-Brücke mitbenutzt (topic ${bridgeTopic})`
+            : `Antwort-Brücke aktiv (topic ${bridgeTopic})`
         );
       }
 
