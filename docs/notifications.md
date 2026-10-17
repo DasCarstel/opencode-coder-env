@@ -81,8 +81,8 @@ Cache 24 h, Attachment-Limit 1 GB (Disk auf CT 100 ist knapp).
 
 | Topic | Zweck | Schreibberechtigt | Empfehlung `min_priority` |
 |-------|-------|-------------------|---------------------------|
-| `crit` | HA-Alarme (Wasserleck) | `src-ha`, `carsten` | 4 |
-| `home` | HA Routine/Real (Roborock, Temp/Feuchte, Regen) | `src-ha`, `carsten` | 3 |
+| `crit` | HA-Alarme (Wasserleck) + Regen bei offenen Fenstern | `src-ha`, `carsten` | 4 |
+| `home` | HA Routine/Real (Roborock, Temp/Feuchte, Zimmer/Fenster) | `src-ha`, `carsten` | 3 |
 | `doorbell` | Türklingel (mit „Tür öffnen"-Button) | `src-ha`, `carsten` | 4 |
 | `print` | 3D-Druck (Job fertig/Fehler) | `src-ha`, `carsten` | 3 |
 | `logs` | Uninteressante HA-Meldungen (Watchdog, CCU, GUARD, Fenster-Sensor) | `src-ha`, `carsten` | 1 |
