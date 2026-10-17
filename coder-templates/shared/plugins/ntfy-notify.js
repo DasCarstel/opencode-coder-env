@@ -193,6 +193,25 @@ const MAX_REPLY_TEXT = 2000;
 const MAX_SENT_IDS = 200;
 // Schon verarbeitete Fremd-IDs — gleiche Begrenzung wie bei den eigenen IDs.
 const MAX_PROCESSED_IDS = 200;
+// Persistierter Ringpuffer eigener Message-IDs: damit erkennt die Brücke ihre
+// eigene Meldung auch nach einem Dienst-Neustart noch als eigene (siehe
+// `sentIds` in der Zustandsdatei). Bewusst kleiner als MAX_SENT_IDS, damit die
+// Datei klein bleibt.
+const MAX_PERSISTED_SENT_IDS = 50;
+// Eigene Wortlaute (nur als Hash gemerkt): die letzten Meldungen, deren Text
+// dieses Plugin selbst veröffentlicht hat. Wird einer davon erneut eingespeist
+// (Stream-Neuaufbau, Verlauf, Selbst-Echo), passiert nichts — siehe isOwnText.
+const MAX_OWN_TEXTS = 10;
+// Antwort-Brücke: höchstens zwei Einspeisungen je Minute. Ein Verlauf oder ein
+// Selbst-Echo darf eine Session nicht fluten (siehe throttleReason).
+const MAX_INJECTIONS_PER_MINUTE = 2;
+const INJECTION_WINDOW_MS = 60000;
+// Gültige `since`-Position: echte ntfy-IDs sind kurz und base62-artig. Alles
+// andere (Fixture-Werte wie "msg_…", "all", "0", "-1", "none", Leerwerte) ist
+// keine Position, die es im Topic gibt — damit darf die Brücke nicht in den
+// Verlauf greifen.
+const SINCE_ID_PATTERN = /^[A-Za-z0-9_-]{6,40}$/;
+const SINCE_ID_LITERALS = new Set(["all", "0", "-1", "none"]);
 // Kopplungslink: `opencode pair` erzeugt einen einmaligen Code, der 5 Minuten
 // gilt. Er hängt als view-Button an jeder Meldung; der fertige Link wird ~120 s
 // zwischengespeichert (Codes sind einmalig, aber so lange gültig).
@@ -268,6 +287,99 @@ export function makeDiag(env) {
       /* Diagnose darf die Meldung nie stören */
     }
   };
+}
+
+/**
+ * Gültige `since`-Position für den ntfy-Stream? Nur ein solcher Wert darf aus
+ * der Zustandsdatei übernommen werden.
+ *
+ * Hintergrund (Vorfall 17.10.2026): stand in der Zustandsdatei ein Wert, den es
+ * im Topic nicht gibt (im Live-Protokoll war das `msg_user9` — ein Fixture-Wert
+ * aus der Testsuite), lieferte ntfy den kompletten alten Verlauf erneut aus,
+ * und die Brücke speiste ihn als Prompt in eine Session ein. Ein ungültiger
+ * Zeiger wird deshalb verworfen; die Brücke startet dann ab jetzt.
+ */
+export function isValidSinceId(value) {
+  const id = String(value ?? "").trim();
+  if (!id) return false;
+  if (SINCE_ID_LITERALS.has(id.toLowerCase())) return false;
+  // "msg_" stammt aus Testdaten/Fixtures — echte ntfy-IDs tragen kein Präfix.
+  if (id.startsWith("msg_")) return false;
+  return SINCE_ID_PATTERN.test(id);
+}
+
+/**
+ * Kurzer Hash über einen Wortlaut (FNV-1a, 32 Bit). Der Ringpuffer eigener
+ * Texte bleibt damit klein, der Vergleich ist trotzdem exakt: Mehrfach-
+ * Whitespace wird zusammengezogen, Groß-/Kleinschreibung bleibt zählend.
+ */
+function textHash(text) {
+  const s = String(text ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!s) return "";
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < s.length; i += 1) {
+    hash ^= s.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16);
+}
+
+/** Ringpuffer der eigenen Wortlaute (Hashes) — defensiv nachgerüstet. */
+function ownTexts(runtime = replyRuntime()) {
+  if (!Array.isArray(runtime.ownTexts)) runtime.ownTexts = [];
+  return runtime.ownTexts;
+}
+
+/** Eigenen Wortlaut merken (die letzten MAX_OWN_TEXTS). Wirft nie. */
+function rememberSentText(text, runtime = replyRuntime()) {
+  if (!runtime) return;
+  const hash = textHash(text);
+  if (!hash) return;
+  const ring = ownTexts(runtime);
+  const index = ring.indexOf(hash);
+  if (index !== -1) ring.splice(index, 1);
+  ring.push(hash);
+  while (ring.length > MAX_OWN_TEXTS) ring.shift();
+}
+
+/** Entspricht der Text dem Wortlaut einer der letzten eigenen Meldungen? */
+function isOwnText(text, runtime = replyRuntime()) {
+  if (!runtime) return false;
+  const hash = textHash(text);
+  if (!hash) return false;
+  return ownTexts(runtime).includes(hash);
+}
+
+/** Persistierte eigene Message-IDs eines Topics (JSON-Ringpuffer der Datei). */
+function readPersistedSentIds(store, topic) {
+  try {
+    const raw = store?.get?.(topic, "sentIds") ?? "";
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((id) => typeof id === "string" && id) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Eigene Message-ID persistieren — nur so erkennt die Brücke ihre eigene
+ * Meldung auch nach einem Dienst-Neustart wieder (Ringpuffer, letzte 50).
+ * Wirft nie: der Zustandsspeicher darf die Meldung nicht stören.
+ */
+function rememberPersistedSentId(id, store, topic) {
+  if (typeof id !== "string" || !id) return;
+  try {
+    const list = readPersistedSentIds(store, topic);
+    if (list.includes(id)) return;
+    list.push(id);
+    while (list.length > MAX_PERSISTED_SENT_IDS) list.shift();
+    store?.set?.(topic, { sentIds: JSON.stringify(list) });
+  } catch {
+    /* der Zustandsspeicher darf die Meldung nie stören */
+  }
 }
 
 /** "0"/"false"/"no"/"off" schalten den Kopplungs-Button ab (Default: an). */
@@ -715,6 +827,8 @@ export function resetSharedState() {
   else if (reply.sentIds instanceof Set) reply.sentIds.clear();
   if (Array.isArray(reply.processedIds)) reply.processedIds.length = 0;
   else if (reply.processedIds instanceof Set) reply.processedIds.clear();
+  // Eigene Wortlaute mit zurücksetzen: Tests starten damit sauber.
+  if (Array.isArray(reply.ownTexts)) reply.ownTexts.length = 0;
   reply.lastSessionID = "";
   reply.lastActiveSession = "";
   reply.replySince = "";
@@ -769,6 +883,7 @@ function newReplyState() {
   return {
     sentIds: [], // IDs der selbst gesendeten ntfy-Nachrichten
     processedIds: [], // IDs der bereits verarbeiteten Fremd-Nachrichten (Idempotenz)
+    ownTexts: [], // Hashes der zuletzt selbst gesendeten Wortlaute (Ringpuffer)
     lastSessionID: "", // Session der zuletzt gesendeten Benachrichtigung
     lastActiveSession: "", // zuletzt gesehene Session ohne Benachrichtigung (Fallback-Ziel)
     replyAbort: null, // AbortController der aktuell laufenden Brücken-Schleife
@@ -793,6 +908,7 @@ export function replyRuntime() {
   if (!Array.isArray(existing.processedIds) && !(existing.processedIds instanceof Set)) {
     existing.processedIds = [];
   }
+  if (!Array.isArray(existing.ownTexts)) existing.ownTexts = [];
   if (typeof existing.lastSessionID !== "string") existing.lastSessionID = "";
   if (typeof existing.lastActiveSession !== "string") existing.lastActiveSession = "";
   if (typeof existing.replySince !== "string") existing.replySince = "";
@@ -879,8 +995,14 @@ function prune() {
 // (NTFY_STATE_FILE, Default /tmp/opencode/ntfy-state.json), je Topic:
 //   lastSessionId  Session, die zuletzt eine Meldung in diesem Topic erzeugt hat
 //   openQuestionId offene native Frage (ID des Formulars)
+//   openQuestionAt Zeitpunkt (Unix-Sekunden), zu dem die Frage gestellt wurde —
+//                  nur Text, der danach entstanden ist, darf sie beantworten
 //   openFormId     offenes Formular (z. B. Freigabe-Dialog)
 //   since          Leseposition der Antwort-Brücke (`since`-Zeiger)
+//   sentIds        Ringpuffer der letzten eigenen Message-IDs (JSON) — daran
+//                  erkennt die Brücke ihre eigenen Meldungen nach einem Neustart
+//   lastHandledTime Wasserstand (Unix-Sekunden): eine Nachricht, die älter ist
+//                  als dieser Wert, ist Verlauf und wird nicht mehr eingespeist
 //   lastBase       zuletzt abgeleitete Basis (Port-App des Workspace) — sie
 //                  dient Meldungen ohne Session als Kopplungs-Ersatzadresse
 //
@@ -898,7 +1020,16 @@ function stateFilePath(env = {}) {
 }
 
 function emptyTopicState() {
-  return { lastSessionId: "", openQuestionId: "", openFormId: "", since: "", lastBase: "" };
+  return {
+    lastSessionId: "",
+    openQuestionId: "",
+    openQuestionAt: "",
+    openFormId: "",
+    since: "",
+    sentIds: "",
+    lastHandledTime: "",
+    lastBase: "",
+  };
 }
 
 /** Tolerante Form: nur bekannte Felder mit String-Wert werden übernommen. */
@@ -1437,6 +1568,14 @@ export function createNtfyNotifier(options = {}) {
         /* Antwort ohne JSON-Body – dann gibt es eben keine ID */
       }
       rememberSentId(id, replyState);
+      // Eigene Message-ID auch in der Zustandsdatei (Ringpuffer, letzte 50):
+      // nur so bleibt die eigene Meldung nach einem Dienst-Neustart als eigene
+      // erkennbar (siehe ignoreReason).
+      rememberPersistedSentId(id, stateStore, topic);
+      // Eigener Wortlaut (als Hash): derselbe Text darf nie als Nutzerantwort
+      // durchgehen, wenn ntfy ihn erneut ausliefert. Bestätigungen (ack) tragen
+      // den Text des Nutzers — sie zählen deshalb nicht als eigene Meldung.
+      if (!payload.ack) rememberSentText(body.message, replyState);
       // Die Meldung ist raus: die abgeleitete Basis als Kopplungs-Ersatzadresse
       // für spätere Meldungen ohne Session merken (gedrosseltes Schreiben wie
       // beim übrigen Zustand). Eine feste NTFY_SESSION_URL ist keine abgeleitete
@@ -1463,6 +1602,12 @@ export function createNtfyNotifier(options = {}) {
     if (!sent) return;
     const formID = formIdFromEvent(event);
     if (formID) stateStore.set(topic, { [key]: formID });
+    // Zeitpunkt der gestellten Frage zusätzlich merken: die Antwort-Brücke darf
+    // eine offene Frage nur mit Text füllen, der NACH dem Stellen entstanden ist
+    // (sonst beantwortet eine alte, erneut eingespeiste Nachricht die Frage).
+    if (key === "openQuestionId") {
+      stateStore.set(topic, { openQuestionAt: String(Math.floor(now() / 1000)) });
+    }
   }
 
   async function sendOnce(sessionID, kind, payload) {
@@ -1681,13 +1826,13 @@ export function createNtfyNotifier(options = {}) {
       // ── Frage/Formular beantwortet: nichts mehr offen ──────────────────
       case "form.replied":
       case "permission.replied": {
-        stateStore.set(topic, { openQuestionId: "", openFormId: "" });
+        stateStore.set(topic, { openQuestionId: "", openQuestionAt: "", openFormId: "" });
         if (sessionID) state.working.add(sessionID);
         return;
       }
       case "question.replied":
       case "form.resolved": {
-        stateStore.set(topic, { openQuestionId: "", openFormId: "" });
+        stateStore.set(topic, { openQuestionId: "", openQuestionAt: "", openFormId: "" });
         return;
       }
       case "session.deleted": {
@@ -2054,6 +2199,93 @@ export function createReplyBridge(options = {}) {
   // überleben damit einen Dienst-Neustart. Fehlt die Datei, ist er schlicht leer.
   const store = options.stateStore ?? stateStoreFor(env);
 
+  // ── Zeitfenster statt Verlauf (Wasserstand) und Drossel ──────────────────
+  //
+  // Vorfall 17.10.2026: die Brücke hat den kompletten alten Verlauf des Topics
+  // erneut als Prompt in eine Session gespeist — Selbst-Echo und uralte
+  // Handy-Nachrichten inklusive. Deshalb gibt es jetzt einen Wasserstand
+  // (lastHandledTime, Unix-Sekunden, in der Zustandsdatei, überlebt jeden
+  // Neustart): nur Nachrichten, die nicht älter sind als dieser Wert, werden
+  // überhaupt angesehen. Nach JEDER Nachricht steht er auf
+  // max(bekannt, message.time) — nichts wird wiederholt.
+  let watermark = 0; // 0 = noch nicht ermittelt
+  let injections = []; // Zeitstempel (ms) der letzten Einspeisungen (Drossel)
+
+  function nowMs() {
+    return Date.now();
+  }
+
+  function nowSeconds() {
+    return Math.floor(nowMs() / 1000);
+  }
+
+  /** Wasserstand ermitteln — beim ersten Start auf jetzt setzen, nie auf 0. */
+  function waterMark() {
+    if (watermark > 0) return watermark;
+    let stored = 0;
+    try {
+      stored = Number(store.get(topic, "lastHandledTime"));
+    } catch {
+      stored = 0; // ein kaputter Speicher darf die Brücke nie stören
+    }
+    watermark = Number.isFinite(stored) && stored > 0 ? Math.floor(stored) : nowSeconds();
+    try {
+      store.set(topic, { lastHandledTime: String(watermark) });
+    } catch {
+      /* siehe oben */
+    }
+    return watermark;
+  }
+
+  /** Wasserstand fortschreiben: max(bekannt, Zeit der Nachricht). */
+  function advanceWatermark(time) {
+    const base = waterMark();
+    const t = Number(time);
+    if (!Number.isFinite(t) || t <= 0) return base;
+    const next = Math.max(base, Math.floor(t));
+    if (next === watermark) return watermark;
+    watermark = next;
+    try {
+      store.set(topic, { lastHandledTime: String(next) });
+    } catch {
+      /* siehe oben */
+    }
+    return watermark;
+  }
+
+  /**
+   * Drossel: höchstens MAX_INJECTIONS_PER_MINUTE Einspeisungen je Minute.
+   * Gezählt werden echte ntfy-Nachrichten (mit `time`): ohne Zeitstempel lässt
+   * sich nichts in ein Fenster einordnen, solche Nachrichten laufen wie bisher.
+   */
+  function throttleReason(counted) {
+    if (!counted) return "";
+    const cutoff = nowMs() - INJECTION_WINDOW_MS;
+    injections = injections.filter((at) => at > cutoff);
+    return injections.length >= MAX_INJECTIONS_PER_MINUTE ? "drossel" : "";
+  }
+
+  function rememberInjection(counted) {
+    if (!counted) return;
+    injections.push(nowMs());
+  }
+
+  // Beim Start festlegen (nicht erst bei der ersten Nachricht): sonst könnte
+  // eine Antwort, die kurz vor der ersten Verarbeitung eintraf, als „zu alt“
+  // gelten.
+  waterMark();
+
+  /**
+   * Eigene Veröffentlichung mit Gedächtnis: der Wortlaut jeder eigenen Meldung
+   * landet als Hash in einem Ringpuffer. Wird derselbe Text später erneut aus
+   * dem Topic eingespeist (Selbst-Echo, Verlauf), ist er als eigener erkennbar.
+   */
+  async function publishOwn(payload) {
+    // Bestätigungen tragen den Nutzertext und werden deshalb nicht als eigener
+    // Wortlaut gemerkt (siehe send in createNtfyNotifier).
+    return publish(payload);
+  }
+
   /**
    * Diagnose-Log: hängt nur dann Zeilen an NTFY_REPLY_LOG (Pfad) an, wenn die
    * Variable gesetzt ist. Ohne sie keine Datei-Ein-/Ausgabe. Wirft nie.
@@ -2071,6 +2303,9 @@ export function createReplyBridge(options = {}) {
   function ignoreReason(message) {
     const id = typeof message?.id === "string" ? message.id : "";
     if (id && hasSentId(runtime, id)) return "id";
+    // Auch der persistierte Ringpuffer zählt: nach einem Dienst-Neustart ist der
+    // Speicher leer, die eigenen IDs stehen aber in der Zustandsdatei.
+    if (id && readPersistedSentIds(store, topic).includes(id)) return "id";
     // Eine Kennung des Arbeitsbereichs ("[name] ") steht vor dem eigenen
     // Präfix: ohne sie zu entfernen, hielte die Brücke ihre eigene Meldung für
     // eine fremde Antwort und würde sie sich selbst einspeisen.
@@ -2185,7 +2420,8 @@ export function createReplyBridge(options = {}) {
   }
 
   async function hint(text) {
-    await publish({
+    await publishOwn({
+      ack: true, // trägt Nutzertext: nicht als eigener Wortlaut merken
       title: REPLY_NO_SESSION_TITLE,
       message: text || "Es gibt gerade keine Session, an die ich die Antwort geben könnte.",
       priority: 2,
@@ -2262,7 +2498,8 @@ export function createReplyBridge(options = {}) {
 
   /** Bestätigung, dass die Antwort in der offenen Frage gelandet ist. */
   async function confirmFormReply(text) {
-    await publish({
+    await publishOwn({
+      ack: true,
       title: FORM_REPLY_ACK_TITLE,
       message: clampText(text, 200),
       priority: 2,
@@ -2312,13 +2549,38 @@ export function createReplyBridge(options = {}) {
     return { ok, formIDs };
   }
 
+  /** Zeitpunkt der offenen Frage (Unix-Sekunden) — 0, wenn unbekannt. */
+  function questionOpenedAt() {
+    try {
+      const value = Number(store.get(topic, "openQuestionAt"));
+      return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Darf diese Nachricht die offene Frage beantworten? Nur wenn der Zeitpunkt
+   * der Frage bekannt ist UND die Nachricht danach entstanden ist. Ohne
+   * gespeicherten Zeitpunkt (Altbestand) wird nicht automatisch eingetragen.
+   */
+  function questionIsAnswerable(messageAt) {
+    const openedAt = questionOpenedAt();
+    const at = Number(messageAt);
+    if (openedAt <= 0) return false;
+    if (!Number.isFinite(at) || at <= 0) return false;
+    return Math.floor(at) >= openedAt;
+  }
+
   /**
    * Versucht, die Antwort auf die eine offene native Frage der Session
    * anzuwenden. Rückgabe: Ergebnisobjekt ("replied" = direkt eingetragen,
-   * "cancelled" = Frage abgebrochen, der Aufrufer übergibt den Text als Prompt)
-   * oder null — dann übernimmt wie bisher die Prompt-Einspeisung. Wirft nie.
+   * "cancelled" = Frage abgebrochen, der Aufrufer übergibt den Text als Prompt,
+   * "skipped"/"zu-alt-fuer-frage" = die Nachricht ist älter als die Frage und
+   * wird gar nicht verwendet) oder null — dann übernimmt wie bisher die
+   * Prompt-Einspeisung. Wirft nie.
    */
-  async function tryFormReply(sessionID, text) {
+  async function tryFormReply(sessionID, text, messageAt = 0) {
     if (!formReply) return null;
     let forms;
     try {
@@ -2334,6 +2596,15 @@ export function createReplyBridge(options = {}) {
       // Nur Fremdformulare (z. B. Freigabe-Dialoge): nicht anfassen.
       diag("form-uebersprungen", `${forms.length} offene Formulare (keine Frage)`);
       return null;
+    }
+
+    // Offene Fragen sind für Automatik tabu: nur eine Nachricht, die NACH dem
+    // Stellen der Frage entstanden ist, darf sie beantworten. Alles Ältere wird
+    // weder eingetragen noch abgebrochen noch eingespeist — die Frage bleibt
+    // offen und wartet auf eine echte Antwort.
+    if (!questionIsAnswerable(messageAt)) {
+      diag("form-zu-alt", `nachricht=${messageAt || "?"} frage=${questionOpenedAt() || "?"}`);
+      return { action: "skipped", reason: "zu-alt-fuer-frage" };
     }
     if (questions.length > 1) {
       // Mehrdeutig: nicht raten, aber auch nicht offen lassen (Deadlock).
@@ -2387,6 +2658,11 @@ export function createReplyBridge(options = {}) {
    * Eine Nutzernachricht verarbeiten.
    * Rückgabe: { action: "duplicate" | "skipped" | "ignored" | "injected" |
    *             "replied" | "cancelled" | "no-session", … }
+   * Ein "skipped" trägt den Grund: "eigene-id" (eigene Message-ID, auch aus dem
+   * persistierten Puffer), "zu-alt" (älter als der Wasserstand), "eigener-text"
+   * (Wortlaut einer der letzten eigenen Meldungen), "drossel" (mehr als zwei
+   * Einspeisungen je Minute), "zu-alt-fuer-frage" (Nachricht vor der offenen
+   * Frage entstanden), "leer".
    */
   async function handleMessage(message) {
     // Zuerst die Idempotenz-Prüfung: ntfy löst `since=<id>` nur sekundengenau
@@ -2399,12 +2675,29 @@ export function createReplyBridge(options = {}) {
     }
     if (messageId) rememberProcessedId(messageId, runtime);
 
+    // Zeitfenster statt Verlauf: eine Nachricht ohne `time` ist keine echte
+    // ntfy-Nachricht aus dem Strom (z. B. von Hand gebaut) — sie gilt wie
+    // bisher als aktuell. Mit `time` zählt der Wasserstand: alles Ältere ist
+    // Verlauf und wird verworfen, ohne Prompt und ohne Veröffentlichung.
+    const messageTime = Number(message?.time);
+    const timed = Number.isFinite(messageTime) && messageTime > 0;
+    const floorTime = timed ? Math.floor(messageTime) : 0;
+    const before = waterMark();
+    if (timed) advanceWatermark(floorTime);
+    const tooOld = timed && floorTime < before;
+
     const reason = ignoreReason(message);
     if (reason === "id") return { action: "skipped", reason: "eigene-id" };
     if (reason === "title") return { action: "ignored", reason: "eigener-titel" };
 
+    if (tooOld) return { action: "skipped", reason: "zu-alt" };
+
     const text = clampText(message?.message ?? message?.text ?? "", MAX_REPLY_TEXT);
     if (!text) return { action: "skipped", reason: "leer" };
+
+    // Eigener Wortlaut: der Text stammt aus einer der letzten eigenen Meldungen
+    // (z. B. erneut ausgelieferter Verlauf oder Selbst-Echo) — nicht einspeisen.
+    if (isOwnText(text, runtime)) return { action: "skipped", reason: "eigener-text" };
 
     // Ziel der Antwort: vorrangig die Session der letzten Benachrichtigung
     // (lastSessionID wird in send/sendOnce gesetzt, Subagenten sind dort schon
@@ -2427,13 +2720,28 @@ export function createReplyBridge(options = {}) {
       await hint(text);
       return { action: "no-session", text };
     }
+    // Drossel: höchstens zwei Einspeisungen je Minute. Der Wasserstand steht an
+    // dieser Stelle bereits fortgeschrieben — eine verworfene Nachricht wird
+    // also nicht später nachgeholt.
+    const throttle = throttleReason(timed);
+    if (throttle) {
+      diag("drossel", oneLine(text, 40));
+      return { action: "skipped", reason: throttle };
+    }
     // Vor der Prompt-Einspeisung prüfen, ob die Antwort in eine offene native
     // Frage der Session gehört: eindeutige Treffer werden direkt eingetragen,
     // ein nicht zuordenbarer Satz bricht die Frage ab (sonst bliebe der Turn
     // blockiert) — siehe tryFormReply. Danach wird der Text immer als Prompt
     // eingespeist; jeder Fehler endet in der gewohnten Prompt-Einspeisung.
-    const formResult = await tryFormReply(sessionID, text);
-    if (formResult?.action === "replied") return formResult;
+    const formResult = await tryFormReply(sessionID, text, timed ? floorTime : nowSeconds());
+    if (formResult?.action === "replied") {
+      rememberInjection(timed);
+      return formResult;
+    }
+    // Älter als die offene Frage: nichts eintragen, nichts abbrechen, nichts
+    // einspeisen — die Frage bleibt offen (siehe tryFormReply).
+    if (formResult?.action === "skipped") return formResult;
+    rememberInjection(timed);
     try {
       await client.session.prompt({ sessionID, text });
     } catch (error) {
@@ -2444,7 +2752,8 @@ export function createReplyBridge(options = {}) {
     // Nach dem Abbruch einer Frage bestätigt die Meldung, dass der Text als
     // Nachricht angekommen ist — und dass kein Fenster mehr offen steht.
     if (formResult?.action === "cancelled") {
-      await publish({
+      await publishOwn({
+        ack: true,
         title: FORM_CANCELLED_ACK_TITLE,
         message: clampText(text, 200),
         priority: 2,
@@ -2453,7 +2762,8 @@ export function createReplyBridge(options = {}) {
       return formResult;
     }
     // Bestätigung, damit der Nutzer weiß, dass die Antwort angekommen ist.
-    await publish({
+    await publishOwn({
+      ack: true,
       title: REPLY_ACK_TITLE,
       message: clampText(text, 200),
       priority: 2,
@@ -2467,14 +2777,18 @@ export function createReplyBridge(options = {}) {
    * Abbruch neu verbinden. Wirft nie heraus.
    */
   async function loop(signal, startSince) {
-    let since = String(startSince ?? Math.floor(Date.now() / 1000));
+    // Ohne Startwert beginnt die Schleife ab jetzt: ein leerer `since` würde
+    // bei ntfy „alles“ bedeuten und den Verlauf erneut ausliefern.
+    let since = String(startSince || Math.floor(Date.now() / 1000));
     runtime.replySince = since;
     // Jede Fortschreibung der Leseposition auch in die Zustandsdatei: nach einem
     // Dienst-Neustart setzt die Schleife dort an (keine alten Meldungen erneut).
     const rememberSince = (value) => {
       since = value;
       runtime.replySince = value;
-      store.set(topic, { since: value });
+      // Persistiert wird nur eine gültige ntfy-Position: ein Unsinnswert in der
+      // Datei ließe die Brücke beim nächsten Start in den Verlauf greifen.
+      if (isValidSinceId(value)) store.set(topic, { since: value });
     };
     diag("start", `since=${since} topic=${topic}`);
     // Wiederholungen ohne eine einzige Nachricht: damit wächst die Wartezeit vor
@@ -2537,7 +2851,17 @@ export function createReplyBridge(options = {}) {
     store.flush(true);
   }
 
-  return { shouldIgnore, ignoreReason, handleMessage, streamOnce, loop, url, topic };
+  return {
+    shouldIgnore,
+    ignoreReason,
+    handleMessage,
+    streamOnce,
+    loop,
+    url,
+    topic,
+    // Nur für Diagnose/Tests: der aktuelle Wasserstand (Unix-Sekunden).
+    watermark: () => waterMark(),
+  };
 }
 
 /**
@@ -2622,9 +2946,18 @@ export function startReplyBridge(options = {}) {
   // persistierte Leseposition aus NTFY_STATE_FILE (sie überlebt auch einen
   // Prozess-Neustart, in dem die beiden anderen Quellen leer sind).
   const store = options.stateStore ?? stateStoreFor(env);
-  const persistedSince = store.writtenHere(bridge.topic, "since")
+  const storedSince = store.writtenHere(bridge.topic, "since")
     ? ""
     : store.get(bridge.topic, "since");
+  // Nur einen gültigen Zeiger übernehmen: ein ungültiger Wert (Altbestand,
+  // Fixture-Wert wie "msg_…", "all", "0") zeigt auf keine Position im Topic.
+  // Die Brücke startet dann ab jetzt und sieht nur neue Nachrichten, statt den
+  // ganzen Verlauf erneut einzuspeisen (siehe isValidSinceId).
+  const persistedSince = isValidSinceId(storedSince) ? storedSince : "";
+  if (storedSince && !persistedSince) {
+    log(`since ungueltig, starte ab jetzt (${oneLine(storedSince, 40)})`);
+    makeDiag(env)("since ungueltig", "starte ab jetzt");
+  }
   const startSince = runtime.replySince || options.since || persistedSince;
 
   const entry = {

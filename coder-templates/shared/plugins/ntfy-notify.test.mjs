@@ -6,21 +6,92 @@
 // Zusätzlich wird die V2-Anbindung (setup → ctx.event.subscribe) mit einem
 // Mock-Context getestet.
 
-import { readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import {
-  createNtfyNotifier,
-  createPluginRuntime,
-  createReplyBridge,
+  createNtfyNotifier as createNtfyNotifierRaw,
+  createPluginRuntime as createPluginRuntimeRaw,
+  createReplyBridge as createReplyBridgeRaw,
   createStateStore,
   isServiceProcess,
+  isValidSinceId,
   parseReplyStream,
   replyRuntime,
   resetSharedState,
   SHARED,
-  startReplyBridge,
+  startReplyBridge as startReplyBridgeRaw,
   subpathFromDirectory,
 } from "./ntfy-notify.js";
+
+// ── Testisolation ─────────────────────────────────────────────────────────
+//
+// Vorfall vom 17.10.2026: Tests und Live-Dienst haben sich dieselben Pfade
+// geteilt. Im Live-Verzeichnis lagen Testdateien, im echten Topic standen
+// Testtexte, und der Live-Zustand zeigte auf einen Fixture-Wert aus dieser
+// Suite (msg_user9) — die Antwort-Brücke hat daraufhin den alten Verlauf als
+// Prompt in eine Session gespeist. Deshalb gilt hier: ALLE Artefakte liegen in
+// einem eigenen Temp-Verzeichnis, das nach dem Lauf verschwindet; die Fabriken
+// unten bekommen die Testpfade fest untergeschoben, damit auch kein Test mit
+// selbst gebauter Env in einen Live-Pfad schreiben kann.
+
+/** Eigenes Verzeichnis für alle Artefakte dieses Laufs. */
+const TEST_DIR = mkdtempSync(path.join(os.tmpdir(), "ntfy-notify-test-"));
+/** Zustandsdatei aller Tests — nie der Default des Plugins. */
+const TEST_STATE_FILE = path.join(TEST_DIR, "ntfy-state.json");
+/** Datei mit Test-Env: es gibt keine echte Env-Datei für die Tests. */
+const TEST_ENV_FILE = path.join(TEST_DIR, "opencode.env");
+/** Ungültige Adresse: kein Test darf ein echtes Topic ansprechen. */
+const TEST_URL_FALLBACK = "https://ntfy-test.invalid";
+/** Pfad einer Artefakt-Datei dieses Laufs (Logs, Env-Dateien, Zustand). */
+const testPath = (...parts) => path.join(TEST_DIR, ...parts);
+
+/** Env jeder Test-Instanz: Testpfade zuerst, ausdrückliche Werte gewinnen. */
+function testEnv(env = {}) {
+  return {
+    NTFY_STATE_FILE: TEST_STATE_FILE,
+    NTFY_ENV_FILE: TEST_ENV_FILE,
+    ...env,
+  };
+}
+
+const withTestEnv = (options = {}) => ({ ...options, env: testEnv(options.env) });
+const createNtfyNotifier = (options = {}) => createNtfyNotifierRaw(withTestEnv(options));
+const createPluginRuntime = (options = {}) => createPluginRuntimeRaw(withTestEnv(options));
+const createReplyBridge = (options = {}) => createReplyBridgeRaw(withTestEnv(options));
+const startReplyBridge = (options = {}) => startReplyBridgeRaw(withTestEnv(options));
+
+// Kein Test spricht einen echten Server an: erlaubt sind nur die lokale
+// Schleuse (127.0.0.1/localhost) und die reservierte Test-Domain ".invalid".
+const GUARD_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+const realFetch = globalThis.fetch;
+globalThis.fetch = (input, init) => {
+  const target = String(input?.url ?? input ?? "");
+  let host = "";
+  try {
+    host = new URL(target).hostname;
+  } catch {
+    host = "";
+  }
+  if (host && !GUARD_HOSTS.has(host) && !host.endsWith(".invalid")) {
+    throw new Error(`Test-Isolation: echter Netzwerkaufruf an ${host} (${target})`);
+  }
+  return realFetch(input, init);
+};
+
+/** Verzeichnis nach dem Lauf aufräumen — auch bei einem Fehlerabbruch. */
+process.on("exit", () => {
+  try {
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  } catch {
+    /* Aufräumen darf nie werfen */
+  }
+});
+
+// Test-Env-Datei anlegen: nur ein Kommentar, also keine echten NTFY_*-Werte —
+// ohne diese Datei würde resolveConfig die echte Env-Datei des Dienstes lesen.
+writeFileSync(TEST_ENV_FILE, "# Testlauf: bewusst keine NTFY_*-Werte\n");
 
 let passed = 0;
 let failed = 0;
@@ -498,7 +569,7 @@ console.log("\nEnv-Datei-Fallback");
 {
   resetSharedState();
   received.length = 0;
-  const envFile = "/tmp/ntfy-notify-test.env";
+  const envFile = testPath("ntfy-notify-test.env");
   await (await import("node:fs/promises")).writeFile(
     envFile,
     'BAO_TOKEN="x"\nNTFY_TOKEN="tk_aus_datei"\nNTFY_URL="' + SINK_URL + '"\n'
@@ -548,7 +619,7 @@ async function triggerFinish(runtime) {
 {
   resetSharedState();
   received.length = 0;
-  const envFile = "/tmp/opencode/ntfy-notify-test-session.env";
+  const envFile = testPath("ntfy-notify-test-session.env");
   await (await import("node:fs/promises")).writeFile(
     envFile,
     "NTFY_SESSION_URL=https://beispiel.test/\nNTFY_SERVER_KEY=example.test\n"
@@ -579,7 +650,7 @@ console.log("\nEnv-Datei: Prozess-Env hat Vorrang");
 {
   resetSharedState();
   received.length = 0;
-  const envFile = "/tmp/opencode/ntfy-notify-test-priority.env";
+  const envFile = testPath("ntfy-notify-test-priority.env");
   await (await import("node:fs/promises")).writeFile(envFile, "NTFY_SERVER_KEY=aus-datei\n");
   const runtime = createPluginRuntime({
     env: {
@@ -1213,7 +1284,7 @@ console.log("\nAntwort-Brücke (Start)");
 console.log("\nAntwort-Brücke (mehrere setup()-Aufrufe)");
 {
   resetSharedState();
-  const logPath = "/tmp/opencode/ntfy-reply-bridge-single.log";
+  const logPath = testPath("ntfy-reply-bridge-single.log");
   rmSync(logPath, { force: true });
   const readLog = () => {
     try {
@@ -1423,7 +1494,7 @@ console.log("\nAntwort-Brücke (Drosselung)");
 {
   resetSharedState();
   const runtime = replyRuntime();
-  const logPath = "/tmp/opencode/ntfy-reply-bridge-429.log";
+  const logPath = testPath("ntfy-reply-bridge-429.log");
   rmSync(logPath, { force: true });
   const readLog = () => {
     try {
@@ -1535,7 +1606,7 @@ console.log("\nAntwort-Brücke (Fallback)");
 console.log("\nAntwort-Brücke (Diagnose-Log)");
 {
   resetSharedState();
-  const logPath = "/tmp/opencode/ntfy-reply-bridge-test.log";
+  const logPath = testPath("ntfy-reply-bridge-test.log");
   rmSync(logPath, { force: true });
   const readLog = () => {
     try {
@@ -1856,7 +1927,7 @@ console.log("\nEreignisstrom (Diagnose)");
 {
   resetSharedState();
   received.length = 0;
-  const logPath = "/tmp/opencode/ntfy-event-strom-test.log";
+  const logPath = testPath("ntfy-event-strom-test.log");
   rmSync(logPath, { force: true });
   const readLog = () => {
     try {
@@ -2223,7 +2294,7 @@ function makeFormBridge(extra = {}) {
 //    (Die Antwort war eindeutig zuordenbar; bleibt der Reply trotzdem
 //    erfolglos, wird wie bisher nicht abgebrochen, sondern eingespeist.)
 {
-  const logPath = "/tmp/opencode/ntfy-form-reply-test.log";
+  const logPath = testPath("ntfy-form-reply-test.log");
   rmSync(logPath, { force: true });
   const { bridge, prompts, published, posts, deletes } = makeFormBridge({
     forms: [openForm("frm_8", [choiceField])],
@@ -2360,7 +2431,7 @@ function makeFormBridge(extra = {}) {
 // m) Der Abbruch scheitert (500): der Text wird trotzdem eingespeist und der
 //    Fehler landet im Diagnose-Log — die Brücke darf nie werfen.
 {
-  const logPath = "/tmp/opencode/ntfy-form-cancel-test.log";
+  const logPath = testPath("ntfy-form-cancel-test.log");
   rmSync(logPath, { force: true });
   const forms = [openForm("frm_16", [choiceField])];
   const { bridge, prompts, published, posts, deletes } = makeFormBridge({
@@ -2530,7 +2601,7 @@ const PAIR_BASE = "https://49374--main--infrastructure--carstenmueller2002-coder
 //    Fehler landet im Diagnose-Log — erst bei HTTP 500, dann bei Netzfehler.
 {
   resetSharedState();
-  const logPath = "/tmp/opencode/ntfy-pair-test.log";
+  const logPath = testPath("ntfy-pair-test.log");
   rmSync(logPath, { force: true });
   const { stub, published, pairCalls, pairActions } = pairFetchStub({ pairStatus: 500 });
   const n = createNtfyNotifier({
@@ -2831,7 +2902,7 @@ console.log("\nZustandsdatei (Neustart)");
 {
   resetSharedState();
   const topic = "ai";
-  const statePath = "/tmp/opencode/ntfy-state-test.json";
+  const statePath = testPath("ntfy-state-test.json");
   rmSync(statePath, { force: true });
   rmSync(`${statePath}.tmp`, { force: true });
 
@@ -2855,27 +2926,27 @@ console.log("\nZustandsdatei (Neustart)");
     publish: async () => true,
     // keepalive-Zeile: die Leseposition rückt weiter, ohne dass eine Nachricht
     // verarbeitet werden muss; der Strom endet danach wieder.
-    fetch: streamFetch(calls1, ['{"id":"msg_nach1","event":"keepalive"}\n']),
+    fetch: streamFetch(calls1, ['{"id":"a3BxY9zQn12","event":"keepalive"}\n']),
     stateStore: store1,
     apiPassword: "",
     reconnectMs: 20,
     log: () => {},
   });
   ok(
-    await until(() => runtime1.replySince === "msg_nach1"),
+    await until(() => runtime1.replySince === "a3BxY9zQn12"),
     "die Brücke schreibt ihre Leseposition fort"
   );
   started1.stop();
   await until(() => runtime1.replyPromise === null);
   store1.flush(true);
-  eq(store1.get(topic, "since"), "msg_nach1", "die Leseposition steht im Zustandsspeicher");
+  eq(store1.get(topic, "since"), "a3BxY9zQn12", "die Leseposition steht im Zustandsspeicher");
   received.length = 0;
 
   // „Neustart“: neuer Speicher über derselben Datei, dazu ein leerer
   // Laufzeit-Zustand — genau so sieht es nach einem Prozess-Neustart aus.
   const store2 = createStateStore({ path: statePath, log: () => {} });
   eq(store2.get(topic, "lastSessionId"), SESSION, "die Zuordnung überlebt in der Datei");
-  eq(store2.get(topic, "since"), "msg_nach1", "die Leseposition überlebt in der Datei");
+  eq(store2.get(topic, "since"), "a3BxY9zQn12", "die Leseposition überlebt in der Datei");
   eq(store2.writtenHere(topic), false, "der neue Prozess hat das Topic noch nicht geschrieben");
 
   const runtime2 = { sentIds: [], processedIds: [], lastSessionID: "", lastActiveSession: "" };
@@ -2903,7 +2974,7 @@ console.log("\nZustandsdatei (Neustart)");
   });
   ok(await until(() => calls2.length >= 1), "die neue Brücke verbindet sich");
   ok(
-    String(calls2[0]?.url).includes("since=msg_nach1"),
+    String(calls2[0]?.url).includes("since=a3BxY9zQn12"),
     `sie liest an der gespeicherten Position weiter (war: ${calls2[0]?.url})`
   );
   ok(await until(() => prompts2.length === 1), "die Handy-Antwort wird zugestellt");
@@ -2913,14 +2984,14 @@ console.log("\nZustandsdatei (Neustart)");
   await until(() => runtime2.replyPromise === null);
 
   // Ohne Datei ändert sich nichts: nichts persistiert, nichts gefunden.
-  const emptyPath = "/tmp/opencode/ntfy-state-test-leer.json";
+  const emptyPath = testPath("ntfy-state-test-leer.json");
   rmSync(emptyPath, { force: true });
   const store3 = createStateStore({ path: emptyPath, log: () => {} });
   eq(store3.get(topic, "lastSessionId"), "", "eine fehlende Datei ergibt einen leeren Eintrag");
   eq(store3.writtenHere(topic), false, "ohne Datei wurde nichts geschrieben");
 
   // Kaputte Datei: kein Fehler, es wird wie ohne Datei gearbeitet.
-  const brokenPath = "/tmp/opencode/ntfy-state-test-kaputt.json";
+  const brokenPath = testPath("ntfy-state-test-kaputt.json");
   await (await import("node:fs/promises")).writeFile(brokenPath, "{kaputt");
   const broken = createStateStore({ path: brokenPath, log: () => {} });
   eq(broken.get(topic, "since"), "", "eine kaputte Datei wird wie eine leere behandelt");
@@ -2934,7 +3005,7 @@ console.log("\nZustandsdatei (Neustart)");
 
   // Halb gefüllte Datei: vorhandene Felder gelten, fehlende bleiben leer,
   // unsinnige Einträge sind kein Fehler.
-  const partialPath = "/tmp/opencode/ntfy-state-test-teil.json";
+  const partialPath = testPath("ntfy-state-test-teil.json");
   await (await import("node:fs/promises")).writeFile(
     partialPath,
     JSON.stringify({ topics: { ai: { lastSessionId: SESSION }, zweit: "quatsch" } })
@@ -2946,7 +3017,7 @@ console.log("\nZustandsdatei (Neustart)");
 
   // Gedrosseltes Schreiben: höchstens einmal je Sekunde — der letzte Stand
   // kommt mit flush() (bzw. beim Ende der Brücke) in die Datei.
-  const throttlePath = "/tmp/opencode/ntfy-state-test-drossel.json";
+  const throttlePath = testPath("ntfy-state-test-drossel.json");
   rmSync(throttlePath, { force: true });
   let clock = 1_000_000;
   const throttle = createStateStore({ path: throttlePath, now: () => clock, log: () => {} });
@@ -2989,7 +3060,7 @@ console.log("\nZustandsdatei (Neustart)");
 // kaputte oder fehlende Werte ändern nur die Basis, nie die Meldung.
 console.log("\nLetzte bekannte Basis");
 {
-  const statePath = "/tmp/opencode/ntfy-lastbase-test.json";
+  const statePath = testPath("ntfy-lastbase-test.json");
   const FALLBACK = "https://fallback.test";
   rmSync(statePath, { force: true });
   rmSync(`${statePath}.tmp`, { force: true });
@@ -3377,7 +3448,7 @@ console.log("\nTopic je Arbeitsbereich");
   //    Diagnosezeile beim Start) — sonst fände keine Antwort mehr zurück.
   resetSharedState();
   const runtime = replyRuntime();
-  const logPath = "/tmp/opencode/ntfy-topic-prefix-test.log";
+  const logPath = testPath("ntfy-topic-prefix-test.log");
   rmSync(logPath, { force: true });
   const readLog = () => {
     try {
@@ -3571,6 +3642,443 @@ const ICON_BASE =
 }
 
 sink.close();
+
+// ── 41. Testisolation: keine Live-Pfade, kein echtes Netz ─────────────────
+//
+// Der Vorfall vom 17.10.2026 kam über gemeinsame Pfade von Test und Dienst
+// zustande. Diese Prüfung liest den eigenen Testquelltext und schlägt an, wenn
+// darin noch der Live-Pfad steht — der Suchtext wird bewusst aus Teilen
+// zusammengesetzt, damit er nicht selbst im Quelltext auftaucht.
+console.log("\nTestisolation");
+{
+  const quelle = readFileSync(new URL(import.meta.url), "utf8");
+  const livePfad = ["", "tmp", "opencode"].join("/");
+  ok(!quelle.includes(livePfad), "der Testquelltext nennt den Live-Pfad des Dienstes nirgends");
+  ok(TEST_DIR.includes("ntfy-notify-test-"), "die Artefakte liegen in einem eigenen Temp-Verzeichnis");
+  ok(TEST_STATE_FILE.startsWith(TEST_DIR), "die Test-Zustandsdatei liegt im Temp-Verzeichnis");
+  ok(!TEST_STATE_FILE.includes(livePfad), "die Test-Zustandsdatei ist nicht die des Dienstes");
+  ok(TEST_ENV_FILE.startsWith(TEST_DIR), "die Test-Env-Datei liegt im Temp-Verzeichnis");
+  ok(TEST_URL_FALLBACK.endsWith(".invalid"), "die Rückfall-Adresse der Tests ist ungültig");
+  ok(!TEST_URL_FALLBACK.includes("mueller-nas"), "kein Test deutet auf den echten Hub");
+
+  // Echte Netzwerkaufrufe lehnt die Schleuse im Testlauf ab.
+  let fehler = "";
+  try {
+    await fetch("https://ntfy.kein-test.example/ai/json");
+  } catch (error) {
+    fehler = String(error?.message ?? error);
+  }
+  ok(fehler.includes("Test-Isolation"), "echte Adressen werden im Test abgelehnt");
+
+  // Der Zustand der Test-Instanzen landet im Temp-Verzeichnis.
+  const n = makeNotifier({
+    fetch: async () => ({ ok: true, status: 200, json: async () => ({ id: "aB3xY9zQk12" }) }),
+  });
+  eq(n.topic, "ai", "Test-Notifier nutzt wie bisher das Topic ai");
+  received.length = 0;
+  ok(await n.sendOnce(SESSION, "probe", { title: "Probe", message: "Probe" }), "Probe-Meldung geht raus");
+  ok(await until(() => existsSync(TEST_STATE_FILE)), "die Zustandsdatei entsteht im Temp-Verzeichnis");
+  ok(
+    await until(() => readFileSync(TEST_STATE_FILE, "utf8").includes("lastSessionId")),
+    "die Zustandsdatei trägt die Testzuordnung"
+  );
+  received.length = 0;
+}
+
+// ── 42. since-Zeiger: nur gültige Positionen ──────────────────────────────
+console.log("\nsince-Zeiger");
+{
+  ok(isValidSinceId("aB3xY9zQk12"), "echte ntfy-ID gilt");
+  ok(isValidSinceId("1700000000"), "Unix-Sekunden gelten als Position");
+  ok(!isValidSinceId("msg_user9"), "Fixture-Wert msg_… gilt nicht (Vorfall vom 17.10.)");
+  ok(!isValidSinceId("all"), "'all' gilt nicht (das wäre der ganze Verlauf)");
+  ok(!isValidSinceId("0"), "'0' gilt nicht");
+  ok(!isValidSinceId("-1"), "'-1' gilt nicht");
+  ok(!isValidSinceId("none"), "'none' gilt nicht");
+  ok(!isValidSinceId(""), "leer gilt nicht");
+  ok(!isValidSinceId("kurz"), "zu kurze Werte gelten nicht");
+}
+{
+  resetSharedState();
+  const zustand = testPath("since-ungueltig.json");
+  writeFileSync(
+    zustand,
+    JSON.stringify({ version: 1, topics: { ai: { since: "msg_user9" } } })
+  );
+  const store = createStateStore({
+    path: zustand,
+    env: { NTFY_STATE_FILE: zustand },
+    throttleMs: 0,
+  });
+  const warnungen = [];
+  const calls = [];
+  const started = startReplyBridge({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_TOPIC: "ai",
+      NTFY_REPLY_LOG: testPath("since-warnung.log"),
+    },
+    runtime: replyRuntime(),
+    stateStore: store,
+    client: { session: { prompt: async () => {} } },
+    publish: async () => true,
+    fetch: openStreamFetch(calls, ['{"id":"aB3xY9zQk12","event":"keepalive"}\n']),
+    reconnectMs: 20,
+    log: (zeile) => warnungen.push(String(zeile)),
+  });
+  ok(await until(() => calls.length >= 1), "die Brücke verbindet sich");
+  const url = decodeURIComponent(String(calls[0]?.url ?? ""));
+  ok(!url.includes("msg_user9"), "der ungültige Zeiger wird nicht als since benutzt");
+  ok(/[?&]since=\d{9,}/.test(url), "stattdessen startet die Brücke ab jetzt (Unix-Sekunden)");
+  ok(
+    warnungen.some((zeile) => zeile.includes("since ungueltig, starte ab jetzt")),
+    "die Warnzeile steht im Protokoll"
+  );
+  await until(() => readFileSync(testPath("since-warnung.log"), "utf8").includes("since ungueltig"));
+  ok(
+    readFileSync(testPath("since-warnung.log"), "utf8").includes("since ungueltig"),
+    "die Warnzeile steht auch in der Diagnose"
+  );
+  // Nur gültige Werte werden persistiert.
+  ok(await until(() => isValidSinceId(store.get("ai", "since"))), "persistiert wird nur eine gültige Position");
+  started.stop();
+  await until(() => replyRuntime().replyPromise === null);
+  resetSharedState();
+}
+{
+  resetSharedState();
+  const zustand = testPath("since-gueltig.json");
+  writeFileSync(
+    zustand,
+    JSON.stringify({ version: 1, topics: { ai: { since: "1700000000" } } })
+  );
+  const store = createStateStore({
+    path: zustand,
+    env: { NTFY_STATE_FILE: zustand },
+    throttleMs: 0,
+  });
+  const calls = [];
+  const started = startReplyBridge({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai" },
+    runtime: replyRuntime(),
+    stateStore: store,
+    client: { session: { prompt: async () => {} } },
+    publish: async () => true,
+    fetch: openStreamFetch(calls, []),
+    reconnectMs: 20,
+    log: () => {},
+  });
+  ok(await until(() => calls.length >= 1), "die Brücke verbindet sich");
+  ok(
+    String(calls[0]?.url ?? "").includes("since=1700000000"),
+    "ein gültiger Zeiger aus der Zustandsdatei wird übernommen"
+  );
+  started.stop();
+  await until(() => replyRuntime().replyPromise === null);
+  resetSharedState();
+}
+
+// ── 43. Wasserstand: nur neue Nachrichten ─────────────────────────────────
+console.log("\nWasserstand (Zeitfenster)");
+{
+  resetSharedState();
+  const jetzt = Math.floor(Date.now() / 1000);
+  const zustand = testPath("wasserstand.json");
+  writeFileSync(
+    zustand,
+    JSON.stringify({
+      version: 1,
+      topics: { ai: { lastHandledTime: String(jetzt), lastSessionId: SESSION } },
+    })
+  );
+  const store = createStateStore({
+    path: zustand,
+    env: { NTFY_STATE_FILE: zustand },
+    throttleMs: 0,
+  });
+  const runtime = replyRuntime();
+  // Eigene Meldung, deren Wortlaut später erneut aus dem Topic kommt. Der
+  // Sink des Testlaufs wird von einem früheren Test geschlossen — diese Prüfung
+  // arbeitet deshalb mit injiziertem fetch (wie alle anderen Meldungstests).
+  const notifier = makeNotifier({
+    replyState: runtime,
+    fetch: async () => ({ ok: true, status: 200, json: async () => ({ id: "aB3xY9zQk12" }) }),
+  });
+  received.length = 0;
+  ok(await notifier.send({ title: "Hinweis", message: "Bitte Variante B umsetzen", priority: 2 }), "eigene Meldung geht raus");
+  received.length = 0;
+  received.length = 0;
+
+  const prompts = [];
+  const published = [];
+  const bridge = createReplyBridge({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai" },
+    runtime,
+    stateStore: store,
+    apiPassword: "",
+    client: {
+      session: {
+        prompt: async (arg) => {
+          prompts.push(arg);
+          return {};
+        },
+      },
+    },
+    publish: async (payload) => {
+      published.push(payload);
+      return true;
+    },
+    log: () => {},
+  });
+
+  // (a) alte Nachricht unter dem Wasserstand → skip, kein Prompt.
+  const alt = await bridge.handleMessage({
+    id: "a11b22c33d",
+    title: "Nutzerantwort",
+    message: "uralt",
+    time: jetzt - 600,
+  });
+  eq(alt.action, "skipped", "alte Nachricht wird verworfen");
+  eq(alt.reason, "zu-alt", "Grund ist zu-alt");
+  eq(prompts.length, 0, "kein Prompt für Verlauf");
+  eq(published.length, 0, "keine Veröffentlichung für Verlauf");
+
+  // (b) neuere Nachricht → Prompt.
+  const neu = await bridge.handleMessage({
+    id: "b11b22c33d",
+    title: "Nutzerantwort",
+    message: "frisch",
+    time: jetzt + 5,
+  });
+  eq(neu.action, "injected", "neuere Nachricht wird eingespeist");
+  eq(prompts[0]?.text, "frisch", "der neue Text kommt als Prompt an");
+
+  // (c) dritte Nachricht binnen einer Minute → Drossel.
+  const zweite = await bridge.handleMessage({
+    id: "c11b22c33d",
+    title: "Nutzerantwort",
+    message: "nochmal",
+    time: jetzt + 6,
+  });
+  eq(zweite.action, "injected", "die zweite Einspeisung ist noch erlaubt");
+  const dritte = await bridge.handleMessage({
+    id: "d11b22c33d",
+    title: "Nutzerantwort",
+    message: "zu viel",
+    time: jetzt + 7,
+  });
+  eq(dritte.action, "skipped", "die dritte Nachricht binnen einer Minute wird gedrosselt");
+  eq(dritte.reason, "drossel", "Grund ist drossel");
+  eq(prompts.length, 2, "die Drossel verhindert jede weitere Einspeisung");
+  eq(bridge.watermark(), jetzt + 7, "der Wasserstand läuft auch bei verworfenen Nachrichten weiter");
+
+  // (e) eigener Wortlaut → eigener-text.
+  const eigen = await bridge.handleMessage({
+    id: "e11b22c33d",
+    title: "Nutzernachricht",
+    message: "Bitte Variante B umsetzen",
+    time: jetzt + 8,
+  });
+  eq(eigen.action, "skipped", "eigener Wortlaut wird nicht eingespeist");
+  eq(eigen.reason, "eigener-text", "Grund ist eigener-text");
+  eq(prompts.length, 2, "kein weiterer Prompt durch den eigenen Text");
+  eq(published.length, 2, "keine weitere Veröffentlichung durch den eigenen Text");
+}
+{
+  // (d) frischer Start ohne Wasserstand: der alte Verlauf bleibt draußen.
+  resetSharedState();
+  const jetzt = Math.floor(Date.now() / 1000);
+  const zustand = testPath("wasserstand-frisch.json");
+  writeFileSync(zustand, JSON.stringify({ version: 1, topics: { ai: {} } }));
+  const store = createStateStore({
+    path: zustand,
+    env: { NTFY_STATE_FILE: zustand },
+    throttleMs: 0,
+  });
+  const prompts = [];
+  const bridge = createReplyBridge({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai" },
+    runtime: replyRuntime(),
+    stateStore: store,
+    apiPassword: "",
+    client: {
+      session: {
+        prompt: async (arg) => {
+          prompts.push(arg);
+          return {};
+        },
+      },
+    },
+    publish: async () => true,
+    log: () => {},
+  });
+  ok(bridge.watermark() >= jetzt - 2, "ohne gespeicherten Wert steht der Wasserstand auf jetzt");
+  ok(bridge.watermark() > 0, "der Wasserstand ist nie 0");
+  const alt = await bridge.handleMessage({
+    id: "f11b22c33d",
+    title: "Nutzerantwort",
+    message: "uralt",
+    time: jetzt - 3600,
+  });
+  eq(alt.action, "skipped", "frischer Start: alter Verlauf wird nicht eingespeist");
+  eq(alt.reason, "zu-alt", "auch hier ist der Grund zu-alt");
+  eq(prompts.length, 0, "kein Prompt nach dem frischen Start");
+}
+
+// ── 44. Eigene Meldungen über Neustarts hinweg erkennen ───────────────────
+console.log("\nEigene Meldungen (persistierte IDs)");
+{
+  resetSharedState();
+  const jetzt = Math.floor(Date.now() / 1000);
+  const zustand = testPath("eigene-ids.json");
+  writeFileSync(
+    zustand,
+    JSON.stringify({
+      version: 1,
+      topics: {
+        ai: {
+          sentIds: JSON.stringify(["aB3xY9zQk12"]),
+          lastHandledTime: String(jetzt),
+          lastSessionId: SESSION,
+        },
+      },
+    })
+  );
+  const store = createStateStore({
+    path: zustand,
+    env: { NTFY_STATE_FILE: zustand },
+    throttleMs: 0,
+  });
+  // Leerer Speicher: wie direkt nach einem Dienst-Neustart.
+  const runtime = { sentIds: [], processedIds: [], lastSessionID: SESSION };
+  const prompts = [];
+  const bridge = createReplyBridge({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai" },
+    runtime,
+    stateStore: store,
+    apiPassword: "",
+    client: {
+      session: {
+        prompt: async (arg) => {
+          prompts.push(arg);
+          return {};
+        },
+      },
+    },
+    publish: async () => true,
+    log: () => {},
+  });
+
+  const byId = await bridge.handleMessage({
+    id: "aB3xY9zQk12",
+    title: "Nutzertext",
+    message: "selbst gesendet",
+    time: jetzt + 5,
+  });
+  eq(byId.action, "skipped", "ID aus dem persistierten Puffer → skipped");
+  eq(byId.reason, "eigene-id", "Grund ist eigene-id");
+  eq(prompts.length, 0, "die eigene Meldung löst keinen Prompt aus");
+
+  const byTitle = await bridge.handleMessage({
+    id: "b22c33d44e",
+    title: "[server-management] ✅ Fertig — server-management",
+    message: "Bin fertig.",
+    time: jetzt + 6,
+  });
+  eq(byTitle.action, "ignored", "eigener Titel → ignored");
+  eq(byTitle.reason, "eigener-titel", "Grund ist eigener-titel");
+  eq(prompts.length, 0, "auch der eigene Titel löst keinen Prompt aus");
+
+  // Titel ohne Präfix, aber Text wie zuletzt gesendet.
+  const notifier = makeNotifier({
+    replyState: runtime,
+    fetch: async () => ({ ok: true, status: 200, json: async () => ({ id: "aB3xY9zQk12" }) }),
+  });
+  received.length = 0;
+  await notifier.send({ title: "Hinweis", message: "Und danach C", priority: 2 });
+  received.length = 0;
+  const eigen = await bridge.handleMessage({
+    id: "c22c33d44e",
+    title: "Nutzernachricht",
+    message: "Und danach C",
+    time: jetzt + 7,
+  });
+  eq(eigen.action, "skipped", "Text wie zuletzt gesendet → skipped");
+  eq(eigen.reason, "eigener-text", "Grund ist eigener-text");
+  eq(prompts.length, 0, "kein Prompt für den eigenen Wortlaut");
+}
+
+// ── 45. Offene Fragen: nur Text nach dem Stellen ──────────────────────────
+console.log("\nOffene Frage (Zeitfenster)");
+{
+  resetSharedState();
+  const jetzt = Math.floor(Date.now() / 1000);
+  const zustand = testPath("frage-zeit.json");
+  writeFileSync(
+    zustand,
+    JSON.stringify({
+      version: 1,
+      topics: {
+        ai: {
+          openQuestionId: "frm_zeit1",
+          openQuestionAt: String(jetzt),
+          lastHandledTime: String(jetzt - 100),
+          lastSessionId: SESSION,
+        },
+      },
+    })
+  );
+  const forms = [openForm("frm_zeit1", [choiceField])];
+  const { bridge, prompts, posts, deletes } = makeFormBridge({
+    forms,
+    env: { NTFY_STATE_FILE: zustand, NTFY_URL: SINK_URL },
+  });
+
+  const alt = await bridge.handleMessage({
+    id: "a33d44e55f",
+    title: "Nutzerantwort",
+    message: "2",
+    time: jetzt - 30,
+  });
+  eq(alt.action, "skipped", "Nachricht vor der Frage wird nicht verwendet");
+  eq(alt.reason, "zu-alt-fuer-frage", "Grund ist zu-alt-fuer-frage");
+  eq(posts().length, 0, "kein Formularschreiben");
+  eq(deletes().length, 0, "die Frage bleibt offen (kein Abbruch)");
+  eq(prompts.length, 0, "keine Einspeisung");
+  eq(forms.length, 1, "die Frage steht weiterhin offen");
+
+  const neu = await bridge.handleMessage({
+    id: "b33d44e55f",
+    title: "Nutzerantwort",
+    message: "2",
+    time: jetzt + 10,
+  });
+  eq(neu.action, "replied", "Nachricht nach der Frage wird eingetragen");
+  eq(posts().length, 1, "genau ein Reply-POST");
+  eq(prompts.length, 0, "kein Prompt — die Frage wurde beantwortet");
+}
+{
+  // Altbestand: offene Frage ohne gespeicherten Zeitpunkt → keine Automatik.
+  resetSharedState();
+  const jetzt = Math.floor(Date.now() / 1000);
+  const zustand = testPath("frage-ohne-zeit.json");
+  writeFileSync(
+    zustand,
+    JSON.stringify({
+      version: 1,
+      topics: { ai: { openQuestionId: "frm_ohne", lastHandledTime: String(jetzt - 100) } },
+    })
+  );
+  const { bridge, posts, prompts } = makeFormBridge({
+    forms: [openForm("frm_ohne", [choiceField])],
+    env: { NTFY_STATE_FILE: zustand, NTFY_URL: SINK_URL },
+  });
+  const result = await bridge.handleMessage({ id: "c33d44e55f", message: "2" });
+  eq(posts().length, 0, "ohne Zeitpunkt wird nichts eingetragen");
+  eq(result.action, "skipped", "die Nachricht wird nicht verwendet");
+  eq(prompts.length, 0, "keine Einspeisung ohne Zeitpunkt");
+}
 
 console.log(`\n${passed} bestanden, ${failed} fehlgeschlagen`);
 process.exit(failed === 0 ? 0 : 1);
