@@ -856,6 +856,10 @@ set_env_default NTFY_ICON_BASE     "$NTFY_ICON_BASE_DEFAULT"
 set_env_default NTFY_IGNORE_TITLES "Ausfall-Probe"
 set_env_default NTFY_LINK_STYLE    "session"
 set_env_default NTFY_REPLY_LOG     "/tmp/opencode/ntfy-diag.log"
+# Debounce für „Fertig"-Meldungen: eine Meldung wird erst nach N ms ohne
+# neue Aktivität verschickt (unterdrückt Spam bei schnellen aufeinander-
+# folgenden Turns / hängenden Sessions). 0 = sofort (Vorgängerverhalten).
+set_env_default NTFY_DEBOUNCE_MS  "60000"
 echo "  ✓ ntfy-Standardoptionen in /etc/opencode.env sichergestellt"
 
 # Topic je Workspace (opt-in über den Namen, siehe Tabelle):

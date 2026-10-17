@@ -662,6 +662,7 @@ function newState() {
     working: new Set(), // Sessions, die gerade arbeiten
     lastText: new Map(), // letzter Assistenten-Text je Session
     lastSent: new Map(), // Dedup: "sessionID:art" → Zeitstempel
+    turnFailed: new Set(), // Sessions, deren aktueller Turn fehlgeschlagen ist
   };
 }
 
@@ -737,6 +738,22 @@ export function createNtfyNotifier(options = {}) {
   // { timer, event, count }. Ein Abbruch oder Dienst-Neustart verwirft den
   // Eintrag; weitere Fehlschläge derselben Session zählen nur hoch.
   const pendingErrors = new Map();
+  // Debounce für „Fertig": eine Meldung wird erst nach N ms ohne neue
+  // Aktivität verschickt. 0 = sofort (Rückwärtskompatibilität / Tests).
+  const debounceMs = (() => {
+    const v = Number(options.debounceMs ?? env.NTFY_DEBOUNCE_MS ?? 0);
+    return Number.isFinite(v) && v >= 0 ? v : 0;
+  })();
+  const pendingFinish = new Map(); // sessionID → { timer }
+
+  function cancelPendingFinish(sessionID) {
+    const entry = pendingFinish.get(sessionID);
+    if (entry?.timer) {
+      clearTimeout(entry.timer);
+      if (typeof entry.timer?.unref === "function") entry.timer.unref();
+    }
+    pendingFinish.delete(sessionID);
+  }
 
   function metaFor(sessionID) {
     return state.meta.get(sessionID) ?? {};
@@ -981,19 +998,44 @@ export function createNtfyNotifier(options = {}) {
     if (await isSubagent(sessionID)) {
       state.working.delete(sessionID);
       state.lastText.delete(sessionID);
+      cancelPendingFinish(sessionID);
       return;
     }
+    // Turn ist fehlgeschlagen (Schritt-/Ausführungsfehler): keine
+    // „Fertig"-Meldung, da die Arbeit nicht abgeschlossen ist. Die
+    // Fehlermeldung selbst kommt über reportError („⚠️ Fehler").
+    const failed = state.turnFailed?.has?.(sessionID);
     state.working.delete(sessionID);
     const summary = clampText(state.lastText.get(sessionID) ?? "", 260);
     state.lastText.delete(sessionID);
+    if (failed) {
+      cancelPendingFinish(sessionID);
+      return;
+    }
     await ensureMeta(sessionID);
-    await sendOnce(sessionID, "idle", {
-      title: `✅ Fertig — ${projectFor(sessionID)}`,
-      message: withHeader(sessionID, summary),
-      priority: 3,
-      tags: ["white_check_mark"],
-      click: linkFor(sessionID),
-    });
+    const doSend = async () => {
+      pendingFinish.delete(sessionID);
+      await sendOnce(sessionID, "idle", {
+        title: `✅ Fertig — ${projectFor(sessionID)}`,
+        message: withHeader(sessionID, summary),
+        priority: 3,
+        tags: ["white_check_mark"],
+        click: linkFor(sessionID),
+      });
+    };
+    // Debounce: erst nach N ms ohne neue Aktivität verschicken. 0 = sofort.
+    if (debounceMs <= 0) {
+      await doSend();
+      return;
+    }
+    cancelPendingFinish(sessionID);
+    const timer = setTimeout(() => {
+      doSend().catch((error) => {
+        logger("Fertig-Meldung nicht verschickt:", error?.message ?? String(error));
+      });
+    }, debounceMs);
+    if (typeof timer?.unref === "function") timer.unref();
+    pendingFinish.set(sessionID, { timer });
   }
 
   /**
@@ -1129,10 +1171,16 @@ export function createNtfyNotifier(options = {}) {
     // dem Abbruch ein).
     if (type === "session.execution.interrupted") {
       cancelPendingError(sessionID);
+      if (sessionID) {
+        state.turnFailed?.delete?.(sessionID);
+        cancelPendingFinish(sessionID);
+      }
       return;
     }
     if (type === "location.shutdown") {
       cancelAllPendingErrors();
+      for (const sid of pendingFinish.keys()) cancelPendingFinish(sid);
+      state.turnFailed?.clear?.();
       return;
     }
 
@@ -1144,6 +1192,8 @@ export function createNtfyNotifier(options = {}) {
     if (sessionID && text) {
       state.lastText.set(sessionID, text);
       state.working.add(sessionID);
+      // Neue Aktivität bricht einen ausstehenden „Fertig"-Timer ab.
+      cancelPendingFinish(sessionID);
     }
 
     switch (type) {
@@ -1152,11 +1202,15 @@ export function createNtfyNotifier(options = {}) {
         const value = typeof kind === "string" ? kind : kind?.type;
         if (sessionID && typeof value === "string" && value.toLowerCase() !== "idle") {
           state.working.add(sessionID);
+          cancelPendingFinish(sessionID);
         }
         return;
       }
       // ── „Arbeitet gerade": V2-Eventnamen (+ V1-Altlasten, tolerant) ────
-      case "session.execution.started":
+      case "session.execution.started": {
+        if (sessionID) state.turnFailed?.delete?.(sessionID);
+      }
+      // fallthrough
       case "session.step.started":
       case "session.step.streamed":
       case "session.reasoning.started":
@@ -1175,7 +1229,10 @@ export function createNtfyNotifier(options = {}) {
       case "tool.execute.before":
       case "tool.execute.after":
       case "session.compacted":
-        if (sessionID) state.working.add(sessionID);
+        if (sessionID) {
+          state.working.add(sessionID);
+          cancelPendingFinish(sessionID);
+        }
         return;
       // ── Turn-Ende ─────────────────────────────────────────────────────
       case "session.idle":
@@ -1196,12 +1253,17 @@ export function createNtfyNotifier(options = {}) {
       // ── Fehler ────────────────────────────────────────────────────────
       case "session.error":
       case "session.execution.failed":
+        if (sessionID) state.turnFailed?.add?.(sessionID);
         await reportError(sessionID, event);
         return;
       case "session.step.failed": {
         // Ein fehlgeschlagener Schritt ist ein echter Fehler; ein einzelner
         // Tool-Fehler (session.tool.failed) ist meist nur ein Zwischenschritt.
-        state.working.add(sessionID);
+        if (sessionID) {
+          state.working.add(sessionID);
+          state.turnFailed?.add?.(sessionID);
+          cancelPendingFinish(sessionID);
+        }
         await reportError(sessionID, event);
         return;
       }
