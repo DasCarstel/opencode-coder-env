@@ -260,6 +260,7 @@ Eigenschaften:
 | `NTFY_ICON_BASE` | Basis-URL der PNG-Symbole; jede Meldung bekommt `icon = <basis>/<workspace>.png?v=4`. |
 | `NTFY_LINK_STYLE` | `session` (Default) = Klickziel ist der Session-Deep-Link („Session öffnen"); `base` = nur die Startseite der Oberfläche. |
 | `NTFY_IGNORE_TITLES` | Kommagetrennte Titel-Teile, die stumm bleiben (z. B. `Ausfall-Probe`). |
+| `NTFY_DEBOUNCE_MS` | Verzögerung für „Fertig"-Meldungen in Millisekunden (Default `60000`): eine Meldung wird erst nach N ms ohne neue Aktivität verschickt; neue Aktivität bricht den Timer ab. `0` = sofort (Vorgängerverhalten). |
 | `NTFY_REPLY_LOG` | Pfad des Diagnose-Logs (z. B. `/tmp/opencode/ntfy-diag.log`); leer = aus. |
 
 Alle Werte liest das Plugin zusätzlich aus der Env-Datei `/etc/opencode.env`
