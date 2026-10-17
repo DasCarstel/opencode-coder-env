@@ -27,6 +27,21 @@
 // createPluginRuntime.setup), damit ein Plugin-Neuladen die Meldungen nicht
 // still abreißen lässt.
 //
+// ntfy ist hier ausschließlich ein Meldeweg: das Plugin veröffentlicht
+// Meldungen und liest nichts aus dem Topic. Geantwortet wird in der Session
+// selbst über den Knopf "Session öffnen" in der Meldung. Einen Weg zurück
+// (Antwort aus der ntfy-App in eine Session einspeisen) gibt es bewusst nicht
+// mehr: wer in ein Topic schreiben kann, hätte damit Prompts in Sessions mit
+// MCP-Rechten einspeisen können — ein Topic ist kein vertrauenswürdiger Kanal
+// (siehe docs/notifications.md, Tag ntfy-antwortweg-vor-rueckbau).
+//
+// Fehlermeldungen gehen kurz verzögert raus (ERROR_HOLD_MS, siehe
+// reportError): bricht der Nutzer den Turn selbst ab
+// (session.execution.interrupted) oder startet der Dienst neu
+// (location.shutdown), wird die noch offene Meldung verworfen — sonst käme
+// "⚠️ Fehler" auch für einen selbst abgebrochenen Turn. Fehlschläge derselben
+// Session im Fenster werden zu einer Meldung zusammengefasst.
+//
 // Umgebungsvariablen:
 //   NTFY_URL    Basis-URL        (Default https://ntfy.mueller-nas.de)
 //   NTFY_TOKEN  Bearer-Token     (ohne Token bleibt das Plugin still)
@@ -34,18 +49,16 @@
 //   NTFY_TOPIC_PREFIX  Opt-in: Topic je Arbeitsbereich. Ist die Variable gesetzt
 //                     und ist der Arbeitsbereich bekannt, gilt
 //                     "<prefix>-<workspace>" (z. B. "oc" +
-//                     "server-management" → "oc-server-management") — einheitlich
-//                     für den Versand UND die Antwort-Brücke (die hört auf
-//                     demselben Topic). Ohne den Prefix bleibt es exakt bei
-//                     NTFY_TOPIC; die Ableitung ist bewusst opt-in, sonst
-//                     landeten Meldungen in Topics, die niemand abonniert hat.
+//                     "server-management" → "oc-server-management"). Ohne den
+//                     Prefix bleibt es exakt bei NTFY_TOPIC; die Ableitung ist
+//                     bewusst opt-in, sonst landeten Meldungen in Topics, die
+//                     niemand abonniert hat.
 //   NTFY_TOPIC_NAME   Arbeitsbereichs-Teil des Topics, wenn das Verzeichnis
 //                     keinen hergibt: der Dienst läuft im Repo-Wurzelverzeichnis,
 //                     dessen Pfad enthält kein "/workspaces/". Zusammen mit
 //                     NTFY_TOPIC_PREFIX gilt "<prefix>-<name>" (z. B. "oc" +
-//                     "infrastructure" → "oc-infrastructure"), einheitlich für
-//                     Versand und Antwort-Brücke. Wirkt NUR auf das Topic:
-//                     Icon (NTFY_ICON_BASE) und Titel-Kennung "[<name>] "
+//                     "infrastructure" → "oc-infrastructure"). Wirkt NUR auf das
+//                     Topic: Icon (NTFY_ICON_BASE) und Titel-Kennung "[<name>] "
 //                     bleiben am Sitzungs-Verzeichnis bzw. an NTFY_WORKSPACE.
 //   NTFY_ICON_BASE    Opt-in: Symbol-URL je Meldung. Ist die Variable gesetzt und
 //                     ist der Arbeitsbereich bekannt, trägt die Meldung das
@@ -64,14 +77,8 @@
 //   NTFY_SERVER_KEY   Optionaler Override; sonst base64url des Ursprungs der
 //                     Basis. Serverschlüssel der OpenCode-Oberfläche im
 //                     Klick-Link (<basis>/server/<schlüssel>/session/<id>).
-//                     Der Kopplungslink bleibt auf der Basis — ohne
-//                     Session-Pfad.
-//   NTFY_PAIR_BUTTON  "0"/"false" schaltet den Kopplungs-Button ab (Default:
-//                     an). Jede Meldung trägt dann einen frisch erzeugten,
-//                     5 Minuten gültigen Kopplungslink als view-Button mit
-//                     (POST /api/pair über die lokale API); der Link wird
-//                     ~120 s zwischengespeichert, damit nicht jede Meldung
-//                     einen neuen Code erzeugt.
+//   NTFY_FALLBACK_URL Rückfall-Adresse für Meldungen ohne Session (Default
+//                     https://coder.mueller-nas.de/)
 //   NTFY_IGNORE_TITLES kommagetrennte Teilzeichenketten (getrimmt, Groß-/
 //                     Kleinschreibung egal): enthält der Titel einer Session
 //                     einen davon, wird für sie gar nichts gemeldet — weder
@@ -79,7 +86,11 @@
 //   NTFY_LINK_STYLE   "session" (Default) = Klickziel ist der Session-Deep-Link
 //                     (<basis>/server/<schlüssel>/session/<id>); "base" = nur
 //                     die Basis (Startseite der Oberfläche, Übergangslösung).
-//                     Der Kopplungsknopf bleibt in beiden Fällen auf der Basis.
+//   NTFY_REPLY_LOG    Pfad eines Diagnose-Logs (Default: aus). Dorthin
+//                     schreibt das Plugin, was es tut: Zustandsfehler der
+//                     Meldungen und der Aufbau des Ereignisstroms. Es ist ein
+//                     reines Protokoll — gelesen wird nur diese Datei, nie ein
+//                     Topic. Ohne gesetzte Variable entsteht keine Datei.
 //   NTFY_WORKSPACE    Kurzer Name des Arbeitsbereichs (z. B. "server-management").
 //                     Er steht als "[<name>] " vor jedem Meldungstitel, damit
 //                     bei mehreren Arbeitsbereichen auf dem Handy sofort
@@ -87,92 +98,25 @@
 //                     nicht gesetzt, wird der Name aus dem letzten Pfadstück
 //                     des Sitzungs-Verzeichnisses abgeleitet; ist auch das nicht
 //                     möglich, bleibt der Titel unverändert.
-//   NTFY_STATE_FILE   JSON-Datei für die wenigen Angaben, die einen
-//                     Dienst-Neustart überleben müssen (Default
-//                     /tmp/opencode/ntfy-state.json): je Topic die zuletzt
-//                     benachrichtigte Session, die offene Frage/das offene
-//                     Formular, die Leseposition der Brücke (`since`) und die
-//                     zuletzt abgeleitete Basis (`lastBase`) als Kopplungs-
-//                     Ersatzadresse für Meldungen ohne Session.
 //
 //   Alle NTFY_*-Einstellungen liest das Plugin zusätzlich aus der Env-Datei
 //   /etc/opencode.env (Pfad über NTFY_ENV_FILE änderbar): die Service-Umgebung
 //   kommt nicht in jeder Installation im Service-Prozess an. Vorrang hat immer
 //   die Prozess-Umgebung, danach die Datei, dann die Defaults.
 //
-// Antwort-Brücke (der Nutzer antwortet in der ntfy-App auf eine Meldung; diese
-// Antwort landet als normale Nachricht im Topic und wird hier abgeholt und als
-// Prompt in die zuletzt benachrichtigte Session eingespeist):
-//   NTFY_REPLY_ENABLED      "0"/"false" schaltet die Brücke ab (Default: an)
-//   NTFY_REPLY_TOPIC        Topic zum Abholen (Default NTFY_TOPIC, also "ai")
-//   (Abgeholt wird über den ntfy-Stream GET /<topic>/json?since=<id>: die
-//    Verbindung bleibt offen und liefert die Zeilen laufend. Endet sie, wird
-//    sie nach kurzer Wartezeit neu aufgebaut — bei HTTP 429 deutlich später.)
-//   Die Zuordnung „Session der letzten Meldung“ und der `since`-Zeiger liegen
-//   zusätzlich in NTFY_STATE_FILE: nach einem Dienst-Neustart findet eine
-//   Handy-Antwort ihre Session auch ohne In-Memory-Zustand, und der Strom
-//   setzt an der letzten Leseposition an (keine alten Meldungen erneut).
-//   NTFY_FORM_REPLY         "0"/"false" schaltet die direkte Antwort in eine
-//                           offene native Frage ab (Default: an). Aus heißt:
-//                           kein Formular-Abruf, nur Prompt-Einspeisung — dann
-//                           bleibt nie ein Formular offen, das die Brücke hätte
-//                           schließen müssen (kein Deadlock-Risiko).
-//   NTFY_REPLY_WINDOW_MIN   Antwortfenster in Minuten (Default 30): ohne offene
-//                           Frage gilt eine Nachricht nur dann als neue
-//                           Anweisung an die Session der letzten Meldung, wenn
-//                           sie nach unserer letzten eigenen Meldung im Topic
-//                           eingegangen ist und höchstens so viele Minuten
-//                           danach liegt. "0" schaltet die Zeitprüfung ab —
-//                           dann zählt jede Nachricht nach der eigenen Meldung.
-//                           Ohne bekannte eigene Sendezeit (Zustandsdatei aus
-//                           einer älteren Fassung) wird verworfen.
-//
-// Ist in der Ziel-Session eine native Frage offen (question-Tool =
-// serverseitiges Formular), trägt die Brücke die Antwort über die lokale API
-// direkt in das Formular ein statt einen Prompt einzuspeisen — der blockierte
-// Turn läuft dann weiter, als hätte der Nutzer im Fragenfenster geantwortet.
-// Offene Fragen werden der Reihe nach beantwortet: zuerst die älteste, die
-// übrigen bleiben offen (Log `form-reihenfolge`). Die Zuordnung ist bewusst
-// streng: nur exakter Treffer auf Optionswert/-label oder eine reine Zahl als
-// Optionsindex — keine unscharfe Teilstring-Suche, die ganze Sätze falsch
-// zuordnen könnte. Passt der Text auf keine Option, gilt er als Freitext-Antwort
-// auf genau diese Frage (Log `form-reply-rohtext`); nirgends wird als Folge einer
-// nicht passenden Antwort abgebrochen. Erst wenn die API die Antwort ablehnt,
-// geht der Text wie eh und je als Prompt weiter (kein Datenverlust) — die Frage
-// bleibt dann offen. Abgebrochen (DELETE .../form/{id}) wird nur noch bei einem
-// echten Abbruch/Zeitablauf, nicht mehr wegen einer Antwort. Formulare mit
-// mehreren Feldern und unbekannten Feldtypen bleiben konservativ: keine
-// geratene Antwort, kein Abbruch, der Text geht als Prompt weiter. Freigabe-
-// Dialoge bleiben dem nativen Fenster vorbehalten. Das native Fragenfenster
-// bleibt unverändert.
-// Zugang zur lokalen API: HTTP-Basic "opencode:<Passwort>" gegen
-// http://127.0.0.1:${NTFY_SESSION_PORT} (Default 49374); das Passwort wird zur
-// Laufzeit aus OPENCODE_SERVER_PASSWORD, /etc/opencode.env oder der
-// Service-Datei gelesen und nie geloggt.
-//
-// Kopplungs-Button: jede Meldung trägt zusätzlich einen frisch erzeugten
-// Kopplungslink (POST /api/pair, der Code gilt 5 Minuten) als view-Aktion mit,
-// damit der Nutzer unterwegs direkt koppeln kann. Der fertige Link wird ~120 s
-// im geteilten Laufzeit-Zustand zwischengespeichert — es entsteht also nicht
-// für jede Meldung ein neuer Code. Schlägt die Erzeugung fehl (Netz, Status,
-// kein Passwort), geht die Meldung ohne Button raus und der Fehler landet als
-// "pair-link-fehler" im Diagnose-Log (NTFY_REPLY_LOG); die Meldung selbst
-// scheitert nie daran.
-//
 // Installation: coder-templates/shared/plugins/ntfy-notify.js
 //               → ~/.config/opencode/plugins/ (dort automatisch geladen)
 
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { appendFileSync, readFileSync } from "node:fs";
 
 // Fassung der Symbol-Bilder (NTFY_ICON_BASE). ntfy und die Apps halten ein
 // einmal geladenes Icon lokal im Zwischenspeicher (laut ntfy-Doku bis zu 24
 // Stunden, teils bis die Meldung gelöscht wird) — sie würden ein geändertes
 // Bild also weiter aus dem Cache zeigen. Die Kennung "?v=<n>" an der URL
 // umgeht den Cache und erzwingt einmalig ein Neuladen. Bei jeder inhaltlichen
-// Änderung der PNGs (tools/make-ntfy-icons.py) hochzählen.
-const ICON_VERSION = 2;
+// Änderung der PNGs (tools/make-ntfy-icons.py) hochzählen — 3 ist der
+// ausgetauschte Symbolsatz.
+const ICON_VERSION = 3;
 
 const DEFAULT_URL = "https://ntfy.mueller-nas.de";
 const DEFAULT_TOPIC = "ai";
@@ -180,11 +124,6 @@ const DEFAULT_TOPIC = "ai";
 // wenn sich der Ursprung der Basis nicht als URL auswerten lässt; sonst zählt
 // base64url des Ursprungs der Basis (siehe serverKeyFromBase).
 const DEFAULT_SERVER_KEY = "local";
-// Zustandsdatei: wenige Angaben, die einen Dienst-Neustart überleben müssen
-// (Zuordnung Topic → Session, offene Frage/offenes Formular, Leseposition).
-const DEFAULT_STATE_FILE = "/tmp/opencode/ntfy-state.json";
-// Gedrosseltes Schreiben: höchstens ein Schreibvorgang je Sekunde.
-const STATE_WRITE_MS = 1000;
 const MAX_TITLE = 90;
 const MAX_BODY = 500;
 // Frage- und Freigabe-Meldungen tragen eine mehrzeilige Optionsliste — ntfy
@@ -194,69 +133,13 @@ const MAX_QUESTION_BODY = 1500;
 const MAX_OPTION_LEN = 120;
 const COOLDOWN_MS = 15000;
 const PLUGIN_ID = "das.ntfy-notify";
-// Antwort-Brücke: eigene Präfixe, Abfrage- und Wartezeiten.
-const REPLY_PREFIXES = ["❓", "✅", "⚠️", "🔐", "🔔", "↩️"];
-const REPLY_ACK_TITLE = "↩️ Antwort an Agenten weitergegeben";
-const REPLY_NO_SESSION_TITLE = "⚠️ Antwort ohne Ziel-Session";
-// Bestätigung, wenn die Antwort direkt in der offenen Frage gelandet ist.
-// Beginnt wie die normale Bestätigung mit "↩️", damit die Brücke die eigene
-// Nachricht im Poll wieder als eigene erkennt (REPLY_PREFIXES).
-const FORM_REPLY_ACK_TITLE = "↩️ Antwort in die offene Frage eingetragen";
-// Hinweis, wenn die Handy-Nachricht leer war und eine Frage offen ist: statt
-// eines Abbruchs wird nur erklärt, was zu tun ist.
-const FORM_EMPTY_ACK_TITLE = "↩️ Leere Nachricht zur offenen Frage";
-// Hinweiszeile in der Frage-Meldung (die mit den nummerierten Optionen).
-// Beantwortet wird immer die nächste offene Frage — bei mehreren Fragen der
-// Reihe nach die älteste; die Kopfzeile "Frage i von n" nennt die Nummer.
-const FORM_QUESTION_HINT =
-  "Antwort direkt hier möglich: Nummer der Option oder freier Text — beantwortet wird immer die nächste offene Frage (der Reihe nach, siehe Frage i von n).";
-// Antwortfenster (R2): wie lange nach unserer letzten eigenen Meldung im Topic
-// eine Nachricht ohne offene Frage noch als neue Anweisung an die meldende
-// Session gilt. NTFY_REPLY_WINDOW_MIN=0 schaltet die Zeitprüfung ab.
-const REPLY_WINDOW_DEFAULT_MIN = 30;
-// Zugang zur lokalen OpenCode-API (HTTP-Basic, Nutzer "opencode").
-const FORM_API_USER = "opencode";
-const FORM_API_TIMEOUT_MS = 5000;
-// Abgeholt wird der ntfy-Stream des Topics (siehe startReplyBridge); die
-// Wartezeiten gelten für den Wiederaufbau nach einem Abbruch.
-const REPLY_RECONNECT_MS = 1000; // Grundwartezeit vor dem Neuverbinden
-const REPLY_RECONNECT_MAX_MS = 30000; // Obergrenze dieser Wartezeit
-// HTTP 429 heißt: ntfy drosselt diesen Aufrufer. Dann deutlich länger warten —
-// eine schnelle Wiederholung treibt das Limit nur weiter hoch.
-const REPLY_RATE_LIMIT_MS = 30000; // erste Wartezeit nach einer Drosselung
-const REPLY_RATE_LIMIT_MAX_MS = 300000; // Obergrenze (5 min)
-// Nur der Verbindungsaufbau hat ein Zeitlimit; steht der Strom, bleibt er
-// offen (ntfy schickt alle ~45 s eine keepalive-Zeile).
-const REPLY_CONNECT_TIMEOUT_MS = 30000;
-const MAX_REPLY_TEXT = 2000;
-const MAX_SENT_IDS = 200;
-// Schon verarbeitete Fremd-IDs — gleiche Begrenzung wie bei den eigenen IDs.
-const MAX_PROCESSED_IDS = 200;
-// Persistierter Ringpuffer eigener Message-IDs: damit erkennt die Brücke ihre
-// eigene Meldung auch nach einem Dienst-Neustart noch als eigene (siehe
-// `sentIds` in der Zustandsdatei). Bewusst kleiner als MAX_SENT_IDS, damit die
-// Datei klein bleibt.
-const MAX_PERSISTED_SENT_IDS = 50;
-// Eigene Wortlaute (nur als Hash gemerkt): die letzten Meldungen, deren Text
-// dieses Plugin selbst veröffentlicht hat. Wird einer davon erneut eingespeist
-// (Stream-Neuaufbau, Verlauf, Selbst-Echo), passiert nichts — siehe isOwnText.
-const MAX_OWN_TEXTS = 10;
-// Antwort-Brücke: höchstens zwei Einspeisungen je Minute. Ein Verlauf oder ein
-// Selbst-Echo darf eine Session nicht fluten (siehe throttleReason).
-const MAX_INJECTIONS_PER_MINUTE = 2;
-const INJECTION_WINDOW_MS = 60000;
-// Gültige `since`-Position: echte ntfy-IDs sind kurz und base62-artig. Alles
-// andere (Fixture-Werte wie "msg_…", "all", "0", "-1", "none", Leerwerte) ist
-// keine Position, die es im Topic gibt — damit darf die Brücke nicht in den
-// Verlauf greifen.
-const SINCE_ID_PATTERN = /^[A-Za-z0-9_-]{6,40}$/;
-const SINCE_ID_LITERALS = new Set(["all", "0", "-1", "none"]);
-// Kopplungslink: `opencode pair` erzeugt einen einmaligen Code, der 5 Minuten
-// gilt. Er hängt als view-Button an jeder Meldung; der fertige Link wird ~120 s
-// zwischengespeichert (Codes sind einmalig, aber so lange gültig).
-const PAIR_API_TIMEOUT_MS = 5000;
-const PAIR_LINK_TTL_MS = 120000;
-const PAIR_LINK_LABEL = "Koppeln (5 Min)";
+// Fehlermeldungen gehen kurz verzoegert raus (siehe reportError): bricht der
+// Nutzer den Turn selbst ab (session.execution.interrupted) oder startet der
+// Dienst neu (location.shutdown), trifft das noch im Fenster ein und die
+// Meldung wird verworfen. Mehrere Fehlschlaege derselben Session im Fenster
+// werden zu einer Meldung zusammengefasst. options.errorHoldMs uebersteuert
+// die Wartezeit nur in Tests.
+const ERROR_HOLD_MS = 3000;
 // Ereignisstrom: endet er (z. B. Plugin-Neuladen) oder wirft er, wird er nach
 // einer kurzen Wartezeit neu aufgebaut; bei wiederholtem Sofort-Ende wächst die
 // Wartezeit bis EVENT_RETRY_MAX_MS. options.eventRetryMs übersteuert die
@@ -272,7 +155,7 @@ const EVENT_RETRY_MAX_MS = 5000;
  * `startup.sh` schreibt dort ALLE `NTFY_*`-Einstellungen nach
  * `/etc/opencode.env` (Mode 0600) — Token/URL/Topic, aber auch den
  * Session-Link (`NTFY_SESSION_URL`), den Serverschlüssel (`NTFY_SERVER_KEY`)
- * und die Schalter (`NTFY_PAIR_BUTTON`, `NTFY_FORM_REPLY` …). Die
+ * und die Kennungen (`NTFY_WORKSPACE`, `NTFY_ICON_BASE` …). Die
  * Service-Umgebung über `opencode service set env` kommt nicht in jeder
  * Installation im Service-Prozess an. Beim Zusammenführen haben Env-Variablen
  * Vorrang, danach die Datei, dann die Defaults.
@@ -312,9 +195,24 @@ function debug(...args) {
   }
 }
 
+/** Wartet ms Millisekunden; bricht sofort ab, wenn das Signal abbricht. */
+function sleep(ms, signal) {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    if (signal) signal.addEventListener("abort", done, { once: true });
+  });
+}
+
 /**
- * Diagnose-Zeile anhängen — nur wenn NTFY_REPLY_LOG gesetzt ist (dieselbe
- * Datei wie die Antwort-Brücke, also eine Diagnose-Quelle). Wirft nie.
+ * Diagnose-Zeile anhängen — nur wenn NTFY_REPLY_LOG gesetzt ist (der Name
+ * bleibt aus Kompatibilität: das Log hat sich als reine Diagnose-Quelle
+ * bewährt). Wirft nie.
  */
 export function makeDiag(env) {
   const path = String(env.NTFY_REPLY_LOG ?? "").trim();
@@ -328,106 +226,6 @@ export function makeDiag(env) {
   };
 }
 
-/**
- * Gültige `since`-Position für den ntfy-Stream? Nur ein solcher Wert darf aus
- * der Zustandsdatei übernommen werden.
- *
- * Hintergrund (Vorfall 17.10.2026): stand in der Zustandsdatei ein Wert, den es
- * im Topic nicht gibt (im Live-Protokoll war das `msg_user9` — ein Fixture-Wert
- * aus der Testsuite), lieferte ntfy den kompletten alten Verlauf erneut aus,
- * und die Brücke speiste ihn als Prompt in eine Session ein. Ein ungültiger
- * Zeiger wird deshalb verworfen; die Brücke startet dann ab jetzt.
- */
-export function isValidSinceId(value) {
-  const id = String(value ?? "").trim();
-  if (!id) return false;
-  if (SINCE_ID_LITERALS.has(id.toLowerCase())) return false;
-  // "msg_" stammt aus Testdaten/Fixtures — echte ntfy-IDs tragen kein Präfix.
-  if (id.startsWith("msg_")) return false;
-  return SINCE_ID_PATTERN.test(id);
-}
-
-/**
- * Kurzer Hash über einen Wortlaut (FNV-1a, 32 Bit). Der Ringpuffer eigener
- * Texte bleibt damit klein, der Vergleich ist trotzdem exakt: Mehrfach-
- * Whitespace wird zusammengezogen, Groß-/Kleinschreibung bleibt zählend.
- */
-function textHash(text) {
-  const s = String(text ?? "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!s) return "";
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < s.length; i += 1) {
-    hash ^= s.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16);
-}
-
-/** Ringpuffer der eigenen Wortlaute (Hashes) — defensiv nachgerüstet. */
-function ownTexts(runtime = replyRuntime()) {
-  if (!Array.isArray(runtime.ownTexts)) runtime.ownTexts = [];
-  return runtime.ownTexts;
-}
-
-/** Eigenen Wortlaut merken (die letzten MAX_OWN_TEXTS). Wirft nie. */
-function rememberSentText(text, runtime = replyRuntime()) {
-  if (!runtime) return;
-  const hash = textHash(text);
-  if (!hash) return;
-  const ring = ownTexts(runtime);
-  const index = ring.indexOf(hash);
-  if (index !== -1) ring.splice(index, 1);
-  ring.push(hash);
-  while (ring.length > MAX_OWN_TEXTS) ring.shift();
-}
-
-/** Entspricht der Text dem Wortlaut einer der letzten eigenen Meldungen? */
-function isOwnText(text, runtime = replyRuntime()) {
-  if (!runtime) return false;
-  const hash = textHash(text);
-  if (!hash) return false;
-  return ownTexts(runtime).includes(hash);
-}
-
-/** Persistierte eigene Message-IDs eines Topics (JSON-Ringpuffer der Datei). */
-function readPersistedSentIds(store, topic) {
-  try {
-    const raw = store?.get?.(topic, "sentIds") ?? "";
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((id) => typeof id === "string" && id) : [];
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Eigene Message-ID persistieren — nur so erkennt die Brücke ihre eigene
- * Meldung auch nach einem Dienst-Neustart wieder (Ringpuffer, letzte 50).
- * Wirft nie: der Zustandsspeicher darf die Meldung nicht stören.
- */
-function rememberPersistedSentId(id, store, topic) {
-  if (typeof id !== "string" || !id) return;
-  try {
-    const list = readPersistedSentIds(store, topic);
-    if (list.includes(id)) return;
-    list.push(id);
-    while (list.length > MAX_PERSISTED_SENT_IDS) list.shift();
-    store?.set?.(topic, { sentIds: JSON.stringify(list) });
-  } catch {
-    /* der Zustandsspeicher darf die Meldung nie stören */
-  }
-}
-
-/** "0"/"false"/"no"/"off" schalten den Kopplungs-Button ab (Default: an). */
-function pairEnabled(env) {
-  const value = String(env.NTFY_PAIR_BUTTON ?? "1")
-    .trim()
-    .toLowerCase();
-  return !["0", "false", "no", "off"].includes(value);
-}
 
 /**
  * Klickziel-Stil: "base" setzt das Klickziel auf die reine Basis (Startseite
@@ -587,12 +385,11 @@ export function topicWithWorkspace(base, env = {}, workspace = "") {
 }
 
 /**
- * Das endgültige Topic einer Instanz — die EINE Ableitung, die Versand UND
- * Antwort-Brücke benutzen (die Brücke muss auf dem Topic hören, in das gesendet
- * wird). Der Arbeitsbereich kommt aus NTFY_TOPIC_NAME, sonst aus
- * NTFY_WORKSPACE/dem Verzeichnis (siehe topicNameFrom/topicWorkspaceFrom);
- * zusammengesetzt wird er nur mit NTFY_TOPIC_PREFIX. Icon und Titel bleiben
- * davon unberührt — sie folgen weiter dem Sitzungs-Verzeichnis.
+ * Das endgültige Topic einer Instanz. Der Arbeitsbereich kommt aus
+ * NTFY_TOPIC_NAME, sonst aus NTFY_WORKSPACE/dem Verzeichnis (siehe
+ * topicNameFrom/topicWorkspaceFrom); zusammengesetzt wird er nur mit
+ * NTFY_TOPIC_PREFIX. Icon und Titel bleiben davon unberührt — sie folgen
+ * weiter dem Sitzungs-Verzeichnis.
  */
 export function topicForEnv(base, env = {}, dir = "") {
   return topicWithWorkspace(base, env, topicNameFrom(env, topicWorkspaceFrom(env, dir)));
@@ -734,17 +531,6 @@ function sessionIDOf(event, info) {
   return findSessionID(event?.data) ?? findSessionID(event);
 }
 
-/** Formular-ID eines Frage-/Freigabe-Events (tolerant wie sessionInfo). */
-function formIdFromEvent(event) {
-  for (const candidate of candidates(event)) {
-    const direct = candidate.formID ?? candidate.formId;
-    if (typeof direct === "string" && direct) return direct;
-    const form = candidate.form;
-    if (form && typeof form === "object" && typeof form.id === "string" && form.id) return form.id;
-  }
-  return "";
-}
-
 /** Text einer Message-Part — nur Assistenten-Text, nie der User-Prompt. */
 function textFromEvent(event) {
   // V2: die vollständige Antwort steht in session.text.ended (je Text-Teil).
@@ -803,10 +589,9 @@ function questionBody(event) {
       .map((o) => oneLine(o?.label ?? o?.title ?? o?.value ?? o?.id ?? o ?? "", MAX_OPTION_LEN))
       .filter(Boolean)
       .map((label, index) => `${index + 1}) ${label}`);
-    // Kopfzeile "Frage i von n": bei mehreren offenen Fragen ist sofort klar,
-    // auf welche Frage sich die Optionen beziehen — geantwortet wird der Reihe
-    // nach auf die nächste offene Frage (siehe tryFormReply), die Nummerierung
-    // der Optionen beginnt trotzdem bei jeder Frage wieder bei "1)".
+    // Kopfzeile "Frage i von n": bei mehreren Fragen einer Meldung ist sofort
+    // klar, auf welche Frage sich die Optionen beziehen; die Nummerierung der
+    // Optionen beginnt bei jeder Frage wieder bei "1)".
     const body = rendered.length ? `${text}\n${rendered.join("\n")}` : text;
     lines.push(`Frage ${position + 1} von ${total}\n${body}`);
   });
@@ -876,9 +661,6 @@ function newState() {
     working: new Set(), // Sessions, die gerade arbeiten
     lastText: new Map(), // letzter Assistenten-Text je Session
     lastSent: new Map(), // Dedup: "sessionID:art" → Zeitstempel
-    // Die eine Antwort-Brücke des Prozesses (siehe startReplyBridge): jede
-    // weitere Plugin-Instanz benutzt sie mit, statt eine eigene zu starten.
-    bridge: null,
   };
 }
 
@@ -892,162 +674,16 @@ for (const [key, value] of Object.entries(newState())) {
   if (SHARED[key] === undefined) SHARED[key] = value;
 }
 
-/** Nur für Tests: geteilten Zustand zurücksetzen. */
+/**
+ * Nur für Tests: den geteilten Zustand leeren (Dedup, Metadaten, „arbeitet
+ * gerade"). Es gibt keinen zweiten Prozesszustand mehr — der Zustand der
+ * Antwort-Brücke und die Zustandsdatei sind entfallen (ntfy ist nur noch
+ * Meldeweg, siehe Dateikopf).
+ */
 export function resetSharedState() {
   for (const map of Object.values(SHARED)) {
     if (map instanceof Map || map instanceof Set) map.clear();
   }
-  const reply = replyRuntime();
-  if (Array.isArray(reply.sentIds)) reply.sentIds.length = 0;
-  else if (reply.sentIds instanceof Set) reply.sentIds.clear();
-  if (Array.isArray(reply.processedIds)) reply.processedIds.length = 0;
-  else if (reply.processedIds instanceof Set) reply.processedIds.clear();
-  // Eigene Wortlaute mit zurücksetzen: Tests starten damit sauber.
-  if (Array.isArray(reply.ownTexts)) reply.ownTexts.length = 0;
-  reply.lastSessionID = "";
-  reply.lastActiveSession = "";
-  reply.replySince = "";
-  // Zwischenspeicher des Kopplungslinks mit zurücksetzen: im Betrieb bleibt er
-  // absichtlich erhalten, Tests starten damit aber sauber.
-  reply.pairLink = "";
-  reply.pairLinkAt = 0;
-  reply.pairLinkTtl = PAIR_LINK_TTL_MS;
-  // Eine noch laufende Schleife mit beenden — sonst würde sie nach dem
-  // Zurücksetzen weiterpollen und wäre über stop() nicht mehr erreichbar.
-  try {
-    reply.replyAbort?.abort();
-  } catch {
-    /* Zurücksetzen darf nie werfen */
-  }
-  reply.replyAbort = null;
-  reply.replyPromise = null;
-  // Die eine Brücke des Prozesses mit beenden und den Eintrag freigeben: sonst
-  // liefe nach dem Zurücksetzen eine Schleife weiter, die über stop() nicht
-  // mehr erreichbar wäre. Der nächste Start fängt wieder bei refs = 1 an.
-  const bridge = SHARED.bridge;
-  if (bridge) {
-    try {
-      bridge.stop();
-    } catch {
-      /* Zurücksetzen darf nie werfen */
-    }
-  }
-  SHARED.bridge = null;
-}
-
-// ── Prozessglobaler Zustand der Antwort-Brücke ────────────────────────────
-//
-// Dieselbe Begründung wie beim Event-Zustand: mehrere Plugin-Instanzen (eine
-// je Location) teilen sich einen Prozess. sentIds/lastSessionID liegen deshalb
-// am Prozess und werden vom Notifier (send/sendOnce) genauso benutzt wie von
-// der Brücke selbst.
-//
-// Die Schleife darf je Prozess nur EINMAL laufen — und zwar genau einmal, auch
-// wenn nacheinander viele Instanzen laden: deshalb hält SHARED.bridge die
-// laufende Brücke samt Referenzzähler (siehe startReplyBridge). Früher startete
-// jede Instanz ihre eigene Schleife; im Diagnoseprotokoll war das an drei
-// verschiedenen `since`-Token zu sehen (drei Brücken, zusammen bis ~35
-// Anfragen/Minute) — bis ntfy mit HTTP 429 drosselte. replyAbort/replyPromise
-// halten weiterhin die aktuelle Schleife fest, replySince (letzter
-// `since`-Zeiger) und lastActiveSession (Fallback-Ziel) überleben den Wechsel
-// bewusst.
-
-const REPLY_KEY = Symbol.for("ntfy.notify.runtime");
-
-function newReplyState() {
-  return {
-    sentIds: [], // IDs der selbst gesendeten ntfy-Nachrichten
-    processedIds: [], // IDs der bereits verarbeiteten Fremd-Nachrichten (Idempotenz)
-    ownTexts: [], // Hashes der zuletzt selbst gesendeten Wortlaute (Ringpuffer)
-    lastSessionID: "", // Session der zuletzt gesendeten Benachrichtigung
-    lastActiveSession: "", // zuletzt gesehene Session ohne Benachrichtigung (Fallback-Ziel)
-    replyAbort: null, // AbortController der aktuell laufenden Brücken-Schleife
-    replyPromise: null, // Promise dieser Schleife (erledigt sich mit ihr)
-    replySince: "", // letzter `since`-Zeiger; überlebt Schleifen-Neustarts
-    pairLink: "", // zwischengespeicherter Kopplungslink (5-Minuten-Code)
-    pairLinkAt: 0, // Zeitstempel der Erzeugung (ms)
-    pairLinkTtl: PAIR_LINK_TTL_MS, // Gültigkeit des Zwischenspeichers (ms)
-  };
-}
-
-/** Zustand der Antwort-Brücke (ein Objekt je Prozess, tolerant nachgerüstet). */
-export function replyRuntime() {
-  const existing = globalThis[REPLY_KEY];
-  if (!existing) {
-    globalThis[REPLY_KEY] = newReplyState();
-    return globalThis[REPLY_KEY];
-  }
-  if (!Array.isArray(existing.sentIds) && !(existing.sentIds instanceof Set)) {
-    existing.sentIds = [];
-  }
-  if (!Array.isArray(existing.processedIds) && !(existing.processedIds instanceof Set)) {
-    existing.processedIds = [];
-  }
-  if (!Array.isArray(existing.ownTexts)) existing.ownTexts = [];
-  if (typeof existing.lastSessionID !== "string") existing.lastSessionID = "";
-  if (typeof existing.lastActiveSession !== "string") existing.lastActiveSession = "";
-  if (typeof existing.replySince !== "string") existing.replySince = "";
-  if (typeof existing.pairLink !== "string") existing.pairLink = "";
-  if (typeof existing.pairLinkAt !== "number") existing.pairLinkAt = 0;
-  if (typeof existing.pairLinkTtl !== "number") existing.pairLinkTtl = PAIR_LINK_TTL_MS;
-  if (!("replyAbort" in existing)) existing.replyAbort = null;
-  if (!("replyPromise" in existing)) existing.replyPromise = null;
-  return existing;
-}
-
-function hasSentId(runtime, id) {
-  if (!id || !runtime?.sentIds) return false;
-  const list = runtime.sentIds;
-  if (typeof list.has === "function") return list.has(id);
-  return Array.isArray(list) && list.includes(id);
-}
-
-/** Eigene Message-ID merken (begrenzt, damit der Zustand nicht wächst). */
-function rememberSentId(id, runtime = replyRuntime()) {
-  if (typeof id !== "string" || !id) return;
-  if (!Array.isArray(runtime.sentIds) && !(runtime.sentIds instanceof Set)) {
-    runtime.sentIds = [];
-  }
-  const list = runtime.sentIds;
-  if (typeof list.add === "function") {
-    list.add(id);
-    while (list.size > MAX_SENT_IDS) list.delete(list.values().next().value);
-    return;
-  }
-  if (list.includes(id)) return;
-  list.push(id);
-  while (list.length > MAX_SENT_IDS) list.shift();
-}
-
-function hasProcessedId(runtime, id) {
-  if (!id) return false;
-  const list = runtime?.processedIds;
-  if (typeof list?.has === "function") return list.has(id);
-  return Array.isArray(list) && list.includes(id);
-}
-
-/**
- * Fremde Message-ID als verarbeitet merken (begrenzt wie sentIds).
- *
- * Grund: ntfy löst `since=<messageID>` nur sekundengenau auf. Zwei Nachrichten
- * in derselben Sekunde (die Nutzerantwort und unsere eigene Antwort darauf)
- * bekommen denselben Zeitstempel; ein Poll mit `since` der ersten liefert sie
- * deshalb immer wieder aus. Der `since`-Zeiger allein kann das nicht lösen.
- */
-function rememberProcessedId(id, runtime = replyRuntime()) {
-  if (typeof id !== "string" || !id) return;
-  if (!Array.isArray(runtime.processedIds) && !(runtime.processedIds instanceof Set)) {
-    runtime.processedIds = [];
-  }
-  const list = runtime.processedIds;
-  if (typeof list.add === "function") {
-    list.add(id);
-    while (list.size > MAX_PROCESSED_IDS) list.delete(list.values().next().value);
-    return;
-  }
-  if (list.includes(id)) return;
-  list.push(id);
-  while (list.length > MAX_PROCESSED_IDS) list.shift();
 }
 
 function prune() {
@@ -1062,230 +698,6 @@ function prune() {
   }
 }
 
-// ── Persistenter Zustand (überlebt einen Dienst-Neustart) ──────────────────
-//
-// Ein Dienst-Neustart verliert den Zustand an globalThis: im Protokoll stand
-// danach `aktion: no-session`, eine Handy-Antwort fand ihre Session nicht mehr.
-// Wenige Angaben liegen deshalb zusätzlich in einer kleinen JSON-Datei
-// (NTFY_STATE_FILE, Default /tmp/opencode/ntfy-state.json), je Topic:
-//   lastSessionId  Session, die zuletzt eine Meldung in diesem Topic erzeugt hat
-//   openQuestionId offene native Frage (ID des Formulars)
-//   openQuestionAt Zeitpunkt (Unix-Sekunden), zu dem die Frage gestellt wurde —
-//                  nur Text, der danach entstanden ist, darf sie beantworten
-//   openFormId     offenes Formular (z. B. Freigabe-Dialog)
-//   since          Leseposition der Antwort-Brücke (`since`-Zeiger)
-//   sentIds        Ringpuffer der letzten eigenen Message-IDs (JSON) — daran
-//                  erkennt die Brücke ihre eigenen Meldungen nach einem Neustart
-//   lastHandledTime Wasserstand (Unix-Sekunden): eine Nachricht, die älter ist
-//                  als dieser Wert, ist Verlauf und wird nicht mehr eingespeist
-//   lastBase       zuletzt abgeleitete Basis (Port-App des Workspace) — sie
-//                  dient Meldungen ohne Session als Kopplungs-Ersatzadresse
-//   lastSentTime   Sendezeit (Unix-Sekunden) unserer letzten eigenen Meldung in
-//                  diesem Topic: nur eine Nachricht, die DANACH eingegangen ist,
-//                  darf ohne offene Frage als neue Anweisung gelten (R2, siehe
-//                  replyWindowReason). Fehlt das Feld (ältere Zustandsdatei),
-//                  gilt R2 als nicht erfüllt — es wird nichts eingespeist.
-//
-// Geschrieben wird gedrosselt (höchstens einmal je Sekunde), gelesen einmal
-// beim Anlegen des Speichers. Eine fehlende, kaputte oder halb gefüllte Datei
-// ist kein Fehler — dann arbeitet der Speicher wie bisher nur im Arbeitsspeicher;
-// Schreibfehler werden ausschließlich diagnostiziert.
-
-const STATE_VERSION = 1;
-
-/** Pfad der Zustandsdatei (NTFY_STATE_FILE, sonst der Default). */
-function stateFilePath(env = {}) {
-  const configured = String(env.NTFY_STATE_FILE ?? "").trim();
-  return configured || DEFAULT_STATE_FILE;
-}
-
-function emptyTopicState() {
-  return {
-    lastSessionId: "",
-    openQuestionId: "",
-    openQuestionAt: "",
-    openFormId: "",
-    since: "",
-    sentIds: "",
-    lastHandledTime: "",
-    lastBase: "",
-    lastSentTime: "",
-  };
-}
-
-/** Tolerante Form: nur bekannte Felder mit String-Wert werden übernommen. */
-function normalizeTopicState(value) {
-  const out = emptyTopicState();
-  if (!value || typeof value !== "object") return out;
-  for (const key of Object.keys(out)) {
-    if (typeof value[key] === "string") out[key] = value[key];
-  }
-  return out;
-}
-
-/**
- * Zustandsspeicher für die Angaben, die einen Dienst-Neustart überleben müssen.
- * Wirft nie: fehlende/kaputte Dateien und fehlgeschlagene Schreibvorgänge ändern
- * nur den gespeicherten Zustand, nie den Betrieb.
- */
-export function createStateStore(options = {}) {
-  const env = options.env ?? {};
-  const path = String(options.path ?? stateFilePath(env));
-  const now = options.now ?? (() => Date.now());
-  const log = options.log ?? (() => {});
-  const throttle = Number(options.throttleMs);
-  const writeMs = Number.isFinite(throttle) && throttle >= 0 ? throttle : STATE_WRITE_MS;
-  const topics = new Map();
-  // Topic → Felder, die dieser Prozess selbst geschrieben hat. Je Feld: der
-  // `since`-Zeiger der Brücke darf die persistierte Session-Zuordnung nicht
-  // entwerten (und umgekehrt) — beide werden unabhängig fortgeschrieben.
-  const written = new Map();
-  let loaded = false;
-  let dirty = false;
-  let lastWriteAt = 0;
-  let timer = null;
-
-  /** Datei einmal einlesen; kaputte/fehlende Datei = leerer Speicher. */
-  function load() {
-    if (loaded) return;
-    loaded = true;
-    let data;
-    try {
-      data = JSON.parse(readFileSync(path, "utf8"));
-    } catch {
-      return; // Datei fehlt oder ist kein JSON – wie ohne Datei weiterarbeiten
-    }
-    const saved = data?.topics;
-    if (!saved || typeof saved !== "object") return;
-    for (const [topic, value] of Object.entries(saved)) {
-      if (topic) topics.set(topic, normalizeTopicState(value));
-    }
-  }
-
-  function topicState(topic) {
-    load();
-    const name = String(topic ?? "");
-    if (!topics.has(name)) topics.set(name, emptyTopicState());
-    return topics.get(name);
-  }
-
-  /** Dateiinhalt als einfaches Objekt — leere Einträge bleiben draußen. */
-  function snapshot() {
-    const out = {};
-    for (const [topic, value] of topics) {
-      const state = normalizeTopicState(value);
-      if (Object.values(state).some(Boolean)) out[topic] = state;
-    }
-    return { version: STATE_VERSION, topics: out };
-  }
-
-  function write() {
-    try {
-      mkdirSync(dirname(path), { recursive: true });
-      // Erst daneben schreiben, dann umbenennen: ein Abbruch mitten im Schreiben
-      // hinterlässt so keine halbe Datei.
-      const temp = `${path}.tmp`;
-      writeFileSync(temp, `${JSON.stringify(snapshot(), null, 2)}\n`, { mode: 0o600 });
-      renameSync(temp, path);
-      return true;
-    } catch (error) {
-      // Schreibfehler nur diagnostizieren — der Betrieb läuft ohne Datei weiter.
-      log("Zustandsdatei nicht geschrieben:", error?.message ?? String(error));
-      return false;
-    }
-  }
-
-  function schedule(delayMs) {
-    if (timer) return;
-    timer = setTimeout(() => {
-      timer = null;
-      flush();
-    }, Math.max(0, delayMs));
-    // Ein offener Schreib-Timer darf den Prozess nicht am Ende hindern.
-    if (typeof timer?.unref === "function") timer.unref();
-  }
-
-  /** Den geänderten Stand sichern — gedrosselt, mit force sofort. */
-  function flush(force = false) {
-    if (!dirty) return false;
-    const elapsed = lastWriteAt === 0 ? Infinity : now() - lastWriteAt;
-    if (!force && elapsed < writeMs) {
-      schedule(writeMs - elapsed);
-      return false;
-    }
-    dirty = false;
-    lastWriteAt = now();
-    return write();
-  }
-
-  return {
-    path,
-    /** Stand eines Topics (immer ein Objekt, notfalls leer). */
-    topic: (name) => ({ ...topicState(name) }),
-    /** Ein Feld lesen; alles Unerwartete wird zu "". */
-    get(name, key) {
-      const value = topicState(name)?.[key];
-      return typeof value === "string" ? value : "";
-    },
-    /** Felder setzen (nur bekannte, nur Strings) und gedrosselt schreiben. */
-    set(name, patch) {
-      const state = topicState(name);
-      const topicName = String(name ?? "");
-      let changed = false;
-      for (const [key, value] of Object.entries(patch ?? {})) {
-        if (!(key in state) || typeof value !== "string") continue;
-        // Auch ein unveränderter Wert zählt als „von diesem Prozess gesetzt“:
-        // der Arbeitsspeicher ist damit die gültige Quelle, und ein alter
-        // Dateiwert wird nicht mehr als Zuordnung herangezogen.
-        if (!written.has(topicName)) written.set(topicName, new Set());
-        written.get(topicName).add(key);
-        if (value === state[key]) continue;
-        state[key] = value;
-        changed = true;
-      }
-      // Rückgabe: true = der gespeicherte Stand hat sich geändert.
-      if (!changed) return false;
-      dirty = true;
-      flush();
-      return true;
-    },
-    /**
-     * true = dieser Prozess hat das Feld (oder das ganze Topic) selbst
-     * geschrieben. Dann ist der Arbeitsspeicher die aktuellere Quelle, und der
-     * persistierte Wert wird nicht als Zuordnung benutzt.
-     */
-    writtenHere(name, key) {
-      load();
-      const fields = written.get(String(name ?? ""));
-      if (!fields) return false;
-      if (typeof key !== "string" || !key) return fields.size > 0;
-      return fields.has(key);
-    },
-    flush,
-  };
-}
-
-const STATE_STORE_KEY = Symbol.for("ntfy.notify.stateStores");
-
-/**
- * Zustandsspeicher je Datei — im Prozess geteilt, wie der übrige Plugin-Zustand
- * (das Plugin lebt mehrfach je Prozess, alle Instanzen müssen denselben Speicher
- * sehen). Bewusst NICHT in resetSharedState() geleert: die Angabe „dieser
- * Prozess hat dieses Topic geschrieben“ muss über alle Instanzen erhalten
- * bleiben, sonst würde nach einem Reset ein alter Dateiwert als Zuordnung gelten.
- */
-export function stateStoreFor(env = {}) {
-  const registry = (globalThis[STATE_STORE_KEY] ??= new Map());
-  const path = stateFilePath(env);
-  if (!registry.has(path)) registry.set(path, createStateStore({ env, path }));
-  return registry.get(path);
-}
-
-/** Nur für Tests: die geteilten Zustandsspeicher vergessen (Datei bleibt). */
-export function resetStateStores() {
-  globalThis[STATE_STORE_KEY] = new Map();
-}
-
 // ── Kern: Event → ntfy-Nachricht ──────────────────────────────────────────
 
 export function createNtfyNotifier(options = {}) {
@@ -1297,9 +709,7 @@ export function createNtfyNotifier(options = {}) {
   // gilt hier bewusst nicht (siehe workspaceForIcon/workspaceName).
   const contextWorkspace = topicWorkspaceFrom(env, options.directory ?? "");
   // Topic: NTFY_TOPIC plus Prefix/Arbeitsbereich (NTFY_TOPIC_PREFIX,
-  // NTFY_TOPIC_NAME) über die gemeinsame Ableitung — dieselbe wie in der
-  // Antwort-Brücke (topicForEnv). options.topic bleibt der ausdrückliche
-  // Override.
+  // NTFY_TOPIC_NAME) — options.topic bleibt der ausdrückliche Override.
   const topic = String(
     options.topic ??
       topicForEnv(String(env.NTFY_TOPIC ?? DEFAULT_TOPIC), env, options.directory ?? "")
@@ -1311,26 +721,21 @@ export function createNtfyNotifier(options = {}) {
   const contextDirectory = options.directory ?? "";
   const client = options.client;
   const state = options.state ?? SHARED;
-  // Zustand der Antwort-Brücke: eigene Message-IDs + letzte Ziel-Session.
-  const replyState = options.replyState ?? replyRuntime();
-  // Zustandsspeicher für die Angaben, die einen Dienst-Neustart überleben
-  // (Zuordnung der Session, offene Frage, Leseposition der Brücke).
-  const stateStore = options.stateStore ?? stateStoreFor(env);
   // Stummschaltung per Titel (NTFY_IGNORE_TITLES) und Klickziel-Stil
   // (NTFY_LINK_STYLE) einmal auswerten — die Env ändert sich im Betrieb nicht.
   const mutedTitles = ignoredTitleParts(env);
   const baseOnlyLinks = linkStyle(env) === "base";
-  // Kopplungs-Button: Schalter, Diagnose-Ziel und API-Passwort. Die Test-Vorgabe
-  // (apiPassword) hat Vorrang; sonst wird das Passwort — wie bei der
-  // Antwort-Brücke — zur Laufzeit ermittelt und nie geloggt.
-  const pairButton = options.pairButton ?? pairEnabled(env);
   const diag = options.diag ?? makeDiag(env);
-  let resolvedPassword;
-  function serverPassword() {
-    if (typeof options.apiPassword === "string") return options.apiPassword;
-    if (resolvedPassword === undefined) resolvedPassword = resolveServerPassword(env);
-    return resolvedPassword;
-  }
+  // Wartezeit, in der eine Fehlermeldung zurückgehalten wird (siehe
+  // reportError). options.errorHoldMs übersteuert sie — nur in Tests.
+  const errorHoldMs = (() => {
+    const value = Number(options.errorHoldMs);
+    return Number.isFinite(value) && value >= 0 ? value : ERROR_HOLD_MS;
+  })();
+  // Noch nicht verschickte Fehlermeldungen dieser Instanz: Session →
+  // { timer, event, count }. Ein Abbruch oder Dienst-Neustart verwirft den
+  // Eintrag; weitere Fehlschläge derselben Session zählen nur hoch.
+  const pendingErrors = new Map();
 
   function metaFor(sessionID) {
     return state.meta.get(sessionID) ?? {};
@@ -1396,42 +801,11 @@ export function createNtfyNotifier(options = {}) {
     return topicWorkspaceFrom(env, metaFor(sessionID).directory) || contextWorkspace;
   }
 
-  /** Persistierte Basis (Kopplungs-Ersatzadresse) — "" wenn (noch) keine da ist. */
-  function storedBase() {
-    try {
-      const value = stateStore.get(topic, "lastBase");
-      return typeof value === "string" ? value.trim() : "";
-    } catch {
-      return ""; // ein kaputter Speicher darf die Meldung nie stören
-    }
-  }
-
   /**
-   * Die zuletzt abgeleitete Basis für spätere Meldungen ohne Session merken
-   * (siehe linkBase). Wirft nie: ein Schreibfehler ändert nur den gespeicherten
-   * Stand, nie die Meldung.
-   */
-  function rememberBase(base) {
-    if (!base) return;
-    try {
-      stateStore.set(topic, { lastBase: base });
-    } catch {
-      /* der Zustandsspeicher darf die Meldung nie stören */
-    }
-  }
-
-  /**
-   * Basis der Session-Links — linkFor baut darauf den Session-Pfad auf, der
-   * Kopplungslink hängt direkt hier an (deshalb ohne Session-Pfad).
+   * Basis der Session-Links — linkFor baut darauf den Session-Pfad auf.
    * NTFY_SESSION_URL gewinnt immer, sonst wird die Port-App der laufenden
-   * `opencode serve`-Instanz aus den Sitzungs-Metadaten abgeleitet.
-   *
-   * Meldungen ohne Session (Antwort-Bestätigungen, Hinweis „ohne Ziel-Session“)
-   * haben keine solche Basis: für sie gilt zuerst die zuletzt gemerkte
-   * `lastBase` — das Kopplungs-Cookie gilt nur für die App-Adresse des
-   * Workspace, auf der allgemeinen Rückfall-URL wäre der Kopplungsknopf also
-   * nutzlos — und erst danach NTFY_FALLBACK_URL. Meldungen mit Session behalten
-   * ihr bisheriges Verhalten.
+   * `opencode serve`-Instanz aus den Sitzungs-Metadaten abgeleitet. Ohne
+   * Session und ohne ableitbare Basis gilt NTFY_FALLBACK_URL.
    */
   function linkBase(sessionID) {
     // Escape-Hatch: eine fest konfigurierte URL gewinnt immer.
@@ -1441,10 +815,6 @@ export function createNtfyNotifier(options = {}) {
     const derived = derivedBase(sessionID);
     if (derived) return derived;
 
-    if (!String(sessionID ?? "").trim()) {
-      const remembered = storedBase();
-      if (remembered) return remembered;
-    }
     return String(env.NTFY_FALLBACK_URL ?? "https://coder.mueller-nas.de/");
   }
 
@@ -1454,9 +824,8 @@ export function createNtfyNotifier(options = {}) {
    * Serverschlüssel ist NTFY_SERVER_KEY, wenn gesetzt — sonst base64url des
    * Ursprungs der Basis (genau der Wert, den die Oberfläche verwendet; siehe
    * serverKeyFromBase). Die Session-ID wird URL-sicher eingesetzt. Ohne
-   * Session-ID bleibt es bei der Basis; der Kopplungslink (pairLink) nutzt
-   * weiterhin linkBase und bekommt keinen Session-Pfad. NTFY_LINK_STYLE=base
-   * setzt das Klickziel auf die Basis (Übergangslösung, siehe linkStyle).
+   * Session-ID bleibt es bei der Basis. NTFY_LINK_STYLE=base setzt das
+   * Klickziel auf die Basis (Übergangslösung, siehe linkStyle).
    */
   function linkFor(sessionID) {
     const base = linkBase(sessionID);
@@ -1467,69 +836,6 @@ export function createNtfyNotifier(options = {}) {
     const serverKey = serverKeyFromBase(base, env);
     const path = `/server/${encodeURIComponent(serverKey)}/session/${encodeURIComponent(id)}`;
     return `${base.replace(/\/+$/, "")}${path}`;
-  }
-
-  /**
-   * Kopplungslink über die lokale API erzeugen: POST /api/pair liefert einen
-   * einmaligen Code (5 Minuten gültig); daraus wird <basis>/auth/connect/<code>.
-   * Der Auth-Kopf wird nie geloggt. Rückgabe: { url, ttlMs } oder null — wirft
-   * nie, ein Fehler heißt schlicht "kein Button".
-   */
-  async function createPairingLink(base) {
-    if (typeof fetchImpl !== "function") return null;
-    const password = serverPassword();
-    if (!password) {
-      diag("pair-link-fehler", "kein API-Passwort");
-      return null;
-    }
-    const init = {
-      method: "POST",
-      headers: { Authorization: basicAuth(FORM_API_USER, password) },
-    };
-    const signal = timeoutSignal(PAIR_API_TIMEOUT_MS);
-    if (signal) init.signal = signal;
-    try {
-      const res = await fetchImpl(`${localApiUrl(env)}/api/pair`, init);
-      const status = Number(res?.status ?? 0);
-      if (res?.ok === false || (status && status >= 400)) throw new Error(`HTTP ${status || "?"}`);
-      const data = typeof res?.json === "function" ? await res.json() : undefined;
-      const code = typeof data?.code === "string" ? data.code.trim() : "";
-      if (!code) throw new Error("Antwort ohne code");
-      // expires_in der API vorsichtig auswerten: der Link gilt nie länger als
-      // der Zwischenspeicher, aber auch nie länger als der Code selbst.
-      const expires = Number(data?.expires_in) > 0 ? Number(data.expires_in) * 1000 : 0;
-      return {
-        url: `${base.replace(/\/+$/, "")}/auth/connect/${encodeURIComponent(code)}`,
-        ttlMs: expires > 0 ? Math.min(PAIR_LINK_TTL_MS, expires) : PAIR_LINK_TTL_MS,
-      };
-    } catch (error) {
-      logger("Kopplungslink nicht erzeugt:", error?.message ?? String(error));
-      diag("pair-link-fehler", error?.message ?? String(error));
-      return null;
-    }
-  }
-
-  /**
-   * Kopplungslink mit kurzem Zwischenspeicher: der Code ist einmalig, gilt aber
-   * 5 Minuten — deshalb wird der fertige Link ~120 s wiederverwendet, statt für
-   * jede Meldung einen neuen Code zu erzeugen. Der Zwischenspeicher liegt am
-   * geteilten Laufzeit-Zustand und überlebt damit auch einen Plugin-Reload.
-   */
-  async function pairLink(sessionID) {
-    const base = linkBase(sessionID).replace(/\/+$/, "");
-    const cached = typeof replyState.pairLink === "string" ? replyState.pairLink : "";
-    const at = Number(replyState.pairLinkAt ?? 0);
-    const stored = Number(replyState.pairLinkTtl ?? 0);
-    const ttl = stored > 0 ? stored : PAIR_LINK_TTL_MS;
-    // Nur Links zur selben Basis wiederverwenden: mehrere Locations teilen sich
-    // einen Prozess, können aber unterschiedliche Basen haben.
-    if (cached.startsWith(`${base}/auth/connect/`) && now() - at < ttl) return cached;
-    const fresh = await createPairingLink(base);
-    if (!fresh) return "";
-    replyState.pairLink = fresh.url;
-    replyState.pairLinkAt = now();
-    replyState.pairLinkTtl = fresh.ttlMs;
-    return fresh.url;
   }
 
   function absorb(info) {
@@ -1593,8 +899,7 @@ export function createNtfyNotifier(options = {}) {
     const icon = iconUrlFor(env, workspaceForIcon(sessionID));
     if (icon) body.icon = icon;
     // Aktionen aufbauen (ntfy erlaubt höchstens drei je Nachricht): vorhandene
-    // übernehmen, dann das Klick-Ziel, zuletzt den Kopplungslink. Das Klick-Ziel
-    // selbst bleibt unverändert.
+    // übernehmen, dann das Klick-Ziel. Das Klick-Ziel selbst bleibt unverändert.
     const actions = Array.isArray(payload.actions)
       ? payload.actions.filter((action) => action && typeof action === "object")
       : [];
@@ -1607,25 +912,6 @@ export function createNtfyNotifier(options = {}) {
           label: baseOnlyLinks ? "OpenCode öffnen" : "Session öffnen",
           url: payload.click,
         });
-      }
-    }
-    // Kopplungslink als view-Button — nur wenn die Erzeugung geklappt hat und
-    // dieselbe URL nicht schon als Aktion dranhängt. Fehler ändern die Meldung
-    // nicht: createPairingLink fängt alles ab und protokolliert nur; die
-    // Meldung selbst darf nie scheitern.
-    if (pairButton) {
-      try {
-        const pairUrl = await pairLink(sessionID);
-        if (
-          pairUrl &&
-          actions.length < 3 &&
-          !actions.some((action) => action.action === "view" && action.url === pairUrl)
-        ) {
-          actions.push({ action: "view", label: PAIR_LINK_LABEL, url: pairUrl });
-        }
-      } catch (error) {
-        logger("Kopplungslink fehlgeschlagen:", error?.message ?? String(error));
-        diag("pair-link-fehler", error?.message ?? String(error));
       }
     }
     if (actions.length) body.actions = actions;
@@ -1643,34 +929,8 @@ export function createNtfyNotifier(options = {}) {
         logger(`Publish fehlgeschlagen: HTTP ${res?.status ?? "?"}`);
         return false;
       }
-      // Message-ID der eigenen Nachricht merken — daran erkennt die
-      // Antwort-Brücke später, dass die Nachricht von uns selbst stammt.
-      let id = "";
-      try {
-        const data = typeof res.json === "function" ? await res.json() : undefined;
-        if (data && typeof data.id === "string") id = data.id;
-      } catch {
-        /* Antwort ohne JSON-Body – dann gibt es eben keine ID */
-      }
-      rememberSentId(id, replyState);
-      // Eigene Message-ID auch in der Zustandsdatei (Ringpuffer, letzte 50):
-      // nur so bleibt die eigene Meldung nach einem Dienst-Neustart als eigene
-      // erkennbar (siehe ignoreReason).
-      rememberPersistedSentId(id, stateStore, topic);
-      // Sendezeit der eigenen Meldung merken: eine Nachricht ohne offene Frage
-      // gilt nur dann als neue Anweisung an die meldende Session, wenn sie NACH
-      // dieser Meldung eingegangen ist (Antwortfenster, siehe
-      // replyWindowReason in der Antwort-Brücke).
-      stateStore.set(topic, { lastSentTime: String(Math.floor(now() / 1000)) });
-      // Eigener Wortlaut (als Hash): derselbe Text darf nie als Nutzerantwort
-      // durchgehen, wenn ntfy ihn erneut ausliefert. Bestätigungen (ack) tragen
-      // den Text des Nutzers — sie zählen deshalb nicht als eigene Meldung.
-      if (!payload.ack) rememberSentText(body.message, replyState);
-      // Die Meldung ist raus: die abgeleitete Basis als Kopplungs-Ersatzadresse
-      // für spätere Meldungen ohne Session merken (gedrosseltes Schreiben wie
-      // beim übrigen Zustand). Eine feste NTFY_SESSION_URL ist keine abgeleitete
-      // Basis und ändert den gemerkten Stand deshalb nicht.
-      if (!fixedSessionUrl()) rememberBase(derivedBase(sessionID));
+      // Die Meldung ist raus. Der Antwort-Body wird nicht mehr ausgewertet: die
+      // Message-ID diente allein dem Antwortweg (Selbsterkennung im Topic).
       return true;
     } catch (error) {
       logger("Publish-Fehler:", error?.message ?? String(error));
@@ -1683,32 +943,6 @@ export function createNtfyNotifier(options = {}) {
     return titleMuted(mutedTitles, metaFor(sessionID).title);
   }
 
-  /**
-   * Offene Frage/offenes Formular im Topic-Zustand löschen — gemeinsam von
-   * „beantwortet" und „abgebrochen" benutzt, damit nach einem
-   * form.cancelled/question.cancelled kein hängender Eintrag stehen bleibt.
-   */
-  function clearOpenForm() {
-    stateStore.set(topic, { openQuestionId: "", openQuestionAt: "", openFormId: "" });
-  }
-
-  /**
-   * Offenes Formular im Zustandsspeicher merken (openQuestionId für Fragen,
-   * openFormId für Freigaben): So ist nach einem Dienst-Neustart noch bekannt,
-   * welche Frage offen war.
-   */
-  function rememberOpenForm(key, event, sent) {
-    if (!sent) return;
-    const formID = formIdFromEvent(event);
-    if (formID) stateStore.set(topic, { [key]: formID });
-    // Zeitpunkt der gestellten Frage zusätzlich merken: die Antwort-Brücke darf
-    // eine offene Frage nur mit Text füllen, der NACH dem Stellen entstanden ist
-    // (sonst beantwortet eine alte, erneut eingespeiste Nachricht die Frage).
-    if (key === "openQuestionId") {
-      stateStore.set(topic, { openQuestionAt: String(Math.floor(now() / 1000)) });
-    }
-  }
-
   async function sendOnce(sessionID, kind, payload) {
     // NTFY_IGNORE_TITLES: für diese Session geht gar nichts raus — weder Frage
     // noch Fertig noch Fehler. Der Cooldown wird dabei nicht angefasst.
@@ -1718,15 +952,7 @@ export function createNtfyNotifier(options = {}) {
     if (t - (state.lastSent.get(key) ?? 0) < cooldownMs) return false;
     state.lastSent.set(key, t);
     prune();
-    const sent = await send(payload, sessionID);
-    // Ziel der Antwort-Brücke: die Session der zuletzt zugestellten Meldung.
-    if (sent && typeof sessionID === "string" && sessionID) {
-      replyState.lastSessionID = sessionID;
-      // Dieselbe Zuordnung in die Zustandsdatei: nach einem Dienst-Neustart
-      // findet die Brücke die Session ohne In-Memory-Zustand wieder.
-      stateStore.set(topic, { lastSessionId: sessionID });
-    }
-    return sent;
+    return send(payload, sessionID);
   }
 
   /**
@@ -1769,18 +995,107 @@ export function createNtfyNotifier(options = {}) {
     });
   }
 
-  async function reportError(sessionID, event) {
+  /**
+   * Trägt das Ereignis erkennbar einen Abbruch? `session.execution.interrupted`
+   * ist ein eigenes Ereignis und meldet nichts (siehe handleEvent); manche
+   * Fehler-Ereignisse tragen den Abbruch aber als Feld mit (aborted, abortedMs,
+   * reason: "aborted", status: "cancelled" …). Auch dann darf keine Meldung
+   * entstehen — sonst stünde „⚠️ Fehler" für einen selbst abgebrochenen Turn im
+   * Topic.
+   */
+  function isAbortEvent(event) {
+    const marker = /^(aborted|abort|interrupted|cancelled|canceled)$/i;
+    const key = /^(aborted|abort|abortreason|reason|status|state|finish)$/i;
+    const seen = new Set();
+    const walk = (value, depth) => {
+      if (depth > 3 || !value || typeof value !== "object" || seen.has(value)) return false;
+      seen.add(value);
+      for (const [name, child] of Object.entries(value)) {
+        if (typeof child === "boolean") {
+          if (child && /^(aborted|interrupted|cancelled|canceled)$/i.test(name)) return true;
+          continue;
+        }
+        if (typeof child === "string") {
+          if (key.test(name) && marker.test(child.trim())) return true;
+          continue;
+        }
+        if (child && typeof child === "object" && walk(child, depth + 1)) return true;
+      }
+      return false;
+    };
+    return walk(event, 0);
+  }
+
+  /** Eine zurückgehaltene Fehlermeldung fallenlassen (Abbruch). */
+  function cancelPendingError(sessionID) {
     if (!sessionID) return;
+    const pending = pendingErrors.get(sessionID);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingErrors.delete(sessionID);
+    // Diagnose: ohne diese Zeile wäre im Log nicht zu sehen, dass eine
+    // Fehlermeldung wegen eines Abbruchs bewusst nicht verschickt wurde.
+    diag("fehler-verworfen", `abbruch (${pending.count} Fehlschlag/Fehlschlaege)`);
+  }
+
+  /** Alle zurückgehaltenen Fehlermeldungen fallenlassen (Dienst-Neustart). */
+  function cancelAllPendingErrors() {
+    const count = pendingErrors.size;
+    for (const pending of pendingErrors.values()) clearTimeout(pending.timer);
+    pendingErrors.clear();
+    if (count) diag("fehler-verworfen", "dienst-neustart");
+  }
+
+  /** Die zurückgehaltene Fehlermeldung jetzt verschicken. */
+  async function flushError(sessionID, pending) {
     if (await isSubagent(sessionID)) return;
     state.working.add(sessionID);
     await ensureMeta(sessionID);
+    const body = errorBody(pending.event) || fallbackBody(pending.event);
+    // Mehrere Fehlschläge im Fenster ergeben eine Meldung — die Anzahl wird
+    // genannt, damit der Zusammenhang nicht verloren geht.
+    const hint = pending.count > 1 ? `\n\n(${pending.count} Fehlschläge zusammengefasst)` : "";
     await sendOnce(sessionID, "error", {
       title: `⚠️ Fehler — ${projectFor(sessionID)}`,
-      message: withHeader(sessionID, errorBody(event) || fallbackBody(event)),
+      message: withHeader(sessionID, `${body}${hint}`),
       priority: 5,
       tags: ["warning"],
       click: linkFor(sessionID),
     });
+  }
+
+  /**
+   * Fehler melden — aber erst nach ERROR_HOLD_MS („Vorgabe ~3 s").
+   *
+   * Grund: `session.step.failed` (und `session.execution.failed`) trifft VOR
+   * dem Abbruch ein. Bricht der Nutzer den Turn selbst ab oder wird der Dienst
+   * neu gestartet, kommt in der Zwischenzeit `session.execution.interrupted`
+   * bzw. `location.shutdown` — dann wird die Meldung verworfen statt verschickt.
+   * Ein Abbruch-Merkmal im Ereignis unterdrückt sie sofort. Weitere Fehlschläge
+   * derselben Session im Fenster ergeben zusammen EINE Meldung.
+   */
+  async function reportError(sessionID, event) {
+    if (!sessionID) return;
+    if (isAbortEvent(event)) {
+      cancelPendingError(sessionID);
+      diag("fehler-verworfen", "abbruch im ereignis");
+      return;
+    }
+    const pending = pendingErrors.get(sessionID);
+    if (pending) {
+      pending.count += 1;
+      return;
+    }
+    const entry = { event, count: 1, timer: null };
+    entry.timer = setTimeout(() => {
+      pendingErrors.delete(sessionID);
+      flushError(sessionID, entry).catch((error) => {
+        logger("Fehlermeldung nicht verschickt:", error?.message ?? String(error));
+      });
+    }, errorHoldMs);
+    // Ein offener Fehler-Timer darf den Prozess nicht am Beenden hindern.
+    if (typeof entry.timer?.unref === "function") entry.timer.unref();
+    pendingErrors.set(sessionID, entry);
   }
 
   function withHeader(sessionID, body) {
@@ -1805,14 +1120,22 @@ export function createNtfyNotifier(options = {}) {
     // V2 liefert den Projekt-Kontext direkt mit: location.directory.
     absorbLocation(sessionID, event?.location?.directory);
 
+    // Abbruch und Dienst-Neustart melden nie etwas von sich aus — sie
+    // verwerfen nur eine noch zurückgehaltene Fehlermeldung (siehe
+    // reportError). Ohne das käme nach einem selbst abgebrochenen Turn oder
+    // einem Dienst-Neustart „⚠️ Fehler" ins Topic (der Fehlschlag trifft vor
+    // dem Abbruch ein).
+    if (type === "session.execution.interrupted") {
+      cancelPendingError(sessionID);
+      return;
+    }
+    if (type === "location.shutdown") {
+      cancelAllPendingErrors();
+      return;
+    }
+
     // Subagent-Sessions (parentID gesetzt) melden nichts — die Eltern-Session tut es.
     if (sessionID && state.children.has(sessionID)) return;
-
-    // Fallback-Ziel der Antwort-Brücke: die zuletzt gesehene Session, die kein
-    // Subagent ist (die Prüfung darüber ist synchron). So kommt eine Antwort
-    // auch dann an, wenn die Session keine eigene Meldung ausgelöst hat.
-    // lastSessionID (aus Benachrichtigungen) hat in der Brücke Vorrang.
-    if (sessionID) replyState.lastActiveSession = sessionID;
 
     // V2: vollständiger Antwort-Text je Text-Teil — der letzte gewinnt.
     const text = textFromEvent(event);
@@ -1888,21 +1211,14 @@ export function createNtfyNotifier(options = {}) {
         if (!sessionID || (await isSubagent(sessionID))) return;
         markWorking(sessionID);
         await ensureMeta(sessionID);
-        // Hinweiszeile: der Text kann direkt aus ntfy in die offene Frage
-        // eingetragen werden (siehe Formular-Antwort in der Antwort-Brücke).
-        const hint = formEnabled(env) ? FORM_QUESTION_HINT : "";
-        const sent = await sendOnce(sessionID, "question", {
+        await sendOnce(sessionID, "question", {
           title: `❓ Frage — ${projectFor(sessionID)}`,
-          message: withHeader(
-            sessionID,
-            [questionBody(event) || fallbackBody(event), hint].filter(Boolean).join("\n\n")
-          ),
+          message: withHeader(sessionID, questionBody(event) || fallbackBody(event)),
           priority: 4,
           tags: ["question"],
           click: linkFor(sessionID),
           maxBody: MAX_QUESTION_BODY,
         });
-        rememberOpenForm("openQuestionId", event, sent);
         return;
       }
       case "permission.asked":
@@ -1911,7 +1227,7 @@ export function createNtfyNotifier(options = {}) {
         if (!sessionID || (await isSubagent(sessionID))) return;
         markWorking(sessionID);
         await ensureMeta(sessionID);
-        const sent = await sendOnce(sessionID, "permission", {
+        await sendOnce(sessionID, "permission", {
           title: `🔐 Freigabe — ${projectFor(sessionID)}`,
           message: withHeader(sessionID, permissionBody(event) || fallbackBody(event)),
           priority: 4,
@@ -1919,26 +1235,12 @@ export function createNtfyNotifier(options = {}) {
           click: linkFor(sessionID),
           maxBody: MAX_QUESTION_BODY,
         });
-        rememberOpenForm("openFormId", event, sent);
         return;
       }
-      // ── Frage/Formular beantwortet oder abgebrochen: nichts mehr offen ──
+      // ── Frage/Freigabe beantwortet: die Session arbeitet weiter ────────
       case "form.replied":
       case "permission.replied": {
-        clearOpenForm();
         if (sessionID) state.working.add(sessionID);
-        return;
-      }
-      case "question.replied":
-      case "form.resolved":
-      // Ein abgebrochenes Formular (Nutzer hat das Fenster geschlossen, Turn
-      // abgebrochen, Zeitablauf) ist genauso wenig mehr offen: ohne dieses
-      // Aufräumen bliebe openQuestionId/openQuestionAt hängen und die Brücke
-      // hielte eine längst erledigte Frage für offen.
-      case "form.cancelled":
-      case "question.cancelled":
-      case "permission.cancelled": {
-        clearOpenForm();
         return;
       }
       case "session.deleted": {
@@ -1984,1203 +1286,6 @@ export function createNtfyNotifier(options = {}) {
     topic,
     _state: state,
   };
-}
-
-// ── Antwort-Brücke: ntfy-Nachricht → Prompt in die Session ────────────────
-//
-// Der Nutzer antwortet in der ntfy-App auf eine Meldung; die Antwort landet
-// als ganz normale Nachricht im Topic. Diese Brücke holt neue Nachrichten im
-// Hintergrund ab und speist sie als Prompt in die zuletzt benachrichtigte
-// Session ein. Eigene Nachrichten (Message-ID aus sentIds ODER eigener
-// Titel-Präfix) werden ignoriert — sonst würde das Plugin sich selbst
-// beantworten. Bereits verarbeitete IDs werden gemerkt (processedIds), weil
-// `since=<id>` sekundengenau aufgelöst wird und dieselbe Nachricht sonst mehr-
-// fach im Strom auftaucht. Die reine Logik steckt in createReplyBridge() und ist
-// damit ohne Netzwerk testbar; startReplyBridge() hängt die Schleife dran — je
-// Prozess genau eine, geteilt über einen Referenzzähler.
-
-/** "0"/"false"/"no"/"off" schalten die Brücke ab (Default: an). */
-function replyEnabled(env) {
-  const value = String(env.NTFY_REPLY_ENABLED ?? "1")
-    .trim()
-    .toLowerCase();
-  return !["0", "false", "no", "off"].includes(value);
-}
-
-// ── Formular-Antwort: Handy-Text → offene native Frage ────────────────────
-//
-// Die native Frage ist serverseitig ein Formular (question-Tool). Offene
-// Formulare einer Session liefert GET /api/session/{id}/form, die Antwort geht
-// per POST /api/session/{id}/form/{formID}/reply mit { answer: { key: wert } }
-// raus (204 = angenommen), der Abbruch per DELETE auf denselben Pfad ohne
-// /reply. Alles hier ist bewusst fehlertolerant und kennt keinen Zustand:
-// schlägt etwas fehl, wird nicht geraten — am Ende steht immer die
-// Prompt-Einspeisung, und eine offene Frage wird vorher abgebrochen, damit kein
-// Turn blockiert zurückbleibt.
-
-/** "0"/"false"/"no"/"off" schalten die Formular-Antwort ab (Default: an). */
-function formEnabled(env) {
-  const value = String(env.NTFY_FORM_REPLY ?? "1")
-    .trim()
-    .toLowerCase();
-  return !["0", "false", "no", "off"].includes(value);
-}
-
-/**
- * Antwortfenster in Sekunden (NTFY_REPLY_WINDOW_MIN, Default 30 Minuten).
- * "0" schaltet die Zeitprüfung ab (dann zählt jede Nachricht nach der eigenen
- * letzten Meldung); Unlesbares/Negatives fällt auf den Default zurück.
- */
-function replyWindowSeconds(env) {
-  const raw = String(env.NTFY_REPLY_WINDOW_MIN ?? "").trim();
-  const fallback = REPLY_WINDOW_DEFAULT_MIN * 60;
-  if (!raw) return fallback;
-  const minutes = Number(raw);
-  if (!Number.isFinite(minutes) || minutes < 0) return fallback;
-  return Math.round(minutes * 60);
-}
-
-/** Basis-URL der lokalen API (die laufende `opencode serve`-Instanz). */
-function localApiUrl(env) {
-  const fixed = String(env.OPENCODE_SERVER_URL ?? "").trim();
-  if (fixed) return fixed.replace(/\/+$/, "");
-  return `http://127.0.0.1:${env.NTFY_SESSION_PORT || "49374"}`;
-}
-
-/** HTTP-Basic-Header-Wert ("opencode:<Passwort>"). Wirft nie. */
-function basicAuth(user, password) {
-  const raw = `${user}:${password}`;
-  try {
-    const buffer = globalThis.Buffer;
-    if (buffer?.from) return `Basic ${buffer.from(raw, "utf8").toString("base64")}`;
-    return `Basic ${btoa(raw)}`;
-  } catch {
-    return "";
-  }
-}
-
-/** AbortSignal mit Zeitlimit; fehlt die Unterstützung, dann ohne Limit. */
-function timeoutSignal(ms) {
-  try {
-    return typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
-      ? AbortSignal.timeout(ms)
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Erstes Passwort-Feld in einem (verschachtelten) Service-Objekt. */
-function findPasswordValue(value, depth = 0) {
-  if (depth > 4 || !value || typeof value !== "object") return "";
-  for (const [key, child] of Object.entries(value)) {
-    if (typeof child === "string") {
-      if (/password/i.test(key) && child.trim()) return child.trim();
-    } else if (child && typeof child === "object") {
-      const found = findPasswordValue(child, depth + 1);
-      if (found) return found;
-    }
-  }
-  return "";
-}
-
-/**
- * Passwort der lokalen API zur Laufzeit ermitteln: Umgebung → Env-Datei
- * (/etc/opencode.env) → Service-Datei der laufenden Instanz. Der Feldname in
- * der Service-Datei variiert je Version, deshalb wird tolerant gesucht. Der
- * Wert wird nirgends geloggt.
- */
-export function resolveServerPassword(env = process.env) {
-  const direct = String(env.OPENCODE_SERVER_PASSWORD ?? "").trim();
-  if (direct) return direct;
-  const fromFile = String(
-    readEnvFile(env.NTFY_ENV_FILE ?? "/etc/opencode.env").OPENCODE_SERVER_PASSWORD ?? ""
-  ).trim();
-  if (fromFile) return fromFile;
-  let home = "";
-  try {
-    home = homedir();
-  } catch {
-    home = "";
-  }
-  for (const file of [
-    env.OPENCODE_SERVICE_FILE,
-    home ? join(home, ".config/opencode/service.json") : "",
-    "/root/.config/opencode/service.json",
-  ]) {
-    if (!file) continue;
-    try {
-      const found = findPasswordValue(JSON.parse(readFileSync(file, "utf8")));
-      if (found) return found;
-    } catch {
-      /* Datei fehlt / kein JSON – nächster Kandidat */
-    }
-  }
-  return "";
-}
-
-/**
- * Optionsliste tolerant normalisieren: laut Schema { value, label }, aber auch
- * einfache Strings sind erlaubt. Einträge ohne Wert fallen raus.
- */
-function normalizeOptions(options) {
-  const out = [];
-  for (const option of Array.isArray(options) ? options : []) {
-    if (option === null || option === undefined) continue;
-    if (typeof option === "object") {
-      const value = option.value ?? option.key ?? option.label ?? option.title;
-      if (value === undefined || value === null || value === "") continue;
-      out.push({ value, label: String(option.label ?? option.title ?? option.value ?? value) });
-      continue;
-    }
-    out.push({ value: option, label: String(option) });
-  }
-  return out;
-}
-
-function optionText(value) {
-  return value === undefined || value === null ? "" : String(value);
-}
-
-/**
- * Vergleichsform eines Antworttexts bzw. Optionswerts: Kleinschreibung,
- * Mehrfach-Whitespace zusammengezogen, umschließende Anführungszeichen weg.
- */
-function matchKey(value) {
-  return optionText(value)
-    .trim()
-    .replace(/^["'„“”‚‘’`´]+/, "")
-    .replace(/["'„“”‚‘’`´]+$/, "")
-    .replace(/\s+/g, " ")
-    .toLowerCase();
-}
-
-/**
- * Antworttext → Optionswert. Bewusst streng: (a) exakte Übereinstimmung mit
- * Optionswert oder -label (ohne Groß-/Kleinschreibung) oder (b) eine reine
- * Zahl n als 1-basierter Optionsindex, sofern 1 ≤ n ≤ Anzahl Optionen.
- * Kein Treffer → null: es wird nicht geraten (eine unscharfe Teilstring-Suche
- * könnte ganze Sätze falsch zuordnen, Stichwort Negation) — der Aufrufer
- * versucht dann den Rohtext bzw. bricht die Frage ab.
- */
-function matchOption(options, text) {
-  const entries = normalizeOptions(options);
-  const needle = matchKey(text);
-  if (!needle || !entries.length) return null;
-  const exact = entries.find(
-    (entry) => matchKey(entry.value) === needle || matchKey(entry.label) === needle
-  );
-  if (exact) return exact.value;
-  if (/^\d+$/.test(needle)) {
-    const index = Number(needle) - 1;
-    if (index >= 0 && index < entries.length) return entries[index].value;
-  }
-  return null;
-}
-
-/**
- * Beantwortungsplan für das einzige Feld des Formulars.
- * Rückgabe:
- *   { kind: "answer", key, value } — eindeutiger Treffer oder Freitext
- *   { kind: "raw", key }           — Optionsfeld ohne Treffer, das Rohtext
- *                                    akzeptieren könnte (type "string")
- *   null                           — bewusst nicht beantworten
- *
- * Bewusst konservativ: mehrere Felder, unbekannte Feldtypen (number, integer,
- * boolean, external), versteckte/bedingte Felder und mehrdeutige Optionsfelder
- * führen nicht zu einer geratenen Antwort; der Aufrufer bricht dann ab.
- */
-function planForForm(form, text) {
-  const fields = Array.isArray(form?.fields) ? form.fields : [];
-  if (fields.length !== 1) return null;
-  const field = fields[0];
-  if (!field || typeof field !== "object") return null;
-  const key = typeof field.key === "string" ? field.key : "";
-  if (!key) return null;
-  if (field.hidden === true) return null;
-  if (Array.isArray(field.when) && field.when.length) return null;
-  const type = typeof field.type === "string" ? field.type : "";
-  if (normalizeOptions(field.options).length) {
-    const value = matchOption(field.options, text);
-    if (value !== null && value !== undefined) {
-      // multiselect erwartet laut Schema eine Liste (Form.Value: string[]).
-      return { kind: "answer", key, value: type === "multiselect" ? [optionText(value)] : value };
-    }
-    // Kein eindeutiger Treffer: den Rohtext nur versuchen, wenn das Feld
-    // Strings akzeptiert (multiselect erwartet eine Liste).
-    return type === "string" ? { kind: "raw", key } : null;
-  }
-  // Freitext nur beim String-Typ — alles andere bleibt konservativ.
-  if (type !== "string") return null;
-  return { kind: "answer", key, value: String(text) };
-}
-
-/**
- * Nur echte Fragen beantworten: Formulare mit anderem Zweck (z. B.
- * Freigabe-Dialoge) bleiben dem nativen Fenster vorbehalten.
- */
-function isQuestionForm(form) {
-  const kind = form?.metadata?.kind;
-  return typeof kind !== "string" || kind === "" || /^question/i.test(kind);
-}
-
-/** NDJSON-Zeilen des /json-Endpunkts lesen; since zeigt danach auf die letzte ID. */
-export function parseReplyStream(raw, since = "") {
-  const messages = [];
-  let nextSince = since;
-  for (const line of String(raw ?? "").split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    let entry;
-    try {
-      entry = JSON.parse(trimmed);
-    } catch {
-      continue;
-    }
-    if (!entry || typeof entry !== "object") continue;
-    // Auch open/keepalive-Zeilen tragen eine ID: sie rückt `since` weiter,
-    // damit dieselbe Stelle nicht immer wieder abgefragt wird.
-    if (typeof entry.id === "string" && entry.id) nextSince = entry.id;
-    // keepalive/open-Zeilen tragen keine Nutzlast.
-    if (entry.event && entry.event !== "message") continue;
-    messages.push(entry);
-  }
-  return { messages, nextSince };
-}
-
-/** Wartet ms Millisekunden; bricht sofort ab, wenn das Signal abbricht. */
-function sleep(ms, signal) {
-  if (signal?.aborted) return Promise.resolve();
-  return new Promise((resolve) => {
-    const done = () => {
-      clearTimeout(timer);
-      if (signal) signal.removeEventListener("abort", done);
-      resolve();
-    };
-    const timer = setTimeout(done, ms);
-    if (signal) signal.addEventListener("abort", done, { once: true });
-  });
-}
-
-/** Erste brauchbare Zahl (> 0) aus der Liste — sonst der letzte Wert. */
-function firstPositive(...values) {
-  for (const value of values) {
-    const num = Number(value);
-    if (Number.isFinite(num) && num > 0) return num;
-  }
-  return 0;
-}
-
-export function createReplyBridge(options = {}) {
-  const env = options.env ?? process.env;
-  const client = options.client ?? {};
-  const runtime = options.runtime ?? replyRuntime();
-  const log = options.log ?? (() => {});
-  const publish = options.publish ?? (async () => false);
-  const config = options.config ?? resolveConfig(env);
-  const url = String(options.url ?? config.url ?? DEFAULT_URL).replace(/\/+$/, "");
-  const token = String(options.token ?? config.token ?? "");
-  // Topic zum Abholen: dieselbe Ableitung wie beim Versand (topicForEnv) — mit
-  // gesetztem NTFY_TOPIC_PREFIX und bekanntem Arbeitsbereich (NTFY_TOPIC_NAME,
-  // NTFY_WORKSPACE oder Workspace-Pfad) hört die Brücke also auf
-  // "<prefix>-<workspace>", genau dem Topic, in das die Meldungen gehen.
-  const topic = String(
-    options.topic ??
-      topicForEnv(
-        String(env.NTFY_REPLY_TOPIC ?? config.topic ?? DEFAULT_TOPIC),
-        env,
-        options.directory ?? ""
-      )
-  );
-  const fetchImpl = options.fetch ?? globalThis.fetch;
-  // Wartezeiten: im Betrieb gelten die Defaults oben (1 s vor dem Neuverbinden,
-  // verdoppelnd bis 30 s; nach HTTP 429 deutlich länger). Tests übersteuern sie
-  // — reconnectMs ersetzt dabei die früheren idleMs/errorMs, weil es keinen
-  // Kurzpoll mehr gibt, sondern nur noch den Wiederaufbau des Stroms.
-  const reconnectMs = firstPositive(
-    options.reconnectMs,
-    options.idleMs,
-    options.errorMs,
-    REPLY_RECONNECT_MS
-  );
-  const reconnectMaxMs = firstPositive(options.reconnectMaxMs, REPLY_RECONNECT_MAX_MS);
-  const rateLimitMs = firstPositive(options.rateLimitMs, REPLY_RATE_LIMIT_MS);
-  const rateLimitMaxMs = firstPositive(options.rateLimitMaxMs, REPLY_RATE_LIMIT_MAX_MS);
-  // Zeitlimit nur für den Verbindungsaufbau (Header).
-  const connectTimeoutMs = firstPositive(options.connectTimeoutMs, REPLY_CONNECT_TIMEOUT_MS);
-  const diagPath = String(env.NTFY_REPLY_LOG ?? "").trim();
-  // Formular-Antwort: Schalter, Basis-URL und API-Passwort. Das Passwort
-  // (Option apiPassword) hat Vorrang, damit Tests ohne Dateizugriff und ohne
-  // Netz laufen können; sonst wird es zur Laufzeit ermittelt. Fehlt es, ist
-  // der Formular-Weg still inaktiv und es bleibt bei der Prompt-Einspeisung.
-  const formReply = options.formReply ?? formEnabled(env);
-  const apiUrl = String(options.apiUrl ?? localApiUrl(env)).replace(/\/+$/, "");
-  const apiPassword = String(options.apiPassword ?? resolveServerPassword(env));
-  // Antwortfenster (R2): 0 = Zeitprüfung aus (siehe replyWindowReason).
-  const windowSeconds = replyWindowSeconds(env);
-  // Zustandsspeicher (Datei): die Zuordnung der Session und die Leseposition
-  // überleben damit einen Dienst-Neustart. Fehlt die Datei, ist er schlicht leer.
-  const store = options.stateStore ?? stateStoreFor(env);
-
-  // ── Zeitfenster statt Verlauf (Wasserstand) und Drossel ──────────────────
-  //
-  // Vorfall 17.10.2026: die Brücke hat den kompletten alten Verlauf des Topics
-  // erneut als Prompt in eine Session gespeist — Selbst-Echo und uralte
-  // Handy-Nachrichten inklusive. Deshalb gibt es jetzt einen Wasserstand
-  // (lastHandledTime, Unix-Sekunden, in der Zustandsdatei, überlebt jeden
-  // Neustart): nur Nachrichten, die nicht älter sind als dieser Wert, werden
-  // überhaupt angesehen. Nach JEDER Nachricht steht er auf
-  // max(bekannt, message.time) — nichts wird wiederholt.
-  let watermark = 0; // 0 = noch nicht ermittelt
-  let injections = []; // Zeitstempel (ms) der letzten Einspeisungen (Drossel)
-
-  function nowMs() {
-    return Date.now();
-  }
-
-  function nowSeconds() {
-    return Math.floor(nowMs() / 1000);
-  }
-
-  /** Wasserstand ermitteln — beim ersten Start auf jetzt setzen, nie auf 0. */
-  function waterMark() {
-    if (watermark > 0) return watermark;
-    let stored = 0;
-    try {
-      stored = Number(store.get(topic, "lastHandledTime"));
-    } catch {
-      stored = 0; // ein kaputter Speicher darf die Brücke nie stören
-    }
-    watermark = Number.isFinite(stored) && stored > 0 ? Math.floor(stored) : nowSeconds();
-    try {
-      store.set(topic, { lastHandledTime: String(watermark) });
-    } catch {
-      /* siehe oben */
-    }
-    return watermark;
-  }
-
-  /** Wasserstand fortschreiben: max(bekannt, Zeit der Nachricht). */
-  function advanceWatermark(time) {
-    const base = waterMark();
-    const t = Number(time);
-    if (!Number.isFinite(t) || t <= 0) return base;
-    const next = Math.max(base, Math.floor(t));
-    if (next === watermark) return watermark;
-    watermark = next;
-    try {
-      store.set(topic, { lastHandledTime: String(next) });
-    } catch {
-      /* siehe oben */
-    }
-    return watermark;
-  }
-
-  /**
-   * Drossel: höchstens MAX_INJECTIONS_PER_MINUTE Einspeisungen je Minute.
-   * Gezählt werden echte ntfy-Nachrichten (mit `time`): ohne Zeitstempel lässt
-   * sich nichts in ein Fenster einordnen, solche Nachrichten laufen wie bisher.
-   */
-  function throttleReason(counted) {
-    if (!counted) return "";
-    const cutoff = nowMs() - INJECTION_WINDOW_MS;
-    injections = injections.filter((at) => at > cutoff);
-    return injections.length >= MAX_INJECTIONS_PER_MINUTE ? "drossel" : "";
-  }
-
-  function rememberInjection(counted) {
-    if (!counted) return;
-    injections.push(nowMs());
-  }
-
-  // Beim Start festlegen (nicht erst bei der ersten Nachricht): sonst könnte
-  // eine Antwort, die kurz vor der ersten Verarbeitung eintraf, als „zu alt“
-  // gelten.
-  waterMark();
-
-  /**
-   * Eigene Veröffentlichung mit Gedächtnis: der Wortlaut jeder eigenen Meldung
-   * landet als Hash in einem Ringpuffer. Wird derselbe Text später erneut aus
-   * dem Topic eingespeist (Selbst-Echo, Verlauf), ist er als eigener erkennbar.
-   */
-  async function publishOwn(payload) {
-    // Bestätigungen tragen den Nutzertext und werden deshalb nicht als eigener
-    // Wortlaut gemerkt (siehe send in createNtfyNotifier).
-    return publish(payload);
-  }
-
-  /**
-   * Diagnose-Log: hängt nur dann Zeilen an NTFY_REPLY_LOG (Pfad) an, wenn die
-   * Variable gesetzt ist. Ohne sie keine Datei-Ein-/Ausgabe. Wirft nie.
-   */
-  function diag(event, detail = "") {
-    if (!diagPath) return;
-    try {
-      appendFileSync(diagPath, `${new Date().toISOString()} ${event}${detail ? `: ${detail}` : ""}\n`);
-    } catch {
-      /* Diagnose darf die Brücke nie stören */
-    }
-  }
-
-  /** "" = fremde Nachricht, "id"/"title" = eigene Nachricht. */
-  function ignoreReason(message) {
-    const id = typeof message?.id === "string" ? message.id : "";
-    if (id && hasSentId(runtime, id)) return "id";
-    // Auch der persistierte Ringpuffer zählt: nach einem Dienst-Neustart ist der
-    // Speicher leer, die eigenen IDs stehen aber in der Zustandsdatei.
-    if (id && readPersistedSentIds(store, topic).includes(id)) return "id";
-    // Eine Kennung des Arbeitsbereichs ("[name] ") steht vor dem eigenen
-    // Präfix: ohne sie zu entfernen, hielte die Brücke ihre eigene Meldung für
-    // eine fremde Antwort und würde sie sich selbst einspeisen.
-    const title = String(message?.title ?? "").replace(/^\s*\[[^\]]*\]\s*/, "");
-    if (REPLY_PREFIXES.some((prefix) => title.startsWith(prefix))) return "title";
-    return "";
-  }
-
-  function shouldIgnore(message) {
-    return ignoreReason(message) !== "";
-  }
-
-  /**
-   * Eine Stream-Runde: mit dem ntfy-Stream des Topics verbinden und die
-   * NDJSON-Zeilen inkrementell lesen, solange die Verbindung steht. Der
-   * Kurzpoll (`?poll=1` alle 5 s) ist damit weg — er kostete bei mehreren
-   * Brücken bis ~35 Anfragen/Minute und lief in HTTP 429.
-   *
-   * `since` bleibt stehen, wenn nichts kam — sonst würde dieselbe Nachricht bei
-   * jedem Neuverbinden erneut verarbeitet.
-   *
-   * Jede Nachricht geht sofort an `onMessage`; `onSince` schreibt den
-   * `since`-Zeiger mit, damit ein lange offener Strom nach einem Plugin-Reload
-   * an der richtigen Stelle weiterläuft. Ohne `onMessage` werden die
-   * Nachrichten stattdessen gesammelt und zurückgegeben (Tests, Direktnutzung) —
-   * im Betrieb wüchse der Speicher sonst mit der Laufzeit des Stroms.
-   *
-   * Rückgabe: { count, messages, nextSince }. Wirft bei Netz-/HTTP-Fehlern;
-   * eine Drosselung (HTTP 429) trägt dabei `rateLimited`.
-   */
-  async function streamOnce(since = "", signal, onMessage = null, onSince = null) {
-    if (!url || !token || typeof fetchImpl !== "function") {
-      return { count: 0, messages: [], nextSince: since };
-    }
-    // Der Abbruch des Aufrufers (teardown/Reset) muss den laufenden fetch
-    // treffen — deshalb ein eigener Controller, an den beide Signale hängen.
-    const connect = new AbortController();
-    const abortConnect = () => connect.abort();
-    if (signal) signal.addEventListener("abort", abortConnect, { once: true });
-    const connectTimer = setTimeout(() => connect.abort(), connectTimeoutMs);
-    let res;
-    try {
-      res = await fetchImpl(
-        // Ohne poll=1: der ntfy-Stream hält die Verbindung und liefert die
-        // Zeilen laufend nach (format=json ist der NDJSON-Standard des Servers).
-        `${url}/${encodeURIComponent(topic)}/json?since=${encodeURIComponent(since)}`,
-        { headers: { Authorization: `Bearer ${token}` }, signal: connect.signal }
-      );
-    } finally {
-      clearTimeout(connectTimer);
-      if (signal) signal.removeEventListener("abort", abortConnect);
-    }
-    if (!res?.ok) {
-      const status = Number(res?.status ?? 0);
-      const error = new Error(`HTTP ${status || "?"}`);
-      // 429 = gedrosselt: der Aufrufer soll deutlich länger warten.
-      if (status === 429) error.rateLimited = true;
-      throw error;
-    }
-
-    const messages = [];
-    let nextSince = since;
-    let count = 0;
-    let rest = "";
-    const emit = async (line) => {
-      const parsed = parseReplyStream(line, nextSince);
-      if (parsed.nextSince !== nextSince) {
-        nextSince = parsed.nextSince;
-        if (onSince) onSince(nextSince);
-      }
-      for (const message of parsed.messages) {
-        count += 1;
-        if (onMessage) await onMessage(message);
-        else messages.push(message);
-      }
-    };
-
-    const reader = res.body?.getReader?.();
-    if (reader) {
-      // Ein Abbruch muss auch den wartenden read() lösen: sonst hinge die
-      // Schleife an einer Verbindung, die nie mehr etwas liefert.
-      const cancel = () => {
-        try {
-          const pending = reader.cancel();
-          if (pending && typeof pending.catch === "function") pending.catch(() => {});
-        } catch {
-          /* Abbrechen darf nie werfen */
-        }
-      };
-      if (signal) signal.addEventListener("abort", cancel, { once: true });
-      const decoder = new TextDecoder();
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          // Bis zum Zeilenende puffern: eine halbe Zeile ist kein gültiges JSON.
-          rest += decoder.decode(value, { stream: true });
-          const lines = rest.split("\n");
-          rest = lines.pop() ?? "";
-          for (const line of lines) await emit(line);
-        }
-      } finally {
-        if (signal) signal.removeEventListener("abort", cancel);
-      }
-    } else if (typeof res.text === "function") {
-      // Kein Strom im Body (z. B. eine Antwort ohne Body): am Stück lesen. Bei
-      // einer echten Stream-Antwort käme das nie zurück.
-      rest = String(await res.text());
-    }
-    if (rest.trim()) await emit(rest);
-    return { count, messages, nextSince };
-  }
-
-  async function hint(text) {
-    await publishOwn({
-      ack: true, // trägt Nutzertext: nicht als eigener Wortlaut merken
-      title: REPLY_NO_SESSION_TITLE,
-      message: text || "Es gibt gerade keine Session, an die ich die Antwort geben könnte.",
-      priority: 2,
-      tags: ["warning"],
-    });
-  }
-
-  /**
-   * Offene Formulare (native Fragen) einer Session abrufen.
-   * Rückgabe: Liste oder null, wenn sie nicht ermittelbar ist. Wirft nur bei
-   * HTTP-/Netzfehlern — der Aufrufer behandelt das als „kein Formular“.
-   */
-  async function fetchOpenForms(sessionID) {
-    if (!apiPassword || typeof fetchImpl !== "function") return null;
-    const init = {
-      method: "GET",
-      headers: { Authorization: basicAuth(FORM_API_USER, apiPassword) },
-    };
-    const signal = timeoutSignal(FORM_API_TIMEOUT_MS);
-    if (signal) init.signal = signal;
-    const res = await fetchImpl(
-      `${apiUrl}/api/session/${encodeURIComponent(sessionID)}/form`,
-      init
-    );
-    const status = Number(res?.status ?? 0);
-    if (res?.ok === false || (status && status >= 400)) throw new Error(`HTTP ${status || "?"}`);
-    const data = typeof res?.json === "function" ? await res.json() : undefined;
-    // Die API antwortet mit { data: [...] }; eine nackte Liste ist auch ok.
-    if (Array.isArray(data)) return data;
-    if (Array.isArray(data?.data)) return data.data;
-    return [];
-  }
-
-  /** Antwort in ein Formular eintragen; Rückgabe: die HTTP-Antwort. */
-  async function postFormReply(sessionID, formID, answer) {
-    const init = {
-      method: "POST",
-      headers: {
-        Authorization: basicAuth(FORM_API_USER, apiPassword),
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ answer }),
-    };
-    const signal = timeoutSignal(FORM_API_TIMEOUT_MS);
-    if (signal) init.signal = signal;
-    return fetchImpl(
-      `${apiUrl}/api/session/${encodeURIComponent(sessionID)}/form/${encodeURIComponent(formID)}/reply`,
-      init
-    );
-  }
-
-  /**
-   * Offene Frage abbrechen (Cancel-Endpunkt laut OpenAPI). Der optionale
-   * `message`-Query wird bewusst weggelassen: der Text geht anschließend als
-   * Prompt in die Session, ein zweiter Zustellweg wäre nur verwirrend.
-   */
-  async function deleteForm(sessionID, formID) {
-    const init = {
-      method: "DELETE",
-      headers: { Authorization: basicAuth(FORM_API_USER, apiPassword) },
-    };
-    const signal = timeoutSignal(FORM_API_TIMEOUT_MS);
-    if (signal) init.signal = signal;
-    return fetchImpl(
-      `${apiUrl}/api/session/${encodeURIComponent(sessionID)}/form/${encodeURIComponent(formID)}`,
-      init
-    );
-  }
-
-  /** 204 = angenommen; ein 2xx/ok gilt ebenfalls (tolerant je Version). */
-  function formAccepted(res) {
-    return res?.status === 204 || res?.ok === true;
-  }
-
-  /**
-   * Bestätigung, dass die Antwort in der offenen Frage gelandet ist. `total`
-   * ist die Zahl der offenen Fragen vor dieser Antwort: der Text nennt damit,
-   * welche Frage beantwortet wurde (immer die älteste, also Frage 1) und welche
-   * noch offen ist.
-   */
-  async function confirmFormReply(text, total = 1) {
-    await publishOwn({
-      ack: true,
-      title: FORM_REPLY_ACK_TITLE,
-      message: [formReplyStatus(total), clampText(text, 200)].filter(Boolean).join("\n"),
-      priority: 2,
-      tags: ["leftwards_arrow_with_hook"],
-    });
-  }
-
-  /**
-   * Statustext der Bestätigung: "Antwort gespeichert (Frage 1 von 3). Offen:
-   * Frage 2 von 3." — beantwortet wird immer die älteste offene Frage, also
-   * immer "Frage 1 von n" der gerade offenen Nummerierung. Ist nichts mehr
-   * offen, bleibt es bei "Antwort gespeichert. Alle Fragen beantwortet."
-   */
-  function formReplyStatus(total) {
-    if (total <= 1) return "Antwort gespeichert. Alle Fragen beantwortet.";
-    return `Antwort gespeichert (Frage 1 von ${total}). Offen: Frage 2 von ${total}.`;
-  }
-
-  /** Formular-Reply mit Fehlerfang — die Brücke darf nie werfen. */
-  async function postFormReplyQuiet(sessionID, formID, answer) {
-    try {
-      return await postFormReply(sessionID, formID, answer);
-    } catch (error) {
-      log("Antwort konnte nicht ins Formular eingetragen werden:", error?.message ?? String(error));
-      diag("form-reply-fehler", error?.message ?? String(error));
-      return null;
-    }
-  }
-
-  /**
-   * Die offenen Frage-Formulare abbrechen. Rückgabe: { ok, formIDs } — ok ist
-   * nur true, wenn wirklich jedes Formular geschlossen werden konnte. Fehler
-   * werden protokolliert, nicht geworfen.
-   *
-   * Reserviert für einen echten Abbruch/Zeitablauf: aus einer nicht passenden
-   * Antwort wird nie mehr abgebrochen (früher löste jeder Text ohne
-   * Optionstreffer den Abbruch ALLER offenen Fragen aus — damit gingen Fragen
-   * verloren, siehe form-reihenfolge/form-reply-rohtext).
-   */
-  async function cancelQuestionForms(sessionID, questions) {
-    const formIDs = [];
-    let ok = true;
-    for (const form of questions) {
-      const formID = typeof form?.id === "string" ? form.id : "";
-      if (!formID) {
-        ok = false;
-        diag("form-abbruch-fehler", "Formular ohne ID");
-        continue;
-      }
-      formIDs.push(formID);
-      try {
-        const res = await deleteForm(sessionID, formID);
-        if (!formAccepted(res)) {
-          ok = false;
-          diag("form-abbruch-fehler", `${formID} HTTP ${res?.status ?? "?"}`);
-        }
-      } catch (error) {
-        ok = false;
-        log("Frage konnte nicht abgebrochen werden:", error?.message ?? String(error));
-        diag("form-abbruch-fehler", `${formID} ${error?.message ?? String(error)}`);
-      }
-    }
-    return { ok, formIDs };
-  }
-
-  /** Zeitpunkt der offenen Frage (Unix-Sekunden) — 0, wenn unbekannt. */
-  function questionOpenedAt() {
-    try {
-      const value = Number(store.get(topic, "openQuestionAt"));
-      return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
-    } catch {
-      return 0;
-    }
-  }
-
-  /**
-   * Darf diese Nachricht die offene Frage beantworten? Nur wenn der Zeitpunkt
-   * der Frage bekannt ist UND die Nachricht danach entstanden ist. Ohne
-   * gespeicherten Zeitpunkt (Altbestand) wird nicht automatisch eingetragen.
-   */
-  function questionIsAnswerable(messageAt) {
-    const openedAt = questionOpenedAt();
-    const at = Number(messageAt);
-    if (openedAt <= 0) return false;
-    if (!Number.isFinite(at) || at <= 0) return false;
-    return Math.floor(at) >= openedAt;
-  }
-
-  /**
-   * Versucht, die Antwort auf die nächste offene native Frage der Session
-   * anzuwenden. Offene Fragen werden der Reihe nach beantwortet: zuerst die
-   * älteste, die übrigen bleiben offen (Log `form-reihenfolge`) — ein Abbruch
-   * als Folge einer nicht passenden Antwort gibt es nicht mehr. Ein Text ohne
-   * Optionstreffer gilt als Freitext-Antwort auf genau diese Frage (Log
-   * `form-reply-rohtext`). Rückgabe: Ergebnisobjekt ("replied" = direkt
-   * eingetragen, "skipped"/"zu-alt-fuer-frage" = die Nachricht ist älter als die
-   * Frage und wird gar nicht verwendet) oder null — dann übernimmt wie bisher
-   * die Prompt-Einspeisung. Wirft nie.
-   */
-  async function tryFormReply(sessionID, text, messageAt = 0) {
-    if (!formReply) return null;
-    let forms;
-    try {
-      forms = await fetchOpenForms(sessionID);
-    } catch (error) {
-      log("Offene Formulare nicht abrufbar:", error?.message ?? String(error));
-      diag("form-abruf-fehler", error?.message ?? String(error));
-      return null;
-    }
-    if (!Array.isArray(forms) || !forms.length) return null;
-    const questions = forms.filter(isQuestionForm);
-    if (!questions.length) {
-      // Nur Fremdformulare (z. B. Freigabe-Dialoge): nicht anfassen.
-      diag("form-uebersprungen", `${forms.length} offene Formulare (keine Frage)`);
-      return null;
-    }
-
-    // Offene Fragen sind für Automatik tabu: nur eine Nachricht, die NACH dem
-    // Stellen der Frage entstanden ist, darf sie beantworten. Alles Ältere wird
-    // weder eingetragen noch eingespeist — die Frage bleibt offen und wartet auf
-    // eine echte Antwort.
-    if (!questionIsAnswerable(messageAt)) {
-      diag("form-zu-alt", `nachricht=${messageAt || "?"} frage=${questionOpenedAt() || "?"}`);
-      return { action: "skipped", reason: "zu-alt-fuer-frage" };
-    }
-
-    // Reihenfolge statt Abbruch: sind mehrere Fragen offen, wird die älteste
-    // beantwortet und der Rest bleibt offen. Die API liefert die offenen
-    // Formulare in der Reihenfolge ihres Entstehens; genau diese Reihenfolge
-    // zählt die Kopfzeile "Frage i von n" der Frage-Meldung.
-    const total = questions.length;
-    if (total > 1) diag("form-reihenfolge", `${total} offene Fragen`);
-    const form = questions[0];
-    const formID = typeof form?.id === "string" ? form.id : "";
-    const plan = formID ? planForForm(form, text) : null;
-
-    // 1. Eindeutiger Treffer (Wert/Label/Index): eintragen.
-    if (plan?.kind === "answer") {
-      const res = await postFormReplyQuiet(sessionID, formID, { [plan.key]: plan.value });
-      if (formAccepted(res)) {
-        await confirmFormReply(text, total);
-        diag("form-reply", `${formID} feld=${plan.key}`);
-        return { action: "replied", sessionID, text, formID, field: plan.key, value: plan.value };
-      }
-      // Abgelehnt (400/404/409 …): nicht raten — der Text kommt als Prompt an.
-      // Kein Abbruch: die Frage bleibt offen und wartet auf eine echte Antwort.
-      diag("form-reply-fehler", `HTTP ${res?.status ?? "?"}`);
-      return null;
-    }
-
-    // 2. Kein Optionstreffer, aber das Feld akzeptiert Strings: den Text als
-    // Freitext-Antwort auf genau diese Frage eintragen (statt abzubrechen).
-    if (plan?.kind === "raw") {
-      const res = await postFormReplyQuiet(sessionID, formID, { [plan.key]: text });
-      if (formAccepted(res)) {
-        await confirmFormReply(text, total);
-        diag("form-reply-rohtext", `${formID} feld=${plan.key}`);
-        return { action: "replied", sessionID, text, formID, field: plan.key, value: text };
-      }
-      // Auch der Rohtext wurde abgelehnt: nichts erzwingen, nichts abbrechen —
-      // der Text geht als Prompt weiter (kein Datenverlust).
-      diag("form-reply-fehler", `HTTP ${res?.status ?? "?"}`);
-      return null;
-    }
-
-    // 3. Strukturell nicht beantwortbar (mehrere Felder, unbekannter Feldtyp,
-    // verstecktes Feld): konservativ nichts eintragen und — anders als früher —
-    // auch nicht abbrechen. Der Aufrufer speist den Text als Prompt ein.
-    diag("form-ohne-treffer", oneLine(form?.title ?? "", 60));
-    return null;
-  }
-
-  /**
-   * Antwortfenster (R2): darf diese Nachricht ohne offene Frage als neue
-   * Anweisung an die Session der letzten Meldung gelten?
-   *
-   * (a) Sie muss NACH unserer letzten eigenen Meldung in diesem Topic
-   *     eingegangen sein (deren Sendezeit steht als `lastSentTime` im
-   *     Topic-Zustand). Ohne bekannte eigene Meldung (Altbestand ohne Feld,
-   *     Neustart ohne eigene Meldung) wird nichts eingespeist.
-   * (b) Sie muss innerhalb von NTFY_REPLY_WINDOW_MIN Minuten danach liegen
-   *     (Default 30). "0" schaltet nur diese Zeitprüfung ab.
-   * (c) Ohne `time` (keine echte ntfy-Nachricht aus dem Strom) lässt sich
-   *     nichts einordnen; solche Nachrichten gelten wie bisher als aktuell.
-   *
-   * Rückgabe: "" = in Ordnung, sonst der Grund fürs Verwerfen (Log-Kürzel).
-   */
-  function replyWindowReason(messageAt) {
-    const at = Number(messageAt);
-    if (!Number.isFinite(at) || at <= 0) return "";
-    const sentAt = Number(store.get(topic, "lastSentTime"));
-    if (!Number.isFinite(sentAt) || sentAt <= 0) return "ohne-offene-frage";
-    if (at < sentAt) return "vor-eigener-meldung";
-    // Beide Werte sind Unix-Sekunden (windowSeconds ebenso).
-    if (windowSeconds > 0 && at - sentAt > windowSeconds) return "antwortfenster";
-    return "";
-  }
-
-  /**
-   * Eine Nutzernachricht verarbeiten.
-   * Rückgabe: { action: "duplicate" | "skipped" | "ignored" | "injected" |
-   *             "replied" | "no-session", … }
-   * Ein "skipped" trägt den Grund: "eigene-id" (eigene Message-ID, auch aus dem
-   * persistierten Puffer), "zu-alt" (älter als der Wasserstand), "eigener-text"
-   * (Wortlaut einer der letzten eigenen Meldungen), "drossel" (mehr als zwei
-   * Einspeisungen je Minute), "zu-alt-fuer-frage" (Nachricht vor der offenen
-   * Frage entstanden), "ohne-offene-frage" (keine eigene Meldung bekannt),
-   * "vor-eigener-meldung" (Nachricht älter als die eigene Meldung),
-   * "antwortfenster" (zu lange nach der eigenen Meldung), "leer".
-   */
-  async function handleMessage(message) {
-    // Zuerst die Idempotenz-Prüfung: ntfy löst `since=<id>` nur sekundengenau
-    // auf, eine Nachricht aus derselben Sekunde kann also mehrfach im Poll
-    // auftauchen. Ohne diese Sperre würde jede Wiederholung erneut eingespeist
-    // (und jede Meldung ohne Ziel-Session erneut veröffentlicht).
-    const messageId = typeof message?.id === "string" ? message.id : "";
-    if (messageId && hasProcessedId(runtime, messageId)) {
-      return { action: "duplicate", reason: "schon-verarbeitet" };
-    }
-    if (messageId) rememberProcessedId(messageId, runtime);
-
-    // Zeitfenster statt Verlauf: eine Nachricht ohne `time` ist keine echte
-    // ntfy-Nachricht aus dem Strom (z. B. von Hand gebaut) — sie gilt wie
-    // bisher als aktuell. Mit `time` zählt der Wasserstand: alles Ältere ist
-    // Verlauf und wird verworfen, ohne Prompt und ohne Veröffentlichung.
-    const messageTime = Number(message?.time);
-    const timed = Number.isFinite(messageTime) && messageTime > 0;
-    const floorTime = timed ? Math.floor(messageTime) : 0;
-    const before = waterMark();
-    if (timed) advanceWatermark(floorTime);
-    const tooOld = timed && floorTime < before;
-
-    const reason = ignoreReason(message);
-    if (reason === "id") return { action: "skipped", reason: "eigene-id" };
-    if (reason === "title") return { action: "ignored", reason: "eigener-titel" };
-
-    if (tooOld) return { action: "skipped", reason: "zu-alt" };
-
-    const text = clampText(message?.message ?? message?.text ?? "", MAX_REPLY_TEXT);
-    if (!text) {
-      // Leerer Text: kein Abbruch (nie mehr), aber ein Hinweis, wenn in diesem
-      // Topic eine Frage offen ist — sonst bliebe unklar, worauf gewartet wird.
-      if (store.get(topic, "openQuestionId")) {
-        await publishOwn({
-          ack: true,
-          title: FORM_EMPTY_ACK_TITLE,
-          message:
-            "Die Nachricht war leer. Bitte die Nummer der Option oder einen kurzen Text senden — beantwortet wird immer die nächste offene Frage.",
-          priority: 2,
-          tags: ["leftwards_arrow_with_hook"],
-        });
-      }
-      return { action: "skipped", reason: "leer" };
-    }
-
-    // Eigener Wortlaut: der Text stammt aus einer der letzten eigenen Meldungen
-    // (z. B. erneut ausgelieferter Verlauf oder Selbst-Echo) — nicht einspeisen.
-    if (isOwnText(text, runtime)) return { action: "skipped", reason: "eigener-text" };
-
-    // Ziel der Antwort: vorrangig die Session der letzten Benachrichtigung
-    // (lastSessionID wird in send/sendOnce gesetzt, Subagenten sind dort schon
-    // gefiltert) — sie ist die präziseste Zuordnung. Nur wenn es keine
-    // Benachrichtigung gab, greift die zuletzt gesehene Session als Fallback.
-    // Ganz zuletzt die persistierte Zuordnung aus NTFY_STATE_FILE: nach einem
-    // Dienst-Neustart ist der In-Memory-Zustand leer — ohne diesen Schritt
-    // stand „aktion: no-session“ im Protokoll und die Antwort ging verloren.
-    // Sie gilt nur, wenn dieser Prozess die Zuordnung noch nicht selbst
-    // geschrieben hat; sonst wäre der Dateiwert nur eine Kopie des ohnehin
-    // gültigen Speichers.
-    const persistedSession = store.writtenHere(topic, "lastSessionId")
-      ? ""
-      : store.get(topic, "lastSessionId");
-    const sessionID =
-      (typeof runtime.lastSessionID === "string" ? runtime.lastSessionID : "") ||
-      (typeof runtime.lastActiveSession === "string" ? runtime.lastActiveSession : "") ||
-      persistedSession;
-    if (!sessionID || typeof client?.session?.prompt !== "function") {
-      await hint(text);
-      return { action: "no-session", text };
-    }
-    // Drossel: höchstens zwei Einspeisungen je Minute. Der Wasserstand steht an
-    // dieser Stelle bereits fortgeschrieben — eine verworfene Nachricht wird
-    // also nicht später nachgeholt.
-    const throttle = throttleReason(timed);
-    if (throttle) {
-      diag("drossel", oneLine(text, 40));
-      return { action: "skipped", reason: throttle };
-    }
-    // Vor der Prompt-Einspeisung prüfen, ob die Antwort in eine offene native
-    // Frage der Session gehört: offene Fragen werden der Reihe nach beantwortet
-    // (zuerst die älteste), ein nicht zuordenbarer Satz gilt als Freitext-Antwort
-    // auf genau diese Frage — abgebrochen wird dabei nie (siehe tryFormReply).
-    // Danach wird der Text immer als Prompt eingespeist; jeder Fehler endet in
-    // der gewohnten Prompt-Einspeisung.
-    const formResult = await tryFormReply(sessionID, text, timed ? floorTime : nowSeconds());
-    if (formResult?.action === "replied") {
-      rememberInjection(timed);
-      return formResult;
-    }
-    // Älter als die offene Frage: nichts eintragen, nichts einspeisen — die
-    // Frage bleibt offen und wartet auf eine echte Antwort (siehe tryFormReply).
-    if (formResult?.action === "skipped") return formResult;
-    // Keine offene Frage: der Text gilt nur dann als neue Anweisung an die
-    // Session der letzten Meldung, wenn er nach unserer letzten eigenen Meldung
-    // im Topic eingegangen ist und im Antwortfenster liegt (R2). Sonst
-    // verwerfen — wie bisher ohne Prompt und ohne Veröffentlichung.
-    const windowReason = replyWindowReason(timed ? floorTime : 0);
-    if (windowReason) {
-      diag(windowReason, oneLine(text, 40));
-      return { action: "skipped", reason: windowReason };
-    }
-    rememberInjection(timed);
-    try {
-      await client.session.prompt({ sessionID, text });
-    } catch (error) {
-      log("Antwort konnte nicht eingespeist werden:", error?.message ?? String(error));
-      await hint(text);
-      return { action: "no-session", text, reason: "prompt-fehler" };
-    }
-    // Bestätigung, damit der Nutzer weiß, dass die Antwort angekommen ist.
-    await publishOwn({
-      ack: true,
-      title: REPLY_ACK_TITLE,
-      message: clampText(text, 200),
-      priority: 2,
-      tags: ["leftwards_arrow_with_hook"],
-    });
-    return { action: "injected", sessionID, text };
-  }
-
-  /**
-   * Endlosschleife: den Strom lesen, Nachrichten verarbeiten, nach einem
-   * Abbruch neu verbinden. Wirft nie heraus.
-   */
-  async function loop(signal, startSince) {
-    // Ohne Startwert beginnt die Schleife ab jetzt: ein leerer `since` würde
-    // bei ntfy „alles“ bedeuten und den Verlauf erneut ausliefern.
-    let since = String(startSince || Math.floor(Date.now() / 1000));
-    runtime.replySince = since;
-    // Jede Fortschreibung der Leseposition auch in die Zustandsdatei: nach einem
-    // Dienst-Neustart setzt die Schleife dort an (keine alten Meldungen erneut).
-    const rememberSince = (value) => {
-      since = value;
-      runtime.replySince = value;
-      // Persistiert wird nur eine gültige ntfy-Position: ein Unsinnswert in der
-      // Datei ließe die Brücke beim nächsten Start in den Verlauf greifen.
-      if (isValidSinceId(value)) store.set(topic, { since: value });
-    };
-    diag("start", `since=${since} topic=${topic}`);
-    // Wiederholungen ohne eine einzige Nachricht: damit wächst die Wartezeit vor
-    // dem Neuverbinden (1 s → 2 s → … bis 30 s) und die Schleife wird kein
-    // Hot-Loop, wenn der Strom sofort wieder endet.
-    let failures = 0;
-    // Dasselbe für HTTP 429 — nur mit deutlich längeren Schritten (bis 5 min).
-    let limits = 0;
-    while (!signal?.aborted) {
-      let count = 0;
-      let error = null;
-      try {
-        const round = await streamOnce(
-          since,
-          signal,
-          async (message) => {
-            if (signal?.aborted) return;
-            try {
-              const result = await handleMessage(message);
-              diag("aktion", `${result?.action ?? "?"}${result?.reason ? ` (${result.reason})` : ""}`);
-            } catch (cause) {
-              log("Antwort konnte nicht verarbeitet werden:", cause?.message ?? String(cause));
-              diag("fehler", `verarbeiten: ${cause?.message ?? String(cause)}`);
-            }
-          },
-          // Zeiger laufend mitschreiben: so setzt auch ein lange offener Strom
-          // nach einem Plugin-Reload an der richtigen Stelle an.
-          (next) => rememberSince(next)
-        );
-        if (round.nextSince) rememberSince(round.nextSince);
-        count = round.count;
-        diag("runde", `${count} neue Nachricht(en), since=${since}`);
-      } catch (cause) {
-        if (signal?.aborted) break;
-        error = cause;
-        log("Antwort-Strom abgebrochen:", cause?.message ?? String(cause));
-        diag("fehler", `strom: ${cause?.message ?? String(cause)}`);
-      }
-      if (signal?.aborted) break;
-      // Eine Drosselung beendet die Schleife nicht, sie wartet nur lange: eine
-      // schnelle Wiederholung würde das Limit weiter hochtreiben.
-      if (error?.rateLimited) {
-        limits += 1;
-        failures = 0;
-        const waitMs = Math.min(rateLimitMs * 2 ** (limits - 1), rateLimitMaxMs);
-        diag("429", `gedrosselt, warte ${Math.round(waitMs / 1000)} s`);
-        await sleep(waitMs, signal);
-        continue;
-      }
-      // Nach einem Strom mit Nachrichten wieder bei der Grundwartezeit anfangen
-      // — sonst würde ein abendfüllender Strom die Wartezeit hochschaukeln.
-      failures = error || count === 0 ? failures + 1 : 0;
-      if (count > 0) limits = 0;
-      const waitMs = Math.min(reconnectMs * 2 ** Math.max(0, failures - 1), reconnectMaxMs);
-      await sleep(waitMs, signal);
-    }
-    diag("ende", `since=${since}`);
-    // Beim Beenden (teardown) den Stand sofort sichern — die Drosselung darf
-    // den letzten Zeiger nicht verschlucken.
-    store.flush(true);
-  }
-
-  return {
-    shouldIgnore,
-    ignoreReason,
-    handleMessage,
-    streamOnce,
-    loop,
-    url,
-    topic,
-    // Nur für Diagnose/Tests: der aktuelle Wasserstand (Unix-Sekunden).
-    watermark: () => waterMark(),
-  };
-}
-
-/**
- * Nutzungsrecht (Lease) an einer laufenden Brücke.
- *
- * stop() zählt nur die eigene Referenz herunter — erst wenn kein Nutzer mehr
- * übrig ist, wird die Schleife wirklich beendet. So kann der Span einer
- * einzelnen Plugin-Instanz die Brücke nicht mit in den Tod nehmen, solange
- * andere Instanzen sie noch benutzen.
- */
-function leaseFor(entry, shared) {
-  const lease = {
-    bridge: entry.bridge,
-    controller: entry.controller,
-    // true, wenn diese Instanz eine bereits laufende Brücke mitbenutzt.
-    shared: Boolean(shared),
-    released: false,
-    stop() {
-      if (lease.released) return; // ein zweites stop() ist folgenlos
-      lease.released = true;
-      entry.refs -= 1;
-      if (entry.refs > 0) return; // andere Instanzen nutzen sie weiter
-      entry.stopped = true;
-      if (SHARED.bridge === entry) SHARED.bridge = null;
-      entry.stop();
-    },
-  };
-  return lease;
-}
-
-/**
- * Startet die Antwort-Brücke — je Prozess genau EINMAL.
- *
- * OpenCode V2 lädt das Plugin pro HTTP-Span, im Prozess leben also viele
- * Modul-Instanzen und jede rief hier setup() auf. Jede startete damit ihre
- * eigene Schleife: im Diagnoseprotokoll war das an drei verschiedenen
- * `since`-Token zu sehen (drei Brücken, zusammen bis ~35 Anfragen/Minute) — bis
- * ntfy mit HTTP 429 drosselte.
- *
- * Deshalb liegt die laufende Brücke in SHARED.bridge und wird über einen
- * Referenzzähler geteilt: der erste Start startet sie (refs = 1) und liefert
- * ein Nutzungsrecht zurück, jeder weitere Start zählt nur hoch (refs++) und
- * bekommt ein Recht auf dieselbe Brücke. Dessen stop() zählt herunter; erst der
- * letzte Nutzer beendet die Schleife.
- *
- * Bewusst KEIN dauerhaftes „läuft schon"-Flag: endet die Schleife, räumt sie
- * ihren Eintrag selbst weg, und der nächste Start legt wieder eine an.
- *
- * Rückgabe: { bridge, controller, stop } oder null (abgeschaltet/ohne Token).
- */
-export function startReplyBridge(options = {}) {
-  const env = options.env ?? process.env;
-  const runtime = options.runtime ?? replyRuntime();
-  const log = options.log ?? (() => {});
-
-  if (!replyEnabled(env)) return null;
-  const config = options.config ?? resolveConfig(env);
-  if (!config.token) return null;
-
-  // Läuft schon eine Brücke? Dann nur mitzählen: jede weitere Schleife würde
-  // denselben `since`-Zeiger ein zweites Mal abfragen.
-  const running = SHARED.bridge;
-  if (running && !running.stopped) {
-    running.refs += 1;
-    return leaseFor(running, true);
-  }
-
-  const bridge = createReplyBridge({
-    ...options,
-    client: options.client ?? options.ctx,
-    env,
-    runtime,
-    log,
-    config,
-  });
-  const controller = options.controller ?? new AbortController();
-  runtime.replyAbort = controller;
-
-  // Zeiger aus dem Prozesszustand: ein Neustart setzt dort an, wo die vorherige
-  // Schleife aufgehört hat. Mit dem Startwert würde sie alte Nachrichten erneut
-  // verarbeiten. Reihenfolge: In-Memory-Zeiger → ausdrücklicher Parameter →
-  // persistierte Leseposition aus NTFY_STATE_FILE (sie überlebt auch einen
-  // Prozess-Neustart, in dem die beiden anderen Quellen leer sind).
-  const store = options.stateStore ?? stateStoreFor(env);
-  const storedSince = store.writtenHere(bridge.topic, "since")
-    ? ""
-    : store.get(bridge.topic, "since");
-  // Nur einen gültigen Zeiger übernehmen: ein ungültiger Wert (Altbestand,
-  // Fixture-Wert wie "msg_…", "all", "0") zeigt auf keine Position im Topic.
-  // Die Brücke startet dann ab jetzt und sieht nur neue Nachrichten, statt den
-  // ganzen Verlauf erneut einzuspeisen (siehe isValidSinceId).
-  const persistedSince = isValidSinceId(storedSince) ? storedSince : "";
-  if (storedSince && !persistedSince) {
-    log(`since ungueltig, starte ab jetzt (${oneLine(storedSince, 40)})`);
-    makeDiag(env)("since ungueltig", "starte ab jetzt");
-  }
-  const startSince = runtime.replySince || options.since || persistedSince;
-
-  const entry = {
-    bridge,
-    controller,
-    refs: 1, // dieser Start ist der erste Nutzer
-    startedAt: Date.now(),
-    stopped: false,
-    stop: () => controller.abort(),
-  };
-
-  const promise = (async () => {
-    try {
-      await bridge.loop(controller.signal, startSince);
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        log("Antwort-Brücke beendet:", error?.message ?? String(error));
-      }
-    }
-  })();
-
-  // Das Promise bleibt als erledigt erkennbar (replyPromise wird dann wieder
-  // frei), damit ein späteres setup() sicher erneut starten kann — auch wenn
-  // die Schleife vorher durch einen Fehler geendet hat.
-  const settled = promise
-    .catch(() => {})
-    .finally(() => {
-      if (runtime.replyPromise === settled) runtime.replyPromise = null;
-      // Die Schleife ist beendet: den Eintrag nicht als „läuft" stehen lassen,
-      // sonst würde der nächste Start nur mitzählen und nie eine Schleife
-      // beginnen.
-      if (SHARED.bridge === entry) SHARED.bridge = null;
-    });
-  runtime.replyPromise = settled;
-  SHARED.bridge = entry;
-
-  return leaseFor(entry, false);
 }
 
 // ── V2-Plugin-Definition ───────────────────────────────────────────────────
@@ -3248,34 +1353,10 @@ export function createPluginRuntime(options = {}) {
         console.error("[ntfy-notify] prompt-Hook nicht registriert:", error?.message ?? error);
       }
 
-      // Antwort-Brücke: Nutzerantworten aus dem Topic zurück in die Session.
-      const replyBridge = startReplyBridge({
-        ctx,
-        env: { ...merged, NTFY_TOKEN: cfg.token, NTFY_URL: cfg.url, NTFY_TOPIC: cfg.topic },
-        // Dasselbe Verzeichnis wie der Notifier: daraus leitet die Brücke über
-        // dieselbe Funktion (topicForEnv) dasselbe Topic ab — inklusive
-        // NTFY_TOPIC_PREFIX und NTFY_TOPIC_NAME. Sie hört auf dem Topic, in das
-        // die Meldungen gehen.
-        directory: contextDirectory,
-        publish: (payload) => notifier.send(payload),
-        log: options.log ?? debug,
-        ...(options.fetch ? { fetch: options.fetch } : {}),
-      });
-      if (replyBridge) {
-        // Immer das Topic der laufenden Brücke nennen (bei einer mitbenutzten
-        // Brücke kann es von dem dieser Instanz abweichen).
-        const bridgeTopic = replyBridge.bridge?.topic || cfg.topic;
-        debug(
-          replyBridge.shared
-            ? `Antwort-Brücke mitbenutzt (topic ${bridgeTopic})`
-            : `Antwort-Brücke aktiv (topic ${bridgeTopic})`
-        );
-      }
-
       const controller = new AbortController();
-      // Diagnose des Ereignisstroms in dieselbe Datei wie die Antwort-Brücke
-      // (NTFY_REPLY_LOG): so ist im Betrieb sichtbar, ob überhaupt Events
-      // ankommen und ob der Strom neu aufgebaut wurde.
+      // Diagnose des Ereignisstroms in die Log-Datei (NTFY_REPLY_LOG): so ist im
+      // Betrieb sichtbar, ob überhaupt Events ankommen und ob der Strom neu
+      // aufgebaut wurde.
       const diagStream = makeDiag({ ...merged });
       // Wartezeit vor dem Wiederaufbau: 1 s, bei wiederholtem Fehlschlag bis
       // 5 s (options.eventRetryMs übersteuert das nur in Tests).
@@ -3332,10 +1413,8 @@ export function createPluginRuntime(options = {}) {
       })();
 
       return () => {
+        // Der Abbruch beendet die Ereignis-Schleife (siehe event-strom-ende).
         controller.abort();
-        // Nur die eigene Referenz abzählen: erst der letzte Nutzer beendet die
-        // Antwort-Brücke (weitere Instanzen brauchen sie weiter).
-        replyBridge?.stop();
       };
     },
   };
