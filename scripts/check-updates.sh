@@ -49,5 +49,13 @@ else
   row "herdr" "${HERDR_VERSION:-?}" "${HERDR_LATEST:-?}" "aktuell"
 fi
 
+# DCP (npm: @tarquinen/opencode-dcp)
+DCP_LATEST=$(npm view @tarquinen/opencode-dcp version 2>/dev/null | tail -1)
+if [ -n "${DCP_VERSION:-}" ] && [ -n "$DCP_LATEST" ] && [ "$DCP_LATEST" != "${DCP_VERSION}" ]; then
+  row "opencode-dcp" "${DCP_VERSION}" "$DCP_LATEST" "versions.env: DCP_VERSION=$DCP_LATEST"
+else
+  row "opencode-dcp" "${DCP_VERSION:-?}" "${DCP_LATEST:-?}" "aktuell"
+fi
+
 echo "--------------------------------------------------------------------"
 echo "Aenderung dann: 'versions.env' bearbeiten, commit + push, Workspace neu starten."

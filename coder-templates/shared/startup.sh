@@ -828,6 +828,26 @@ else
   echo "  ⚠ ntfy-Plugin nicht gefunden: $NTFY_PLUGIN_SRC"
 fi
 read_secret "secret/data/mcp/notify" "opencode_token" "NTFY_TOKEN"
+
+# ── DCP: Dynamic Context Pruning Plugin (npm, gepinnt) ─────────────────────
+echo ""
+echo "=== DCP (Dynamic Context Pruning) ==="
+DCP_STAMP="$HOME/.local/bin/.dcp-version"
+if [ -z "${DCP_VERSION:-}" ]; then
+  echo "  ⚠ DCP_VERSION nicht gesetzt"
+elif [ "$(cat "$DCP_STAMP" 2>/dev/null)" != "${DCP_VERSION}" ]; then
+  echo "  → DCP ${DCP_VERSION} installieren..."
+  if npm install -g "@tarquinen/opencode-dcp@${DCP_VERSION}" >/tmp/npm-dcp.log 2>&1; then
+    tail -2 /tmp/npm-dcp.log
+    echo "${DCP_VERSION}" > "$DCP_STAMP"
+    echo "  ✓ DCP ${DCP_VERSION} installiert"
+  else
+    tail -3 /tmp/npm-dcp.log
+    echo "  ⚠ DCP konnte nicht installiert werden"
+  fi
+else
+  echo "  ✓ DCP bereits auf Pin (${DCP_VERSION})"
+fi
 read_secret "secret/data/mcp/notify" "url" "NTFY_URL"
 if [ -n "${NTFY_TOKEN:-}" ]; then
   printf 'NTFY_TOKEN="%s"\n' "$NTFY_TOKEN" >> /etc/opencode.env
@@ -949,6 +969,14 @@ if [ -f "$OVERRIDES_SRC" ]; then
   install -m 600 "$OVERRIDES_SRC" /root/.config/opencode/opencode-model-router.overrides.jsonc \
     && echo "  ✓ Overrides global verfügbar (Service-Kontexte)" \
     || echo "  ⚠ Overrides konnten nicht global abgelegt werden"
+fi
+
+# ── DCP: Config GLOBAL ablegen ─────────────────────────────────────────────
+DCP_CFG_SRC="$REPO_DIR/.opencode/dcp.jsonc"
+if [ -f "$DCP_CFG_SRC" ]; then
+  install -m 600 "$DCP_CFG_SRC" /root/.config/opencode/dcp.jsonc \
+    && echo "  ✓ DCP-Config global verfügbar (Service-Kontexte)" \
+    || echo "  ⚠ DCP-Config konnte nicht global abgelegt werden"
 fi
 
 # ── OpenCode Go (mehrere Keys aus OpenBao) ──────────────────────────────────

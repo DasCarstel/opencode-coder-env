@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-model-router"],
+  "plugins": ["opencode-model-router", "@tarquinen/opencode-dcp"],
   "mcp": {
     "servers": {}
   }

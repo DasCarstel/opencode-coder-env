@@ -6,7 +6,8 @@
     "../../skills/server"
   ],
   "plugins": [
-    "opencode-model-router"
+    "opencode-model-router",
+    "@tarquinen/opencode-dcp"
   ],
   "mcp": {
     "servers": {

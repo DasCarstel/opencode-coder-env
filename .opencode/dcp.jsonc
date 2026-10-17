@@ -1,0 +1,57 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Opencode-DCP/opencode-dynamic-context-pruning/master/dcp.schema.json",
+  // DCP — Kontext-Kompaktierung (Schwellenwerte werden von Hestia verwaltet).
+  // Nur die Felder unter "compress" (maxContextLimit/minContextLimit/modelMaxLimits)
+  // werden von Hestia ueberschrieben; der Rest bleibt erhalten.
+  "enabled": true,
+  "debug": false,
+  "pruneNotification": "detailed",
+  "pruneNotificationType": "chat",
+  "commands": {
+    "enabled": true,
+    "protectedTools": []
+  },
+  "manualMode": {
+    "enabled": false,
+    "automaticStrategies": true
+  },
+  "turnProtection": {
+    "enabled": false,
+    "turns": 4
+  },
+  "experimental": {
+    "allowSubAgents": false,
+    "customPrompts": false
+  },
+  "protectedFilePatterns": [],
+  "compress": {
+    "mode": "range",
+    "permission": "allow",
+    "showCompression": false,
+    "summaryBuffer": true,
+    // Hart: ab dieser Token-Zahl wird kompaktiert (Hestia-verwaltet).
+    "maxContextLimit": 100000,
+    // Weich: darunter nur sanfte Nudges (Hestia-verwaltet).
+    "minContextLimit": 50000,
+    "nudgeFrequency": 5,
+    "iterationNudgeThreshold": 15,
+    "nudgeForce": "soft",
+    "protectedTools": [],
+    "protectTags": false,
+    "protectUserMessages": false,
+    // Per-Modell-Overrides (Hestia-verwaltet): "provider/model": 250000 oder "80%"
+    "modelMaxLimits": {},
+    "modelMinLimits": {}
+  },
+  "strategies": {
+    "deduplication": {
+      "enabled": true,
+      "protectedTools": []
+    },
+    "purgeErrors": {
+      "enabled": true,
+      "turns": 4,
+      "protectedTools": []
+    }
+  }
+}

@@ -5,7 +5,7 @@
     "../../skills/uni/fernuni-stack",
     "../../skills/uni/fernuni-sync"
   ],
-  "plugins": ["opencode-model-router"],
+  "plugins": ["opencode-model-router", "@tarquinen/opencode-dcp"],
   "mcp": {
     "servers": {
       "ocis": {

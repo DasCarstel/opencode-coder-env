@@ -85,6 +85,34 @@ def main():
     except Exception as e:
         print(f"⚠ models.dev nicht erreichbar ({e}) — nur Schema-Checks bestanden")
 
+    # DCP-Schwellenwerte prüfen (wenn vorhanden)
+    dcp_path = os.path.abspath(os.path.join(os.path.dirname(OVERRIDES_PATH), "dcp.jsonc"))
+    if os.path.isfile(dcp_path):
+        try:
+            dcp_text = open(dcp_path).read()
+            dcp_cfg = hjsonc.parse(dcp_text)
+        except Exception as e:
+            fail(f"DCP JSONC parse Fehler: {e}")
+        print(f"✓ DCP JSONC valide ({dcp_path})")
+        compress = (dcp_cfg or {}).get("compress") or {}
+        max_l = compress.get("maxContextLimit")
+        min_l = compress.get("minContextLimit")
+
+        def _is_pct(v):
+            return isinstance(v, str) and v.strip().endswith("%")
+
+        if max_l is not None and not _is_pct(max_l) and not isinstance(max_l, bool) and not isinstance(max_l, int):
+            fail(f"DCP maxContextLimit '{max_l}' — muss int oder 'X%' sein")
+        if min_l is not None and not _is_pct(min_l) and not isinstance(min_l, bool) and not isinstance(min_l, int):
+            fail(f"DCP minContextLimit '{min_l}' — muss int oder 'X%' sein")
+        if (isinstance(max_l, int) and not isinstance(max_l, bool)
+                and isinstance(min_l, int) and not isinstance(min_l, bool)
+                and max_l < min_l):
+            fail(f"DCP maxContextLimit ({max_l}) < minContextLimit ({min_l})")
+        print(f"✓ DCP-Schwellenwerte plausibel: max={max_l} min={min_l}")
+    else:
+        print(f"• DCP-Config nicht vorhanden ({dcp_path}) — übersprungen")
+
     print("VALIDIERUNG OK")
     sys.exit(0)
 

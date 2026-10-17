@@ -48,6 +48,7 @@ import failover as failover_mod  # noqa: E402
 import accounts as accounts_mod  # noqa: E402
 import hermes as hermes_mod  # noqa: E402
 import benchmarks as benchmarks_mod  # noqa: E402
+import dcp as dcp_mod  # noqa: E402
 
 STATIC_DIR = os.environ.get(
     "HESTIA_STATIC", os.path.join(os.path.dirname(BASE_DIR), "frontend", "dist")
@@ -421,11 +422,17 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 _log(f"hermes status error: {e}")
                 return self._json({"error": str(e)}, 502)
+        if path == "/api/dcp":
+            try:
+                return self._json(dcp_mod.state())
+            except Exception as e:  # noqa: BLE001
+                _log(f"dcp status error: {e}")
+                return self._json({"error": str(e)}, 500)
         if path in ("/api/apply", "/api/suggest", "/api/rollout",
                     "/api/accounts/check", "/api/accounts/switch",
                     "/api/hermes/apply", "/api/failover/settings",
                     "/api/failover/check", "/api/suggest/settings",
-                    "/api/benchmarks/refresh"):
+                    "/api/benchmarks/refresh", "/api/dcp/settings"):
             return self._json(
                 {"error": f"{path} ist POST-only (der Aufruf kam als GET an)"}, 405
             )
@@ -683,6 +690,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(benchmarks_mod.refresh(force=True))
             except Exception as e:
                 _log(f"benchmarks refresh error: {e}")
+                return self._json({"error": str(e)}, 500)
+
+        if path == "/api/dcp/settings":
+            try:
+                res = dcp_mod.update_settings(self._body())
+                return self._json(res)
+            except (dcp_mod.SettingsError, ApplyError) as e:
+                return self._json({"error": str(e)}, 400)
+            except ConfigError as e:
+                return self._json({"error": str(e)}, 502)
+            except Exception as e:
+                _log(f"dcp settings error: {e}")
                 return self._json({"error": str(e)}, 500)
 
         if path == "/api/rollout":
