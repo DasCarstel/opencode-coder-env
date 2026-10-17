@@ -2143,9 +2143,9 @@ function makeFormBridge(extra = {}) {
   eq(deletes().length, 0, "kein Abbruch bei eindeutigem Treffer");
 }
 
-// c) Ganzer Satz ohne Treffer: der Rohtext wird versucht; lehnt die API ihn
-//    ab (400), wird die offene Frage abgebrochen und der Text als Prompt
-//    übergeben — sie bleibt nicht offen stehen (kein blockierter Turn).
+// c) Ganzer Satz ohne Optionstreffer: er gilt als Freitext-Antwort auf die
+//    gerade offene Frage. Lehnt die API ihn ab (400), wird nichts abgebrochen —
+//    der Text geht dann als Prompt weiter, die Frage bleibt offen (R1).
 {
   const forms = [openForm("frm_3", [choiceField])];
   const { bridge, prompts, published, posts, deletes, bodyOf } = makeFormBridge({
@@ -2157,24 +2157,14 @@ function makeFormBridge(extra = {}) {
     title: "Nutzerantwort",
     message: "vielleicht später",
   });
-  eq(result.action, "cancelled", "ohne Treffer wird die Frage abgebrochen");
-  eq(posts().length, 1, "zuerst wird der Rohtext als Antwort versucht");
+  eq(result.action, "injected", "der Text ohne Optionstreffer wird nicht mehr abgebrochen");
+  eq(posts().length, 1, "zuerst wird der Rohtext als Freitext-Antwort versucht");
   eq(bodyOf(posts()[0])?.answer?.q0, "vielleicht später", "der Rohtext geht als Antwort raus");
-  eq(deletes().length, 1, "die offene Frage wird abgebrochen (DELETE)");
-  eq(
-    deletes()[0]?.url,
-    `http://127.0.0.1:49374/api/session/${SESSION}/form/frm_3`,
-    "Abbruch geht an den Formular-Endpunkt (ohne /reply)"
-  );
-  eq(deletes()[0]?.init?.method, "DELETE", "Abbruch nutzt die DELETE-Methode");
-  eq(forms.length, 0, "kein offenes Formular mehr");
+  eq(deletes().length, 0, "kein Abbruch als Folge einer Antwort (kein DELETE)");
+  eq(forms.length, 1, "die Frage bleibt offen und wartet auf eine echte Antwort");
   eq(prompts.length, 1, "der Text kommt zusätzlich als Prompt an");
   eq(prompts[0]?.text, "vielleicht später", "der Prompt trägt den ganzen Satz");
-  eq(
-    published[0]?.title,
-    "↩️ Frage aufgelöst, Antwort als Nachricht übergeben",
-    "Bestätigung nennt das Auflösen der Frage"
-  );
+  eq(published[0]?.title, "↩️ Antwort an Agenten weitergegeben", "es gilt die normale Bestätigung");
   eq(published[0]?.priority, 2, "Bestätigung ist leise (Priorität 2)");
 }
 {
@@ -2196,21 +2186,23 @@ function makeFormBridge(extra = {}) {
 }
 {
   // Zahl außerhalb des Optionsbereichs ist kein Index: es wird kein
-  // Optionswert geraten, sondern der Rohtext versucht (hier abgelehnt).
+  // Optionswert geraten, sondern der Text als Freitext-Antwort versucht (hier
+  // von der API abgelehnt) — ohne Abbruch, der Text geht als Prompt weiter.
   const { bridge, prompts, posts, deletes, bodyOf } = makeFormBridge({
     forms: [openForm("frm_3b", [choiceField])],
     replyStatus: 400,
   });
   const result = await bridge.handleMessage({ id: "msg_f3b", message: "7" });
-  eq(result.action, "cancelled", "Optionsindex außerhalb der Liste wird nicht geraten");
+  eq(result.action, "injected", "Optionsindex außerhalb der Liste wird nicht geraten");
   eq(posts().length, 1, "der Rohtext wird versucht");
   eq(bodyOf(posts()[0])?.answer?.q0, "7", "gesendet wird die Zahl als Rohtext, kein Optionswert");
-  eq(deletes().length, 1, "die Frage wird abgebrochen");
+  eq(deletes().length, 0, "kein Abbruch — die Frage bleibt offen");
   eq(prompts.length, 1, "der Text kommt als Prompt an");
 }
 {
   // Reine Teilstring-Ähnlichkeit ist KEIN Treffer: „Kopplung“ passt nur
-  // zufällig in „Kopplung hakt noch“ — nicht raten, sondern abbrechen.
+  // zufällig in „Kopplung hakt noch“ — nicht raten, sondern den Text als
+  // Freitext-Antwort versuchen (kein Abbruch).
   const { bridge, prompts, posts, deletes, bodyOf } = makeFormBridge({
     forms: [
       openForm("frm_3c", [
@@ -2225,10 +2217,10 @@ function makeFormBridge(extra = {}) {
     replyStatus: 400,
   });
   const result = await bridge.handleMessage({ id: "msg_f3c", message: "Kopplung" });
-  eq(result.action, "cancelled", "Teilstring-Ähnlichkeit führt nicht zu einem Formular-Reply");
+  eq(result.action, "injected", "Teilstring-Ähnlichkeit führt nicht zu einem Formular-Reply");
   eq(posts().length, 1, "der Rohtext wird versucht");
   eq(bodyOf(posts()[0])?.answer?.q0, "Kopplung", "gesendet wird der Rohtext, nicht der Optionswert");
-  eq(deletes().length, 1, "die Frage wird abgebrochen");
+  eq(deletes().length, 0, "kein Abbruch — die Frage bleibt offen");
   eq(prompts.length, 1, "der ganze Satz kommt als Prompt an");
 }
 
@@ -2245,49 +2237,52 @@ function makeFormBridge(extra = {}) {
   eq(prompts.length, 0, "kein Prompt beim Freitext-Feld");
 }
 {
-  // Unbekannter Feldtyp (number) bleibt konservativ: kein Reply-Versuch,
-  // aber die Frage wird abgebrochen — sie darf nicht offen bleiben.
+  // Unbekannter Feldtyp (number) bleibt konservativ: kein Reply-Versuch und —
+  // anders als früher — auch kein Abbruch; der Text geht als Prompt weiter.
   const forms = [openForm("frm_4b", [{ key: "q0", type: "number", title: "Wie viele?" }])];
   const { bridge, posts, prompts, deletes, published } = makeFormBridge({ forms });
   const result = await bridge.handleMessage({ id: "msg_f4b", message: "42" });
-  eq(result.action, "cancelled", "unbekannter Feldtyp → die Frage wird abgebrochen");
+  eq(result.action, "injected", "unbekannter Feldtyp → keine geratene Antwort, aber kein Abbruch");
   eq(posts().length, 0, "kein Reply-POST für unbekannte Feldtypen");
-  eq(deletes().length, 1, "der Abbruch geht raus");
-  eq(forms.length, 0, "kein offenes Formular mehr");
+  eq(deletes().length, 0, "kein Abbruch — die Frage bleibt offen");
+  eq(forms.length, 1, "die Frage steht weiterhin offen");
   eq(prompts.length, 1, "der Text kommt als Prompt an");
-  eq(
-    published[0]?.title,
-    "↩️ Frage aufgelöst, Antwort als Nachricht übergeben",
-    "Bestätigung nennt das Auflösen der Frage"
-  );
+  eq(published[0]?.title, "↩️ Antwort an Agenten weitergegeben", "es gilt die normale Bestätigung");
 }
 
-// e) Mehrere Felder bzw. mehrere Formulare → nicht raten, aber die offenen
-//    Fragen werden abgebrochen (sie dürfen den Turn nicht blockieren).
+// e) Mehrere Felder bzw. mehrere Formulare → nicht raten. Nichts wird
+//    abgebrochen: bei mehreren Feldern geht der Text als Prompt weiter, bei
+//    mehreren Fragen wird die älteste der Reihe nach beantwortet (R1).
 {
   const forms = [openForm("frm_5", [choiceField, { key: "q1", type: "string", title: "Warum?" }])];
   const { bridge, prompts, posts, deletes, published } = makeFormBridge({ forms });
   const result = await bridge.handleMessage({ id: "msg_f5", message: "Warten" });
-  eq(result.action, "cancelled", "zwei Felder → konservativ, die Frage wird abgebrochen");
+  eq(result.action, "injected", "zwei Felder → keine geratene Antwort, aber kein Abbruch");
   eq(posts().length, 0, "kein Reply-POST bei zwei Feldern");
-  eq(deletes().length, 1, "die Frage wird abgebrochen");
-  eq(forms.length, 0, "kein offenes Formular mehr");
+  eq(deletes().length, 0, "kein Abbruch — die Frage bleibt offen");
+  eq(forms.length, 1, "die Frage steht weiterhin offen");
   eq(prompts.length, 1, "stattdessen Prompt-Einspeisung");
-  eq(
-    published[0]?.title,
-    "↩️ Frage aufgelöst, Antwort als Nachricht übergeben",
-    "Bestätigung nennt das Auflösen der Frage"
-  );
+  eq(published[0]?.title, "↩️ Antwort an Agenten weitergegeben", "es gilt die normale Bestätigung");
 }
 {
   const forms = [openForm("frm_6", [choiceField]), openForm("frm_7", [choiceField])];
-  const { bridge, prompts, posts, deletes } = makeFormBridge({ forms });
+  const { bridge, prompts, posts, deletes, published } = makeFormBridge({ forms });
   const result = await bridge.handleMessage({ id: "msg_f6", message: "Warten" });
-  eq(result.action, "cancelled", "zwei offene Fragen → konservativ, beide werden abgebrochen");
-  eq(posts().length, 0, "kein Reply-POST bei zwei Formularen");
-  eq(deletes().length, 2, "beide Fragen werden abgebrochen");
-  eq(forms.length, 0, "kein offenes Formular mehr");
-  eq(prompts.length, 1, "stattdessen Prompt-Einspeisung");
+  eq(result.action, "replied", "zwei offene Fragen → die älteste wird beantwortet (R1)");
+  eq(result.formID, "frm_6", "die Antwort landet in der zuerst gestellten Frage");
+  eq(posts().length, 1, "genau ein Reply-POST, an die älteste Frage");
+  eq(deletes().length, 0, "kein Abbruch mehr");
+  eq(forms.length, 2, "die Liste der offenen Formulare bleibt unangetastet (kein DELETE)");
+  eq(prompts.length, 0, "kein Prompt — die Frage wurde beantwortet");
+  eq(published.length, 1, "genau eine Bestätigung");
+  ok(
+    String(published[0]?.message).includes("Frage 1 von 2"),
+    "die Bestätigung nennt die beantwortete Frage"
+  );
+  ok(
+    String(published[0]?.message).includes("Offen: Frage 2 von 2."),
+    "die Bestätigung nennt die noch offene Frage"
+  );
 }
 
 // f) Reply wird abgelehnt (400) → Fallback auf Prompt + Diagnose-Log.
@@ -2428,31 +2423,31 @@ function makeFormBridge(extra = {}) {
   eq(posts().length, 1, "genau ein Reply-POST trotz Wiederholung");
 }
 
-// m) Der Abbruch scheitert (500): der Text wird trotzdem eingespeist und der
-//    Fehler landet im Diagnose-Log — die Brücke darf nie werfen.
+// m) Der Rohtext wird von der API abgelehnt (400): der Text wird trotzdem
+//    eingespeist und der Fehler landet im Diagnose-Log — die Brücke darf nie
+//    werfen und bricht nichts ab.
 {
-  const logPath = testPath("ntfy-form-cancel-test.log");
+  const logPath = testPath("ntfy-form-reply-test2.log");
   rmSync(logPath, { force: true });
   const forms = [openForm("frm_16", [choiceField])];
   const { bridge, prompts, published, posts, deletes } = makeFormBridge({
     forms,
     replyStatus: 400,
-    deleteStatus: 500,
     env: { NTFY_REPLY_LOG: logPath },
   });
   const result = await bridge.handleMessage({
     id: "msg_f16",
     message: "Kopplung prüfen bitte",
   });
-  eq(result.action, "injected", "fehlgeschlagener Abbruch → trotzdem Prompt-Einspeisung");
+  eq(result.action, "injected", "abgelehnter Rohtext → Prompt-Einspeisung, kein Abbruch");
   eq(posts().length, 1, "der Rohtext wurde als Antwort versucht");
-  eq(deletes().length, 1, "der Abbruch wurde versucht");
-  eq(forms.length, 1, "die Frage bleibt in diesem Fall offen");
+  eq(deletes().length, 0, "abgebrochen wird als Folge einer Antwort nicht mehr");
+  eq(forms.length, 1, "die Frage bleibt offen");
   eq(prompts.length, 1, "kein Datenverlust: der Text kommt als Prompt an");
   eq(published[0]?.title, "↩️ Antwort an Agenten weitergegeben", "normale Bestätigung");
   ok(
-    readFileSync(logPath, "utf8").includes("form-abbruch-fehler"),
-    "der fehlgeschlagene Abbruch steht im Diagnose-Log"
+    readFileSync(logPath, "utf8").includes("form-reply-fehler"),
+    "der abgelehnte Rohtext steht im Diagnose-Log"
   );
   rmSync(logPath, { force: true });
 }
@@ -2471,8 +2466,8 @@ function makeFormBridge(extra = {}) {
   ok(message.includes("Nummer der Option oder freier Text"), "Hinweis nennt Nummer und freien Text");
   eq(
     message.trim().split("\n").pop(),
-    "Antwort direkt hier möglich: Nummer der Option oder freier Text.",
-    "Hinweis steht als eigene Zeile am Ende"
+    "Antwort direkt hier möglich: Nummer der Option oder freier Text — beantwortet wird immer die nächste offene Frage (der Reihe nach, siehe Frage i von n).",
+    "Hinweis steht als eigene Zeile am Ende und nennt die Reihenfolge"
   );
 }
 {
@@ -3941,7 +3936,15 @@ console.log("\nWasserstand (Zeitfenster)");
     zustand,
     JSON.stringify({
       version: 1,
-      topics: { ai: { lastHandledTime: String(jetzt), lastSessionId: SESSION } },
+      topics: {
+        ai: {
+          lastHandledTime: String(jetzt),
+          lastSessionId: SESSION,
+          // Eigene Meldung von vor 10 Sekunden: nur eine Nachricht danach und
+          // innerhalb des Antwortfensters gilt als neuer Auftrag (R2).
+          lastSentTime: String(jetzt - 10),
+        },
+      },
     })
   );
   const store = createStateStore({
@@ -4230,6 +4233,370 @@ console.log("\nOffene Frage (Zeitfenster)");
   eq(posts().length, 0, "ohne Zeitpunkt wird nichts eingetragen");
   eq(result.action, "skipped", "die Nachricht wird nicht verwendet");
   eq(prompts.length, 0, "keine Einspeisung ohne Zeitpunkt");
+}
+
+// ── 46. Fragen der Reihe nach (R1) und Antwortfenster (R2) ────────────────
+//
+// R1: offene Fragen werden der Reihe nach beantwortet — zuerst die älteste, die
+//     übrigen bleiben offen; ein Text ohne Optionstreffer gilt als
+//     Freitext-Antwort auf genau diese Frage. Abgebrochen wird nie mehr als
+//     Folge einer Antwort.
+// R2: ohne offene Frage gilt eine Nachricht nur dann als neue Anweisung an die
+//     Session der letzten Meldung, wenn sie nach unserer letzten eigenen Meldung
+//     im Topic eingegangen ist und im Antwortfenster liegt
+//     (NTFY_REPLY_WINDOW_MIN, Default 30 Minuten; "0" schaltet die
+//     Zeitprüfung ab). Ohne bekannte eigene Meldung wird verworfen (R3).
+console.log("\nFragen der Reihe nach (R1) und Antwortfenster (R2)");
+
+{
+  // R1-1: drei offene Fragen, Nachricht mit gültiger Option → die ÄLTESTE
+  // Frage wird beantwortet, die anderen bleiben offen.
+  resetSharedState();
+  const jetzt = Math.floor(Date.now() / 1000);
+  const zustand = testPath("reihenfolge-option.json");
+  writeFileSync(
+    zustand,
+    JSON.stringify({
+      version: 1,
+      topics: {
+        ai: {
+          openQuestionId: "frm_r1",
+          openQuestionAt: String(jetzt - 60),
+          lastHandledTime: String(jetzt - 120),
+          lastSessionId: SESSION,
+        },
+      },
+    })
+  );
+  const forms = [
+    openForm("frm_r1", [choiceField]),
+    openForm("frm_r2", [choiceField]),
+    openForm("frm_r3", [choiceField]),
+  ];
+  const { bridge, prompts, published, posts, deletes } = makeFormBridge({
+    forms,
+    env: { NTFY_STATE_FILE: zustand },
+  });
+  const result = await bridge.handleMessage({
+    id: "msg_ord1",
+    title: "Nutzerantwort",
+    message: "Warten",
+    time: jetzt,
+  });
+  eq(result.action, "replied", "drei offene Fragen → die älteste wird beantwortet");
+  eq(result.formID, "frm_r1", "die Antwort landet in der zuerst gestellten Frage");
+  eq(posts().length, 1, "genau ein Reply-POST");
+  eq(
+    posts()[0]?.url,
+    `http://127.0.0.1:49374/api/session/${SESSION}/form/frm_r1/reply`,
+    "der Reply geht an die älteste Frage"
+  );
+  eq(deletes().length, 0, "kein Abbruch der übrigen Fragen");
+  eq(forms.length, 3, "die übrigen Fragen bleiben offen (kein DELETE)");
+  eq(prompts.length, 0, "kein Prompt — solange eine Frage offen ist, wird sie beantwortet");
+  eq(published.length, 1, "genau eine Bestätigung");
+  ok(String(published[0]?.title).startsWith("↩️"), "die Bestätigung trägt das Antwort-Präfix");
+  ok(
+    String(published[0]?.message).includes("Frage 1 von 3"),
+    "die Bestätigung nennt 'Frage 1 von 3'"
+  );
+  ok(
+    String(published[0]?.message).includes("Offen: Frage 2 von 3."),
+    "die Bestätigung nennt die nächste offene Frage"
+  );
+  ok(
+    String(published[0]?.message).includes("Warten"),
+    "die Bestätigung trägt weiterhin den Antworttext"
+  );
+}
+{
+  // R1-2: drei offene Fragen, Freitext ohne Optionstreffer → er gilt als
+  // Freitext-Antwort der ältesten Frage (kein Abbruch). Die nächste Nachricht
+  // beantwortet der Reihe nach die nächste offene Frage.
+  resetSharedState();
+  const jetzt = Math.floor(Date.now() / 1000);
+  const zustand = testPath("reihenfolge-freitext.json");
+  const logPath = testPath("reihenfolge-freitext.log");
+  rmSync(logPath, { force: true });
+  writeFileSync(
+    zustand,
+    JSON.stringify({
+      version: 1,
+      topics: {
+        ai: {
+          openQuestionId: "frm_t1",
+          openQuestionAt: String(jetzt - 60),
+          lastHandledTime: String(jetzt - 120),
+          lastSessionId: SESSION,
+        },
+      },
+    })
+  );
+  const forms = [
+    openForm("frm_t1", [choiceField]),
+    openForm("frm_t2", [choiceField]),
+    openForm("frm_t3", [choiceField]),
+  ];
+  const { bridge, prompts, published, posts, deletes, bodyOf } = makeFormBridge({
+    forms,
+    env: { NTFY_STATE_FILE: zustand, NTFY_REPLY_LOG: logPath },
+  });
+  const result = await bridge.handleMessage({
+    id: "msg_ord2",
+    title: "Nutzerantwort",
+    message: "das machen wir später",
+    time: jetzt,
+  });
+  eq(result.action, "replied", "Freitext ohne Optionstreffer gilt als Antwort (kein Abbruch)");
+  eq(posts().length, 1, "genau ein Reply-POST");
+  eq(
+    bodyOf(posts()[0])?.answer?.q0,
+    "das machen wir später",
+    "der ganze Satz geht als Freitext-Antwort raus"
+  );
+  eq(deletes().length, 0, "kein Abbruch — die anderen Fragen bleiben offen");
+  eq(forms.length, 3, "keine Frage wurde entfernt");
+  eq(prompts.length, 0, "kein Prompt");
+  ok(
+    readFileSync(logPath, "utf8").includes("form-reply-rohtext"),
+    "der Freitext-Weg steht im Diagnose-Log"
+  );
+  // Die echte API schließt eine beantwortete Frage; der Mock tut das nicht —
+  // deshalb hier von Hand, damit die nächste Nachricht wirklich an der Reihe ist.
+  forms.splice(0, 1);
+  const zweite = await bridge.handleMessage({
+    id: "msg_ord3",
+    title: "Nutzerantwort",
+    message: "1",
+    time: jetzt + 5,
+  });
+  eq(zweite.action, "replied", "die nächste Nachricht beantwortet die nächste offene Frage");
+  eq(zweite.formID, "frm_t2", "der Reihe nach: jetzt ist die zweite Frage dran");
+  eq(posts().length, 2, "jede Nachricht erzeugt genau einen Reply-POST");
+  eq(deletes().length, 0, "auch dabei wird nichts abgebrochen");
+  ok(
+    String(published[1]?.message).includes("Frage 1 von 2"),
+    "die Bestätigung zählt die noch offenen Fragen"
+  );
+}
+{
+  // R2-1: keine offene Frage, Nachricht 5 Minuten nach unserer eigenen Meldung
+  // → sie gilt als neue Anweisung an die Session der letzten Meldung.
+  resetSharedState();
+  const jetzt = Math.floor(Date.now() / 1000);
+  const zustand = testPath("antwortfenster-innen.json");
+  writeFileSync(
+    zustand,
+    JSON.stringify({
+      version: 1,
+      topics: {
+        ai: {
+          lastSentTime: String(jetzt - 300),
+          lastHandledTime: String(jetzt - 600),
+          lastSessionId: SESSION,
+        },
+      },
+    })
+  );
+  const { bridge, prompts, published } = makeFormBridge({
+    forms: [],
+    env: { NTFY_STATE_FILE: zustand },
+  });
+  const result = await bridge.handleMessage({
+    id: "msg_win1",
+    title: "Nutzerantwort",
+    message: "Bitte weitermachen.",
+    time: jetzt,
+  });
+  eq(result.action, "injected", "5 Minuten nach der eigenen Meldung → neue Anweisung (R2)");
+  eq(result.sessionID, SESSION, "Ziel ist die Session der letzten Meldung");
+  eq(prompts.length, 1, "genau ein Prompt");
+  eq(prompts[0]?.text, "Bitte weitermachen.", "der Text kommt als Prompt an");
+  eq(published.length, 1, "die gewohnte Bestätigung");
+  ok(String(published[0]?.title).startsWith("↩️"), "die Bestätigung trägt das Antwort-Präfix");
+}
+{
+  // R2-2: 31 Minuten nach der eigenen Meldung → verworfen (Log antwortfenster).
+  resetSharedState();
+  const jetzt = Math.floor(Date.now() / 1000);
+  const zustand = testPath("antwortfenster-aussen.json");
+  const logPath = testPath("antwortfenster.log");
+  rmSync(logPath, { force: true });
+  writeFileSync(
+    zustand,
+    JSON.stringify({
+      version: 1,
+      topics: {
+        ai: {
+          lastSentTime: String(jetzt - 1860),
+          lastHandledTime: String(jetzt - 3600),
+          lastSessionId: SESSION,
+        },
+      },
+    })
+  );
+  const { bridge, prompts, published } = makeFormBridge({
+    forms: [],
+    env: { NTFY_STATE_FILE: zustand, NTFY_REPLY_LOG: logPath },
+  });
+  const result = await bridge.handleMessage({
+    id: "msg_win2",
+    title: "Nutzerantwort",
+    message: "zu spät",
+    time: jetzt,
+  });
+  eq(result.action, "skipped", "31 Minuten danach wird nichts mehr eingespeist");
+  eq(result.reason, "antwortfenster", "Grund ist antwortfenster");
+  eq(prompts.length, 0, "kein Prompt");
+  eq(published.length, 0, "keine Bestätigung");
+  ok(
+    readFileSync(logPath, "utf8").includes("antwortfenster"),
+    "der Grund steht im Diagnose-Log"
+  );
+}
+{
+  // R2-3: Nachricht VOR unserer eigenen Meldung → verworfen.
+  resetSharedState();
+  const jetzt = Math.floor(Date.now() / 1000);
+  const zustand = testPath("antwortfenster-vorher.json");
+  writeFileSync(
+    zustand,
+    JSON.stringify({
+      version: 1,
+      topics: {
+        ai: {
+          lastSentTime: String(jetzt - 300),
+          lastHandledTime: String(jetzt - 3600),
+          lastSessionId: SESSION,
+        },
+      },
+    })
+  );
+  const { bridge, prompts, published } = makeFormBridge({
+    forms: [],
+    env: { NTFY_STATE_FILE: zustand },
+  });
+  const result = await bridge.handleMessage({
+    id: "msg_win3",
+    title: "Nutzerantwort",
+    message: "verlauf",
+    time: jetzt - 600,
+  });
+  eq(result.action, "skipped", "eine Nachricht vor der eigenen Meldung wird verworfen");
+  eq(result.reason, "vor-eigener-meldung", "Grund ist vor-eigener-meldung");
+  eq(prompts.length, 0, "kein Prompt");
+  eq(published.length, 0, "keine Bestätigung");
+}
+{
+  // R3: Zustandsdatei aus einer älteren Fassung (ohne lastSentTime) → keine
+  // eigene Meldung bekannt, also nichts einspeisen (kein Absturz).
+  resetSharedState();
+  const jetzt = Math.floor(Date.now() / 1000);
+  const zustand = testPath("antwortfenster-altbestand.json");
+  writeFileSync(
+    zustand,
+    JSON.stringify({
+      version: 1,
+      topics: { ai: { lastHandledTime: String(jetzt - 3600), lastSessionId: SESSION } },
+    })
+  );
+  const { bridge, prompts } = makeFormBridge({
+    forms: [],
+    env: { NTFY_STATE_FILE: zustand },
+  });
+  const result = await bridge.handleMessage({
+    id: "msg_win4",
+    title: "Nutzerantwort",
+    message: "ohne bekannte eigene Meldung",
+    time: jetzt,
+  });
+  eq(result.action, "skipped", "ohne bekannte eigene Meldung wird nichts eingespeist");
+  eq(result.reason, "ohne-offene-frage", "Grund ist ohne-offene-frage");
+  eq(prompts.length, 0, "kein Prompt");
+}
+{
+  // NTFY_REPLY_WINDOW_MIN=0: die Zeitprüfung ist aus — eine Nachricht nach der
+  // eigenen Meldung gilt auch nach einer Stunde noch. Die Bedingung "nach der
+  // eigenen Meldung" bleibt bestehen.
+  resetSharedState();
+  const jetzt = Math.floor(Date.now() / 1000);
+  const zustand = testPath("antwortfenster-abgeschaltet.json");
+  writeFileSync(
+    zustand,
+    JSON.stringify({
+      version: 1,
+      topics: {
+        ai: {
+          lastSentTime: String(jetzt - 3600),
+          lastHandledTime: String(jetzt - 7200),
+          lastSessionId: SESSION,
+        },
+      },
+    })
+  );
+  const { bridge, prompts } = makeFormBridge({
+    forms: [],
+    env: { NTFY_STATE_FILE: zustand, NTFY_REPLY_WINDOW_MIN: "0" },
+  });
+  const vorher = await bridge.handleMessage({
+    id: "msg_win5",
+    title: "Nutzerantwort",
+    message: "verlauf",
+    time: jetzt - 4000,
+  });
+  eq(vorher.action, "skipped", "auch bei 0 gilt nur, was nach der eigenen Meldung kam");
+  eq(vorher.reason, "vor-eigener-meldung", "Grund ist vor-eigener-meldung");
+  const spaet = await bridge.handleMessage({
+    id: "msg_win6",
+    title: "Nutzerantwort",
+    message: "auch nach einer Stunde",
+    time: jetzt,
+  });
+  eq(spaet.action, "injected", "NTFY_REPLY_WINDOW_MIN=0 schaltet die Zeitprüfung ab");
+  eq(prompts.length, 1, "genau ein Prompt");
+  eq(prompts[0]?.text, "auch nach einer Stunde", "der Text kommt als Prompt an");
+}
+{
+  // R3: form.cancelled/question.cancelled leeren den offenen Frage-Zustand —
+  // sonst bliebe openQuestionId hängen und die Brücke hielte eine längst
+  // erledigte Frage für offen.
+  resetSharedState();
+  const zustand = testPath("form-abbruch.json");
+  writeFileSync(
+    zustand,
+    JSON.stringify({
+      version: 1,
+      topics: {
+        ai: {
+          openQuestionId: "frm_c1",
+          openQuestionAt: "1792168300",
+          openFormId: "frm_c2",
+          lastHandledTime: "1792168391",
+          lastSessionId: SESSION,
+        },
+      },
+    })
+  );
+  const store = createStateStore({
+    path: zustand,
+    env: { NTFY_STATE_FILE: zustand },
+    throttleMs: 0,
+  });
+  const n = makeNotifier({ stateStore: store, state: freshState() });
+  await n.handleEvent(v2("form.cancelled", {}));
+  eq(store.get("ai", "openQuestionId"), "", "form.cancelled leert die offene Frage");
+  eq(store.get("ai", "openQuestionAt"), "", "form.cancelled leert den Frage-Zeitpunkt");
+  eq(store.get("ai", "openFormId"), "", "form.cancelled leert das offene Formular");
+  eq(store.get("ai", "lastSessionId"), SESSION, "die Session-Zuordnung bleibt erhalten");
+
+  store.set("ai", {
+    openQuestionId: "frm_c3",
+    openQuestionAt: "1792168300",
+    openFormId: "frm_c4",
+  });
+  await n.handleEvent(v2("question.cancelled", {}));
+  eq(store.get("ai", "openQuestionId"), "", "question.cancelled leert den Zustand ebenso");
+  eq(store.get("ai", "openFormId"), "", "auch das offene Formular ist danach leer");
 }
 
 console.log(`\n${passed} bestanden, ${failed} fehlgeschlagen`);

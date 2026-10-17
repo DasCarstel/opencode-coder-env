@@ -117,20 +117,34 @@
 //                           kein Formular-Abruf, nur Prompt-Einspeisung — dann
 //                           bleibt nie ein Formular offen, das die Brücke hätte
 //                           schließen müssen (kein Deadlock-Risiko).
+//   NTFY_REPLY_WINDOW_MIN   Antwortfenster in Minuten (Default 30): ohne offene
+//                           Frage gilt eine Nachricht nur dann als neue
+//                           Anweisung an die Session der letzten Meldung, wenn
+//                           sie nach unserer letzten eigenen Meldung im Topic
+//                           eingegangen ist und höchstens so viele Minuten
+//                           danach liegt. "0" schaltet die Zeitprüfung ab —
+//                           dann zählt jede Nachricht nach der eigenen Meldung.
+//                           Ohne bekannte eigene Sendezeit (Zustandsdatei aus
+//                           einer älteren Fassung) wird verworfen.
 //
 // Ist in der Ziel-Session eine native Frage offen (question-Tool =
 // serverseitiges Formular), trägt die Brücke die Antwort über die lokale API
 // direkt in das Formular ein statt einen Prompt einzuspeisen — der blockierte
 // Turn läuft dann weiter, als hätte der Nutzer im Fragenfenster geantwortet.
-// Die Zuordnung ist bewusst streng: nur exakter Treffer auf Optionswert/-label
-// oder eine reine Zahl als Optionsindex — keine unscharfe Teilstring-Suche, die
-// ganze Sätze falsch zuordnen könnte. Ohne eindeutigen Treffer wird der Rohtext
-// dennoch versucht (falls das Feld Strings akzeptiert); lehnt die API ab, wird
-// die offene Frage abgebrochen (DELETE .../form/{id}) und der Text als Prompt
-// eingespeist, damit kein Turn blockiert zurückbleibt. Mehrere Fragen/Felder
-// werden konservativ ebenso abgebrochen; Freigabe-Dialoge bleiben dem nativen
-// Fenster vorbehalten. Jeder Fehler endet trotzdem in der Prompt-Einspeisung.
-// Das native Fragenfenster bleibt unverändert.
+// Offene Fragen werden der Reihe nach beantwortet: zuerst die älteste, die
+// übrigen bleiben offen (Log `form-reihenfolge`). Die Zuordnung ist bewusst
+// streng: nur exakter Treffer auf Optionswert/-label oder eine reine Zahl als
+// Optionsindex — keine unscharfe Teilstring-Suche, die ganze Sätze falsch
+// zuordnen könnte. Passt der Text auf keine Option, gilt er als Freitext-Antwort
+// auf genau diese Frage (Log `form-reply-rohtext`); nirgends wird als Folge einer
+// nicht passenden Antwort abgebrochen. Erst wenn die API die Antwort ablehnt,
+// geht der Text wie eh und je als Prompt weiter (kein Datenverlust) — die Frage
+// bleibt dann offen. Abgebrochen (DELETE .../form/{id}) wird nur noch bei einem
+// echten Abbruch/Zeitablauf, nicht mehr wegen einer Antwort. Formulare mit
+// mehreren Feldern und unbekannten Feldtypen bleiben konservativ: keine
+// geratene Antwort, kein Abbruch, der Text geht als Prompt weiter. Freigabe-
+// Dialoge bleiben dem nativen Fenster vorbehalten. Das native Fragenfenster
+// bleibt unverändert.
 // Zugang zur lokalen API: HTTP-Basic "opencode:<Passwort>" gegen
 // http://127.0.0.1:${NTFY_SESSION_PORT} (Default 49374); das Passwort wird zur
 // Laufzeit aus OPENCODE_SERVER_PASSWORD, /etc/opencode.env oder der
@@ -188,11 +202,18 @@ const REPLY_NO_SESSION_TITLE = "⚠️ Antwort ohne Ziel-Session";
 // Beginnt wie die normale Bestätigung mit "↩️", damit die Brücke die eigene
 // Nachricht im Poll wieder als eigene erkennt (REPLY_PREFIXES).
 const FORM_REPLY_ACK_TITLE = "↩️ Antwort in die offene Frage eingetragen";
-// Bestätigung, wenn die offene Frage abgebrochen und der Text als normale
-// Nachricht übergeben wurde (der Agent liest den Satz dann selbst).
-const FORM_CANCELLED_ACK_TITLE = "↩️ Frage aufgelöst, Antwort als Nachricht übergeben";
+// Hinweis, wenn die Handy-Nachricht leer war und eine Frage offen ist: statt
+// eines Abbruchs wird nur erklärt, was zu tun ist.
+const FORM_EMPTY_ACK_TITLE = "↩️ Leere Nachricht zur offenen Frage";
 // Hinweiszeile in der Frage-Meldung (die mit den nummerierten Optionen).
-const FORM_QUESTION_HINT = "Antwort direkt hier möglich: Nummer der Option oder freier Text.";
+// Beantwortet wird immer die nächste offene Frage — bei mehreren Fragen der
+// Reihe nach die älteste; die Kopfzeile "Frage i von n" nennt die Nummer.
+const FORM_QUESTION_HINT =
+  "Antwort direkt hier möglich: Nummer der Option oder freier Text — beantwortet wird immer die nächste offene Frage (der Reihe nach, siehe Frage i von n).";
+// Antwortfenster (R2): wie lange nach unserer letzten eigenen Meldung im Topic
+// eine Nachricht ohne offene Frage noch als neue Anweisung an die meldende
+// Session gilt. NTFY_REPLY_WINDOW_MIN=0 schaltet die Zeitprüfung ab.
+const REPLY_WINDOW_DEFAULT_MIN = 30;
 // Zugang zur lokalen OpenCode-API (HTTP-Basic, Nutzer "opencode").
 const FORM_API_USER = "opencode";
 const FORM_API_TIMEOUT_MS = 5000;
@@ -768,11 +789,13 @@ function questionBody(event) {
   if (!collected.length && data.form && typeof data.form === "object") collected.push(data.form);
 
   const lines = [];
-  for (const q of collected.slice(0, 3)) {
+  const questions = collected.slice(0, 3);
+  const total = questions.length;
+  questions.forEach((q, position) => {
     const headline = oneLine(q?.title ?? q?.header ?? q?.label ?? q?.name ?? "", 120);
     const detail = oneLine(q?.question ?? q?.description ?? q?.text ?? q?.prompt ?? "", 200);
     const text = headline && detail ? `${headline}\n${detail}` : headline || detail;
-    if (!text) continue;
+    if (!text) return;
     const options = Array.isArray(q?.options) ? q.options : Array.isArray(q?.choices) ? q.choices : [];
     // Eine Option pro Zeile, nummeriert — auf dem Handy war in der
     // Ein-Zeilen-Variante (" | ") nur die erste Option sichtbar.
@@ -780,8 +803,13 @@ function questionBody(event) {
       .map((o) => oneLine(o?.label ?? o?.title ?? o?.value ?? o?.id ?? o ?? "", MAX_OPTION_LEN))
       .filter(Boolean)
       .map((label, index) => `${index + 1}) ${label}`);
-    lines.push(rendered.length ? `${text}\n${rendered.join("\n")}` : text);
-  }
+    // Kopfzeile "Frage i von n": bei mehreren offenen Fragen ist sofort klar,
+    // auf welche Frage sich die Optionen beziehen — geantwortet wird der Reihe
+    // nach auf die nächste offene Frage (siehe tryFormReply), die Nummerierung
+    // der Optionen beginnt trotzdem bei jeder Frage wieder bei "1)".
+    const body = rendered.length ? `${text}\n${rendered.join("\n")}` : text;
+    lines.push(`Frage ${position + 1} von ${total}\n${body}`);
+  });
   if (!lines.length) {
     const single = oneLine(data.prompt ?? data.message ?? data.text ?? data.title ?? "", 160);
     if (single) lines.push(single);
@@ -1052,6 +1080,11 @@ function prune() {
 //                  als dieser Wert, ist Verlauf und wird nicht mehr eingespeist
 //   lastBase       zuletzt abgeleitete Basis (Port-App des Workspace) — sie
 //                  dient Meldungen ohne Session als Kopplungs-Ersatzadresse
+//   lastSentTime   Sendezeit (Unix-Sekunden) unserer letzten eigenen Meldung in
+//                  diesem Topic: nur eine Nachricht, die DANACH eingegangen ist,
+//                  darf ohne offene Frage als neue Anweisung gelten (R2, siehe
+//                  replyWindowReason). Fehlt das Feld (ältere Zustandsdatei),
+//                  gilt R2 als nicht erfüllt — es wird nichts eingespeist.
 //
 // Geschrieben wird gedrosselt (höchstens einmal je Sekunde), gelesen einmal
 // beim Anlegen des Speichers. Eine fehlende, kaputte oder halb gefüllte Datei
@@ -1076,6 +1109,7 @@ function emptyTopicState() {
     sentIds: "",
     lastHandledTime: "",
     lastBase: "",
+    lastSentTime: "",
   };
 }
 
@@ -1623,6 +1657,11 @@ export function createNtfyNotifier(options = {}) {
       // nur so bleibt die eigene Meldung nach einem Dienst-Neustart als eigene
       // erkennbar (siehe ignoreReason).
       rememberPersistedSentId(id, stateStore, topic);
+      // Sendezeit der eigenen Meldung merken: eine Nachricht ohne offene Frage
+      // gilt nur dann als neue Anweisung an die meldende Session, wenn sie NACH
+      // dieser Meldung eingegangen ist (Antwortfenster, siehe
+      // replyWindowReason in der Antwort-Brücke).
+      stateStore.set(topic, { lastSentTime: String(Math.floor(now() / 1000)) });
       // Eigener Wortlaut (als Hash): derselbe Text darf nie als Nutzerantwort
       // durchgehen, wenn ntfy ihn erneut ausliefert. Bestätigungen (ack) tragen
       // den Text des Nutzers — sie zählen deshalb nicht als eigene Meldung.
@@ -1642,6 +1681,15 @@ export function createNtfyNotifier(options = {}) {
   /** Stummgeschaltete Session? (Titel enthält einen Teil aus NTFY_IGNORE_TITLES) */
   function isMuted(sessionID) {
     return titleMuted(mutedTitles, metaFor(sessionID).title);
+  }
+
+  /**
+   * Offene Frage/offenes Formular im Topic-Zustand löschen — gemeinsam von
+   * „beantwortet" und „abgebrochen" benutzt, damit nach einem
+   * form.cancelled/question.cancelled kein hängender Eintrag stehen bleibt.
+   */
+  function clearOpenForm() {
+    stateStore.set(topic, { openQuestionId: "", openQuestionAt: "", openFormId: "" });
   }
 
   /**
@@ -1874,16 +1922,23 @@ export function createNtfyNotifier(options = {}) {
         rememberOpenForm("openFormId", event, sent);
         return;
       }
-      // ── Frage/Formular beantwortet: nichts mehr offen ──────────────────
+      // ── Frage/Formular beantwortet oder abgebrochen: nichts mehr offen ──
       case "form.replied":
       case "permission.replied": {
-        stateStore.set(topic, { openQuestionId: "", openQuestionAt: "", openFormId: "" });
+        clearOpenForm();
         if (sessionID) state.working.add(sessionID);
         return;
       }
       case "question.replied":
-      case "form.resolved": {
-        stateStore.set(topic, { openQuestionId: "", openQuestionAt: "", openFormId: "" });
+      case "form.resolved":
+      // Ein abgebrochenes Formular (Nutzer hat das Fenster geschlossen, Turn
+      // abgebrochen, Zeitablauf) ist genauso wenig mehr offen: ohne dieses
+      // Aufräumen bliebe openQuestionId/openQuestionAt hängen und die Brücke
+      // hielte eine längst erledigte Frage für offen.
+      case "form.cancelled":
+      case "question.cancelled":
+      case "permission.cancelled": {
+        clearOpenForm();
         return;
       }
       case "session.deleted": {
@@ -1969,6 +2024,20 @@ function formEnabled(env) {
     .trim()
     .toLowerCase();
   return !["0", "false", "no", "off"].includes(value);
+}
+
+/**
+ * Antwortfenster in Sekunden (NTFY_REPLY_WINDOW_MIN, Default 30 Minuten).
+ * "0" schaltet die Zeitprüfung ab (dann zählt jede Nachricht nach der eigenen
+ * letzten Meldung); Unlesbares/Negatives fällt auf den Default zurück.
+ */
+function replyWindowSeconds(env) {
+  const raw = String(env.NTFY_REPLY_WINDOW_MIN ?? "").trim();
+  const fallback = REPLY_WINDOW_DEFAULT_MIN * 60;
+  if (!raw) return fallback;
+  const minutes = Number(raw);
+  if (!Number.isFinite(minutes) || minutes < 0) return fallback;
+  return Math.round(minutes * 60);
 }
 
 /** Basis-URL der lokalen API (die laufende `opencode serve`-Instanz). */
@@ -2247,6 +2316,8 @@ export function createReplyBridge(options = {}) {
   const formReply = options.formReply ?? formEnabled(env);
   const apiUrl = String(options.apiUrl ?? localApiUrl(env)).replace(/\/+$/, "");
   const apiPassword = String(options.apiPassword ?? resolveServerPassword(env));
+  // Antwortfenster (R2): 0 = Zeitprüfung aus (siehe replyWindowReason).
+  const windowSeconds = replyWindowSeconds(env);
   // Zustandsspeicher (Datei): die Zuordnung der Session und die Leseposition
   // überleben damit einen Dienst-Neustart. Fehlt die Datei, ist er schlicht leer.
   const store = options.stateStore ?? stateStoreFor(env);
@@ -2548,15 +2619,31 @@ export function createReplyBridge(options = {}) {
     return res?.status === 204 || res?.ok === true;
   }
 
-  /** Bestätigung, dass die Antwort in der offenen Frage gelandet ist. */
-  async function confirmFormReply(text) {
+  /**
+   * Bestätigung, dass die Antwort in der offenen Frage gelandet ist. `total`
+   * ist die Zahl der offenen Fragen vor dieser Antwort: der Text nennt damit,
+   * welche Frage beantwortet wurde (immer die älteste, also Frage 1) und welche
+   * noch offen ist.
+   */
+  async function confirmFormReply(text, total = 1) {
     await publishOwn({
       ack: true,
       title: FORM_REPLY_ACK_TITLE,
-      message: clampText(text, 200),
+      message: [formReplyStatus(total), clampText(text, 200)].filter(Boolean).join("\n"),
       priority: 2,
       tags: ["leftwards_arrow_with_hook"],
     });
+  }
+
+  /**
+   * Statustext der Bestätigung: "Antwort gespeichert (Frage 1 von 3). Offen:
+   * Frage 2 von 3." — beantwortet wird immer die älteste offene Frage, also
+   * immer "Frage 1 von n" der gerade offenen Nummerierung. Ist nichts mehr
+   * offen, bleibt es bei "Antwort gespeichert. Alle Fragen beantwortet."
+   */
+  function formReplyStatus(total) {
+    if (total <= 1) return "Antwort gespeichert. Alle Fragen beantwortet.";
+    return `Antwort gespeichert (Frage 1 von ${total}). Offen: Frage 2 von ${total}.`;
   }
 
   /** Formular-Reply mit Fehlerfang — die Brücke darf nie werfen. */
@@ -2574,6 +2661,11 @@ export function createReplyBridge(options = {}) {
    * Die offenen Frage-Formulare abbrechen. Rückgabe: { ok, formIDs } — ok ist
    * nur true, wenn wirklich jedes Formular geschlossen werden konnte. Fehler
    * werden protokolliert, nicht geworfen.
+   *
+   * Reserviert für einen echten Abbruch/Zeitablauf: aus einer nicht passenden
+   * Antwort wird nie mehr abgebrochen (früher löste jeder Text ohne
+   * Optionstreffer den Abbruch ALLER offenen Fragen aus — damit gingen Fragen
+   * verloren, siehe form-reihenfolge/form-reply-rohtext).
    */
   async function cancelQuestionForms(sessionID, questions) {
     const formIDs = [];
@@ -2625,12 +2717,15 @@ export function createReplyBridge(options = {}) {
   }
 
   /**
-   * Versucht, die Antwort auf die eine offene native Frage der Session
-   * anzuwenden. Rückgabe: Ergebnisobjekt ("replied" = direkt eingetragen,
-   * "cancelled" = Frage abgebrochen, der Aufrufer übergibt den Text als Prompt,
-   * "skipped"/"zu-alt-fuer-frage" = die Nachricht ist älter als die Frage und
-   * wird gar nicht verwendet) oder null — dann übernimmt wie bisher die
-   * Prompt-Einspeisung. Wirft nie.
+   * Versucht, die Antwort auf die nächste offene native Frage der Session
+   * anzuwenden. Offene Fragen werden der Reihe nach beantwortet: zuerst die
+   * älteste, die übrigen bleiben offen (Log `form-reihenfolge`) — ein Abbruch
+   * als Folge einer nicht passenden Antwort gibt es nicht mehr. Ein Text ohne
+   * Optionstreffer gilt als Freitext-Antwort auf genau diese Frage (Log
+   * `form-reply-rohtext`). Rückgabe: Ergebnisobjekt ("replied" = direkt
+   * eingetragen, "skipped"/"zu-alt-fuer-frage" = die Nachricht ist älter als die
+   * Frage und wird gar nicht verwendet) oder null — dann übernimmt wie bisher
+   * die Prompt-Einspeisung. Wirft nie.
    */
   async function tryFormReply(sessionID, text, messageAt = 0) {
     if (!formReply) return null;
@@ -2652,69 +2747,96 @@ export function createReplyBridge(options = {}) {
 
     // Offene Fragen sind für Automatik tabu: nur eine Nachricht, die NACH dem
     // Stellen der Frage entstanden ist, darf sie beantworten. Alles Ältere wird
-    // weder eingetragen noch abgebrochen noch eingespeist — die Frage bleibt
-    // offen und wartet auf eine echte Antwort.
+    // weder eingetragen noch eingespeist — die Frage bleibt offen und wartet auf
+    // eine echte Antwort.
     if (!questionIsAnswerable(messageAt)) {
       diag("form-zu-alt", `nachricht=${messageAt || "?"} frage=${questionOpenedAt() || "?"}`);
       return { action: "skipped", reason: "zu-alt-fuer-frage" };
     }
-    if (questions.length > 1) {
-      // Mehrdeutig: nicht raten, aber auch nicht offen lassen (Deadlock).
-      diag("form-mehrdeutig", `${questions.length} offene Fragen`);
+
+    // Reihenfolge statt Abbruch: sind mehrere Fragen offen, wird die älteste
+    // beantwortet und der Rest bleibt offen. Die API liefert die offenen
+    // Formulare in der Reihenfolge ihres Entstehens; genau diese Reihenfolge
+    // zählt die Kopfzeile "Frage i von n" der Frage-Meldung.
+    const total = questions.length;
+    if (total > 1) diag("form-reihenfolge", `${total} offene Fragen`);
+    const form = questions[0];
+    const formID = typeof form?.id === "string" ? form.id : "";
+    const plan = formID ? planForForm(form, text) : null;
+
+    // 1. Eindeutiger Treffer (Wert/Label/Index): eintragen.
+    if (plan?.kind === "answer") {
+      const res = await postFormReplyQuiet(sessionID, formID, { [plan.key]: plan.value });
+      if (formAccepted(res)) {
+        await confirmFormReply(text, total);
+        diag("form-reply", `${formID} feld=${plan.key}`);
+        return { action: "replied", sessionID, text, formID, field: plan.key, value: plan.value };
+      }
+      // Abgelehnt (400/404/409 …): nicht raten — der Text kommt als Prompt an.
+      // Kein Abbruch: die Frage bleibt offen und wartet auf eine echte Antwort.
+      diag("form-reply-fehler", `HTTP ${res?.status ?? "?"}`);
+      return null;
     }
 
-    if (questions.length === 1) {
-      const form = questions[0];
-      const formID = typeof form?.id === "string" ? form.id : "";
-      const plan = formID ? planForForm(form, text) : null;
-
-      // 1. Eindeutiger Treffer (Wert/Label/Index) oder Freitext: eintragen.
-      if (plan?.kind === "answer") {
-        const res = await postFormReplyQuiet(sessionID, formID, { [plan.key]: plan.value });
-        if (formAccepted(res)) {
-          await confirmFormReply(text);
-          diag("form-reply", `${formID} feld=${plan.key}`);
-          return { action: "replied", sessionID, text, formID, field: plan.key, value: plan.value };
-        }
-        // Abgelehnt (400/404/409 …): wie bisher nicht raten — der Text kommt
-        // als Prompt an. Kein Abbruch, die Frage war ja klar zuordenbar.
-        diag("form-reply-fehler", `HTTP ${res?.status ?? "?"}`);
-        return null;
+    // 2. Kein Optionstreffer, aber das Feld akzeptiert Strings: den Text als
+    // Freitext-Antwort auf genau diese Frage eintragen (statt abzubrechen).
+    if (plan?.kind === "raw") {
+      const res = await postFormReplyQuiet(sessionID, formID, { [plan.key]: text });
+      if (formAccepted(res)) {
+        await confirmFormReply(text, total);
+        diag("form-reply-rohtext", `${formID} feld=${plan.key}`);
+        return { action: "replied", sessionID, text, formID, field: plan.key, value: text };
       }
-
-      // 2. Kein eindeutiger Treffer, aber das Feld akzeptiert Strings: den
-      // Rohtext dennoch versuchen — der Agent liest den Satz dann selbst.
-      if (plan?.kind === "raw") {
-        const res = await postFormReplyQuiet(sessionID, formID, { [plan.key]: text });
-        if (formAccepted(res)) {
-          await confirmFormReply(text);
-          diag("form-reply-rohtext", `${formID} feld=${plan.key}`);
-          return { action: "replied", sessionID, text, formID, field: plan.key, value: text };
-        }
-        diag("form-reply-fehler", `HTTP ${res?.status ?? "?"}`);
-      } else {
-        diag("form-ohne-treffer", oneLine(form?.title ?? "", 60));
-      }
+      // Auch der Rohtext wurde abgelehnt: nichts erzwingen, nichts abbrechen —
+      // der Text geht als Prompt weiter (kein Datenverlust).
+      diag("form-reply-fehler", `HTTP ${res?.status ?? "?"}`);
+      return null;
     }
 
-    // 3. Kein eindeutiger Treffer: die Frage darf nicht offen bleiben — sonst
-    // blockiert der Turn, bis der Nutzer doch noch im Fenster antwortet
-    // (Deadlock). Also abbrechen und den Text danach als Prompt einspeisen.
-    const cancel = await cancelQuestionForms(sessionID, questions);
-    if (!cancel.ok) return null; // Aufrufer speist trotzdem ein (kein Datenverlust)
-    diag("form-abgebrochen", cancel.formIDs.join(","));
-    return { action: "cancelled", sessionID, text, formIDs: cancel.formIDs };
+    // 3. Strukturell nicht beantwortbar (mehrere Felder, unbekannter Feldtyp,
+    // verstecktes Feld): konservativ nichts eintragen und — anders als früher —
+    // auch nicht abbrechen. Der Aufrufer speist den Text als Prompt ein.
+    diag("form-ohne-treffer", oneLine(form?.title ?? "", 60));
+    return null;
+  }
+
+  /**
+   * Antwortfenster (R2): darf diese Nachricht ohne offene Frage als neue
+   * Anweisung an die Session der letzten Meldung gelten?
+   *
+   * (a) Sie muss NACH unserer letzten eigenen Meldung in diesem Topic
+   *     eingegangen sein (deren Sendezeit steht als `lastSentTime` im
+   *     Topic-Zustand). Ohne bekannte eigene Meldung (Altbestand ohne Feld,
+   *     Neustart ohne eigene Meldung) wird nichts eingespeist.
+   * (b) Sie muss innerhalb von NTFY_REPLY_WINDOW_MIN Minuten danach liegen
+   *     (Default 30). "0" schaltet nur diese Zeitprüfung ab.
+   * (c) Ohne `time` (keine echte ntfy-Nachricht aus dem Strom) lässt sich
+   *     nichts einordnen; solche Nachrichten gelten wie bisher als aktuell.
+   *
+   * Rückgabe: "" = in Ordnung, sonst der Grund fürs Verwerfen (Log-Kürzel).
+   */
+  function replyWindowReason(messageAt) {
+    const at = Number(messageAt);
+    if (!Number.isFinite(at) || at <= 0) return "";
+    const sentAt = Number(store.get(topic, "lastSentTime"));
+    if (!Number.isFinite(sentAt) || sentAt <= 0) return "ohne-offene-frage";
+    if (at < sentAt) return "vor-eigener-meldung";
+    // Beide Werte sind Unix-Sekunden (windowSeconds ebenso).
+    if (windowSeconds > 0 && at - sentAt > windowSeconds) return "antwortfenster";
+    return "";
   }
 
   /**
    * Eine Nutzernachricht verarbeiten.
    * Rückgabe: { action: "duplicate" | "skipped" | "ignored" | "injected" |
-   *             "replied" | "cancelled" | "no-session", … }
+   *             "replied" | "no-session", … }
    * Ein "skipped" trägt den Grund: "eigene-id" (eigene Message-ID, auch aus dem
    * persistierten Puffer), "zu-alt" (älter als der Wasserstand), "eigener-text"
    * (Wortlaut einer der letzten eigenen Meldungen), "drossel" (mehr als zwei
    * Einspeisungen je Minute), "zu-alt-fuer-frage" (Nachricht vor der offenen
-   * Frage entstanden), "leer".
+   * Frage entstanden), "ohne-offene-frage" (keine eigene Meldung bekannt),
+   * "vor-eigener-meldung" (Nachricht älter als die eigene Meldung),
+   * "antwortfenster" (zu lange nach der eigenen Meldung), "leer".
    */
   async function handleMessage(message) {
     // Zuerst die Idempotenz-Prüfung: ntfy löst `since=<id>` nur sekundengenau
@@ -2745,7 +2867,21 @@ export function createReplyBridge(options = {}) {
     if (tooOld) return { action: "skipped", reason: "zu-alt" };
 
     const text = clampText(message?.message ?? message?.text ?? "", MAX_REPLY_TEXT);
-    if (!text) return { action: "skipped", reason: "leer" };
+    if (!text) {
+      // Leerer Text: kein Abbruch (nie mehr), aber ein Hinweis, wenn in diesem
+      // Topic eine Frage offen ist — sonst bliebe unklar, worauf gewartet wird.
+      if (store.get(topic, "openQuestionId")) {
+        await publishOwn({
+          ack: true,
+          title: FORM_EMPTY_ACK_TITLE,
+          message:
+            "Die Nachricht war leer. Bitte die Nummer der Option oder einen kurzen Text senden — beantwortet wird immer die nächste offene Frage.",
+          priority: 2,
+          tags: ["leftwards_arrow_with_hook"],
+        });
+      }
+      return { action: "skipped", reason: "leer" };
+    }
 
     // Eigener Wortlaut: der Text stammt aus einer der letzten eigenen Meldungen
     // (z. B. erneut ausgelieferter Verlauf oder Selbst-Echo) — nicht einspeisen.
@@ -2781,18 +2917,28 @@ export function createReplyBridge(options = {}) {
       return { action: "skipped", reason: throttle };
     }
     // Vor der Prompt-Einspeisung prüfen, ob die Antwort in eine offene native
-    // Frage der Session gehört: eindeutige Treffer werden direkt eingetragen,
-    // ein nicht zuordenbarer Satz bricht die Frage ab (sonst bliebe der Turn
-    // blockiert) — siehe tryFormReply. Danach wird der Text immer als Prompt
-    // eingespeist; jeder Fehler endet in der gewohnten Prompt-Einspeisung.
+    // Frage der Session gehört: offene Fragen werden der Reihe nach beantwortet
+    // (zuerst die älteste), ein nicht zuordenbarer Satz gilt als Freitext-Antwort
+    // auf genau diese Frage — abgebrochen wird dabei nie (siehe tryFormReply).
+    // Danach wird der Text immer als Prompt eingespeist; jeder Fehler endet in
+    // der gewohnten Prompt-Einspeisung.
     const formResult = await tryFormReply(sessionID, text, timed ? floorTime : nowSeconds());
     if (formResult?.action === "replied") {
       rememberInjection(timed);
       return formResult;
     }
-    // Älter als die offene Frage: nichts eintragen, nichts abbrechen, nichts
-    // einspeisen — die Frage bleibt offen (siehe tryFormReply).
+    // Älter als die offene Frage: nichts eintragen, nichts einspeisen — die
+    // Frage bleibt offen und wartet auf eine echte Antwort (siehe tryFormReply).
     if (formResult?.action === "skipped") return formResult;
+    // Keine offene Frage: der Text gilt nur dann als neue Anweisung an die
+    // Session der letzten Meldung, wenn er nach unserer letzten eigenen Meldung
+    // im Topic eingegangen ist und im Antwortfenster liegt (R2). Sonst
+    // verwerfen — wie bisher ohne Prompt und ohne Veröffentlichung.
+    const windowReason = replyWindowReason(timed ? floorTime : 0);
+    if (windowReason) {
+      diag(windowReason, oneLine(text, 40));
+      return { action: "skipped", reason: windowReason };
+    }
     rememberInjection(timed);
     try {
       await client.session.prompt({ sessionID, text });
@@ -2800,18 +2946,6 @@ export function createReplyBridge(options = {}) {
       log("Antwort konnte nicht eingespeist werden:", error?.message ?? String(error));
       await hint(text);
       return { action: "no-session", text, reason: "prompt-fehler" };
-    }
-    // Nach dem Abbruch einer Frage bestätigt die Meldung, dass der Text als
-    // Nachricht angekommen ist — und dass kein Fenster mehr offen steht.
-    if (formResult?.action === "cancelled") {
-      await publishOwn({
-        ack: true,
-        title: FORM_CANCELLED_ACK_TITLE,
-        message: clampText(text, 200),
-        priority: 2,
-        tags: ["leftwards_arrow_with_hook"],
-      });
-      return formResult;
     }
     // Bestätigung, damit der Nutzer weiß, dass die Antwort angekommen ist.
     await publishOwn({

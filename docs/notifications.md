@@ -203,6 +203,58 @@ Kopplungslink zuerst die zuletzt abgeleitete Workspace-Basis (`lastBase` in
 `NTFY_FALLBACK_URL` — nur auf der App-Adresse des Workspace gilt das
 Kopplungs-Cookie.
 
+#### Antwort vom Handy (Antwort-Brücke)
+
+Der Text, den man in der ntfy-App als Nachricht ins Topic schickt, geht an die
+Session, die zuletzt etwas gemeldet hat (`lastSessionId`, überlebt einen
+Dienst-Neustart in `NTFY_STATE_FILE`; Fallback: die zuletzt gesehene Session).
+
+**Offene Frage:** Steht im Agenten eine Frage offen, beantwortet der Text genau
+diese Frage — der blockierte Turn läuft weiter, als hätte man im Fragenfenster
+geantwortet.
+
+- Die Frage-Meldung trägt je Frage eine Kopfzeile `Frage i von n` und eine
+  eigene Optionsliste (`1) …`).
+- Bei mehreren offenen Fragen wird **der Reihe nach** beantwortet: immer die
+  **älteste** offene Frage, die übrigen bleiben offen — es wird nichts mehr
+  abgebrochen. Die Bestätigung nennt, welche Frage beantwortet wurde und welche
+  noch offen ist: `Antwort gespeichert (Frage 1 von 3). Offen: Frage 2 von 3.`
+- Passt der Text auf **keine** Option, gilt er als **Freitext-Antwort** auf diese
+  Frage — abgebrochen wird deswegen nichts.
+- Erst wenn die API die Antwort ablehnt (z. B. HTTP 409 „schon beantwortet“),
+  geht der Text zusätzlich als normale Nachricht an den Agenten; die Frage
+  bleibt offen.
+- Eine leere Nachricht löst nur einen Hinweis aus.
+
+**Ohne offene Frage:** Der Text gilt als **neue Anweisung** an die Session der
+letzten Meldung — aber nur, wenn beides stimmt:
+
+1. die Nachricht ist **nach** unserer letzten eigenen Meldung im Topic
+   eingegangen (deren Sendezeit steht als `lastSentTime` in `NTFY_STATE_FILE`), und
+2. sie liegt höchstens **`NTFY_REPLY_WINDOW_MIN`** Minuten danach (Default `30`).
+
+Sonst wird sie verworfen statt eingespeist. Unverändert scharf bleiben dabei die
+Schutzregeln: eigene Nachrichten (Titel-Präfix `❓ ✅ ⚠️ 🔐 🔔 ↩️`, eigene
+Message-IDs, eigener Wortlaut) werden ignoriert, der Wasserstand
+`lastHandledTime` hält alten Verlauf draußen und die Drossel erlaubt höchstens
+zwei Einspeisungen je Minute. Eine offene Frage hat immer Vorrang: solange eine
+Frage offen ist, gilt ein Text als Antwort darauf und nie als Prompt.
+
+Abgebrochene Fragen (`form.cancelled`, `question.cancelled`) räumen den Zustand
+auf: `openQuestionId`, `openQuestionAt` und `openFormId` werden geleert — sonst
+hielte die Brücke eine längst erledigte Frage für offen.
+
+| Einstellung | Wirkung |
+|-------------|---------|
+| `NTFY_REPLY_WINDOW_MIN` | Antwortfenster in Minuten (Default `30`): so lange gilt eine Nachricht ohne offene Frage noch als neue Anweisung an die letzte meldende Session. `0` schaltet die Zeitprüfung ab — dann zählt jede Nachricht nach der eigenen letzten Meldung. |
+
+Kürzel im Diagnose-Log der Brücke (`NTFY_REPLY_LOG`): `form-reihenfolge`
+(mehrere offene Fragen — die älteste wird beantwortet), `form-reply`
+(Optionsantwort), `form-reply-rohtext` (Freitext-Antwort), `form-ohne-treffer`
+(konservativ nicht beantwortbar, der Text geht als Nachricht weiter),
+`ohne-offene-frage` / `vor-eigener-meldung` / `antwortfenster` (ohne offene
+Frage verworfen).
+
 #### Aktivieren
 
 1. OpenBao: `secret/data/mcp/notify` mit `url` und `opencode_token` (Token des
