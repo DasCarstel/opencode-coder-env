@@ -44,6 +44,41 @@ pro Quelle statt eines Sammel-Tokens.
 Topics entstehen beim ersten Publizieren automatisch; es gibt keine
 `topic allow`-Pflege. Der Schutz kommt aus Nutzer + ACL + `deny-all`.
 
+## ntfy-Berechtigungen (ACL)
+
+ntfy prüft den Zugriff **je Topic**: ein Token darf nur die Topics lesen und
+beschreiben, für die sein Nutzer freigeschaltet ist. Der Publish-/Lese-Token der
+Agenten gehört zum ntfy-Nutzer **`src-opencode`**, und sein Zugriff muss für
+**jedes** Topic gesetzt sein, das ein Workspace benutzt. Fehlt die Freigabe,
+schlägt der Publish mit `HTTP 403` fehl **und** die Antwort-Brücke kann nicht
+streamen (`fehler: strom: HTTP 403`): das Diagnose-Log füllt sich mit 403ern,
+und auf dem Handy kommt **gar nichts** mehr an.
+
+Benötigt sind aktuell sechs Topics: `ai` (Rückfall-Topic, solange kein
+`NTFY_TOPIC_NAME` gesetzt ist), `oc-infrastructure`, `oc-general`, `oc-minijob`,
+`oc-datascience` und `hermes`.
+
+```bash
+# auf dem Docker-Host: je Topic einmal setzen (<topic> ersetzen)
+docker exec ntfy ntfy access src-opencode <topic> rw
+
+# Kontrolle: alle Nutzer mit ihren Topic-Rechten
+docker exec ntfy ntfy access
+```
+
+Die Rechte landen in der ntfy-Nutzerdatenbank (`auth.db`) und überleben einen
+Neustart des Containers.
+
+**Regel:** Beim Anlegen eines neuen Workspace-Topics gehört die Rechtevergabe
+dazu — **erst die ACL setzen, dann das Topic in `startup.sh`/`/etc/opencode.env`
+scharf schalten** (sonst läuft der Publisher in die 403er von oben).
+
+**Ein Topic-Wechsel besteht aus zwei Teilen:** (1) die Plugin-Datei
+`/root/.config/opencode/plugins/ntfy-notify.js` aus
+`coder-templates/shared/plugins/` nachziehen — ein Container-Start erledigt das
+automatisch (`startup.sh`), im laufenden Betrieb muss die Datei von Hand
+nachgezogen werden; (2) die ACL für das neue Topic setzen.
+
 ## Topics und Icons
 
 Das OpenCode-Plugin (`coder-templates/shared/plugins/ntfy-notify.js`) kann je
