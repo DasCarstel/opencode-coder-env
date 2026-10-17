@@ -47,6 +47,19 @@
 //                     (POST /api/pair über die lokale API); der Link wird
 //                     ~120 s zwischengespeichert, damit nicht jede Meldung
 //                     einen neuen Code erzeugt.
+//   NTFY_IGNORE_TITLES kommagetrennte Teilzeichenketten (getrimmt, Groß-/
+//                     Kleinschreibung egal): enthält der Titel einer Session
+//                     einen davon, wird für sie gar nichts gemeldet — weder
+//                     Frage noch Fertig noch Fehler. Leer/ungesetzt = aus.
+//   NTFY_LINK_STYLE   "session" (Default) = Klickziel ist der Session-Deep-Link
+//                     (<basis>/server/<schlüssel>/session/<id>); "base" = nur
+//                     die Basis (Startseite der Oberfläche, Übergangslösung).
+//                     Der Kopplungsknopf bleibt in beiden Fällen auf der Basis.
+//   NTFY_STATE_FILE   JSON-Datei für die wenigen Angaben, die einen
+//                     Dienst-Neustart überleben müssen (Default
+//                     /tmp/opencode/ntfy-state.json): je Topic die zuletzt
+//                     benachrichtigte Session, die offene Frage/das offene
+//                     Formular und die Leseposition der Brücke (`since`).
 //
 //   Alle NTFY_*-Einstellungen liest das Plugin zusätzlich aus der Env-Datei
 //   /etc/opencode.env (Pfad über NTFY_ENV_FILE änderbar): die Service-Umgebung
@@ -61,6 +74,10 @@
 //   (Abgeholt wird über den ntfy-Stream GET /<topic>/json?since=<id>: die
 //    Verbindung bleibt offen und liefert die Zeilen laufend. Endet sie, wird
 //    sie nach kurzer Wartezeit neu aufgebaut — bei HTTP 429 deutlich später.)
+//   Die Zuordnung „Session der letzten Meldung“ und der `since`-Zeiger liegen
+//   zusätzlich in NTFY_STATE_FILE: nach einem Dienst-Neustart findet eine
+//   Handy-Antwort ihre Session auch ohne In-Memory-Zustand, und der Strom
+//   setzt an der letzten Leseposition an (keine alten Meldungen erneut).
 //   NTFY_FORM_REPLY         "0"/"false" schaltet die direkte Antwort in eine
 //                           offene native Frage ab (Default: an). Aus heißt:
 //                           kein Formular-Abruf, nur Prompt-Einspeisung — dann
@@ -97,15 +114,20 @@
 // Installation: coder-templates/shared/plugins/ntfy-notify.js
 //               → ~/.config/opencode/plugins/ (dort automatisch geladen)
 
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const DEFAULT_URL = "https://ntfy.mueller-nas.de";
 const DEFAULT_TOPIC = "ai";
 // Serverschlüssel der OpenCode-Oberfläche im Klick-Link
 // (/server/<schlüssel>/session/<id>); der lokale Dienst heißt "local".
 const DEFAULT_SERVER_KEY = "local";
+// Zustandsdatei: wenige Angaben, die einen Dienst-Neustart überleben müssen
+// (Zuordnung Topic → Session, offene Frage/offenes Formular, Leseposition).
+const DEFAULT_STATE_FILE = "/tmp/opencode/ntfy-state.json";
+// Gedrosseltes Schreiben: höchstens ein Schreibvorgang je Sekunde.
+const STATE_WRITE_MS = 1000;
 const MAX_TITLE = 90;
 const MAX_BODY = 500;
 // Frage- und Freigabe-Meldungen tragen eine mehrzeilige Optionsliste — ntfy
@@ -231,6 +253,38 @@ function pairEnabled(env) {
   return !["0", "false", "no", "off"].includes(value);
 }
 
+/**
+ * Klickziel-Stil: "base" setzt das Klickziel auf die reine Basis (Startseite
+ * der Oberfläche) — Übergangslösung, bis der Session-Deep-Link überall trägt.
+ * Alles andere (und der Default) bleibt beim bisherigen Verhalten "session".
+ */
+function linkStyle(env) {
+  const value = String(env.NTFY_LINK_STYLE ?? "")
+    .trim()
+    .toLowerCase();
+  return value === "base" ? "base" : "session";
+}
+
+/**
+ * NTFY_IGNORE_TITLES: kommagetrennte Teilzeichenketten, getrimmt und in
+ * Kleinschreibung. Leer/nicht gesetzt ergibt eine leere Liste (= aus).
+ */
+function ignoredTitleParts(env) {
+  return String(env.NTFY_IGNORE_TITLES ?? "")
+    .split(",")
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/** Enthält der Session-Titel einen der Teile? (leerer Titel: nein) */
+function titleMuted(parts, title) {
+  const needle = String(title ?? "")
+    .trim()
+    .toLowerCase();
+  if (!needle) return false;
+  return parts.some((part) => needle.includes(part));
+}
+
 /** Nur der Hintergrund-Service soll melden — sonst doppelte Events aus TUI/CLI. */
 export function isServiceProcess(argv = process.argv.slice(2)) {
   const args = [...argv];
@@ -354,6 +408,17 @@ function sessionIDOf(event, info) {
   if (typeof aggregate === "string" && aggregate) return aggregate;
   if (info && typeof info.id === "string" && info.id) return info.id;
   return findSessionID(event?.data) ?? findSessionID(event);
+}
+
+/** Formular-ID eines Frage-/Freigabe-Events (tolerant wie sessionInfo). */
+function formIdFromEvent(event) {
+  for (const candidate of candidates(event)) {
+    const direct = candidate.formID ?? candidate.formId;
+    if (typeof direct === "string" && direct) return direct;
+    const form = candidate.form;
+    if (form && typeof form === "object" && typeof form.id === "string" && form.id) return form.id;
+  }
+  return "";
 }
 
 /** Text einer Message-Part — nur Assistenten-Text, nie der User-Prompt. */
@@ -662,6 +727,207 @@ function prune() {
   }
 }
 
+// ── Persistenter Zustand (überlebt einen Dienst-Neustart) ──────────────────
+//
+// Ein Dienst-Neustart verliert den Zustand an globalThis: im Protokoll stand
+// danach `aktion: no-session`, eine Handy-Antwort fand ihre Session nicht mehr.
+// Wenige Angaben liegen deshalb zusätzlich in einer kleinen JSON-Datei
+// (NTFY_STATE_FILE, Default /tmp/opencode/ntfy-state.json), je Topic:
+//   lastSessionId  Session, die zuletzt eine Meldung in diesem Topic erzeugt hat
+//   openQuestionId offene native Frage (ID des Formulars)
+//   openFormId     offenes Formular (z. B. Freigabe-Dialog)
+//   since          Leseposition der Antwort-Brücke (`since`-Zeiger)
+//
+// Geschrieben wird gedrosselt (höchstens einmal je Sekunde), gelesen einmal
+// beim Anlegen des Speichers. Eine fehlende, kaputte oder halb gefüllte Datei
+// ist kein Fehler — dann arbeitet der Speicher wie bisher nur im Arbeitsspeicher;
+// Schreibfehler werden ausschließlich diagnostiziert.
+
+const STATE_VERSION = 1;
+
+/** Pfad der Zustandsdatei (NTFY_STATE_FILE, sonst der Default). */
+function stateFilePath(env = {}) {
+  const configured = String(env.NTFY_STATE_FILE ?? "").trim();
+  return configured || DEFAULT_STATE_FILE;
+}
+
+function emptyTopicState() {
+  return { lastSessionId: "", openQuestionId: "", openFormId: "", since: "" };
+}
+
+/** Tolerante Form: nur bekannte Felder mit String-Wert werden übernommen. */
+function normalizeTopicState(value) {
+  const out = emptyTopicState();
+  if (!value || typeof value !== "object") return out;
+  for (const key of Object.keys(out)) {
+    if (typeof value[key] === "string") out[key] = value[key];
+  }
+  return out;
+}
+
+/**
+ * Zustandsspeicher für die Angaben, die einen Dienst-Neustart überleben müssen.
+ * Wirft nie: fehlende/kaputte Dateien und fehlgeschlagene Schreibvorgänge ändern
+ * nur den gespeicherten Zustand, nie den Betrieb.
+ */
+export function createStateStore(options = {}) {
+  const env = options.env ?? {};
+  const path = String(options.path ?? stateFilePath(env));
+  const now = options.now ?? (() => Date.now());
+  const log = options.log ?? (() => {});
+  const throttle = Number(options.throttleMs);
+  const writeMs = Number.isFinite(throttle) && throttle >= 0 ? throttle : STATE_WRITE_MS;
+  const topics = new Map();
+  // Topic → Felder, die dieser Prozess selbst geschrieben hat. Je Feld: der
+  // `since`-Zeiger der Brücke darf die persistierte Session-Zuordnung nicht
+  // entwerten (und umgekehrt) — beide werden unabhängig fortgeschrieben.
+  const written = new Map();
+  let loaded = false;
+  let dirty = false;
+  let lastWriteAt = 0;
+  let timer = null;
+
+  /** Datei einmal einlesen; kaputte/fehlende Datei = leerer Speicher. */
+  function load() {
+    if (loaded) return;
+    loaded = true;
+    let data;
+    try {
+      data = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      return; // Datei fehlt oder ist kein JSON – wie ohne Datei weiterarbeiten
+    }
+    const saved = data?.topics;
+    if (!saved || typeof saved !== "object") return;
+    for (const [topic, value] of Object.entries(saved)) {
+      if (topic) topics.set(topic, normalizeTopicState(value));
+    }
+  }
+
+  function topicState(topic) {
+    load();
+    const name = String(topic ?? "");
+    if (!topics.has(name)) topics.set(name, emptyTopicState());
+    return topics.get(name);
+  }
+
+  /** Dateiinhalt als einfaches Objekt — leere Einträge bleiben draußen. */
+  function snapshot() {
+    const out = {};
+    for (const [topic, value] of topics) {
+      const state = normalizeTopicState(value);
+      if (Object.values(state).some(Boolean)) out[topic] = state;
+    }
+    return { version: STATE_VERSION, topics: out };
+  }
+
+  function write() {
+    try {
+      mkdirSync(dirname(path), { recursive: true });
+      // Erst daneben schreiben, dann umbenennen: ein Abbruch mitten im Schreiben
+      // hinterlässt so keine halbe Datei.
+      const temp = `${path}.tmp`;
+      writeFileSync(temp, `${JSON.stringify(snapshot(), null, 2)}\n`, { mode: 0o600 });
+      renameSync(temp, path);
+      return true;
+    } catch (error) {
+      // Schreibfehler nur diagnostizieren — der Betrieb läuft ohne Datei weiter.
+      log("Zustandsdatei nicht geschrieben:", error?.message ?? String(error));
+      return false;
+    }
+  }
+
+  function schedule(delayMs) {
+    if (timer) return;
+    timer = setTimeout(() => {
+      timer = null;
+      flush();
+    }, Math.max(0, delayMs));
+    // Ein offener Schreib-Timer darf den Prozess nicht am Ende hindern.
+    if (typeof timer?.unref === "function") timer.unref();
+  }
+
+  /** Den geänderten Stand sichern — gedrosselt, mit force sofort. */
+  function flush(force = false) {
+    if (!dirty) return false;
+    const elapsed = lastWriteAt === 0 ? Infinity : now() - lastWriteAt;
+    if (!force && elapsed < writeMs) {
+      schedule(writeMs - elapsed);
+      return false;
+    }
+    dirty = false;
+    lastWriteAt = now();
+    return write();
+  }
+
+  return {
+    path,
+    /** Stand eines Topics (immer ein Objekt, notfalls leer). */
+    topic: (name) => ({ ...topicState(name) }),
+    /** Ein Feld lesen; alles Unerwartete wird zu "". */
+    get(name, key) {
+      const value = topicState(name)?.[key];
+      return typeof value === "string" ? value : "";
+    },
+    /** Felder setzen (nur bekannte, nur Strings) und gedrosselt schreiben. */
+    set(name, patch) {
+      const state = topicState(name);
+      const topicName = String(name ?? "");
+      let changed = false;
+      for (const [key, value] of Object.entries(patch ?? {})) {
+        if (!(key in state) || typeof value !== "string") continue;
+        // Auch ein unveränderter Wert zählt als „von diesem Prozess gesetzt“:
+        // der Arbeitsspeicher ist damit die gültige Quelle, und ein alter
+        // Dateiwert wird nicht mehr als Zuordnung herangezogen.
+        if (!written.has(topicName)) written.set(topicName, new Set());
+        written.get(topicName).add(key);
+        if (value === state[key]) continue;
+        state[key] = value;
+        changed = true;
+      }
+      // Rückgabe: true = der gespeicherte Stand hat sich geändert.
+      if (!changed) return false;
+      dirty = true;
+      flush();
+      return true;
+    },
+    /**
+     * true = dieser Prozess hat das Feld (oder das ganze Topic) selbst
+     * geschrieben. Dann ist der Arbeitsspeicher die aktuellere Quelle, und der
+     * persistierte Wert wird nicht als Zuordnung benutzt.
+     */
+    writtenHere(name, key) {
+      load();
+      const fields = written.get(String(name ?? ""));
+      if (!fields) return false;
+      if (typeof key !== "string" || !key) return fields.size > 0;
+      return fields.has(key);
+    },
+    flush,
+  };
+}
+
+const STATE_STORE_KEY = Symbol.for("ntfy.notify.stateStores");
+
+/**
+ * Zustandsspeicher je Datei — im Prozess geteilt, wie der übrige Plugin-Zustand
+ * (das Plugin lebt mehrfach je Prozess, alle Instanzen müssen denselben Speicher
+ * sehen). Bewusst NICHT in resetSharedState() geleert: die Angabe „dieser
+ * Prozess hat dieses Topic geschrieben“ muss über alle Instanzen erhalten
+ * bleiben, sonst würde nach einem Reset ein alter Dateiwert als Zuordnung gelten.
+ */
+export function stateStoreFor(env = {}) {
+  const registry = (globalThis[STATE_STORE_KEY] ??= new Map());
+  const path = stateFilePath(env);
+  if (!registry.has(path)) registry.set(path, createStateStore({ env, path }));
+  return registry.get(path);
+}
+
+/** Nur für Tests: die geteilten Zustandsspeicher vergessen (Datei bleibt). */
+export function resetStateStores() {
+  globalThis[STATE_STORE_KEY] = new Map();
+}
+
 // ── Kern: Event → ntfy-Nachricht ──────────────────────────────────────────
 
 export function createNtfyNotifier(options = {}) {
@@ -678,6 +944,13 @@ export function createNtfyNotifier(options = {}) {
   const state = options.state ?? SHARED;
   // Zustand der Antwort-Brücke: eigene Message-IDs + letzte Ziel-Session.
   const replyState = options.replyState ?? replyRuntime();
+  // Zustandsspeicher für die Angaben, die einen Dienst-Neustart überleben
+  // (Zuordnung der Session, offene Frage, Leseposition der Brücke).
+  const stateStore = options.stateStore ?? stateStoreFor(env);
+  // Stummschaltung per Titel (NTFY_IGNORE_TITLES) und Klickziel-Stil
+  // (NTFY_LINK_STYLE) einmal auswerten — die Env ändert sich im Betrieb nicht.
+  const mutedTitles = ignoredTitleParts(env);
+  const baseOnlyLinks = linkStyle(env) === "base";
   // Kopplungs-Button: Schalter, Diagnose-Ziel und API-Passwort. Die Test-Vorgabe
   // (apiPassword) hat Vorrang; sonst wird das Passwort — wie bei der
   // Antwort-Brücke — zur Laufzeit ermittelt und nie geloggt.
@@ -741,10 +1014,13 @@ export function createNtfyNotifier(options = {}) {
    * Serverschlüssel kommt aus NTFY_SERVER_KEY (Default "local" — so heißt der
    * lokale Dienst), die Session-ID wird URL-sicher eingesetzt. Ohne Session-ID
    * bleibt es bei der Basis; der Kopplungslink (pairLink) nutzt weiterhin
-   * linkBase und bekommt keinen Session-Pfad.
+   * linkBase und bekommt keinen Session-Pfad. NTFY_LINK_STYLE=base setzt das
+   * Klickziel auf die Basis (Übergangslösung, siehe linkStyle).
    */
   function linkFor(sessionID) {
     const base = linkBase(sessionID);
+    // NTFY_LINK_STYLE=base: Klickziel ist nur die Startseite der Oberfläche.
+    if (baseOnlyLinks) return base;
     const id = String(sessionID ?? "").trim();
     if (!id) return base;
     const serverKey = String(env.NTFY_SERVER_KEY ?? "").trim() || DEFAULT_SERVER_KEY;
@@ -874,7 +1150,12 @@ export function createNtfyNotifier(options = {}) {
     if (payload.click) {
       body.click = payload.click;
       if (!actions.some((action) => action.action === "view" && action.url === payload.click)) {
-        actions.push({ action: "view", label: "Session öffnen", url: payload.click });
+        // Im Basis-Stil führt der Knopf nur auf die Startseite — dann heißt er auch so.
+        actions.push({
+          action: "view",
+          label: baseOnlyLinks ? "OpenCode öffnen" : "Session öffnen",
+          url: payload.click,
+        });
       }
     }
     // Kopplungslink als view-Button — nur wenn die Erzeugung geklappt hat und
@@ -928,7 +1209,26 @@ export function createNtfyNotifier(options = {}) {
     }
   }
 
+  /** Stummgeschaltete Session? (Titel enthält einen Teil aus NTFY_IGNORE_TITLES) */
+  function isMuted(sessionID) {
+    return titleMuted(mutedTitles, metaFor(sessionID).title);
+  }
+
+  /**
+   * Offenes Formular im Zustandsspeicher merken (openQuestionId für Fragen,
+   * openFormId für Freigaben): So ist nach einem Dienst-Neustart noch bekannt,
+   * welche Frage offen war.
+   */
+  function rememberOpenForm(key, event, sent) {
+    if (!sent) return;
+    const formID = formIdFromEvent(event);
+    if (formID) stateStore.set(topic, { [key]: formID });
+  }
+
   async function sendOnce(sessionID, kind, payload) {
+    // NTFY_IGNORE_TITLES: für diese Session geht gar nichts raus — weder Frage
+    // noch Fertig noch Fehler. Der Cooldown wird dabei nicht angefasst.
+    if (sessionID && isMuted(sessionID)) return false;
     const key = `${sessionID ?? "?"}:${kind}`;
     const t = now();
     if (t - (state.lastSent.get(key) ?? 0) < cooldownMs) return false;
@@ -938,6 +1238,9 @@ export function createNtfyNotifier(options = {}) {
     // Ziel der Antwort-Brücke: die Session der zuletzt zugestellten Meldung.
     if (sent && typeof sessionID === "string" && sessionID) {
       replyState.lastSessionID = sessionID;
+      // Dieselbe Zuordnung in die Zustandsdatei: nach einem Dienst-Neustart
+      // findet die Brücke die Session ohne In-Memory-Zustand wieder.
+      stateStore.set(topic, { lastSessionId: sessionID });
     }
     return sent;
   }
@@ -1058,8 +1361,6 @@ export function createNtfyNotifier(options = {}) {
       case "session.tool.failed":
       case "session.shell.started":
       case "session.retry.scheduled":
-      case "form.replied":
-      case "permission.replied":
       case "message.part.updated":
       case "message.updated":
       case "tool.execute.before":
@@ -1106,7 +1407,7 @@ export function createNtfyNotifier(options = {}) {
         // Hinweiszeile: der Text kann direkt aus ntfy in die offene Frage
         // eingetragen werden (siehe Formular-Antwort in der Antwort-Brücke).
         const hint = formEnabled(env) ? FORM_QUESTION_HINT : "";
-        await sendOnce(sessionID, "question", {
+        const sent = await sendOnce(sessionID, "question", {
           title: `❓ Frage — ${projectFor(sessionID)}`,
           message: withHeader(
             sessionID,
@@ -1117,6 +1418,7 @@ export function createNtfyNotifier(options = {}) {
           click: linkFor(sessionID),
           maxBody: MAX_QUESTION_BODY,
         });
+        rememberOpenForm("openQuestionId", event, sent);
         return;
       }
       case "permission.asked":
@@ -1125,7 +1427,7 @@ export function createNtfyNotifier(options = {}) {
         if (!sessionID || (await isSubagent(sessionID))) return;
         markWorking(sessionID);
         await ensureMeta(sessionID);
-        await sendOnce(sessionID, "permission", {
+        const sent = await sendOnce(sessionID, "permission", {
           title: `🔐 Freigabe — ${projectFor(sessionID)}`,
           message: withHeader(sessionID, permissionBody(event) || fallbackBody(event)),
           priority: 4,
@@ -1133,6 +1435,19 @@ export function createNtfyNotifier(options = {}) {
           click: linkFor(sessionID),
           maxBody: MAX_QUESTION_BODY,
         });
+        rememberOpenForm("openFormId", event, sent);
+        return;
+      }
+      // ── Frage/Formular beantwortet: nichts mehr offen ──────────────────
+      case "form.replied":
+      case "permission.replied": {
+        stateStore.set(topic, { openQuestionId: "", openFormId: "" });
+        if (sessionID) state.working.add(sessionID);
+        return;
+      }
+      case "question.replied":
+      case "form.resolved": {
+        stateStore.set(topic, { openQuestionId: "", openFormId: "" });
         return;
       }
       case "session.deleted": {
@@ -1482,6 +1797,9 @@ export function createReplyBridge(options = {}) {
   const formReply = options.formReply ?? formEnabled(env);
   const apiUrl = String(options.apiUrl ?? localApiUrl(env)).replace(/\/+$/, "");
   const apiPassword = String(options.apiPassword ?? resolveServerPassword(env));
+  // Zustandsspeicher (Datei): die Zuordnung der Session und die Leseposition
+  // überleben damit einen Dienst-Neustart. Fehlt die Datei, ist er schlicht leer.
+  const store = options.stateStore ?? stateStoreFor(env);
 
   /**
    * Diagnose-Log: hängt nur dann Zeilen an NTFY_REPLY_LOG (Pfad) an, wenn die
@@ -1836,9 +2154,19 @@ export function createReplyBridge(options = {}) {
     // (lastSessionID wird in send/sendOnce gesetzt, Subagenten sind dort schon
     // gefiltert) — sie ist die präziseste Zuordnung. Nur wenn es keine
     // Benachrichtigung gab, greift die zuletzt gesehene Session als Fallback.
+    // Ganz zuletzt die persistierte Zuordnung aus NTFY_STATE_FILE: nach einem
+    // Dienst-Neustart ist der In-Memory-Zustand leer — ohne diesen Schritt
+    // stand „aktion: no-session“ im Protokoll und die Antwort ging verloren.
+    // Sie gilt nur, wenn dieser Prozess die Zuordnung noch nicht selbst
+    // geschrieben hat; sonst wäre der Dateiwert nur eine Kopie des ohnehin
+    // gültigen Speichers.
+    const persistedSession = store.writtenHere(topic, "lastSessionId")
+      ? ""
+      : store.get(topic, "lastSessionId");
     const sessionID =
       (typeof runtime.lastSessionID === "string" ? runtime.lastSessionID : "") ||
-      (typeof runtime.lastActiveSession === "string" ? runtime.lastActiveSession : "");
+      (typeof runtime.lastActiveSession === "string" ? runtime.lastActiveSession : "") ||
+      persistedSession;
     if (!sessionID || typeof client?.session?.prompt !== "function") {
       await hint(text);
       return { action: "no-session", text };
@@ -1885,6 +2213,13 @@ export function createReplyBridge(options = {}) {
   async function loop(signal, startSince) {
     let since = String(startSince ?? Math.floor(Date.now() / 1000));
     runtime.replySince = since;
+    // Jede Fortschreibung der Leseposition auch in die Zustandsdatei: nach einem
+    // Dienst-Neustart setzt die Schleife dort an (keine alten Meldungen erneut).
+    const rememberSince = (value) => {
+      since = value;
+      runtime.replySince = value;
+      store.set(topic, { since: value });
+    };
     diag("start", `since=${since} topic=${topic}`);
     // Wiederholungen ohne eine einzige Nachricht: damit wächst die Wartezeit vor
     // dem Neuverbinden (1 s → 2 s → … bis 30 s) und die Schleife wird kein
@@ -1911,15 +2246,9 @@ export function createReplyBridge(options = {}) {
           },
           // Zeiger laufend mitschreiben: so setzt auch ein lange offener Strom
           // nach einem Plugin-Reload an der richtigen Stelle an.
-          (next) => {
-            since = next;
-            runtime.replySince = next;
-          }
+          (next) => rememberSince(next)
         );
-        if (round.nextSince) {
-          since = round.nextSince;
-          runtime.replySince = since;
-        }
+        if (round.nextSince) rememberSince(round.nextSince);
         count = round.count;
         diag("runde", `${count} neue Nachricht(en), since=${since}`);
       } catch (cause) {
@@ -1947,6 +2276,9 @@ export function createReplyBridge(options = {}) {
       await sleep(waitMs, signal);
     }
     diag("ende", `since=${since}`);
+    // Beim Beenden (teardown) den Stand sofort sichern — die Drosselung darf
+    // den letzten Zeiger nicht verschlucken.
+    store.flush(true);
   }
 
   return { shouldIgnore, ignoreReason, handleMessage, streamOnce, loop, url, topic };
@@ -2030,8 +2362,14 @@ export function startReplyBridge(options = {}) {
 
   // Zeiger aus dem Prozesszustand: ein Neustart setzt dort an, wo die vorherige
   // Schleife aufgehört hat. Mit dem Startwert würde sie alte Nachrichten erneut
-  // verarbeiten.
-  const startSince = runtime.replySince ? runtime.replySince : options.since;
+  // verarbeiten. Reihenfolge: In-Memory-Zeiger → ausdrücklicher Parameter →
+  // persistierte Leseposition aus NTFY_STATE_FILE (sie überlebt auch einen
+  // Prozess-Neustart, in dem die beiden anderen Quellen leer sind).
+  const store = options.stateStore ?? stateStoreFor(env);
+  const persistedSince = store.writtenHere(bridge.topic, "since")
+    ? ""
+    : store.get(bridge.topic, "since");
+  const startSince = runtime.replySince || options.since || persistedSince;
 
   const entry = {
     bridge,

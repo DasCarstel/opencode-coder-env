@@ -12,6 +12,7 @@ import {
   createNtfyNotifier,
   createPluginRuntime,
   createReplyBridge,
+  createStateStore,
   isServiceProcess,
   parseReplyStream,
   replyRuntime,
@@ -2770,6 +2771,267 @@ const UI_ENV = {
     "das Klickziel derselben Meldung ist der Deep-Link"
   );
   resetSharedState();
+}
+
+// ── 36. Zustandsdatei: Zuordnung und Leseposition überleben den Neustart ──
+//
+// Ein Dienst-Neustart verliert den In-Memory-Zustand: im Protokoll stand danach
+// „aktion: no-session“, eine Handy-Antwort fand ihre Session nicht mehr. Die
+// wenigen nötigen Angaben liegen deshalb in NTFY_STATE_FILE. Hier wird der
+// Neustart mit einem zweiten Zustandsspeicher (frischer Prozess) über derselben
+// Datei simuliert: die Antwort muss in der richtigen Session landen und der
+// Strom an der gespeicherten Leseposition ansetzen (keine Doppelverarbeitung).
+console.log("\nZustandsdatei (Neustart)");
+{
+  resetSharedState();
+  const topic = "ai";
+  const statePath = "/tmp/opencode/ntfy-state-test.json";
+  rmSync(statePath, { force: true });
+  rmSync(`${statePath}.tmp`, { force: true });
+
+  // Erster „Prozess“: eine Meldung geht raus (Zuordnung) und die Brücke
+  // schreibt ihre Leseposition fort.
+  const store1 = createStateStore({ path: statePath, log: () => {} });
+  const runtime1 = { sentIds: [], processedIds: [], lastSessionID: "", lastActiveSession: "" };
+  received.length = 0;
+  const notifier1 = makeNotifier({ replyState: runtime1, stateStore: store1 });
+  await notifier1.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  notifier1.markWorking(SESSION);
+  await notifier1.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Meldung des ersten Prozesses geht raus");
+  eq(store1.get(topic, "lastSessionId"), SESSION, "die Zuordnung landet im Zustandsspeicher");
+
+  const calls1 = [];
+  const started1 = startReplyBridge({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: topic },
+    runtime: runtime1,
+    client: { session: { prompt: async () => ({}) } },
+    publish: async () => true,
+    // keepalive-Zeile: die Leseposition rückt weiter, ohne dass eine Nachricht
+    // verarbeitet werden muss; der Strom endet danach wieder.
+    fetch: streamFetch(calls1, ['{"id":"msg_nach1","event":"keepalive"}\n']),
+    stateStore: store1,
+    apiPassword: "",
+    reconnectMs: 20,
+    log: () => {},
+  });
+  ok(
+    await until(() => runtime1.replySince === "msg_nach1"),
+    "die Brücke schreibt ihre Leseposition fort"
+  );
+  started1.stop();
+  await until(() => runtime1.replyPromise === null);
+  store1.flush(true);
+  eq(store1.get(topic, "since"), "msg_nach1", "die Leseposition steht im Zustandsspeicher");
+  received.length = 0;
+
+  // „Neustart“: neuer Speicher über derselben Datei, dazu ein leerer
+  // Laufzeit-Zustand — genau so sieht es nach einem Prozess-Neustart aus.
+  const store2 = createStateStore({ path: statePath, log: () => {} });
+  eq(store2.get(topic, "lastSessionId"), SESSION, "die Zuordnung überlebt in der Datei");
+  eq(store2.get(topic, "since"), "msg_nach1", "die Leseposition überlebt in der Datei");
+  eq(store2.writtenHere(topic), false, "der neue Prozess hat das Topic noch nicht geschrieben");
+
+  const runtime2 = { sentIds: [], processedIds: [], lastSessionID: "", lastActiveSession: "" };
+  const calls2 = [];
+  const prompts2 = [];
+  const started2 = startReplyBridge({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: topic },
+    runtime: runtime2,
+    client: {
+      session: {
+        prompt: async (arg) => {
+          prompts2.push(arg);
+          return {};
+        },
+      },
+    },
+    publish: async () => true,
+    fetch: streamFetch(calls2, [
+      '{"id":"msg_neu2","event":"message","title":"Nutzerantwort","message":"Bitte weitermachen."}\n',
+    ]),
+    stateStore: store2,
+    apiPassword: "",
+    reconnectMs: 20,
+    log: () => {},
+  });
+  ok(await until(() => calls2.length >= 1), "die neue Brücke verbindet sich");
+  ok(
+    String(calls2[0]?.url).includes("since=msg_nach1"),
+    `sie liest an der gespeicherten Position weiter (war: ${calls2[0]?.url})`
+  );
+  ok(await until(() => prompts2.length === 1), "die Handy-Antwort wird zugestellt");
+  eq(prompts2[0]?.sessionID, SESSION, "die persistierte Zuordnung liefert die richtige Session");
+  eq(prompts2[0]?.text, "Bitte weitermachen.", "der Text kommt unverändert an");
+  started2.stop();
+  await until(() => runtime2.replyPromise === null);
+
+  // Ohne Datei ändert sich nichts: nichts persistiert, nichts gefunden.
+  const emptyPath = "/tmp/opencode/ntfy-state-test-leer.json";
+  rmSync(emptyPath, { force: true });
+  const store3 = createStateStore({ path: emptyPath, log: () => {} });
+  eq(store3.get(topic, "lastSessionId"), "", "eine fehlende Datei ergibt einen leeren Eintrag");
+  eq(store3.writtenHere(topic), false, "ohne Datei wurde nichts geschrieben");
+
+  // Kaputte Datei: kein Fehler, es wird wie ohne Datei gearbeitet.
+  const brokenPath = "/tmp/opencode/ntfy-state-test-kaputt.json";
+  await (await import("node:fs/promises")).writeFile(brokenPath, "{kaputt");
+  const broken = createStateStore({ path: brokenPath, log: () => {} });
+  eq(broken.get(topic, "since"), "", "eine kaputte Datei wird wie eine leere behandelt");
+  ok(broken.set(topic, { lastSessionId: SESSION }), "danach lässt sie sich wieder beschreiben");
+  broken.flush(true);
+  eq(
+    createStateStore({ path: brokenPath, log: () => {} }).get(topic, "lastSessionId"),
+    SESSION,
+    "der neue Stand steht in der Datei"
+  );
+
+  // Halb gefüllte Datei: vorhandene Felder gelten, fehlende bleiben leer,
+  // unsinnige Einträge sind kein Fehler.
+  const partialPath = "/tmp/opencode/ntfy-state-test-teil.json";
+  await (await import("node:fs/promises")).writeFile(
+    partialPath,
+    JSON.stringify({ topics: { ai: { lastSessionId: SESSION }, zweit: "quatsch" } })
+  );
+  const partial = createStateStore({ path: partialPath, log: () => {} });
+  eq(partial.get(topic, "lastSessionId"), SESSION, "vorhandene Felder werden übernommen");
+  eq(partial.get(topic, "since"), "", "fehlende Felder bleiben leer");
+  eq(partial.get("zweit", "lastSessionId"), "", "unsinnige Einträge sind kein Fehler");
+
+  // Gedrosseltes Schreiben: höchstens einmal je Sekunde — der letzte Stand
+  // kommt mit flush() (bzw. beim Ende der Brücke) in die Datei.
+  const throttlePath = "/tmp/opencode/ntfy-state-test-drossel.json";
+  rmSync(throttlePath, { force: true });
+  let clock = 1_000_000;
+  const throttle = createStateStore({ path: throttlePath, now: () => clock, log: () => {} });
+  throttle.set(topic, { lastSessionId: "ses_erste1" });
+  clock += 100;
+  throttle.set(topic, { lastSessionId: "ses_zweite2" });
+  eq(
+    createStateStore({ path: throttlePath, log: () => {} }).get(topic, "lastSessionId"),
+    "ses_erste1",
+    "innerhalb der Drosselung wird nicht geschrieben"
+  );
+  throttle.flush(true);
+  eq(
+    createStateStore({ path: throttlePath, log: () => {} }).get(topic, "lastSessionId"),
+    "ses_zweite2",
+    "nach dem erzwungenen Schreiben steht der letzte Stand in der Datei"
+  );
+
+  // Aufräumen: die Testdateien haben im Betrieb nichts zu suchen.
+  for (const path of [statePath, emptyPath, brokenPath, partialPath, throttlePath]) {
+    rmSync(path, { force: true });
+  }
+  rmSync(`${statePath}.tmp`, { force: true });
+}
+
+// ── 37. Sessions per Titel stummschalten (NTFY_IGNORE_TITLES) ─────────────
+//
+// Manche Sessions sind selbst Diagnose (z. B. „Hestia Ausfall-Probe“) und
+// sollen keine Meldungen erzeugen. NTFY_IGNORE_TITLES nimmt kommagetrennte
+// Teilzeichenketten (getrimmt, Groß-/Kleinschreibung egal): passt eine davon
+// auf den Titel der Session, geht gar nichts raus — weder Frage noch Fertig
+// noch Fehler. Leer/nicht gesetzt bleibt das Verhalten unverändert.
+console.log("\nStummschalten per Titel");
+{
+  const n = makeNotifier({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_IGNORE_TITLES: "  ausfall-probe , " },
+  });
+  received.length = 0;
+  await n.handleEvent({
+    type: "session.created",
+    properties: { info: info(SESSION, { title: "Hestia Ausfall-Probe" }) },
+  });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 0, "stummgeschaltete Session → keine Fertig-Meldung");
+
+  await n.handleEvent(
+    v2("form.created", {
+      questions: [{ question: "Weiter?", options: [{ label: "Ja" }] }],
+    })
+  );
+  eq(received.length, 0, "… auch keine Frage");
+  await n.handleEvent(v2("session.error", { error: { message: "kaputt" } }));
+  eq(received.length, 0, "… und kein Fehler");
+  eq(n._state.lastSent.size, 0, "der Cooldown wird für stumme Sessions nicht angefasst");
+}
+{
+  // Gegenprobe: ein anderer Titel meldet weiterhin; der Vergleich ist
+  // case-insensitiv und Teilzeichenketten genügen.
+  const n = makeNotifier({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_IGNORE_TITLES: "AUSFALL-PROBE" },
+  });
+  received.length = 0;
+  await n.handleEvent({
+    type: "session.created",
+    properties: { info: info(SESSION, { title: "Self-hosted Benachrichtigungsdienst" }) },
+  });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "ein anderer Titel meldet wie bisher");
+  eq(received[0]?.body?.title, "✅ Fertig — server-management", "die Meldung ist die gewohnte");
+}
+{
+  // Ohne NTFY_IGNORE_TITLES wird nichts gefiltert (unverändertes Verhalten).
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent({
+    type: "session.created",
+    properties: { info: info(SESSION, { title: "Hestia Ausfall-Probe" }) },
+  });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "ohne NTFY_IGNORE_TITLES wird auch dieser Titel gemeldet");
+}
+
+// ── 38. Klickziel-Stil (NTFY_LINK_STYLE) ─────────────────────────────────
+//
+// Übergangslösung: "base" setzt das Klickziel (click-Feld und die Aktion
+// „Session öffnen") auf die Basis, also die Startseite der Oberfläche.
+// Standard bleibt "session" = Session-Deep-Link. Der Kopplungsknopf hängt
+// weiterhin an der Basis (siehe Kopplungslink-Tests).
+console.log("\nKlickziel-Stil");
+{
+  const n = makeNotifier({ env: { ...UI_ENV, NTFY_FALLBACK_URL: UI_BASE, NTFY_LINK_STYLE: "base" } });
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  eq(n.linkFor(SESSION), UI_BASE, "Stil 'base' → Klickziel mit Session-Kennung ist die Basis");
+  eq(n.linkFor(""), UI_BASE, "Stil 'base' → ohne Session-Kennung ebenfalls die Basis");
+
+  received.length = 0;
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Meldung geht raus");
+  const body = received[0]?.body ?? {};
+  eq(body.click, UI_BASE, "das click-Feld zeigt auf die Basis");
+  eq(body.actions?.[0]?.label, "OpenCode öffnen", "im Basis-Stil heißt die Aktion 'OpenCode öffnen'");
+  eq(body.actions?.[0]?.url, UI_BASE, "'Session öffnen' zeigt auf die Basis");
+}
+{
+  // Standard "session": wie bisher der Deep-Link — mit und ohne Kennung.
+  const n = makeNotifier({ env: { ...UI_ENV, NTFY_FALLBACK_URL: UI_BASE } });
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  eq(
+    n.linkFor(SESSION),
+    `${UI_BASE}/server/local/session/${SESSION}`,
+    "Stil 'session' (Default) → Deep-Link"
+  );
+  eq(n.linkFor(""), UI_BASE, "Stil 'session' → ohne Session-Kennung die Basis");
+
+  received.length = 0;
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(
+    received[0]?.body?.click,
+    `${UI_BASE}/server/local/session/${SESSION}`,
+    "der Standard bleibt der Deep-Link"
+  );
+  eq(
+    received[0]?.body?.actions?.[0]?.url,
+    received[0]?.body?.click,
+    "'OpenCode öffnen' trägt denselben Link"
+  );
 }
 
 sink.close();
