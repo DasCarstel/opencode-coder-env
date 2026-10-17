@@ -1,8 +1,15 @@
+// opencode-model-router Overrides — Single Source of Truth der Tier-Anbindung
+//
+// Dieses File wird vom Plugin `opencode-model-router` gelesen (deep-merge über
+// die gebündelten Defaults): Das Plugin durchsucht den Working directory nach
+// oben bis zur Repo-Root, sodass jeder OpenCode-Workspaces-Container im Repo
+// automatisch dieselbe Konfiguration zieht — kein Symlink, kein Cache-Eingriff.
+//
+// Verwaltet vom Hestia-Panel (hestia/): Änderungen laufen über
+//   POST /api/apply  → schreibe dieses File → git push → CI/CD-Rollout
+// Manuelle Edits sind weiterhin möglich (JSONC: // und /* */ erlaubt).
 {
   "$schema": "https://raw.githubusercontent.com/Opencode-DCP/opencode-dynamic-context-pruning/master/dcp.schema.json",
-  // DCP — Kontext-Kompaktierung (Schwellenwerte werden von Hestia verwaltet).
-  // Nur die Felder unter "compress" (maxContextLimit/minContextLimit/modelMaxLimits)
-  // werden von Hestia ueberschrieben; der Rest bleibt erhalten.
   "enabled": true,
   "debug": false,
   "pruneNotification": "detailed",
@@ -29,17 +36,14 @@
     "permission": "allow",
     "showCompression": false,
     "summaryBuffer": true,
-    // Hart: ab dieser Token-Zahl wird kompaktiert (Hestia-verwaltet).
-    "maxContextLimit": 100000,
-    // Weich: darunter nur sanfte Nudges (Hestia-verwaltet).
-    "minContextLimit": 50000,
+    "maxContextLimit": 175000,
+    "minContextLimit": 100000,
     "nudgeFrequency": 5,
     "iterationNudgeThreshold": 15,
     "nudgeForce": "soft",
     "protectedTools": [],
     "protectTags": false,
     "protectUserMessages": false,
-    // Per-Modell-Overrides (Hestia-verwaltet): "provider/model": 250000 oder "80%"
     "modelMaxLimits": {},
     "modelMinLimits": {}
   },
