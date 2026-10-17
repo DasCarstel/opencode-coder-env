@@ -779,9 +779,9 @@ async function saveDcpSettings() {
 
 function applyDcpPreset(preset) {
   const presets = {
-    light: { max: 85000, min: 50000 },
-    moderate: { max: 75000, min: 40000 },
-    max: { max: 60000, min: 25000 },
+    light: { max: 250000, min: 150000 },
+    moderate: { max: 175000, min: 100000 },
+    max: { max: 10000, min: 5000 },
   }
   const p = presets[preset]
   if (p) {
@@ -1170,50 +1170,7 @@ setInterval(loadSuggestStatus, 60000)
   </p>
 </div>
 
-<div class="card">
-  <h2>DCP — Kontext-Kompaktierung (Schwellenwerte)</h2>
-  <p class="muted">
-    Dynamic Context Pruning: ab welcher Token-Zahl der Kontext kompaktiert wird.
-    Hart = ab dieser Zahl wird kompaktiert; Weich = darunter nur sanfte Nudges.
-    Wirkt nach dem nächsten Container-Restart (Rollout). SOT: <span class="mono">.opencode/dcp.jsonc</span>.
-  </p>
-  <div class="row">
-    <label class="foCheck">
-      <input type="checkbox" bind:checked={dcpForm.enabled} disabled={dcpSaveBusy} />
-      DCP aktiv
-    </label>
-    <label>
-      Hart (maxContextLimit)
-      <input type="number" min="0" step="1000" bind:value={dcpForm.maxContextLimit} disabled={dcpSaveBusy} style="width:120px" />
-    </label>
-    <label>
-      Weich (minContextLimit)
-      <input type="number" min="0" step="1000" bind:value={dcpForm.minContextLimit} disabled={dcpSaveBusy} style="width:120px" />
-    </label>
-    <span class="muted">
-      Aktuell: {dcpStatus?.settings?.enabled === false ? 'aus' : 'an'} · max {dcpStatus?.settings?.maxContextLimit ?? '—'} · min {dcpStatus?.settings?.minContextLimit ?? '—'}
-    </span>
-  </div>
-  <div class="row" style="margin-top:8px">
-    <span class="muted">Presets:</span>
-    <button onclick={() => applyDcpPreset('light')} disabled={dcpSaveBusy}>light (85k/50k)</button>
-    <button onclick={() => applyDcpPreset('moderate')} disabled={dcpSaveBusy}>moderate (75k/40k)</button>
-    <button onclick={() => applyDcpPreset('max')} disabled={dcpSaveBusy}>max (60k/25k)</button>
-  </div>
-  <div class="row" style="margin-top:8px">
-    <button class="primary" onclick={saveDcpSettings} disabled={dcpSaveBusy}>
-      {dcpSaveBusy ? 'Speichere …' : '💾 Schwellenwerte speichern'}
-    </button>
-    {#if dcpSaveResult?.saved}
-      <span class="muted">
-        Gespeichert {#if dcpSaveResult.commit?.sha}· Commit <span class="mono">{dcpSaveResult.commit.sha.slice(0, 8)}</span>{/if}
-        · {dcpSaveResult.rollout}
-      </span>
-    {:else if dcpSaveResult?.error}
-      <span class="muted" style="color:var(--err)">⚠ {dcpSaveResult.error}</span>
-    {/if}
-  </div>
-</div>
+
 
 <div class="card">
   <h2>DCP — Kontext-Kompaktierung (Schwellenwerte)</h2>
@@ -1241,9 +1198,9 @@ setInterval(loadSuggestStatus, 60000)
   </div>
   <div class="row" style="margin-top:8px">
     <span class="muted">Presets:</span>
-    <button onclick={() => applyDcpPreset('light')} disabled={dcpSaveBusy}>light (85k/50k)</button>
-    <button onclick={() => applyDcpPreset('moderate')} disabled={dcpSaveBusy}>moderate (75k/40k)</button>
-    <button onclick={() => applyDcpPreset('max')} disabled={dcpSaveBusy}>max (60k/25k)</button>
+    <button onclick={() => applyDcpPreset('light')} disabled={dcpSaveBusy}>light (250k/150k)</button>
+    <button onclick={() => applyDcpPreset('moderate')} disabled={dcpSaveBusy}>moderate (175k/100k)</button>
+    <button onclick={() => applyDcpPreset('max')} disabled={dcpSaveBusy}>max (10k/5k)</button>
   </div>
   <div class="row" style="margin-top:8px">
     <button class="primary" onclick={saveDcpSettings} disabled={dcpSaveBusy}>
