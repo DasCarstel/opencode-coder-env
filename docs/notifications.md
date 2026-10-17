@@ -205,7 +205,21 @@ Kopplungs-Cookie.
 
 #### Antwort vom Handy (Antwort-Brücke)
 
-Der Text, den man in der ntfy-App als Nachricht ins Topic schickt, geht an die
+> **Standardmäßig abgeschaltet (seit 17.10.2026):** `NTFY_REPLY_ENABLED=0` und
+> `NTFY_FORM_REPLY=0` (Vorgabe aus `startup.sh`, gesetzt nur wenn der Schlüssel
+> in `/etc/opencode.env` noch fehlt). Die Meldung enthält weiter den
+> Knopf/Deep-Link **„Session öffnen"** — geantwortet wird dort, in der
+> OpenCode-Session. **Grund:** ntfy kennt keine verknüpfte Antwort; jede Antwort
+> ist eine freie Nachricht im Topic, und die Zuordnung zu Frage/Session war
+> unzuverlässig (derselbe Text wurde als Formularantwort *und* als Prompt
+> verarbeitet). **Wieder einschalten:** beide Variablen auf `1` setzen
+> (`NTFY_REPLY_ENABLED=1`, `NTFY_FORM_REPLY=1`) und den Dienst neu starten — dann
+> gelten wieder die Regeln aus `e8702a0`: es wird zuerst die nächste offene Frage
+> beantwortet, und ohne offene Frage gilt eine Nachricht 30 Minuten lang als neue
+> Anweisung an die zuletzt meldende Session (Details unten).
+
+Wenn die Brücke eingeschaltet ist (`NTFY_REPLY_ENABLED=1`), geht der Text, den
+man in der ntfy-App als Nachricht ins Topic schickt, an die
 Session, die zuletzt etwas gemeldet hat (`lastSessionId`, überlebt einen
 Dienst-Neustart in `NTFY_STATE_FILE`; Fallback: die zuletzt gesehene Session).
 
@@ -246,6 +260,8 @@ hielte die Brücke eine längst erledigte Frage für offen.
 
 | Einstellung | Wirkung |
 |-------------|---------|
+| `NTFY_REPLY_ENABLED` | `0` (Default, Vorgabe aus `startup.sh`) schaltet die Antwort-Brücke ab — die Meldung kommt weiter, aber es wird nur benachrichtigt. `1` schaltet sie ein. |
+| `NTFY_FORM_REPLY` | `0` (Default, Vorgabe aus `startup.sh`) entfernt den Hinweis „Antwort direkt hier möglich …“ aus Frage-Meldungen; gehört zur Brücke und ist nur zusammen mit `NTFY_REPLY_ENABLED=1` sinnvoll. |
 | `NTFY_REPLY_WINDOW_MIN` | Antwortfenster in Minuten (Default `30`): so lange gilt eine Nachricht ohne offene Frage noch als neue Anweisung an die letzte meldende Session. `0` schaltet die Zeitprüfung ab — dann zählt jede Nachricht nach der eigenen letzten Meldung. |
 
 Kürzel im Diagnose-Log der Brücke (`NTFY_REPLY_LOG`): `form-reihenfolge`

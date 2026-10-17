@@ -846,8 +846,9 @@ set_env_default() {
 }
 
 # Statische ntfy-Optionen (alle Profile): Icons für die Meldungen, Stummschaltung
-# der Hestia-Ausfall-Probe, Deep-Link-Stil (öffnet direkt die Session) und das
-# Diagnose-Log. Bisher waren diese vier Schlüssel nur im Container
+# der Hestia-Ausfall-Probe, Deep-Link-Stil (öffnet direkt die Session), das
+# Diagnose-Log und seit 17.10.2026 die Voreinstellungen der Antwortbrücke.
+# Bisher waren die ersten vier Schlüssel nur im Container
 # coder-carstenmueller2002-infrastructure manuell gesetzt – alle übrigen Profile
 # liefen ohne sie.
 NTFY_ICON_BASE_DEFAULT="https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons"
@@ -855,6 +856,17 @@ set_env_default NTFY_ICON_BASE     "$NTFY_ICON_BASE_DEFAULT"
 set_env_default NTFY_IGNORE_TITLES "Ausfall-Probe"
 set_env_default NTFY_LINK_STYLE    "session"
 set_env_default NTFY_REPLY_LOG     "/tmp/opencode/ntfy-diag.log"
+# Antwortbrücke standardmäßig aus: aufs Handy wird nur benachrichtigt, geantwortet
+# wird in der OpenCode-Session (Klick auf die Meldung, Deep-Link "Session öffnen").
+# Grund: ntfy kennt keine verknüpfte Antwort – jede Antwort ist eine freie
+# Nachricht im Topic und muss der Frage/Session zugeordnet werden. Das ging
+# wiederholt schief (derselbe Text galt gleichzeitig als Formularantwort und als
+# Prompt → fehlgeschlagene Schritte und Fehlermeldungen aufs Handy).
+# Zum Wiedereinschalten NTFY_REPLY_ENABLED=1 setzen.
+set_env_default NTFY_REPLY_ENABLED "0"
+# Der Hinweis "Antwort direkt hier möglich …" in Frage-Meldungen gehört zur
+# Brücke und ist deshalb ebenfalls aus; NTFY_FORM_REPLY=1 schaltet ihn zurück.
+set_env_default NTFY_FORM_REPLY    "0"
 echo "  ✓ ntfy-Standardoptionen in /etc/opencode.env sichergestellt"
 
 # Topic je Workspace (opt-in über den Namen, siehe Tabelle):
