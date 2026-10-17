@@ -837,6 +837,31 @@ else
   echo "  ⚠ ntfy-Token fehlt (OpenBao secret/data/mcp/notify, Feld 'opencode_token')"
 fi
 
+# Schreibt einen Schlüssel nur, wenn er in /etc/opencode.env noch fehlt –
+# ein bereits vorhandener (manuell eingetragener) Wert gewinnt immer.
+set_env_default() {
+  local key="$1" value="$2"
+  grep -q "^${key}=" /etc/opencode.env 2>/dev/null \
+    || printf '%s="%s"\n' "$key" "$value" >> /etc/opencode.env
+}
+
+# Statische ntfy-Optionen (alle Profile): Icons für die Meldungen, Stummschaltung
+# der Hestia-Ausfall-Probe, Deep-Link-Stil (öffnet direkt die Session) und das
+# Diagnose-Log. Bisher waren diese vier Schlüssel nur im Container
+# coder-carstenmueller2002-infrastructure manuell gesetzt – alle übrigen Profile
+# liefen ohne sie.
+NTFY_ICON_BASE_DEFAULT="https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons"
+set_env_default NTFY_ICON_BASE     "$NTFY_ICON_BASE_DEFAULT"
+set_env_default NTFY_IGNORE_TITLES "Ausfall-Probe"
+set_env_default NTFY_LINK_STYLE    "session"
+set_env_default NTFY_REPLY_LOG     "/tmp/opencode/ntfy-diag.log"
+echo "  ✓ ntfy-Standardoptionen in /etc/opencode.env sichergestellt"
+
+# NTFY_TOPIC_PREFIX wird hier bewusst NICHT gesetzt: Der Präfix trennt die Topics
+# mehrerer Workspaces und wird später je Workspace aktiviert (opt-in). Ohne
+# passendes Abo auf dem Gerät würden Meldungen sonst in einem Topic landen, das
+# niemand abonniert hat – sie verschwänden stillschweigend.
+
 # ── OpenCode-Theme: dauerhaft hell (cli.json, idempotent) ───────────────────
 mkdir -p ~/.config/opencode
 python3 - <<'PY' >/dev/null 2>&1
