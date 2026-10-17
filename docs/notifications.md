@@ -87,11 +87,11 @@ Cache 24 h, Attachment-Limit 1 GB (Disk auf CT 100 ist knapp).
 | `print` | 3D-Druck (Job fertig/Fehler) | `src-ha`, `carsten` | 3 |
 | `logs` | Uninteressante HA-Meldungen (Watchdog, CCU, GUARD, Fenster-Sensor) | `src-ha`, `carsten` | 1 |
 | `gorkem` | Görkem-spezifisch (Toilette, Roborock-Standort) | `src-ha`, `carsten`, `gorkem` | 3 |
-| `oc-infrastructure` | OpenCode server-management | `src-opencode`, `carsten` | 3 |
-| `oc-general` | OpenCode general | `src-opencode`, `carsten` | 3 |
-| `oc-minijob` | OpenCode minijob | `src-opencode`, `carsten` | 3 |
-| `oc-datascience` | OpenCode uni/datascience | `src-opencode`, `carsten` | 3 |
-| `hermes` | Hermes-Agent (Notifications) | `src-opencode` (Hermes), `carsten` | 3 |
+| `oc-infrastructure` | OpenCode server-management | `src-opencode`, `carsten` | 2 |
+| `oc-general` | OpenCode general | `src-opencode`, `carsten` | 2 |
+| `oc-minijob` | OpenCode minijob | `src-opencode`, `carsten` | 2 |
+| `oc-datascience` | OpenCode uni/datascience | `src-opencode`, `carsten` | 2 |
+| `hermes` | Hermes-Agent (Notifications) | `src-opencode` (Hermes), `carsten` | 2 |
 | `ai` | Rückfall-Topic (nur wenn kein `NTFY_TOPIC_NAME` gesetzt) | `src-opencode`, `carsten` | 3 |
 
 Entfallen: `infra` (Hestia/Backups/Deploys — nicht mehr genutzt), `digest`
