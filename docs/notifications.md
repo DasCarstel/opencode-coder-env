@@ -86,6 +86,7 @@ Cache 24 h, Attachment-Limit 1 GB (Disk auf CT 100 ist knapp).
 | `doorbell` | Türklingel (mit „Tür öffnen"-Button) | `src-ha`, `carsten` | 4 |
 | `print` | 3D-Druck (Job fertig/Fehler) | `src-ha`, `carsten` | 3 |
 | `logs` | Uninteressante HA-Meldungen (Watchdog, CCU, GUARD, Fenster-Sensor) | `src-ha`, `carsten` | 1 |
+| `gorkem` | Görkem-spezifisch (Toilette, Roborock-Standort) | `src-ha`, `carsten`, `gorkem` | 3 |
 | `oc-infrastructure` | OpenCode server-management | `src-opencode`, `carsten` | 3 |
 | `oc-general` | OpenCode general | `src-opencode`, `carsten` | 3 |
 | `oc-minijob` | OpenCode minijob | `src-opencode`, `carsten` | 3 |
@@ -113,10 +114,10 @@ Agenten gehört zum ntfy-Nutzer **`src-opencode`**, und sein Zugriff muss für
 schlägt der Publish mit `HTTP 403` fehl: im Diagnose-Log (`NTFY_REPLY_LOG`)
 stehen dann die Fehlschläge, und auf dem Handy kommt **gar nichts** mehr an.
 
-Benötigt sind aktuell elf Topics (siehe Tabelle oben): `crit`, `home`,
-`doorbell`, `print`, `logs`, `oc-infrastructure`, `oc-general`, `oc-minijob`,
-`oc-datascience`, `hermes` und `ai` (Rückfall-Topic). `infra` und `digest`
-entfallen und können auf dem Handy gelöscht werden.
+Benötigt sind aktuell zwölf Topics (siehe Tabelle oben): `crit`, `home`,
+`doorbell`, `print`, `logs`, `gorkem`, `oc-infrastructure`, `oc-general`,
+`oc-minijob`, `oc-datascience`, `hermes` und `ai` (Rückfall-Topic).
+`infra` und `digest` entfallen und können auf dem Handy gelöscht werden.
 
 ```bash
 # auf dem Docker-Host: je Topic einmal setzen (<topic> ersetzen)
