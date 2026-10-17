@@ -1,13 +1,5 @@
-// opencode-model-router Overrides — Single Source of Truth der Tier-Anbindung
-//
-// Dieses File wird vom Plugin `opencode-model-router` gelesen (deep-merge über
-// die gebündelten Defaults): Das Plugin durchsucht den Working directory nach
-// oben bis zur Repo-Root, sodass jeder OpenCode-Workspaces-Container im Repo
-// automatisch dieselbe Konfiguration zieht — kein Symlink, kein Cache-Eingriff.
-//
-// Verwaltet vom Hestia-Panel (hestia/): Änderungen laufen über
-//   POST /api/apply  → schreibe dieses File → git push → CI/CD-Rollout
-// Manuelle Edits sind weiterhin möglich (JSONC: // und /* */ erlaubt).
+// DCP — Kontext-Kompaktierung (Schwellenwerte, SOT des Hestia-Panels).
+// Geschrieben ueber POST /api/dcp/settings, gelesen von DCP beim Container-Start.
 {
   "$schema": "https://raw.githubusercontent.com/Opencode-DCP/opencode-dynamic-context-pruning/master/dcp.schema.json",
   "enabled": true,

@@ -159,10 +159,9 @@ def update_settings(payload: dict) -> dict:
     compress["modelMinLimits"] = model_min
     data["compress"] = compress
 
-    text = hjsonc.serialize(data) if hasattr(hjsonc, "serialize") else None
-    if text is None:
-        # Fallback: json.dumps (kein Kommentar-Support, aber gueltig)
-        text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    DCP_HEADER = ("// DCP — Kontext-Kompaktierung (Schwellenwerte, SOT des Hestia-Panels).\n"
+                  "// Geschrieben ueber POST /api/dcp/settings, gelesen von DCP beim Container-Start.\n")
+    text = hjsonc.serialize(data, header=DCP_HEADER)
 
     commit = github_api.put_files(
         {DCP_SETTINGS_PATH: text}, "hestia: DCP-Schwellenwerte aktualisiert")
