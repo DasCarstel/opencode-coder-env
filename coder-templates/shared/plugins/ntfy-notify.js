@@ -39,6 +39,14 @@
 //                     demselben Topic). Ohne den Prefix bleibt es exakt bei
 //                     NTFY_TOPIC; die Ableitung ist bewusst opt-in, sonst
 //                     landeten Meldungen in Topics, die niemand abonniert hat.
+//   NTFY_TOPIC_NAME   Arbeitsbereichs-Teil des Topics, wenn das Verzeichnis
+//                     keinen hergibt: der Dienst läuft im Repo-Wurzelverzeichnis,
+//                     dessen Pfad enthält kein "/workspaces/". Zusammen mit
+//                     NTFY_TOPIC_PREFIX gilt "<prefix>-<name>" (z. B. "oc" +
+//                     "infrastructure" → "oc-infrastructure"), einheitlich für
+//                     Versand und Antwort-Brücke. Wirkt NUR auf das Topic:
+//                     Icon (NTFY_ICON_BASE) und Titel-Kennung "[<name>] "
+//                     bleiben am Sitzungs-Verzeichnis bzw. an NTFY_WORKSPACE.
 //   NTFY_ICON_BASE    Opt-in: Symbol-URL je Meldung. Ist die Variable gesetzt und
 //                     ist der Arbeitsbereich bekannt, trägt die Meldung das
 //                     ntfy-Feld "icon" = "<basis>/<workspace>.png" (im JSON
@@ -516,6 +524,21 @@ export function topicWorkspaceFrom(env = {}, dir = "") {
 }
 
 /**
+ * Arbeitsbereichs-Teil des TOPICS, wenn das Verzeichnis keinen hergibt:
+ * NTFY_TOPIC_NAME gewinnt, sonst der übergebene Arbeitsbereich. Gedacht für
+ * den Dienst im Repo-Wurzelverzeichnis (kein "/workspaces/" im Pfad). Bewusst
+ * NICHT für Icon und Titel verwenden — die hängen weiter am Sitzungs-
+ * Verzeichnis bzw. an NTFY_WORKSPACE (siehe workspaceForIcon/workspaceName).
+ */
+export function topicNameFrom(env = {}, workspace = "") {
+  const clean = (value) =>
+    String(value ?? "")
+      .replace(/[[\]]/g, "")
+      .trim();
+  return clean(env.NTFY_TOPIC_NAME) || clean(workspace);
+}
+
+/**
  * Topic mit Arbeitsbereich (NTFY_TOPIC_PREFIX). Die Ableitung ist opt-in: ohne
  * Prefix oder ohne bekannten Arbeitsbereich kommt unverändert `base` zurück —
  * sonst landeten Meldungen in Topics, die der Nutzer nicht abonniert hat. Mit
@@ -530,6 +553,18 @@ export function topicWithWorkspace(base, env = {}, workspace = "") {
   const name = String(workspace ?? "").trim();
   if (!prefix || !name) return base;
   return `${prefix}-${name}`;
+}
+
+/**
+ * Das endgültige Topic einer Instanz — die EINE Ableitung, die Versand UND
+ * Antwort-Brücke benutzen (die Brücke muss auf dem Topic hören, in das gesendet
+ * wird). Der Arbeitsbereich kommt aus NTFY_TOPIC_NAME, sonst aus
+ * NTFY_WORKSPACE/dem Verzeichnis (siehe topicNameFrom/topicWorkspaceFrom);
+ * zusammengesetzt wird er nur mit NTFY_TOPIC_PREFIX. Icon und Titel bleiben
+ * davon unberührt — sie folgen weiter dem Sitzungs-Verzeichnis.
+ */
+export function topicForEnv(base, env = {}, dir = "") {
+  return topicWithWorkspace(base, env, topicNameFrom(env, topicWorkspaceFrom(env, dir)));
 }
 
 /**
@@ -1212,13 +1247,16 @@ export function createNtfyNotifier(options = {}) {
   const url = String(options.url ?? env.NTFY_URL ?? DEFAULT_URL).replace(/\/+$/, "");
   const token = String(options.token ?? env.NTFY_TOKEN ?? "");
   // Arbeitsbereich dieser Instanz: NTFY_WORKSPACE oder der Workspace-Pfad des
-  // Kontext-Verzeichnisses. Daraus entsteht das Topic — aber nur mit
-  // NTFY_TOPIC_PREFIX (opt-in, siehe topicWithWorkspace). options.topic bleibt
-  // der ausdrückliche Override.
+  // Kontext-Verzeichnisses. Er bestimmt Icon und Titel-Kennung — NTFY_TOPIC_NAME
+  // gilt hier bewusst nicht (siehe workspaceForIcon/workspaceName).
   const contextWorkspace = topicWorkspaceFrom(env, options.directory ?? "");
+  // Topic: NTFY_TOPIC plus Prefix/Arbeitsbereich (NTFY_TOPIC_PREFIX,
+  // NTFY_TOPIC_NAME) über die gemeinsame Ableitung — dieselbe wie in der
+  // Antwort-Brücke (topicForEnv). options.topic bleibt der ausdrückliche
+  // Override.
   const topic = String(
     options.topic ??
-      topicWithWorkspace(String(env.NTFY_TOPIC ?? DEFAULT_TOPIC), env, contextWorkspace)
+      topicForEnv(String(env.NTFY_TOPIC ?? DEFAULT_TOPIC), env, options.directory ?? "")
   );
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const now = options.now ?? (() => Date.now());
@@ -1303,9 +1341,10 @@ export function createNtfyNotifier(options = {}) {
   }
 
   /**
-   * Arbeitsbereich für Topic und Symbol: die Sitzung gewinnt (ihr Verzeichnis
-   * ist der echte Workspace-Pfad), sonst der Arbeitsbereich der Instanz. Ohne
-   * beides ist der Name unbekannt — dann gibt es kein icon-Feld.
+   * Arbeitsbereich für Symbol UND Titel-Kennung: die Sitzung gewinnt (ihr
+   * Verzeichnis ist der echte Workspace-Pfad), sonst der Arbeitsbereich der
+   * Instanz. NTFY_TOPIC_NAME gilt hier ausdrücklich NICHT — die Variable setzt
+   * nur den Topic-Namen. Ohne Arbeitsbereich gibt es kein icon-Feld.
    */
   function workspaceForIcon(sessionID) {
     return topicWorkspaceFrom(env, metaFor(sessionID).directory) || contextWorkspace;
@@ -2160,15 +2199,16 @@ export function createReplyBridge(options = {}) {
   const config = options.config ?? resolveConfig(env);
   const url = String(options.url ?? config.url ?? DEFAULT_URL).replace(/\/+$/, "");
   const token = String(options.token ?? config.token ?? "");
-  // Topic zum Abholen: dieselbe Ableitung wie beim Versand — mit gesetztem
-  // NTFY_TOPIC_PREFIX und bekanntem Arbeitsbereich hört die Brücke also auf
+  // Topic zum Abholen: dieselbe Ableitung wie beim Versand (topicForEnv) — mit
+  // gesetztem NTFY_TOPIC_PREFIX und bekanntem Arbeitsbereich (NTFY_TOPIC_NAME,
+  // NTFY_WORKSPACE oder Workspace-Pfad) hört die Brücke also auf
   // "<prefix>-<workspace>", genau dem Topic, in das die Meldungen gehen.
   const topic = String(
     options.topic ??
-      topicWithWorkspace(
+      topicForEnv(
         String(env.NTFY_REPLY_TOPIC ?? config.topic ?? DEFAULT_TOPIC),
         env,
-        topicWorkspaceFrom(env, options.directory ?? "")
+        options.directory ?? ""
       )
   );
   const fetchImpl = options.fetch ?? globalThis.fetch;
@@ -3066,9 +3106,10 @@ export function createPluginRuntime(options = {}) {
       const replyBridge = startReplyBridge({
         ctx,
         env: { ...merged, NTFY_TOKEN: cfg.token, NTFY_URL: cfg.url, NTFY_TOPIC: cfg.topic },
-        // Dasselbe Verzeichnis wie der Notifier: daraus leitet die Brücke
-        // dasselbe Topic ab (NTFY_TOPIC_PREFIX) — sie hört auf dem Topic, in
-        // das die Meldungen gehen.
+        // Dasselbe Verzeichnis wie der Notifier: daraus leitet die Brücke über
+        // dieselbe Funktion (topicForEnv) dasselbe Topic ab — inklusive
+        // NTFY_TOPIC_PREFIX und NTFY_TOPIC_NAME. Sie hört auf dem Topic, in das
+        // die Meldungen gehen.
         directory: contextDirectory,
         publish: (payload) => notifier.send(payload),
         log: options.log ?? debug,

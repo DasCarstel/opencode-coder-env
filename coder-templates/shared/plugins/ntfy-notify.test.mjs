@@ -3558,6 +3558,157 @@ console.log("\nTopic je Arbeitsbereich");
   await wait();
 }
 
+// ── 39b. NTFY_TOPIC_NAME: nur das Topic, nie Icon oder Titel ──────────────
+//
+// Der Dienst läuft im Repo-Wurzelverzeichnis (REPO_DIR) — dessen Pfad enthält
+// kein "/workspaces/", also kommt aus dem Verzeichnis kein Arbeitsbereich und
+// das Topic bliebe bei NTFY_TOPIC ("ai"). NTFY_TOPIC_NAME setzt genau diesen
+// Teil des Topics (zusammen mit NTFY_TOPIC_PREFIX). Icon und Titel-Kennung
+// bleiben unangetastet: sie folgen weiter dem Sitzungs-Verzeichnis bzw.
+// NTFY_WORKSPACE (sonst überschriebe die neue Variable die bewährten Icons).
+console.log("\nTopic-Name (NTFY_TOPIC_NAME)");
+{
+  // a) Prefix + NTFY_TOPIC_NAME → "<prefix>-<name>", auch ohne Workspace-Pfad.
+  const n = createNtfyNotifier({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_PAIR_BUTTON: "0",
+      NTFY_TOPIC: "ai",
+      NTFY_TOPIC_PREFIX: "oc",
+      NTFY_TOPIC_NAME: "infrastructure",
+    },
+    directory: REPO_DIR,
+    state: freshState(),
+    log: () => {},
+  });
+  eq(n.topic, "oc-infrastructure", "NTFY_TOPIC_NAME ergibt <prefix>-<name>");
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Meldung geht raus");
+  eq(
+    received[0]?.body?.topic,
+    "oc-infrastructure",
+    "der Versand nutzt das Topic aus NTFY_TOPIC_NAME"
+  );
+}
+{
+  // b) Gegenprobe: ohne NTFY_TOPIC_NAME und ohne Workspace-Pfad bleibt es bei
+  //    NTFY_TOPIC — genau das Verhalten von heute.
+  const n = createNtfyNotifier({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_PAIR_BUTTON: "0",
+      NTFY_TOPIC: "ai",
+      NTFY_TOPIC_PREFIX: "oc",
+    },
+    directory: REPO_DIR,
+    state: freshState(),
+    log: () => {},
+  });
+  eq(n.topic, "ai", "ohne NTFY_TOPIC_NAME bleibt das Topic bei NTFY_TOPIC");
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Meldung geht raus");
+  eq(received[0]?.body?.topic, "ai", "der Versand bleibt im Topic 'ai'");
+}
+{
+  // c) Icon und Titel kommen weiter aus dem Sitzungs-Verzeichnis: derselbe
+  //    Ablauf einmal mit, einmal ohne NTFY_TOPIC_NAME — nur das Topic darf
+  //    sich unterscheiden. Die Sitzung liegt in homeassistant, nicht in
+  //    infrastructure (dem Topic-Namen).
+  const iconBase = "https://icons.invalid/base";
+  const lauf = async (topicName) => {
+    const n = createNtfyNotifier({
+      env: {
+        NTFY_URL: SINK_URL,
+        NTFY_TOKEN: "tk_test",
+        NTFY_PAIR_BUTTON: "0",
+        NTFY_TOPIC: "ai",
+        NTFY_TOPIC_PREFIX: "oc",
+        NTFY_ICON_BASE: iconBase,
+        ...(topicName ? { NTFY_TOPIC_NAME: topicName } : {}),
+      },
+      directory: REPO_DIR,
+      state: freshState(),
+      log: () => {},
+    });
+    received.length = 0;
+    const sesInfo = info(SESSION, {
+      location: { directory: `${REPO_DIR}/workspaces/infrastructure/homeassistant` },
+    });
+    await n.handleEvent({ type: "session.created", properties: { info: sesInfo } });
+    n.markWorking(SESSION);
+    await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+    return { topic: n.topic, body: received[0]?.body ?? {} };
+  };
+  const mit = await lauf("infrastructure");
+  const ohne = await lauf("");
+  eq(mit.topic, "oc-infrastructure", "mit NTFY_TOPIC_NAME folgt das Topic dem Topic-Namen");
+  eq(ohne.topic, "ai", "ohne NTFY_TOPIC_NAME bleibt das Topic bei NTFY_TOPIC");
+  eq(
+    mit.body.icon,
+    `${iconBase}/homeassistant.png`,
+    "das icon zeigt weiter auf den Arbeitsbereich des Sitzungs-Verzeichnisses"
+  );
+  eq(mit.body.icon, ohne.body.icon, "NTFY_TOPIC_NAME ändert das icon-Feld nicht");
+  eq(mit.body.title, ohne.body.title, "NTFY_TOPIC_NAME ändert den Titel nicht");
+  ok(
+    String(mit.body.title ?? "").startsWith("[homeassistant]"),
+    `die Titel-Kennung kommt weiter aus dem Sitzungs-Verzeichnis (war: ${mit.body.title})`
+  );
+}
+{
+  // d) Brücke und Notifier leiten dasselbe Topic ab: gleiche Env, gleiches
+  //    Verzeichnis — genau die Verdrahtung aus createPluginRuntime. Die Brücke
+  //    muss auf dem Topic hören, in das der Notifier sendet, sonst findet keine
+  //    Antwort mehr zurück.
+  const env = {
+    NTFY_URL: SINK_URL,
+    NTFY_TOKEN: "tk_test",
+    NTFY_TOPIC: "ai",
+    NTFY_TOPIC_PREFIX: "oc",
+    NTFY_TOPIC_NAME: "infrastructure",
+  };
+  const notifier = createNtfyNotifier({
+    env,
+    directory: REPO_DIR,
+    state: freshState(),
+    log: () => {},
+  });
+  eq(notifier.topic, "oc-infrastructure", "der Notifier leitet das Topic ab");
+  resetSharedState();
+  const runtime = replyRuntime();
+  const calls = [];
+  const started = startReplyBridge({
+    env,
+    runtime,
+    directory: REPO_DIR,
+    controller: new AbortController(),
+    client: { session: { prompt: async () => {} } },
+    publish: async () => true,
+    fetch: openStreamFetch(calls),
+    reconnectMs: 20,
+    apiPassword: "",
+    log: () => {},
+  });
+  ok(await until(() => calls.length === 1), "die Brücke verbindet sich");
+  eq(started.bridge?.topic, "oc-infrastructure", "die Brücke hört auf <prefix>-<name>");
+  eq(started.bridge?.topic, notifier.topic, "Brücke und Notifier nutzen dasselbe Topic");
+  ok(
+    decodeURIComponent(String(calls[0]?.url)).includes("/oc-infrastructure/json"),
+    `der Strom wird mit demselben Topic abgefragt (war: ${calls[0]?.url})`
+  );
+  started.stop();
+  await until(() => runtime.replyPromise === null);
+  resetSharedState();
+}
+
 // ── 40. Symbol je Meldung (NTFY_ICON_BASE) ────────────────────────────────
 //
 // Ist NTFY_ICON_BASE gesetzt und der Arbeitsbereich bekannt, trägt die Meldung

@@ -55,6 +55,7 @@ rutscht, das niemand abonniert hat.
 | Einstellung | Wirkung |
 |-------------|---------|
 | `NTFY_TOPIC_PREFIX` | Gesetzt **und** Arbeitsbereich bekannt → Topic `<prefix>-<workspace>`, z. B. `oc` + `server-management` → **`oc-server-management`**. Gilt einheitlich für den Versand **und** die Antwort-Brücke (die hört auf demselben Topic). Ohne Prefix oder ohne bekannten Arbeitsbereich bleibt es bei `NTFY_TOPIC`. |
+| `NTFY_TOPIC_NAME` | Arbeitsbereichs-Teil des Topics, wenn das Verzeichnis keinen hergibt: der Dienst läuft im Repo-Wurzelverzeichnis, dessen Pfad enthält kein `/workspaces/`. Nur zusammen mit `NTFY_TOPIC_PREFIX`, z. B. `oc` + `infrastructure` → **`oc-infrastructure`**. Wirkt **nur** aufs Topic — `icon` und Titel-Kennung `[<name>] ` bleiben am Sitzungs-Verzeichnis. |
 | `NTFY_ICON_BASE` | Gesetzt **und** Arbeitsbereich bekannt → jede Meldung trägt das ntfy-Feld `icon` = `<basis>/<workspace>.png` (JSON-Feld `icon`, als Header `Icon`; Android/iOS zeigen das Bild als Benachrichtigungssymbol). Ohne Basis entfällt das Feld. |
 
 Der Arbeitsbereich kommt aus `NTFY_WORKSPACE`, sonst aus dem letzten Pfadstück
@@ -65,8 +66,19 @@ steht. Beide Variablen werden wie alle `NTFY_*`-Werte von `startup.sh` in
 Diagnosezeile beim Start der Brücke und die Zeile `[ntfy-notify] aktiv (topic …)`
 nennen immer das tatsächlich verwendete Topic.
 
+**Topic und Icon sind getrennt:** `NTFY_TOPIC_NAME` setzt ausschließlich den
+Topic-Namen (zusammen mit `NTFY_TOPIC_PREFIX`) und wird gebraucht, weil der
+OpenCode-Dienst im Repo-Wurzelverzeichnis läuft — dessen Pfad enthält kein
+`/workspaces/`, aus dem Verzeichnis käme also kein Arbeitsbereich. `icon` und
+die Titel-Kennung `[<name>] …` hängen weiterhin am Sitzungs-Verzeichnis bzw. an
+`NTFY_WORKSPACE`; `NTFY_TOPIC_NAME` ändert daran nichts. Versand und
+Antwort-Brücke leiten das Topic über dieselbe Funktion ab und bleiben damit auf
+demselben Topic.
+
 **Topics:** Schema `oc-<workspace>` je Arbeitsbereich (`oc-server-management`,
-später z. B. `oc-cleve`). Hermes hat ein **eigenes Topic `hermes`** und läuft
+später z. B. `oc-cleve`); läuft der Dienst im Repo-Wurzelverzeichnis, gibt
+`NTFY_TOPIC_NAME` den Namen vor (z. B. `oc-infrastructure`). Hermes hat ein
+**eigenes Topic `hermes`** und läuft
 **nicht** über dieses Plugin (eigene Quelle, eigenes Topic in ntfy). Neue
 Topics entstehen beim ersten Publizieren, brauchen aber vorher Nutzer/ACL —
 siehe „Topics und Scopes“.
@@ -147,7 +159,9 @@ genau eine Testnachricht und registriert keine Hooks — für Diagnose).
 Ergänzend: `NTFY_WORKSPACE` (kurzer Name des Arbeitsbereichs, z. B.
 `server-management`) steht als `[<name>] ` vor jedem Meldungstitel — ohne die
 Variable wird der Name aus dem letzten Pfadstück des Sitzungs-Verzeichnisses
-abgeleitet, sonst bleibt der Titel unverändert. Meldungen **ohne** Session
+abgeleitet, sonst bleibt der Titel unverändert. Den **Topic-Namen** setzt
+`NTFY_TOPIC_NAME` (nur zusammen mit `NTFY_TOPIC_PREFIX`); die Variable lässt
+Titel und Icon unberührt. Meldungen **ohne** Session
 (Antwort-Bestätigungen, „Antwort ohne Ziel-Session“) nutzen für den
 Kopplungslink zuerst die zuletzt abgeleitete Workspace-Basis (`lastBase` in
 `NTFY_STATE_FILE`, überlebt einen Dienst-Neustart) und erst danach
