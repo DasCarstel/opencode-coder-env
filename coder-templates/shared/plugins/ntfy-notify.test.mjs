@@ -1217,7 +1217,7 @@ const UI_ENV = {
   eq(fixed.linkFor(""), "https://beispiel.test/base/", "ohne Session-ID bleibt sie unverändert");
 }
 
-// f) Eine nicht auswertbare Basis: kein Absturz, kein kaputter Link — es bleibt
+// e) Eine nicht auswertbare Basis: kein Absturz, kein kaputter Link — es bleibt
 //    beim bisherigen Rückfall-Schlüssel "local".
 {
   const n = makeNotifier({ env: { ...UI_ENV, NTFY_SESSION_URL: "keine-url" } });
@@ -1524,7 +1524,7 @@ console.log("\nTopic je Arbeitsbereich");
   eq(received[0]?.body?.topic, "ai", "Rückfall auf NTFY_TOPIC");
 }
 {
-  // e) Die Aktiv-Zeile des Plugins nennt das tatsächlich verwendete Topic
+  // d) Die Aktiv-Zeile des Plugins nennt das tatsächlich verwendete Topic
   //    (Konsole für diesen einen setup()-Lauf abgefangen).
   resetSharedState();
   received.length = 0;
