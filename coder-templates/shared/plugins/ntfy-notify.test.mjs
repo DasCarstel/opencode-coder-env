@@ -328,7 +328,7 @@ console.log("\nFreigabe und Fehler");
   ok(await until(() => received.length >= 1), "die Fehlermeldung kommt nach dem Haltefenster");
   const err = received[0]?.body ?? {};
   eq(err.title, "[server-management] ⚠️ Fehler — server-management", "Fehler-Titel");
-  eq(err.priority, 3, "Priorität 3");
+  eq(err.priority, 2, "Priorität 2");
   ok(String(err.message).includes("Provider nicht erreichbar"), "Fehlermeldung enthalten");
 }
 
@@ -764,7 +764,7 @@ console.log("\nFreigabe und Fehler (V2)");
   await n.handleEvent(v2("session.step.failed", { error: { message: "Provider 500" } }));
   ok(await until(() => received.length >= 1), "session.step.failed kommt nach dem Haltefenster");
   eq(received.length, 1, "session.step.failed meldet");
-  eq(received[0]?.body?.priority, 3, "Fehler hat Priorität 3");
+  eq(received[0]?.body?.priority, 2, "Fehler (AI) hat Priorität 2");
   ok(String(received[0]?.body?.message ?? "").includes("Provider 500"), "Fehlertext enthalten");
 
   received.length = 0;
@@ -813,7 +813,7 @@ console.log("\nTurn-Ende (V2)");
   await n.handleEvent(v2("session.execution.failed", { error: { message: "Turn abgebrochen" } }));
   ok(await until(() => received.length >= 1), "execution.failed kommt nach dem Haltefenster");
   eq(received.length, 1, "execution.failed meldet einen Fehler");
-  eq(received[0]?.body?.priority, 3, "Fehler mit Priorität 3");
+  eq(received[0]?.body?.priority, 2, "Fehler (AI) mit Priorität 2");
   ok(String(received[0]?.body?.message).includes("Turn abgebrochen"), "Fehlertext enthalten");
 }
 
@@ -867,7 +867,7 @@ console.log("\nFehlermeldungen (Dämpfung)");
   eq(received.length, 0, "im Fenster geht noch nichts raus");
   ok(await until(() => received.length >= 1), "nach dem Fenster kommt die Meldung");
   eq(received.length, 1, "drei Fehlschläge ergeben genau eine Meldung");
-  eq(received[0]?.body?.priority, 3, "Priorität 3 bleibt");
+  eq(received[0]?.body?.priority, 2, "Priorität 2 bleibt");
   ok(
     String(received[0]?.body?.message ?? "").includes("erster"),
     "der erste Fehlschlag liefert den Text"
@@ -886,7 +886,7 @@ console.log("\nFehlermeldungen (Dämpfung)");
   eq(received.length, 0, "gehalten, solange das Fenster läuft");
   ok(await until(() => received.length >= 1), "nach dem Fenster kommt die Meldung");
   eq(received[0]?.body?.title, "[server-management] ⚠️ Fehler — server-management", "Fehler-Titel");
-  eq(received[0]?.body?.priority, 3, "Priorität 3");
+  eq(received[0]?.body?.priority, 2, "Priorität 2");
   ok(String(received[0]?.body?.message ?? "").includes("echter Fehler"), "Fehlertext enthalten");
 }
 {

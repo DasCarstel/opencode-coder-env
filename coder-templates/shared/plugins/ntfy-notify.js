@@ -1101,7 +1101,7 @@ export function createNtfyNotifier(options = {}) {
     await sendOnce(sessionID, "error", {
       title: `⚠️ Fehler — ${projectFor(sessionID)}`,
       message: withHeader(sessionID, `${body}${hint}`),
-      priority: 3,
+      priority: 2,
 
       tags: ["warning"],
       click: linkFor(sessionID),
