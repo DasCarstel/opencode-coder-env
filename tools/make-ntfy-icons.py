@@ -7,8 +7,43 @@ Meldung kommt:
 
     https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons/<name>.png
 
-Jedes Icon ist ein abgerundetes Quadrat in der Workspace-Farbe, darin
-1-2 weiße Großbuchstaben sowie ein dünner heller Rand.
+Jedes Icon ist ein abgerundetes Quadrat in der Workspace-Farbe mit dünnem
+hellem Rand; darin liegt ein **weißes Piktogramm** aus einfachen
+geometrischen Formen. Bewusst keine Buchstaben, keine Ziffern und keine
+Sonderzeichen — Kürzel wie "SM" oder "HA" sind nicht selbsterklärend.
+
+Motive und ihre Abgrenzung (auch in Graustufen und auf Handygröße):
+
+* ``server-management``  **Server-Rack**: drei gleich breite, waagerechte
+  Gehäuse (3 HE) mit je zwei dunklen LED-Punkten links. Balken + runde
+  Punkte, alles streng achsenparallel in gleicher Flucht.
+* ``cleve``              **Container-Stapel**: drei schmalere Kisten mit je
+  vier senkrechten dunklen Rillen, treppenförmig nach rechts oben versetzt.
+  Ebenfalls Balken, aber Rillen statt Punkte und Versatz statt Flucht.
+* ``homeassistant``      **Haus**: Dachdreieck mit Überstand, Korpus und
+  dunkler Bogentür. Einziges Motiv mit einer Spitze nach oben und einem
+  "Loch" mitten in der Fläche.
+* ``svelte``             **Blitz**: gezacktes Sechseck. Einziges schräg
+  verlaufendes, spitzwinkliges Motiv ohne rechte Winkel.
+* ``general``            **Werkzeugkasten**: breiter Korpus, darüber ein
+  Bügel (Halbring), dunkle Deckelfuge mit Schloss. Balken MIT Aufsatz.
+* ``minijob``            **Münzenstapel**: vier waagerechte Ellipsen mit
+  dunklem Rand (oberste mit Innenring). Einziges Motiv aus reinen
+  Rundformen, ohne eine einzige gerade Kante.
+* ``uni``                **Doktorhut**: liegende Raute auf schmalerem
+  Käppchen, dazu eine Quaste rechts. Vier schräge Kanten plus hängender
+  Faden — klar getrennt vom Blitz (spitzwinklig, ohne Faden).
+* ``hermes``             **Sprechblase**: abgerundetes Rechteck mit Schwanz
+  unten links und drei dunklen Punkten. Balken MIT Schwanz (der
+  Werkzeugkasten hat stattdessen den Bügel oben und das Schloss).
+
+Gegenprobe der vier "Balken"-Motive: sie teilen die Grundsilhouette, sind
+aber über genau ein auffälliges Zusatzmerkmal unterscheidbar, das auch
+klein erhalten bleibt — Rack: zwei Punkte **links in jeder Reihe**;
+Container: vier **Rillen** und **Treppenversatz**; Werkzeugkasten:
+**Bügel oben** und Schloss **in der Mitte**; Sprechblase: **Schwanz
+unten links** und drei Punkte **in einer Reihe über die ganze Breite**.
+Haus, Blitz, Münzen und Hut sind bereits in der Silhouette eindeutig.
 
 Aufruf:
 
@@ -23,8 +58,9 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Callable
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 # ---------------------------------------------------------------------------
 # Konfiguration
@@ -44,22 +80,14 @@ ECKENRADIUS = 56
 RAND_EINZUG = 3
 RAND_BREITE = 2
 
-# Anteil der Kantenlänge, den die Buchstaben höchstens einnehmen dürfen
-TEXT_BREITE_ANTEIL = 0.60
-TEXT_HOEHE_ANTEIL = 0.46
+# Strichstärke der kräftigen weißen Linien (Anteil der Zeichenfläche)
+STRICH_ANTEIL = 0.045
 
-# Tabelle der Icons: (Name, Farbe, Kürzel).
-# Der Name bestimmt den Dateinamen assets/ntfy-icons/<name>.png.
-ICONS: list[tuple[str, str, str]] = [
-    ("server-management", "#2563eb", "SM"),
-    ("homeassistant", "#f59e0b", "HA"),
-    ("cleve", "#16a34a", "CL"),
-    ("general", "#64748b", "GE"),
-    ("minijob", "#0d9488", "MJ"),
-    ("uni", "#7c3aed", "UN"),
-    ("svelte", "#ea580c", "SV"),
-    ("hermes", "#ca8a04", "HE"),
-]
+# Voll deckendes Weiß für das Piktogramm
+WEISS = (255, 255, 255, 255)
+
+# Zeichenfunktion eines Motivs: (Zeichner, Hintergrundfarbe, Fläche, Strich)
+Motiv = Callable[[ImageDraw.ImageDraw, "tuple[int, int, int]", int, int], None]
 
 
 # ---------------------------------------------------------------------------
@@ -80,39 +108,25 @@ def aufhellen(rgb: tuple[int, int, int], anteil: float) -> tuple[int, int, int]:
     return tuple(round(k + (255 - k) * anteil) for k in rgb)  # type: ignore[return-value]
 
 
-def schrift_fuer(text: str, max_breite: int, max_hoehe: int) -> ImageFont.ImageFont:
-    """Sucht die größte Pillow-Standardschrift, die in den erlaubten Rahmen passt.
+def abdunkeln(rgb: tuple[int, int, int], anteil: float) -> tuple[int, int, int]:
+    """Mischt eine Farbe mit Schwarz ab (anteil = 0.0 .. 1.0).
 
-    Verwendet werden soll die eingebaute Schrift (kein Systemfont nötig).
-    Der Rahmen wird von groß nach klein durchprobiert -> deterministisch.
+    Dient für die dunklen Details (LEDs, Rillen, Punkte, Fugen): sie liegen
+    auf dem weißen Piktogramm und bleiben so auch in Graustufen sichtbar.
     """
-    groesse = max_hoehe * 3
-    while groesse > 6:
-        font = ImageFont.load_default(size=groesse)
-        box = font.getbbox(text)
-        if (box[2] - box[0]) <= max_breite and (box[3] - box[1]) <= max_hoehe:
-            return font
-        groesse -= 1
-    return ImageFont.load_default(size=6)
+    return tuple(round(k * (1 - anteil)) for k in rgb)  # type: ignore[return-value]
 
 
-def text_maske(text: str, font: ImageFont.ImageFont) -> Image.Image:
-    """Rendert den Text in eine auf die Tinten-Box zugeschnittene Graustufenmaske."""
-    box = font.getbbox(text)
-    breite = box[2] - box[0]
-    hoehe = box[3] - box[1]
-
-    # Etwas Luft, damit nichts am Rand abgeschnitten wird
-    polster = 8
-    ebene = Image.new("L", (breite + 2 * polster, hoehe + 2 * polster), 0)
-    zeichner = ImageDraw.Draw(ebene)
-    zeichner.text((polster - box[0], polster - box[1]), text, fill=255, font=font)
-
-    return ebene.crop(ebene.getbbox())  # type: ignore[return-value]
+def px(anteil: float, basis: int) -> int:
+    """Rechnet einen Anteil der Zeichenfläche in ganze Pixel um (deterministisch)."""
+    return int(round(anteil * basis))
 
 
-def icon_erzeugen(farbe: str, kuerzel: str) -> Image.Image:
-    """Baut ein einzelnes Icon als 256x256-PNG-taugliches RGBA-Bild."""
+def hintergrund(farbe: str) -> tuple[Image.Image, ImageDraw.ImageDraw, tuple[int, int, int], int]:
+    """Legt das abgerundete Quadrat samt hellem Rand an.
+
+    Rückgabe: (Bild, Zeichner, RGB der Farbe, Kantenlänge des Puffers).
+    """
     rgb = hex_zu_rgb(farbe)
     kante = KANTE * UEBERABTASTUNG
 
@@ -136,24 +150,330 @@ def icon_erzeugen(farbe: str, kuerzel: str) -> Image.Image:
             width=RAND_BREITE * UEBERABTASTUNG,
         )
 
-    max_breite = int(kante * TEXT_BREITE_ANTEIL)
-    max_hoehe = int(kante * TEXT_HOEHE_ANTEIL)
-    font = schrift_fuer(kuerzel, max_breite, max_hoehe)
-    maske = text_maske(kuerzel, font)
+    return bild, zeichner, rgb, kante
 
-    # Buchstaben rein weiß, mittig platziert
-    weiss = Image.new("RGBA", maske.size, (255, 255, 255, 0))
-    weiss.putalpha(maske)
-    position = ((kante - maske.width) // 2, (kante - maske.height) // 2)
-    bild.alpha_composite(weiss, position)
 
-    # Herunterskalieren -> weiche Kanten, feste Zielgröße
-    return bild.resize((KANTE, KANTE), Image.LANCZOS)
+# ---------------------------------------------------------------------------
+# Motive (alle Koordinaten als Anteil der Zeichenfläche -> mitskalierend)
+# ---------------------------------------------------------------------------
+
+
+def motiv_server(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
+    """Server-Rack: drei waagerechte Gehäuse (3 HE) mit Lüftungsschlitz und 2 LEDs.
+
+    Die Frontblenden sind bewusst asymmetrisch aufgebaut (Schlitz links,
+    LEDs rechts) — sonst sähe das Motiv wie eine Aufzählungsliste aus
+    (drei Balken mit Punkt links).
+    """
+    del strich  # die Gehäuse sind massiv, keine Linien nötig
+    detail = (*abdunkeln(rgb, 0.55), 255)
+
+    breite = px(0.62, kante)
+    hoehe = px(0.16, kante)
+    luecke = px(0.032, kante)
+    gesamt = 3 * hoehe + 2 * luecke
+    x0 = (kante - breite) // 2
+    y0 = (kante - gesamt) // 2
+
+    led_radius = px(0.021, kante)
+    schlitz_hoehe = px(0.03, kante)
+    for reihe in range(3):
+        oben = y0 + reihe * (hoehe + luecke)
+        zeichner.rounded_rectangle(
+            (x0, oben, x0 + breite, oben + hoehe),
+            radius=px(0.028, kante),
+            fill=WEISS,
+        )
+        mitte_y = oben + hoehe // 2
+        # Lüftungsschlitz auf der linken Hälfte der Frontblende
+        zeichner.rounded_rectangle(
+            (
+                x0 + px(0.09, breite),
+                mitte_y - schlitz_hoehe // 2,
+                x0 + px(0.55, breite),
+                mitte_y + schlitz_hoehe // 2,
+            ),
+            radius=schlitz_hoehe // 2,
+            fill=detail,
+        )
+        # zwei LED-Punkte rechts
+        for led_anteil in (0.78, 0.90):
+            led_cx = x0 + px(led_anteil, breite)
+            zeichner.ellipse(
+                (led_cx - led_radius, mitte_y - led_radius, led_cx + led_radius, mitte_y + led_radius),
+                fill=detail,
+            )
+
+
+def motiv_haus(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
+    """Haus: Dachdreieck mit Überstand, Korpus und dunkle Bogentür."""
+    del strich
+    cx = kante // 2
+
+    dach_spitze = px(0.19, kante)
+    traufe = px(0.47, kante)
+    basis = px(0.80, kante)
+    dach_halb = px(0.33, kante)
+    korpus_halb = px(0.255, kante)
+
+    # Dach (Dreieck) und Korpus (Rechteck) als massive weiße Flächen
+    zeichner.polygon(
+        [(cx, dach_spitze), (cx + dach_halb, traufe), (cx - dach_halb, traufe)],
+        fill=WEISS,
+    )
+    zeichner.rectangle((cx - korpus_halb, traufe, cx + korpus_halb, basis), fill=WEISS)
+
+    # Tür als "Loch" in der Workspace-Farbe: Bogen oben, unten offen.
+    # Die untere Abrundung liegt unterhalb der Hauskante und ist unsichtbar.
+    tuer_halb = px(0.075, kante)
+    tuer_oben = px(0.635, kante)
+    zeichner.rounded_rectangle(
+        (cx - tuer_halb, tuer_oben, cx + tuer_halb, basis + tuer_halb),
+        radius=tuer_halb,
+        fill=(*rgb, 255),
+    )
+
+
+def motiv_blitz(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
+    """Blitz: gezacktes Sechseck, mittig und spitzwinklig."""
+    del rgb, strich
+    cx = kante // 2
+    cy = kante // 2
+    halb_b = px(0.30, kante)
+    halb_h = px(0.345, kante)
+
+    umriss = [
+        (0.35, -1.00),
+        (-0.78, 0.10),
+        (-0.05, 0.10),
+        (-0.35, 1.00),
+        (0.78, -0.20),
+        (0.05, -0.20),
+    ]
+    punkte = [(cx + px(x, halb_b), cy + px(y, halb_h)) for x, y in umriss]
+    zeichner.polygon(punkte, fill=WEISS)
+
+
+def motiv_container(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
+    """Container-Stapel: drei versetzte Kisten mit senkrechten Rillen."""
+    del strich
+    detail = (*abdunkeln(rgb, 0.45), 255)
+
+    breite = px(0.46, kante)
+    hoehe = px(0.18, kante)
+    luecke = px(0.032, kante)
+    versatz = px(0.055, kante)
+    gesamt = 3 * hoehe + 2 * luecke
+
+    x0 = (kante - (breite + 2 * versatz)) // 2
+    y0 = (kante - gesamt) // 2
+
+    rillen_breite = max(2, px(0.035, breite))
+    for kiste in range(3):
+        # unterste Kiste links unten, jede weitere nach rechts oben versetzt
+        links = x0 + kiste * versatz
+        oben = y0 + (2 - kiste) * (hoehe + luecke)
+        zeichner.rounded_rectangle(
+            (links, oben, links + breite, oben + hoehe),
+            radius=px(0.025, kante),
+            fill=WEISS,
+        )
+        # vier senkrechte Rillen (Containerprofil)
+        oben_rille = oben + px(0.24, hoehe)
+        unten_rille = oben + px(0.76, hoehe)
+        for i in range(4):
+            rille_x = links + px(0.18 + 0.21 * i, breite)
+            zeichner.rectangle(
+                (rille_x - rillen_breite // 2, oben_rille, rille_x + rillen_breite // 2, unten_rille),
+                fill=detail,
+            )
+
+
+def motiv_werkzeugkasten(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
+    """Werkzeugkasten: Korpus, Bügel (Halbring) und dunkle Deckelfuge mit Schloss."""
+    detail = (*abdunkeln(rgb, 0.55), 255)
+    cx = kante // 2
+
+    korpus_halb = px(0.31, kante)
+    korpus_oben = px(0.46, kante)
+    korpus_unten = px(0.82, kante)
+
+    # Bügel zuerst: seine Enden verschwinden im Korpus
+    buergel_halb = px(0.145, kante)
+    zeichner.arc(
+        (cx - buergel_halb, px(0.27, kante), cx + buergel_halb, px(0.70, kante)),
+        start=180,
+        end=360,
+        fill=WEISS,
+        width=strich,
+    )
+
+    zeichner.rounded_rectangle(
+        (cx - korpus_halb, korpus_oben, cx + korpus_halb, korpus_unten),
+        radius=px(0.045, kante),
+        fill=WEISS,
+    )
+
+    # Deckelfuge (quer) und Schloss (senkrecht darüber) als dunkle Details
+    fuge = korpus_oben + px(0.10, kante)
+    zeichner.rectangle(
+        (
+            cx - korpus_halb + px(0.012, kante),
+            fuge - px(0.011, kante),
+            cx + korpus_halb - px(0.012, kante),
+            fuge + px(0.011, kante),
+        ),
+        fill=detail,
+    )
+    schloss_halb = px(0.038, kante)
+    zeichner.rounded_rectangle(
+        (cx - schloss_halb, korpus_oben, cx + schloss_halb, korpus_oben + px(0.14, kante)),
+        radius=px(0.02, kante),
+        fill=detail,
+    )
+
+
+def motiv_muenzen(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
+    """Münzenstapel: vier gestapelte Ellipsen mit dunklem Rand."""
+    del strich
+    detail = (*abdunkeln(rgb, 0.5), 255)
+    cx = kante // 2
+
+    halb_b = px(0.235, kante)
+    halb_h = px(0.075, kante)
+    abstand = px(0.115, kante)
+    unten_mitte = px(0.775, kante)
+    rand = px(0.018, kante)
+
+    for muenze in range(4):  # von unten nach oben, jede höhere deckt die tiefere
+        cy = unten_mitte - muenze * abstand
+        zeichner.ellipse(
+            (cx - halb_b, cy - halb_h, cx + halb_b, cy + halb_h),
+            fill=WEISS,
+            outline=detail,
+            width=rand,
+        )
+
+    # Innenring auf der obersten Münze -> Münzbild statt bloßer Scheibe
+    oben_mitte = unten_mitte - 3 * abstand
+    zeichner.ellipse(
+        (cx - px(0.135, kante), oben_mitte - px(0.038, kante), cx + px(0.135, kante), oben_mitte + px(0.038, kante)),
+        outline=detail,
+        width=rand,
+    )
+
+
+def motiv_doktorhut(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
+    """Doktorhut: liegende Raute (Brett) auf Käppchen, Quaste rechts."""
+    del rgb
+    cx = kante // 2
+
+    brett_cy = px(0.40, kante)
+    brett_halb_b = px(0.35, kante)
+    brett_halb_h = px(0.155, kante)
+
+    # Käppchen darunter (Trapez, nach unten schmaler)
+    kappe_oben = px(0.44, kante)
+    kappe_unten = px(0.72, kante)
+    zeichner.polygon(
+        [
+            (cx - px(0.19, kante), kappe_oben),
+            (cx + px(0.19, kante), kappe_oben),
+            (cx + px(0.145, kante), kappe_unten),
+            (cx - px(0.145, kante), kappe_unten),
+        ],
+        fill=WEISS,
+    )
+
+    # Quaste: Faden läuft am rechten Rand des Bretts heraus, Kugel am Ende
+    zeichner.line(
+        (cx + px(0.255, kante), brett_cy, cx + px(0.255, kante), px(0.63, kante)),
+        fill=WEISS,
+        width=max(2, px(0.028, kante)),
+    )
+    ball_radius = px(0.048, kante)
+    ball_cy = px(0.675, kante)
+    ball_cx = cx + px(0.255, kante)
+    zeichner.ellipse(
+        (ball_cx - ball_radius, ball_cy - ball_radius, ball_cx + ball_radius, ball_cy + ball_radius),
+        fill=WEISS,
+    )
+
+    # Brett als Raute zuletzt -> liegt sauber auf dem Käppchen
+    zeichner.polygon(
+        [
+            (cx, brett_cy - brett_halb_h),
+            (cx + brett_halb_b, brett_cy),
+            (cx, brett_cy + brett_halb_h),
+            (cx - brett_halb_b, brett_cy),
+        ],
+        fill=WEISS,
+    )
+
+
+def motiv_sprechblase(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
+    """Sprechblase: abgerundetes Rechteck mit Schwanz und drei Punkten."""
+    del strich
+    detail = (*abdunkeln(rgb, 0.55), 255)
+
+    links = px(0.17, kante)
+    rechts = px(0.83, kante)
+    oben = px(0.17, kante)
+    unten = px(0.68, kante)
+    radius = px(0.115, kante)
+
+    zeichner.rounded_rectangle((links, oben, rechts, unten), radius=radius, fill=WEISS)
+
+    # Schwanz unten links: Oberkante liegt im Blasenkörper -> verschmilzt
+    zeichner.polygon(
+        [
+            (px(0.30, kante), unten - px(0.03, kante)),
+            (px(0.50, kante), unten - px(0.03, kante)),
+            (px(0.27, kante), px(0.86, kante)),
+        ],
+        fill=WEISS,
+    )
+
+    # drei Punkte ("Nachricht") in einer Reihe über die Blasenmitte
+    punkt_radius = px(0.052, kante)
+    mitte_y = (oben + unten) // 2
+    for i in (-1, 0, 1):
+        cx = kante // 2 + i * px(0.165, kante)
+        zeichner.ellipse(
+            (cx - punkt_radius, mitte_y - punkt_radius, cx + punkt_radius, mitte_y + punkt_radius),
+            fill=detail,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tabelle der Icons: (Dateiname ohne .png, Workspace-Farbe, Motiv, Beschreibung)
+# ---------------------------------------------------------------------------
+
+ICONS: list[tuple[str, str, Motiv, str]] = [
+    ("server-management", "#2563eb", motiv_server, "Server-Rack (3 HE mit LEDs)"),
+    ("homeassistant", "#f59e0b", motiv_haus, "Haus mit Dach und Tür"),
+    ("cleve", "#16a34a", motiv_container, "Container-Stapel mit Rillen"),
+    ("general", "#64748b", motiv_werkzeugkasten, "Werkzeugkasten mit Bügel und Schloss"),
+    ("minijob", "#0d9488", motiv_muenzen, "Münzenstapel (4 Münzen)"),
+    ("uni", "#7c3aed", motiv_doktorhut, "Doktorhut mit Quaste"),
+    ("svelte", "#ea580c", motiv_blitz, "Blitz"),
+    ("hermes", "#ca8a04", motiv_sprechblase, "Sprechblase mit drei Punkten"),
+]
 
 
 # ---------------------------------------------------------------------------
 # Ablauf
 # ---------------------------------------------------------------------------
+
+
+def icon_erzeugen(farbe: str, motiv: Motiv) -> Image.Image:
+    """Baut ein einzelnes Icon als 256x256-PNG-taugliches RGBA-Bild."""
+    bild, zeichner, rgb, kante = hintergrund(farbe)
+    strich = max(2, px(STRICH_ANTEIL, kante))
+    motiv(zeichner, rgb, kante, strich)
+
+    # Herunterskalieren -> weiche Kanten, feste Zielgröße
+    return bild.resize((KANTE, KANTE), Image.LANCZOS)
 
 
 def ziel_verzeichnis(argv: list[str]) -> Path:
@@ -171,16 +491,16 @@ def main(argv: list[str]) -> int:
     print(f"Ausgabeordner: {ziel}")
     print()
 
-    for name, farbe, kuerzel in ICONS:
+    for name, farbe, motiv, beschreibung in ICONS:
         datei = ziel / f"{name}.png"
-        icon = icon_erzeugen(farbe, kuerzel)
+        icon = icon_erzeugen(farbe, motiv)
         icon.save(datei, format="PNG", optimize=True)
 
         groesse = datei.stat().st_size
         breite, hoehe = icon.size
         print(
             f"  {datei.name:<24} {breite}x{hoehe}  {groesse:>6} B "
-            f"({groesse / 1024:.1f} KB)  {farbe}  {kuerzel}"
+            f"({groesse / 1024:.1f} KB)  {farbe}  {beschreibung}"
         )
 
     print()
