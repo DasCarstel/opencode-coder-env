@@ -81,12 +81,20 @@ Cache 24 h, Attachment-Limit 1 GB (Disk auf CT 100 ist knapp).
 
 | Topic | Zweck | Schreibberechtigt | Empfehlung `min_priority` |
 |-------|-------|-------------------|---------------------------|
-| `crit` | Ausfälle/Störungen (Monitoring, HA-Alarme) | `src-monitoring`, `src-ha`, `carsten` | 1 |
-| `ai` | Agenten (OpenCode fertig/Frage/Freigabe/Fehler) | `src-opencode`, `carsten` | 3 |
-| `infra` | Infrastruktur (Hestia, Backups, Deploys) | `src-hestia`, `src-monitoring`, `carsten` | 3 |
-| `home` | Smart Home (HA-Zustände, Routinen) | `src-ha`, `carsten` | 2 |
+| `crit` | HA-Alarme (Wasserleck) | `src-ha`, `carsten` | 4 |
+| `home` | HA Routine/Real (Roborock, Temp/Feuchte, Regen) | `src-ha`, `carsten` | 3 |
+| `doorbell` | Türklingel (mit „Tür öffnen"-Button) | `src-ha`, `carsten` | 4 |
 | `print` | 3D-Druck (Job fertig/Fehler) | `src-ha`, `carsten` | 3 |
-| `digest` | Sammelnachrichten (Tages-/Wochenüberblick) | `carsten` | 2 |
+| `logs` | Uninteressante HA-Meldungen (Watchdog, CCU, GUARD, Fenster-Sensor) | `src-ha`, `carsten` | 1 |
+| `oc-infrastructure` | OpenCode server-management | `src-opencode`, `carsten` | 3 |
+| `oc-general` | OpenCode general | `src-opencode`, `carsten` | 3 |
+| `oc-minijob` | OpenCode minijob | `src-opencode`, `carsten` | 3 |
+| `oc-datascience` | OpenCode uni/datascience | `src-opencode`, `carsten` | 3 |
+| `hermes` | Hermes-Agent (Notifications) | `src-opencode` (Hermes), `carsten` | 3 |
+| `ai` | Rückfall-Topic (nur wenn kein `NTFY_TOPIC_NAME` gesetzt) | `src-opencode`, `carsten` | 3 |
+
+Entfallen: `infra` (Hestia/Backups/Deploys — nicht mehr genutzt), `digest`
+(Sammelnachrichten — nicht mehr genutzt). Beide können auf dem Handy gelöscht werden.
 
 Nutzer: `carsten` (Admin, lesen auf allen Topics) plus je Quelle ein eigener
 Nutzer mit Schreibrecht nur auf die eigenen Topics. **ntfy-Tokens sind nicht
@@ -105,9 +113,10 @@ Agenten gehört zum ntfy-Nutzer **`src-opencode`**, und sein Zugriff muss für
 schlägt der Publish mit `HTTP 403` fehl: im Diagnose-Log (`NTFY_REPLY_LOG`)
 stehen dann die Fehlschläge, und auf dem Handy kommt **gar nichts** mehr an.
 
-Benötigt sind aktuell sechs Topics: `ai` (Rückfall-Topic, solange kein
-`NTFY_TOPIC_NAME` gesetzt ist), `oc-infrastructure`, `oc-general`, `oc-minijob`,
-`oc-datascience` und `hermes`.
+Benötigt sind aktuell elf Topics (siehe Tabelle oben): `crit`, `home`,
+`doorbell`, `print`, `logs`, `oc-infrastructure`, `oc-general`, `oc-minijob`,
+`oc-datascience`, `hermes` und `ai` (Rückfall-Topic). `infra` und `digest`
+entfallen und können auf dem Handy gelöscht werden.
 
 ```bash
 # auf dem Docker-Host: je Topic einmal setzen (<topic> ersetzen)
@@ -338,7 +347,7 @@ Empirisch im Container (OpenCode 2.0.29) geprüft:
 ## Filtern gegen Nachrichtenflut
 
 - Pro Topic in der ntfy-App ein **`min_priority`** setzen (Tabelle oben): das
-  Phone bekommt dann z. B. von `home` nur Wichtiges, `digest` bleibt stumm.
+  Phone bekommt dann z. B. von `home` nur Wichtiges, `logs` bleibt stumm (Prio 1).
 - `crit` bleibt ungefiltert (Ausfälle dürfen nie untergehen).
 - Ein Topic pro Zweck statt eines Sammel-Topics — Filter und später „Zustellen
   nur zu diesen Zeiten“ (ntfy: *Do not disturb*) greifen pro Topic.
@@ -352,7 +361,7 @@ Empirisch im Container (OpenCode 2.0.29) geprüft:
   `https://ntfy.mueller-nas.de`, Topic `crit`, Token des Nutzers
   `src-monitoring` (Bearer).
 - **Grafana:** Contact Point *webhook* →
-  `https://ntfy.mueller-nas.de/infra` mit Header
+  `https://ntfy.mueller-nas.de/crit` mit Header
   `Authorization: Bearer <Token src-monitoring>` (Grafana hat keine
   Provisioning-Dateien, daher im UI).
 
