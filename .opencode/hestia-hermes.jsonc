@@ -1,13 +1,13 @@
 {
   "enabled": true,
   "primary": {
-    "provider": "opencode-go",
-    "model": "deepseek-v4.1-flash"
+    "provider": "opencode",
+    "model": "beam-free"
   },
   "fallback": [
     {
-      "provider": "opencode-go",
-      "model": "gpt-6-luna"
+      "provider": "opencode",
+      "model": "longcat-2.5-preview-free"
     },
     {
       "provider": "opencode-go",
