@@ -49,10 +49,12 @@
 //                     bleiben am Sitzungs-Verzeichnis bzw. an NTFY_WORKSPACE.
 //   NTFY_ICON_BASE    Opt-in: Symbol-URL je Meldung. Ist die Variable gesetzt und
 //                     ist der Arbeitsbereich bekannt, trägt die Meldung das
-//                     ntfy-Feld "icon" = "<basis>/<workspace>.png" (im JSON
-//                     heißt das Feld `icon`, als Header `Icon` — die App zeigt
-//                     das Bild auf Android/iOS als Benachrichtigungssymbol).
-//                     Ohne die Basis entfällt das Feld (Verhalten unverändert).
+//                     ntfy-Feld "icon" = "<basis>/<workspace>.png?v=<fassung>"
+//                     (im JSON heißt das Feld `icon`, als Header `Icon` — die
+//                     App zeigt das Bild auf Android/iOS als Benachrichtigungs-
+//                     symbol). Die Versionskennung ICON_VERSION hängt hinten an
+//                     der URL und umgeht so den Icon-Cache der Apps. Ohne die
+//                     Basis entfällt das Feld (Verhalten unverändert).
 //   NTFY_DEBUG=1      Debug-Ausgaben ins OpenCode-Log
 //   NTFY_SELFTEST=1   sendet beim Laden genau eine Testnachricht (Diagnose),
 //                     unabhängig vom Prozess-Check
@@ -149,6 +151,14 @@
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+
+// Fassung der Symbol-Bilder (NTFY_ICON_BASE). ntfy und die Apps halten ein
+// einmal geladenes Icon lokal im Zwischenspeicher (laut ntfy-Doku bis zu 24
+// Stunden, teils bis die Meldung gelöscht wird) — sie würden ein geändertes
+// Bild also weiter aus dem Cache zeigen. Die Kennung "?v=<n>" an der URL
+// umgeht den Cache und erzwingt einmalig ein Neuladen. Bei jeder inhaltlichen
+// Änderung der PNGs (tools/make-ntfy-icons.py) hochzählen.
+const ICON_VERSION = 2;
 
 const DEFAULT_URL = "https://ntfy.mueller-nas.de";
 const DEFAULT_TOPIC = "ai";
@@ -568,10 +578,12 @@ export function topicForEnv(base, env = {}, dir = "") {
 }
 
 /**
- * Symbol-URL einer Meldung: NTFY_ICON_BASE + "/<workspace>.png". Ohne Basis oder
- * ohne bekannten Arbeitsbereich kommt "" zurück — dann setzt send() kein
- * icon-Feld und das Verhalten bleibt wie bisher. Ein abschließender Slash der
- * Basis wird entfernt, damit keine doppelten "//" entstehen.
+ * Symbol-URL einer Meldung: NTFY_ICON_BASE +
+ * "/<workspace>.png?v=<ICON_VERSION>". Ohne Basis oder ohne bekannten
+ * Arbeitsbereich kommt "" zurück — dann setzt send() kein icon-Feld und das
+ * Verhalten bleibt wie bisher. Ein abschließender Slash der Basis wird entfernt,
+ * damit keine doppelten "//" entstehen. Die Versionskennung sitzt am Bildnamen
+ * und umgeht so den lokalen Zwischenspeicher der Apps (siehe ICON_VERSION).
  */
 export function iconUrlFor(env = {}, workspace = "") {
   const base = String(env.NTFY_ICON_BASE ?? "")
@@ -579,7 +591,7 @@ export function iconUrlFor(env = {}, workspace = "") {
     .replace(/\/+$/, "");
   const name = String(workspace ?? "").trim();
   if (!base || !name) return "";
-  return `${base}/${name}.png`;
+  return `${base}/${name}.png?v=${ICON_VERSION}`;
 }
 
 /**

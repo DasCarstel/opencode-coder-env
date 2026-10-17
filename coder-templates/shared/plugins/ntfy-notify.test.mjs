@@ -3653,7 +3653,7 @@ console.log("\nTopic-Name (NTFY_TOPIC_NAME)");
   eq(ohne.topic, "ai", "ohne NTFY_TOPIC_NAME bleibt das Topic bei NTFY_TOPIC");
   eq(
     mit.body.icon,
-    `${iconBase}/homeassistant.png`,
+    `${iconBase}/homeassistant.png?v=2`,
     "das icon zeigt weiter auf den Arbeitsbereich des Sitzungs-Verzeichnisses"
   );
   eq(mit.body.icon, ohne.body.icon, "NTFY_TOPIC_NAME ändert das icon-Feld nicht");
@@ -3712,10 +3712,11 @@ console.log("\nTopic-Name (NTFY_TOPIC_NAME)");
 // ── 40. Symbol je Meldung (NTFY_ICON_BASE) ────────────────────────────────
 //
 // Ist NTFY_ICON_BASE gesetzt und der Arbeitsbereich bekannt, trägt die Meldung
-// das ntfy-Feld `icon` = "<basis>/<workspace>.png" (JSON-Feld `icon`, als
-// Header `Icon`; die Apps zeigen das Bild als Benachrichtigungssymbol). Ohne
-// die Basis oder ohne bekannten Arbeitsbereich entfällt das Feld — dann bleibt
-// das Verhalten unverändert.
+// das ntfy-Feld `icon` = "<basis>/<workspace>.png?v=2" (JSON-Feld `icon`, als
+// Header `Icon`; die Apps zeigen das Bild als Benachrichtigungssymbol). Die
+// Versionskennung umgeht den Icon-Cache der Apps (Konstante ICON_VERSION im
+// Plugin). Ohne die Basis oder ohne bekannten Arbeitsbereich entfällt das Feld
+// — dann bleibt das Verhalten unverändert.
 console.log("\nSymbol (icon)");
 const ICON_BASE =
   "https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons";
@@ -3730,8 +3731,8 @@ const ICON_BASE =
   eq(received.length, 1, "die Meldung geht raus");
   eq(
     received[0]?.body?.icon,
-    `${ICON_BASE}/server-management.png`,
-    "icon zeigt auf das PNG des Arbeitsbereichs"
+    `${ICON_BASE}/server-management.png?v=2`,
+    "icon zeigt auf das PNG des Arbeitsbereichs (mit Versionskennung)"
   );
 }
 {
@@ -3756,7 +3757,7 @@ const ICON_BASE =
   eq(received.length, 1, "die Meldung ohne Sitzungs-Verzeichnis geht raus");
   eq(
     received[0]?.body?.icon,
-    `${ICON_BASE}/server-management.png`,
+    `${ICON_BASE}/server-management.png?v=2`,
     "ein abschließender Slash der Basis ergibt kein doppeltes //"
   );
 }

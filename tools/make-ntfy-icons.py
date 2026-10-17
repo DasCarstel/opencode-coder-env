@@ -12,17 +12,25 @@ hellem Rand; darin liegt ein **weißes Piktogramm** aus einfachen
 geometrischen Formen. Bewusst keine Buchstaben, keine Ziffern und keine
 Sonderzeichen — Kürzel wie "SM" oder "HA" sind nicht selbsterklärend.
 
+Ausnahme sind die beiden Icons mit einem **echten Logo**: ``server-management``
+trägt das Proxmox-Zeichen, ``homeassistant`` das Home-Assistant-Zeichen. Diese
+beiden werden nicht gezeichnet, sondern aus einem Quellbild in
+``assets/ntfy-icons/src/`` zusammengesetzt (auf die Zielfläche eingepasst,
+Seitenverhältnis erhalten, zentriert, alles außerhalb des Motivs bleibt
+transparent) — siehe ``logo_erzeugen``. Die Quellbilder liegen im Repo, das
+Skript braucht also weiterhin kein Netz.
+
 Motive und ihre Abgrenzung (auch in Graustufen und auf Handygröße):
 
-* ``server-management``  **Server-Rack**: drei gleich breite, waagerechte
-  Gehäuse (3 HE) mit je zwei dunklen LED-Punkten links. Balken + runde
-  Punkte, alles streng achsenparallel in gleicher Flucht.
+* ``server-management``  **Proxmox** (echtes Logo, ``src/proxmox.png``): das
+  Markenzeichen des Proxmox-Projekts. Wird nicht gezeichnet, sondern aus dem
+  Quellbild auf die Zielfläche eingepasst und zentriert.
 * ``cleve``              **Container-Stapel**: drei schmalere Kisten mit je
   vier senkrechten dunklen Rillen, treppenförmig nach rechts oben versetzt.
   Ebenfalls Balken, aber Rillen statt Punkte und Versatz statt Flucht.
-* ``homeassistant``      **Haus**: Dachdreieck mit Überstand, Korpus und
-  dunkler Bogentür. Einziges Motiv mit einer Spitze nach oben und einem
-  "Loch" mitten in der Fläche.
+* ``homeassistant``      **Home Assistant** (echtes Logo,
+  ``src/home-assistant.png``): das Zeichen des Home-Assistant-Projekts,
+  ebenfalls eingepasst statt gezeichnet.
 * ``svelte``             **Blitz**: gezacktes Sechseck. Einziges schräg
   verlaufendes, spitzwinkliges Motiv ohne rechte Winkel.
 * ``general``            **Werkzeugkasten**: breiter Korpus, darüber ein
@@ -37,21 +45,24 @@ Motive und ihre Abgrenzung (auch in Graustufen und auf Handygröße):
   unten links und drei dunklen Punkten. Balken MIT Schwanz (der
   Werkzeugkasten hat stattdessen den Bügel oben und das Schloss).
 
-Gegenprobe der vier "Balken"-Motive: sie teilen die Grundsilhouette, sind
+Gegenprobe der drei "Balken"-Motive: sie teilen die Grundsilhouette, sind
 aber über genau ein auffälliges Zusatzmerkmal unterscheidbar, das auch
-klein erhalten bleibt — Rack: zwei Punkte **links in jeder Reihe**;
-Container: vier **Rillen** und **Treppenversatz**; Werkzeugkasten:
-**Bügel oben** und Schloss **in der Mitte**; Sprechblase: **Schwanz
-unten links** und drei Punkte **in einer Reihe über die ganze Breite**.
-Haus, Blitz, Münzen und Hut sind bereits in der Silhouette eindeutig.
+klein erhalten bleibt — Container: vier **Rillen** und
+**Treppenversatz**; Werkzeugkasten: **Bügel oben** und Schloss **in der
+Mitte**; Sprechblase: **Schwanz unten links** und drei Punkte **in einer
+Reihe über die ganze Breite**. Blitz, Münzen und Hut sind bereits in der
+Silhouette eindeutig; die beiden Logos tragen ihre eigenen Farben und sind
+damit ohnehin nicht zu verwechseln.
 
 Aufruf:
 
     python3 tools/make-ntfy-icons.py
 
 Das Skript ist deterministisch: es enthält weder Zeitstempel noch
-Zufallswerte, ein erneuter Lauf erzeugt also byte-identische Dateien.
-Neue Workspaces einfach unten in ICONS ergänzen.
+Zufallswerte, ein erneuter Lauf erzeugt also byte-identische Dateien — auch
+für die beiden Logos, deren Quellbilder fest im Repo liegen
+(``assets/ntfy-icons/src/``), sodass kein Netz nötig ist. Neue Workspaces
+einfach unten in ICONS ergänzen.
 """
 
 from __future__ import annotations
@@ -83,10 +94,18 @@ RAND_BREITE = 2
 # Strichstärke der kräftigen weißen Linien (Anteil der Zeichenfläche)
 STRICH_ANTEIL = 0.045
 
+# Transparenter Rand der beiden Logo-Icons, als Anteil der Zielfläche. Das Logo
+# wird auf (KANTE - 2 * LOGO_RAND) eingepasst, damit es nicht am Bildrand klebt;
+# Seitenverhältnis und Transparenz bleiben dabei erhalten.
+LOGO_RAND = 0.05
+
 # Voll deckendes Weiß für das Piktogramm
 WEISS = (255, 255, 255, 255)
 
-# Zeichenfunktion eines Motivs: (Zeichner, Hintergrundfarbe, Fläche, Strich)
+# Zeichenfunktion eines Motivs: (Zeichner, Hintergrundfarbe, Fläche, Strich).
+# In der Tabelle ICONS darf das Motiv None sein: dann entsteht das Icon nicht aus
+# einer Zeichenfunktion, sondern aus dem Quellbild in der fünften Spalte (echtes
+# Logo, siehe logo_erzeugen).
 Motiv = Callable[[ImageDraw.ImageDraw, "tuple[int, int, int]", int, int], None]
 
 
@@ -446,18 +465,21 @@ def motiv_sprechblase(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], 
 
 
 # ---------------------------------------------------------------------------
-# Tabelle der Icons: (Dateiname ohne .png, Workspace-Farbe, Motiv, Beschreibung)
+# Tabelle der Icons:
+# (Dateiname ohne .png, Workspace-Farbe, Motiv, Beschreibung, Quellbild)
+# Das Motiv wird gezeichnet; ist es None, entsteht das Icon stattdessen aus dem
+# Quellbild in ``assets/ntfy-icons/src/`` (die Farbe ist dann nur Dokumentation).
 # ---------------------------------------------------------------------------
 
-ICONS: list[tuple[str, str, Motiv, str]] = [
-    ("server-management", "#2563eb", motiv_server, "Server-Rack (3 HE mit LEDs)"),
-    ("homeassistant", "#f59e0b", motiv_haus, "Haus mit Dach und Tür"),
-    ("cleve", "#16a34a", motiv_container, "Container-Stapel mit Rillen"),
-    ("general", "#64748b", motiv_werkzeugkasten, "Werkzeugkasten mit Bügel und Schloss"),
-    ("minijob", "#0d9488", motiv_muenzen, "Münzenstapel (4 Münzen)"),
-    ("uni", "#7c3aed", motiv_doktorhut, "Doktorhut mit Quaste"),
-    ("svelte", "#ea580c", motiv_blitz, "Blitz"),
-    ("hermes", "#ca8a04", motiv_sprechblase, "Sprechblase mit drei Punkten"),
+ICONS: list[tuple[str, str, Motiv | None, str, str | None]] = [
+    ("server-management", "#2563eb", None, "Proxmox-Zeichen (Quellbild)", "proxmox.png"),
+    ("homeassistant", "#f59e0b", None, "Home-Assistant-Zeichen (Quellbild)", "home-assistant.png"),
+    ("cleve", "#16a34a", motiv_container, "Container-Stapel mit Rillen", None),
+    ("general", "#64748b", motiv_werkzeugkasten, "Werkzeugkasten mit Bügel und Schloss", None),
+    ("minijob", "#0d9488", motiv_muenzen, "Münzenstapel (4 Münzen)", None),
+    ("uni", "#7c3aed", motiv_doktorhut, "Doktorhut mit Quaste", None),
+    ("svelte", "#ea580c", motiv_blitz, "Blitz", None),
+    ("hermes", "#ca8a04", motiv_sprechblase, "Sprechblase mit drei Punkten", None),
 ]
 
 
@@ -466,8 +488,49 @@ ICONS: list[tuple[str, str, Motiv, str]] = [
 # ---------------------------------------------------------------------------
 
 
-def icon_erzeugen(farbe: str, motiv: Motiv) -> Image.Image:
-    """Baut ein einzelnes Icon als 256x256-PNG-taugliches RGBA-Bild."""
+def quell_verzeichnis() -> Path:
+    """Ordner mit den Quellbildern (echte Logos): <repo>/assets/ntfy-icons/src.
+
+    Bewusst unabhängig vom Ausgabeordner: die Quellbilder gehören ins Repo, das
+    Skript liest sie von dort und braucht dafür kein Netz.
+    """
+    return Path(__file__).resolve().parent.parent / "assets" / "ntfy-icons" / "src"
+
+
+def logo_erzeugen(quelle: str) -> Image.Image:
+    """Setzt ein Quellbild (echtes Logo) mittig auf eine transparente Zielfläche.
+
+    Eingepasst wird mit dem kleineren der beiden Faktoren — das Seitenverhältnis
+    bleibt also exakt erhalten, verzerrt wird nichts. Der Rest der Zielfläche
+    bleibt transparent, ein transparenter Rand des Quellbilds ebenso.
+    """
+    with Image.open(quell_verzeichnis() / quelle) as bild:
+        bild.load()
+        vorlage = bild.convert("RGBA")
+
+    nutzbar = KANTE - 2 * px(LOGO_RAND, KANTE)
+    faktor = min(nutzbar / vorlage.width, nutzbar / vorlage.height)
+    breite = max(1, round(vorlage.width * faktor))
+    hoehe = max(1, round(vorlage.height * faktor))
+    logo = vorlage.resize((breite, hoehe), Image.LANCZOS)
+
+    ziel = Image.new("RGBA", (KANTE, KANTE), (0, 0, 0, 0))
+    ziel.alpha_composite(logo, ((KANTE - breite) // 2, (KANTE - hoehe) // 2))
+    return ziel
+
+
+def icon_erzeugen(farbe: str, motiv: Motiv | None, quelle: str | None = None) -> Image.Image:
+    """Baut ein einzelnes Icon als 256x256-PNG-taugliches RGBA-Bild.
+
+    Ist ``quelle`` gesetzt, entsteht das Icon aus diesem Quellbild (echtes Logo)
+    statt aus einem gezeichneten Piktogramm; ``farbe`` und ``motiv`` bleiben dann
+    unbenutzt.
+    """
+    if quelle:
+        return logo_erzeugen(quelle)
+    if motiv is None:
+        raise ValueError(f"Icon ohne Motiv und ohne Quellbild: {farbe!r}")
+
     bild, zeichner, rgb, kante = hintergrund(farbe)
     strich = max(2, px(STRICH_ANTEIL, kante))
     motiv(zeichner, rgb, kante, strich)
@@ -491,9 +554,9 @@ def main(argv: list[str]) -> int:
     print(f"Ausgabeordner: {ziel}")
     print()
 
-    for name, farbe, motiv, beschreibung in ICONS:
+    for name, farbe, motiv, beschreibung, quelle in ICONS:
         datei = ziel / f"{name}.png"
-        icon = icon_erzeugen(farbe, motiv)
+        icon = icon_erzeugen(farbe, motiv, quelle)
         icon.save(datei, format="PNG", optimize=True)
 
         groesse = datei.stat().st_size
