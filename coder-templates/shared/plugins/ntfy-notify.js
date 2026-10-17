@@ -37,10 +37,11 @@
 //   NTFY_SESSION_PORT Port der laufenden `opencode serve`-Web-UI für den
 //                     Klick-Link (Default 49374)
 //   NTFY_SESSION_URL  feste Session-URL — schlägt die automatische Ableitung
-//   NTFY_SERVER_KEY   Serverschlüssel der OpenCode-Oberfläche im Klick-Link
-//                     (<basis>/server/<schlüssel>/session/<id>); für den
-//                     lokalen Dienst "local" (Default). Der Kopplungslink
-//                     bleibt auf der Basis — ohne Session-Pfad.
+//   NTFY_SERVER_KEY   Optionaler Override; sonst base64url des Ursprungs der
+//                     Basis. Serverschlüssel der OpenCode-Oberfläche im
+//                     Klick-Link (<basis>/server/<schlüssel>/session/<id>).
+//                     Der Kopplungslink bleibt auf der Basis — ohne
+//                     Session-Pfad.
 //   NTFY_PAIR_BUTTON  "0"/"false" schaltet den Kopplungs-Button ab (Default:
 //                     an). Jede Meldung trägt dann einen frisch erzeugten,
 //                     5 Minuten gültigen Kopplungslink als view-Button mit
@@ -120,8 +121,9 @@ import { dirname, join } from "node:path";
 
 const DEFAULT_URL = "https://ntfy.mueller-nas.de";
 const DEFAULT_TOPIC = "ai";
-// Serverschlüssel der OpenCode-Oberfläche im Klick-Link
-// (/server/<schlüssel>/session/<id>); der lokale Dienst heißt "local".
+// Rückfall-Serverschlüssel im Klick-Link (/server/<schlüssel>/session/<id>),
+// wenn sich der Ursprung der Basis nicht als URL auswerten lässt; sonst zählt
+// base64url des Ursprungs der Basis (siehe serverKeyFromBase).
 const DEFAULT_SERVER_KEY = "local";
 // Zustandsdatei: wenige Angaben, die einen Dienst-Neustart überleben müssen
 // (Zuordnung Topic → Session, offene Frage/offenes Formular, Leseposition).
@@ -346,6 +348,28 @@ function hostFromUrl(value) {
     return new URL(s).host;
   } catch {
     return "";
+  }
+}
+
+/**
+ * Serverschlüssel der OpenCode-Oberfläche für eine Basis: NTFY_SERVER_KEY
+ * gewinnt, wenn gesetzt und nicht leer (ausdrücklicher Override). Sonst zählt
+ * base64url des Ursprungs der Basis — mit genau diesem Wert adressiert die
+ * Oberfläche ihren Dienst (/server/<schlüssel>/session/<id>). Die frühere
+ * Annahme "local" ließ die Oberfläche abstürzen, weil der Schlüssel dort ein
+ * base64url-Wert ist. Lässt sich die Basis nicht als URL auswerten (oder hat
+ * sie keinen echten Ursprung), bleibt es beim bisherigen Rückfall; die
+ * Funktion wirft nie, die Meldung darf daran nicht scheitern.
+ */
+function serverKeyFromBase(base, env) {
+  const configured = String(env.NTFY_SERVER_KEY ?? "").trim();
+  if (configured) return configured;
+  try {
+    const origin = new URL(String(base ?? "")).origin;
+    if (!origin || origin === "null") return DEFAULT_SERVER_KEY;
+    return Buffer.from(origin).toString("base64url");
+  } catch {
+    return DEFAULT_SERVER_KEY;
   }
 }
 
@@ -1011,11 +1035,12 @@ export function createNtfyNotifier(options = {}) {
   /**
    * Klick-Ziel jeder Meldung: Session-Deep-Link der OpenCode-Oberfläche
    * (`/server/<serverKey>/session/<id>`, Solid-Router mit Path-Routing). Der
-   * Serverschlüssel kommt aus NTFY_SERVER_KEY (Default "local" — so heißt der
-   * lokale Dienst), die Session-ID wird URL-sicher eingesetzt. Ohne Session-ID
-   * bleibt es bei der Basis; der Kopplungslink (pairLink) nutzt weiterhin
-   * linkBase und bekommt keinen Session-Pfad. NTFY_LINK_STYLE=base setzt das
-   * Klickziel auf die Basis (Übergangslösung, siehe linkStyle).
+   * Serverschlüssel ist NTFY_SERVER_KEY, wenn gesetzt — sonst base64url des
+   * Ursprungs der Basis (genau der Wert, den die Oberfläche verwendet; siehe
+   * serverKeyFromBase). Die Session-ID wird URL-sicher eingesetzt. Ohne
+   * Session-ID bleibt es bei der Basis; der Kopplungslink (pairLink) nutzt
+   * weiterhin linkBase und bekommt keinen Session-Pfad. NTFY_LINK_STYLE=base
+   * setzt das Klickziel auf die Basis (Übergangslösung, siehe linkStyle).
    */
   function linkFor(sessionID) {
     const base = linkBase(sessionID);
@@ -1023,7 +1048,7 @@ export function createNtfyNotifier(options = {}) {
     if (baseOnlyLinks) return base;
     const id = String(sessionID ?? "").trim();
     if (!id) return base;
-    const serverKey = String(env.NTFY_SERVER_KEY ?? "").trim() || DEFAULT_SERVER_KEY;
+    const serverKey = serverKeyFromBase(base, env);
     const path = `/server/${encodeURIComponent(serverKey)}/session/${encodeURIComponent(id)}`;
     return `${base.replace(/\/+$/, "")}${path}`;
   }

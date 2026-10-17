@@ -70,6 +70,17 @@ const SINK_URL = `http://127.0.0.1:${sink.address().port}`;
 
 const REPO_DIR = "/home/carstenmueller2002/opencode-coder-env";
 
+/**
+ * Serverschlüssel der Oberfläche: base64url des Ursprungs der Basis — genau der
+ * Wert, den die Web-UI in ihrer Route /server/<schlüssel>/session/<id> erwartet
+ * (im Browser gemessen; die frühere Annahme "local" ließ die UI abstürzen).
+ */
+const serverKeyOf = (base) => Buffer.from(new URL(base).origin).toString("base64url");
+/** Basis der Port-App im Container (so leitet linkBase sie ab). */
+const UI_BASE = "https://49374--main--infrastructure--carstenmueller2002-coder.mueller-nas.de";
+/** Der daraus berechnete Schlüssel der Oberfläche (ohne Padding). */
+const UI_KEY = serverKeyOf(UI_BASE);
+
 function info(id, overrides = {}) {
   return {
     id,
@@ -173,7 +184,7 @@ received.length = 0;
   ok(String(body.message).includes("Ablauf prüfen"), "Session-Titel ist enthalten");
   eq(
     body.click,
-    `https://49374--main--infrastructure--carstenmueller2002-coder.mueller-nas.de/server/local/session/${SESSION}`,
+    `${UI_BASE}/server/${UI_KEY}/session/${SESSION}`,
     "Click-URL ist der Session-Deep-Link der Port-App"
   );
   eq((received[0]?.headers ?? {}).authorization, "Bearer tk_test", "Bearer-Token im Header");
@@ -292,7 +303,7 @@ console.log("\nFallback ohne Workspace-Pfad");
   eq(body.title, "✅ Fertig — opencode", "Projekt-Fallback");
   eq(
     body.click,
-    `https://coder.mueller-nas.de/server/local/session/${SESSION}`,
+    `https://coder.mueller-nas.de/server/${serverKeyOf("https://coder.mueller-nas.de/")}/session/${SESSION}`,
     "URL-Fallback plus Session-Deep-Link"
   );
 }
@@ -608,7 +619,7 @@ console.log("\nV2-Eventform (durable/location/data)");
   ok(String(body.message).includes("Alles erledigt"), "TLDR stammt aus session.text.ended");
   eq(
     body.click,
-    `https://49374--main--infrastructure--carstenmueller2002-coder.mueller-nas.de/server/local/session/${SESSION}`,
+    `${UI_BASE}/server/${UI_KEY}/session/${SESSION}`,
     "Click-URL aus location.directory (mit Session-Pfad)"
   );
 }
@@ -863,7 +874,7 @@ console.log("\nSession-Link und Frage-Optionen");
   const message = String(body.message);
   eq(
     body.click,
-    `https://49374--main--infrastructure--carstenmueller2002-coder.mueller-nas.de/server/local/session/${SESSION}`,
+    `${UI_BASE}/server/${UI_KEY}/session/${SESSION}`,
     "Klick-Link folgt dem Port-Agent-Workspace-Owner-Muster (plus Session-Pfad)"
   );
   ok(message.includes("1) A: sofort deployen"), "Option 1 im Body");
@@ -896,7 +907,7 @@ console.log("\nSession-Link und Frage-Optionen");
   eq(received.length, 1, "Frage mit Override meldet");
   eq(
     received[0]?.body?.click,
-    `https://beispiel.test/session/42/server/local/session/${SESSION}`,
+    `https://beispiel.test/session/42/server/${serverKeyOf("https://beispiel.test/session/42")}/session/${SESSION}`,
     "NTFY_SESSION_URL überschreibt die Basis des Klick-Links"
   );
 }
@@ -2635,13 +2646,14 @@ const PAIR_BASE = "https://49374--main--infrastructure--carstenmueller2002-coder
 // ── 34. Klickziel: Session-Deep-Link der OpenCode-Oberfläche ─────────────
 //
 // Die Oberfläche hat die Route /server/<serverKey>/session/<id> (Solid-Router
-// mit Path-Routing); der lokale Dienst trägt den Serverschlüssel "local". Jeder
-// Klick zeigt deshalb auf den Deep-Link der Session statt nur auf die Basis —
-// der Schlüssel kommt aus NTFY_SERVER_KEY, die Session-ID wird URL-sicher
-// eingesetzt. Der Kopplungslink bleibt auf der Basis (kein Session-Pfad).
+// mit Path-Routing); <serverKey> ist base64url des Ursprungs der Basis (im
+// Browser gemessen — "local" ließ die UI abstürzen). Jeder Klick zeigt deshalb
+// auf den Deep-Link der Session statt nur auf die Basis: der Schlüssel kommt
+// aus NTFY_SERVER_KEY, wenn gesetzt, sonst wird er aus der Basis berechnet;
+// die Session-ID wird URL-sicher eingesetzt. Der Kopplungslink bleibt auf der
+// Basis (kein Session-Pfad). UI_BASE/UI_KEY stehen oben bei REPO_DIR.
 console.log("\nKlickziel (Session-Deep-Link)");
 
-const UI_BASE = "https://49374--main--infrastructure--carstenmueller2002-coder.mueller-nas.de";
 /** Projekt-Kontext wie im Container — daraus leitet linkBase die Basis ab. */
 const UI_ENV = {
   NTFY_URL: SINK_URL,
@@ -2654,7 +2666,8 @@ const UI_ENV = {
   NTFY_SESSION_PORT: "49374",
 };
 
-// a) Default-Schlüssel "local": der Klick-Link ist der Session-Deep-Link.
+// a) Ohne Override ist der Schlüssel base64url des Ursprungs der Basis — exakt
+//    der Wert, den die Oberfläche im Browser erwartet.
 {
   const n = makeNotifier({ env: UI_ENV });
   received.length = 0;
@@ -2663,9 +2676,15 @@ const UI_ENV = {
   await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
   eq(received.length, 1, "die Fertig-Meldung geht raus");
   eq(
+    n.linkFor(SESSION),
+    `${UI_BASE}/server/aHR0cHM6Ly80OTM3NC0tbWFpbi0taW5mcmFzdHJ1Y3R1cmUtLWNhcnN0ZW5tdWVsbGVyMjAwMi1jb2Rlci5tdWVsbGVyLW5hcy5kZQ/session/${SESSION}`,
+    "der Schlüssel ist base64url des Ursprungs der Basis (wie im Browser gemessen)"
+  );
+  ok(!n.linkFor(SESSION).includes("="), "der Schlüssel trägt kein Base64-Padding");
+  eq(
     received[0]?.body?.click,
-    `${UI_BASE}/server/local/session/${SESSION}`,
-    "das Klickziel ist der Session-Deep-Link (Schlüssel 'local')"
+    `${UI_BASE}/server/${UI_KEY}/session/${SESSION}`,
+    "das Klickziel ist der Session-Deep-Link"
   );
   eq(
     received[0]?.body?.actions?.[0]?.url,
@@ -2674,7 +2693,7 @@ const UI_ENV = {
   );
 }
 
-// b) NTFY_SERVER_KEY setzt den Serverschlüssel; leer → "local".
+// b) NTFY_SERVER_KEY gewinnt als Override; leer → berechneter Schlüssel.
 {
   const sidecar = makeNotifier({ env: { ...UI_ENV, NTFY_SERVER_KEY: "sidecar" } });
   received.length = 0;
@@ -2697,8 +2716,8 @@ const UI_ENV = {
   await blank.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
   eq(
     blank.linkFor(SESSION),
-    `${UI_BASE}/server/local/session/${SESSION}`,
-    "ein leerer Schlüssel fällt auf 'local' zurück"
+    `${UI_BASE}/server/${UI_KEY}/session/${SESSION}`,
+    "ein leerer Schlüssel fällt auf den berechneten Schlüssel zurück"
   );
 }
 
@@ -2709,7 +2728,7 @@ const UI_ENV = {
   await n.handleEvent({ type: "session.created", properties: { info: info(weird) } });
   eq(
     n.linkFor(weird),
-    `${UI_BASE}/server/local/session/ses_a%2Fb%20c%3Fd`,
+    `${UI_BASE}/server/${UI_KEY}/session/ses_a%2Fb%20c%3Fd`,
     "Sonderzeichen der Session-ID werden kodiert"
   );
   const keyed = makeNotifier({ env: { ...UI_ENV, NTFY_SERVER_KEY: "a/b" } });
@@ -2733,8 +2752,8 @@ const UI_ENV = {
   });
   eq(
     fixed.linkFor(SESSION),
-    `https://beispiel.test/base/server/local/session/${SESSION}`,
-    "die feste Basis wird ohne abschließenden Slash benutzt"
+    `https://beispiel.test/base/server/${serverKeyOf("https://beispiel.test/base/")}/session/${SESSION}`,
+    "die feste Basis wird ohne abschließenden Slash benutzt (Schlüssel aus ihrem Ursprung)"
   );
   eq(fixed.linkFor(""), "https://beispiel.test/base/", "ohne Session-ID bleibt sie unverändert");
 }
@@ -2767,10 +2786,33 @@ const UI_ENV = {
   );
   eq(
     published[0]?.click,
-    `${UI_BASE}/server/local/session/${SESSION}`,
+    `${UI_BASE}/server/${UI_KEY}/session/${SESSION}`,
     "das Klickziel derselben Meldung ist der Deep-Link"
   );
   resetSharedState();
+}
+
+// f) Eine nicht auswertbare Basis: kein Absturz, kein kaputter Link — es bleibt
+//    beim bisherigen Rückfall-Schlüssel "local".
+{
+  const n = makeNotifier({ env: { ...UI_ENV, NTFY_SESSION_URL: "keine-url" } });
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  eq(
+    n.linkFor(SESSION),
+    `keine-url/server/local/session/${SESSION}`,
+    "ohne auswertbare Basis bleibt der bisherige Rückfall-Schlüssel"
+  );
+  ok(!n.linkFor(SESSION).includes("undefined"), "der Rückfall-Link ist nicht kaputt");
+
+  received.length = 0;
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Meldung geht auch mit unauswertbarer Basis raus");
+  eq(
+    received[0]?.body?.click,
+    `keine-url/server/local/session/${SESSION}`,
+    "die Meldung trägt den Rückfall-Link (kein Fehler nach außen)"
+  );
 }
 
 // ── 36. Zustandsdatei: Zuordnung und Leseposition überleben den Neustart ──
@@ -3014,7 +3056,7 @@ console.log("\nKlickziel-Stil");
   await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
   eq(
     n.linkFor(SESSION),
-    `${UI_BASE}/server/local/session/${SESSION}`,
+    `${UI_BASE}/server/${UI_KEY}/session/${SESSION}`,
     "Stil 'session' (Default) → Deep-Link"
   );
   eq(n.linkFor(""), UI_BASE, "Stil 'session' → ohne Session-Kennung die Basis");
@@ -3024,7 +3066,7 @@ console.log("\nKlickziel-Stil");
   await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
   eq(
     received[0]?.body?.click,
-    `${UI_BASE}/server/local/session/${SESSION}`,
+    `${UI_BASE}/server/${UI_KEY}/session/${SESSION}`,
     "der Standard bleibt der Deep-Link"
   );
   eq(
