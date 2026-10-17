@@ -12,22 +12,28 @@ hellem Rand; darin liegt ein **weißes Piktogramm** aus einfachen
 geometrischen Formen. Bewusst keine Buchstaben, keine Ziffern und keine
 Sonderzeichen — Kürzel wie "SM" oder "HA" sind nicht selbsterklärend.
 
-Ausnahme sind die beiden Icons mit einem **echten Logo**: ``server-management``
-trägt das Proxmox-Zeichen, ``homeassistant`` das Home-Assistant-Zeichen. Diese
-beiden werden nicht gezeichnet, sondern aus einem Quellbild in
-``assets/ntfy-icons/src/`` zusammengesetzt (auf die Zielfläche eingepasst,
-Seitenverhältnis erhalten, zentriert, alles außerhalb des Motivs bleibt
-transparent) — siehe ``logo_erzeugen``. Die Quellbilder liegen im Repo, das
-Skript braucht also weiterhin kein Netz.
+Sieben Motive werden gezeichnet; das achte, ``homeassistant``, zeigt das
+**echte Home-Assistant-Zeichen** in Weiß auf Home-Assistant-Blau. Dafür wird
+kein Motiv gezeichnet: aus dem Quellbild
+``assets/ntfy-icons/src/home-assistant.png`` (die Originalkachel — weißes
+Zeichen auf blauem Grund) werden die **hellen Partien** als weiße Form
+gewonnen und auf das übliche abgerundete Quadrat samt hellem Rand gesetzt —
+siehe ``zeichen_erzeugen``. Der Alphakanal der Kachel taugt dafür *nicht*: er
+umreißt das ganze Quadrat, nicht das Zeichen. Die Quellbilder liegen im Repo,
+das Skript braucht also weiterhin kein Netz.
 
 Motive und ihre Abgrenzung (auch in Graustufen und auf Handygröße):
 
-* ``server-management``  **Proxmox** (echtes Logo, ``src/proxmox.png``): das
-  Markenzeichen des Proxmox-Projekts. Wird nicht gezeichnet, sondern aus dem
-  Quellbild auf die Zielfläche eingepasst und zentriert.
-* ``homeassistant``      **Home Assistant** (echtes Logo,
-  ``src/home-assistant.png``): das Zeichen des Home-Assistant-Projekts,
-  ebenfalls eingepasst statt gezeichnet.
+* ``server-management``  **Kisten-Stapel ohne Standortnadel**: derselbe
+  Container-Stapel wie ``cleve`` — drei schmalere Kisten mit je vier
+  senkrechten Rillen, treppenförmig nach rechts oben versetzt —, aber **ohne**
+  die Nadel und **größer** (rund 85 % der Fläche, während der Stapel im
+  cleve-Icon neben der Nadel nur knapp die Hälfte einnimmt). Keine Nadel =
+  Innenstandort, Nadel = Auswärtsstandort.
+* ``homeassistant``      **Home-Assistant-Zeichen in Weiß** auf
+  Home-Assistant-Blau (``#18bcf2``, dieselbe Farbe wie die Originalkachel):
+  das echte Zeichen als weiße Form auf dem üblichen abgerundeten Quadrat mit
+  hellem Rand — dieselbe Machart wie alle übrigen Motive.
 * ``cleve``              **Kisten-Stapel mit Standortnadel**: drei schmalere
   Kisten mit je vier senkrechten dunklen Rillen, treppenförmig nach rechts
   oben versetzt; oben rechts eine **Standortnadel** (Pin mit dunklem Loch)
@@ -43,24 +49,34 @@ Motive und ihre Abgrenzung (auch in Graustufen und auf Handygröße):
 * ``svelte``             **Browserfenster**: dasselbe Fenster wie
   ``general``, im Inhalt aber eine **Erdkugel** (Kreis mit Meridian und
   Äquator) statt der Eingabeaufforderung.
-* ``hermes``             **Geflügelter Stab**: senkrechter Stab mit Kugel
-  oben und je einem Flügel aus drei Federspitzen — das Boten-Attribut des
-  Hermes (Kerykeion, ohne Schlangen). Gewählt statt des geflügelten Helms,
-  weil der Stab auf 64 px drei getrennte Formen behält, während der Helm
-  klein zu einer Fläche verschmilzt.
+* ``hermes``             **Geflügelter Helm**: Kuppel, dunkles Hutband, breite
+  Krempe und links wie rechts ein Flügel aus drei Federspitzen — das
+  klassische Boten-Attribut. Das dunkle Hutband trennt Kuppel und Krempe, die
+  sonst auf 64 px zu einer einzigen weißen Fläche verschmelzen (siehe
+  ``motiv_hermes_helm``). Der frühere geflügelte Stab bleibt als
+  ``motiv_hermes_stab`` im Skript erhalten.
 
 Gegenprobe der beiden Fenster-Motive: ``general`` und ``svelte`` teilen
 sich Rahmen, Titelleiste und Fensterknöpfe und unterscheiden sich allein im
 Inhalt — links unten eine Prompt-Zeile aus Chevron und Cursor gegen eine
 Erdkugel, die den Innenraum füllt. Auf 64 px ist das der Unterschied
-zwischen "zwei kurze Striche" und "großer Kreis mit Kreuz". Kistenstapel
-(mit Standortnadel), Werkzeugkasten (Bügel mit Schloss) und Flügelstab
-(senkrechter Balken auf Kugel) haben eigene Silhouetten; die beiden Logos
-tragen ihre eigenen Farben und sind damit ohnehin nicht zu verwechseln.
+zwischen "zwei kurze Striche" und "großer Kreis mit Kreuz". Die beiden
+Kisten-Motive unterscheiden sich doppelt: ``cleve`` trägt die Standortnadel
+und einen kleinen Stapel, ``server-management`` den großen Stapel ohne Nadel.
+Werkzeugkasten (Bügel mit Schloss), Doktorhut (Raute auf Käppchen),
+Flügelhelm (Kuppel mit Hutband und Flügeln) und das weiße
+Home-Assistant-Zeichen auf eigenem Blau haben eigene Silhouetten und Farben;
+sie sind auch in Graustufen und auf Handygröße nicht zu verwechseln.
 
 Aufruf:
 
     python3 tools/make-ntfy-icons.py
+    python3 tools/make-ntfy-icons.py --uebersicht
+
+``--uebersicht`` schreibt zusätzlich ``uebersicht.png``: je Workspace das
+Icon in 160 px und in 56 px (Handy-Vorschau) mit Namen darunter, vier Spalten
+und zwei Zeilen auf hellem Grund. Das ist nur eine Sichtprüfung für die
+Motivwahl — dieselbe Datei entsteht sonst nirgends.
 
 Das Skript ist deterministisch: es enthält weder Zeitstempel noch
 Zufallswerte, ein erneuter Lauf erzeugt also byte-identische Dateien — auch
@@ -72,10 +88,11 @@ einfach unten in ICONS ergänzen.
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 # ---------------------------------------------------------------------------
 # Konfiguration
@@ -98,18 +115,63 @@ RAND_BREITE = 2
 # Strichstärke der kräftigen weißen Linien (Anteil der Zeichenfläche)
 STRICH_ANTEIL = 0.045
 
-# Transparenter Rand der beiden Logo-Icons, als Anteil der Zielfläche. Das Logo
-# wird auf (KANTE - 2 * LOGO_RAND) eingepasst, damit es nicht am Bildrand klebt;
-# Seitenverhältnis und Transparenz bleiben dabei erhalten.
+# Transparenter Rand eines unverändert eingepassten Logos, als Anteil der
+# Zielfläche. Das Logo wird auf (KANTE - 2 * LOGO_RAND) eingepasst, damit es
+# nicht am Bildrand klebt; Seitenverhältnis und Transparenz bleiben dabei
+# erhalten. Derzeit nutzt das kein Icon — es bleibt als Rückfall für ein Motiv
+# stehen, das ein Logo unverändert zeigen soll.
 LOGO_RAND = 0.05
+
+# Kantenlänge, auf die ein echtes Zeichen aus einem Quellbild eingepasst wird,
+# als Anteil der Zielfläche (wie die gezeichneten Motive rund zwei Drittel).
+ZEICHEN_ANTEIL = 0.72
+
+# Füllung des Kisten-Stapels von ``server-management`` (Anteil der Zielfläche,
+# bezogen auf die längere Seite des Stapels). ``cleve`` zeichnet denselben
+# Stapel kleiner, weil dort noch die Standortnadel daneben steht.
+KISTEN_FUELLUNG = 0.84
+
+# Helligkeitsrampe, mit der aus einem Quellbild die *hellen* Partien als Form
+# gewonnen werden (Maß ist der kleinste Farbkanal je Pixel): bis HELL_TIEF
+# durchsichtig, ab HELL_HOCH voll deckend, dazwischen weich. So bleibt die Kante
+# des Zeichens glatt, statt zu treppeln.
+HELL_TIEF = 60
+HELL_HOCH = 200
+
+# Aufbau der Übersicht (Sichtprüfung): heller Grund, Titelzeile, je Workspace
+# das Icon in 160 px und darunter in 56 px (Handy-Vorschau), Name darunter.
+UEBERSICHT_GRUND = "#f5f5f7"
+UEBERSICHT_TITEL = "ntfy-Icons (oben 160 px, unten 56 px)"
+UEBERSICHT_GROSS = 160
+UEBERSICHT_KLEIN = 56
+UEBERSICHT_SPALTEN = 4
+UEBERSICHT_RAND = 28
+UEBERSICHT_TEXT = "#1f2937"
 
 # Voll deckendes Weiß für das Piktogramm
 WEISS = (255, 255, 255, 255)
 
+
+@dataclass(frozen=True)
+class Quellbild:
+    """Verweis auf ein Bild in ``assets/ntfy-icons/src/``.
+
+    ``als_form`` steuert, was damit geschieht:
+
+    * ``False`` — das Bild wird unverändert auf die Zielfläche eingepasst
+      (echtes Logo, wie es ist; siehe ``logo_erzeugen``).
+    * ``True`` — die hellen Partien des Bildes dienen als Form für ein **weißes
+      Zeichen auf dem farbigen Rahmen** (siehe ``zeichen_erzeugen``).
+    """
+
+    datei: str
+    als_form: bool = False
+
+
 # Zeichenfunktion eines Motivs: (Zeichner, Hintergrundfarbe, Fläche, Strich).
 # In der Tabelle ICONS darf das Motiv None sein: dann entsteht das Icon nicht aus
-# einer Zeichenfunktion, sondern aus dem Quellbild in der fünften Spalte (echtes
-# Logo, siehe logo_erzeugen).
+# einer Zeichenfunktion, sondern aus dem Quellbild in der fünften Spalte (siehe
+# Quellbild).
 Motiv = Callable[[ImageDraw.ImageDraw, "tuple[int, int, int]", int, int], None]
 
 
@@ -143,6 +205,47 @@ def abdunkeln(rgb: tuple[int, int, int], anteil: float) -> tuple[int, int, int]:
 def px(anteil: float, basis: int) -> int:
     """Rechnet einen Anteil der Zeichenfläche in ganze Pixel um (deterministisch)."""
     return int(round(anteil * basis))
+
+
+def einpassen(form: Image.Image, nutzbar: int) -> Image.Image:
+    """Skaliert eine Form seitenverhältnistreu auf höchstens ``nutzbar`` Pixel.
+
+    Der kleinere der beiden Faktoren gewinnt, verzerrt wird also nichts; das
+    Resampling mit LANCZOS (fest, kein Zufall) ergibt weiche Kanten.
+    """
+    faktor = nutzbar / max(form.width, form.height)
+    return form.resize(
+        (max(1, round(form.width * faktor)), max(1, round(form.height * faktor))),
+        Image.LANCZOS,
+    )
+
+
+def helligkeit_rampe(wert: int) -> int:
+    """Bildet den kleinsten Farbkanal eines Pixels auf eine weiche Deckung ab."""
+    if wert <= HELL_TIEF:
+        return 0
+    if wert >= HELL_HOCH:
+        return 255
+    return (wert - HELL_TIEF) * 255 // (HELL_HOCH - HELL_TIEF)
+
+
+def form_aus_bild(vorlage: Image.Image) -> Image.Image:
+    """Gewinnt aus einem Quellbild die **hellen Partien** als Graustufenform.
+
+    Maß ist der kleinste Farbkanal je Pixel. Bei der Home-Assistant-Kachel
+    (weißes Zeichen ``#f2f4f9`` auf blauem Grund ``#18bcf2``) liegt der Grund
+    bei 24 und das Zeichen bei 242 — die Rampe trennt also sauber und hält die
+    Ränder weich. Zurück kommt die auf den sichtbaren Bereich zugeschnittene
+    Form, damit später das Zeichen und nicht sein Randmaß die Größe bestimmt.
+    """
+    rot, gruen, blau = vorlage.convert("RGB").split()
+    dunkelster = ImageChops.darker(ImageChops.darker(rot, gruen), blau)
+    form = dunkelster.point(helligkeit_rampe)
+
+    zuschnitt = form.getbbox()
+    if zuschnitt is None:
+        raise ValueError("Quellbild ohne helle Partien — daraus lässt sich keine Form gewinnen")
+    return form.crop(zuschnitt)
 
 
 def hintergrund(farbe: str) -> tuple[Image.Image, ImageDraw.ImageDraw, tuple[int, int, int], int]:
@@ -356,25 +459,24 @@ def motiv_browser(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kant
     zeichner.line((cx - radius, cy, cx + radius, cy), fill=WEISS, width=linie)
 
 
-def motiv_container(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
-    """Kisten-Stapel mit Standortnadel: drei versetzte Kisten mit senkrechten
-    Rillen, oben rechts eine Nadel als Kennzeichen für den Auswärtsstandort.
+def kistenstapel_zeichnen(
+    zeichner: ImageDraw.ImageDraw,
+    detail: tuple[int, int, int, int],
+    kante: int,
+    x0: int,
+    y0: int,
+    breite: int,
+    hoehe: int,
+    luecke: int,
+    versatz: int,
+) -> None:
+    """Zeichnet drei treppenförmig versetzte Kisten mit je vier senkrechten Rillen.
 
-    Die Kisten rücken dafür etwas nach links unten; die Nadel steht frei
-    daneben, damit sich ihre Umrisse auf Handygröße nicht mit den Kisten zu
-    einer Fläche verbinden.
+    ``x0``/``y0`` ist die linke obere Ecke des Stapels: die unterste Kiste sitzt
+    links unten, jede weitere rückt um ``versatz`` nach rechts und oben. Geteilt
+    von ``cleve`` (klein, mit Standortnadel) und ``server-management`` (groß,
+    ohne Nadel), damit beide wirklich denselben Stapel zeigen.
     """
-    del strich
-    detail = (*abdunkeln(rgb, 0.45), 255)
-
-    breite = px(0.35, kante)
-    hoehe = px(0.135, kante)
-    luecke = px(0.025, kante)
-    versatz = px(0.045, kante)
-
-    x0 = px(0.085, kante)
-    y0 = px(0.425, kante)
-
     rillen_breite = max(2, px(0.035, breite))
     for kiste in range(3):
         # unterste Kiste links unten, jede weitere nach rechts oben versetzt
@@ -394,6 +496,30 @@ def motiv_container(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], ka
                 (rille_x - rillen_breite // 2, oben_rille, rille_x + rillen_breite // 2, unten_rille),
                 fill=detail,
             )
+
+
+def motiv_container(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
+    """Kisten-Stapel mit Standortnadel: drei versetzte Kisten mit senkrechten
+    Rillen, oben rechts eine Nadel als Kennzeichen für den Auswärtsstandort.
+
+    Die Kisten rücken dafür etwas nach links unten; die Nadel steht frei
+    daneben, damit sich ihre Umrisse auf Handygröße nicht mit den Kisten zu
+    einer Fläche verbinden.
+    """
+    del strich
+    detail = (*abdunkeln(rgb, 0.45), 255)
+
+    kistenstapel_zeichnen(
+        zeichner,
+        detail,
+        kante,
+        x0=px(0.085, kante),
+        y0=px(0.425, kante),
+        breite=px(0.35, kante),
+        hoehe=px(0.135, kante),
+        luecke=px(0.025, kante),
+        versatz=px(0.045, kante),
+    )
 
     # Standortnadel: Kreis mit Spitze nach unten (Teardrop) und dunklem Loch
     nadel_cx = px(0.75, kante)
@@ -420,6 +546,41 @@ def motiv_container(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], ka
     zeichner.ellipse(
         (nadel_cx - loch_radius, nadel_cy - loch_radius, nadel_cx + loch_radius, nadel_cy + loch_radius),
         fill=detail,
+    )
+
+
+def motiv_kistenstapel(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
+    """Kisten-Stapel **ohne** Standortnadel: derselbe Stapel wie bei ``cleve``,
+    nur ohne Nadel und deutlich größer, mittig im Bild.
+
+    Er steht hier allein, während er sich bei ``cleve`` den Platz mit der Nadel
+    teilt — deshalb füllt er ``KISTEN_FUELLUNG`` der Fläche. Die Unterscheidung
+    der beiden Motive bleibt damit erhalten: **mit** Nadel = Auswärtsstandort,
+    **ohne** Nadel = Innenstandort.
+    """
+    del strich
+    detail = (*abdunkeln(rgb, 0.45), 255)
+
+    # Die Höhe (3 Kisten + 2 Lücken) ist die längere Seite des Stapels und damit
+    # das Maß für die Füllung; Breite, Lücken und Versatz skalieren mit, sodass
+    # die Proportionen der Kisten unverändert bleiben.
+    faktor = KISTEN_FUELLUNG / (3 * 0.135 + 2 * 0.025)
+
+    breite = px(0.35 * faktor, kante)
+    hoehe = px(0.135 * faktor, kante)
+    luecke = px(0.025 * faktor, kante)
+    versatz = px(0.045 * faktor, kante)
+
+    kistenstapel_zeichnen(
+        zeichner,
+        detail,
+        kante,
+        x0=(kante - (breite + 2 * versatz)) // 2,
+        y0=(kante - (3 * hoehe + 2 * luecke)) // 2,
+        breite=breite,
+        hoehe=hoehe,
+        luecke=luecke,
+        versatz=versatz,
     )
 
 
@@ -567,22 +728,113 @@ def motiv_hermes_stab(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], 
         zeichner.polygon(punkte, fill=WEISS)
 
 
+def motiv_hermes_helm(zeichner: ImageDraw.ImageDraw, rgb: tuple[int, int, int], kante: int, strich: int) -> None:
+    """Geflügelter Helm (Petasos) des Hermes: hohe Kuppel, dunkles Hutband,
+    breite Krempe und links wie rechts ein Flügel mit drei Federspitzen.
+
+    Aufbau von oben nach unten: die Kuppel sitzt als schmale, hohe Halbellipse
+    auf der Krempe und **überragt die Flügel deutlich** — nur so bleibt „Helm"
+    auch bei 64 px erkennbar (gleich hohe Flügel verschmelzen mit der Kuppel zu
+    einer breiten Masse, das Motiv liest sich dann als Fledermaus). Darunter
+    läuft das **dunkle Hutband** quer über die volle Krempenbreite; ohne es
+    verschmelzen Kuppel und Krempe zu einer einzigen Fläche und das Motiv liest
+    sich als Pilz. Die Flügel wurzeln unter der Kuppel und fächern nach außen
+    auf; ihre drei Federspitzen bleiben als Zacken abgesetzt, damit die
+    Silhouette nicht zu einem Balken zerfällt.
+
+    Der geflügelte **Stab** (``motiv_hermes_stab``) bleibt als gezeichnete
+    Zweitfassung im Skript — er war die frühere Wahl.
+    """
+    del strich
+    cx = kante // 2
+    detail = (*abdunkeln(rgb, 0.5), 255)
+
+    # Krempe: breite, flach gerundete Scheibe. Ihre Oberkante trägt die Kuppel.
+    krempe_halb = px(0.305, kante)
+    krempe_oben = px(0.615, kante)
+    krempe_radius = px(0.035, kante)
+
+    # Flügel zuerst — ihre Wurzel verschwindet anschließend unter der Kuppel.
+    # Sie sitzen tiefer als die Kuppelspitze und bleiben flacher als sie, damit
+    # die Kuppel das Bild oben bestimmt.
+    fluegel = [
+        (0.400, 0.475),  # Wurzel oben (liegt unter der Kuppel)
+        (0.330, 0.445),
+        (0.250, 0.430),
+        (0.175, 0.430),  # vorderste Federspitze
+        (0.205, 0.483),  # Einkerbung
+        (0.155, 0.505),  # Federspitze 1
+        (0.230, 0.530),  # Einkerbung
+        (0.215, 0.570),  # Federspitze 2
+        (0.300, 0.565),  # Einkerbung
+        (0.400, 0.550),  # Wurzel unten (liegt unter der Kuppel)
+    ]
+    for spiegel in (False, True):
+        punkte = [
+            (px(x if not spiegel else 1.0 - x, kante), px(y, kante)) for x, y in fluegel
+        ]
+        zeichner.polygon(punkte, fill=WEISS)
+
+    zeichner.rounded_rectangle(
+        (cx - krempe_halb, krempe_oben, cx + krempe_halb, px(0.705, kante)),
+        radius=krempe_radius,
+        fill=WEISS,
+    )
+
+    # Hutband: dunkler Streifen an der Krempen-Oberkante. Seine oberen Rundungen
+    # sind dieselben wie die der Krempe, es tritt also nirgends darüber hinaus.
+    zeichner.rounded_rectangle(
+        (cx - krempe_halb, krempe_oben, cx + krempe_halb, px(0.660, kante)),
+        radius=krempe_radius,
+        fill=detail,
+    )
+
+    # Kuppel: obere Hälfte einer Ellipse, auf der Krempen-Oberkante aufsitzend —
+    # schmal und hoch, damit sie die Flügel überragt.
+    kuppel_halb = px(0.155, kante)
+    kuppel_hoehe = px(0.33, kante)
+    zeichner.pieslice(
+        (
+            cx - kuppel_halb,
+            krempe_oben - kuppel_hoehe,
+            cx + kuppel_halb,
+            krempe_oben + kuppel_hoehe,
+        ),
+        start=180,
+        end=360,
+        fill=WEISS,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tabelle der Icons:
 # (Dateiname ohne .png, Workspace-Farbe, Motiv, Beschreibung, Quellbild)
 # Das Motiv wird gezeichnet; ist es None, entsteht das Icon stattdessen aus dem
-# Quellbild in ``assets/ntfy-icons/src/`` (die Farbe ist dann nur Dokumentation).
+# Quellbild in ``assets/ntfy-icons/src/``. Bei einem Zeichen als Form ist die
+# Farbe die des Rahmens, bei einem eingepassten Logo nur Dokumentation.
 # ---------------------------------------------------------------------------
 
-ICONS: list[tuple[str, str, Motiv | None, str, str | None]] = [
-    ("server-management", "#2563eb", None, "Proxmox-Zeichen (Quellbild)", "proxmox.png"),
-    ("homeassistant", "#f59e0b", None, "Home-Assistant-Zeichen (Quellbild)", "home-assistant.png"),
+ICONS: list[tuple[str, str, Motiv | None, str, Quellbild | None]] = [
+    (
+        "server-management",
+        "#2563eb",
+        motiv_kistenstapel,
+        "Kisten-Stapel ohne Standortnadel, groß (Innenstandort)",
+        None,
+    ),
+    (
+        "homeassistant",
+        "#18bcf2",
+        None,
+        "Home-Assistant-Zeichen in Weiß auf Home-Assistant-Blau",
+        Quellbild("home-assistant.png", als_form=True),
+    ),
     ("cleve", "#64748b", motiv_container, "Kisten-Stapel mit Standortnadel (Auswärtsstandort)", None),
     ("general", "#334155", motiv_kommandozeile, "Kommandozeilen-Fenster mit Prompt und Cursor", None),
     ("minijob", "#0d9488", motiv_werkzeugkasten, "Werkzeugkasten mit Bügel und Schloss", None),
     ("uni", "#7c3aed", motiv_doktorhut, "Doktorhut mit Quaste", None),
     ("svelte", "#ea580c", motiv_browser, "Browserfenster mit Erdkugel", None),
-    ("hermes", "#ca8a04", motiv_hermes_stab, "Geflügelter Stab mit Kugel (Boten-Attribut)", None),
+    ("hermes", "#ca8a04", motiv_hermes_helm, "Geflügelter Helm mit Hutband und Flügeln (Boten-Attribut)", None),
 ]
 
 
@@ -592,7 +844,7 @@ ICONS: list[tuple[str, str, Motiv | None, str, str | None]] = [
 
 
 def quell_verzeichnis() -> Path:
-    """Ordner mit den Quellbildern (echte Logos): <repo>/assets/ntfy-icons/src.
+    """Ordner mit den Quellbildern (echte Zeichen): <repo>/assets/ntfy-icons/src.
 
     Bewusst unabhängig vom Ausgabeordner: die Quellbilder gehören ins Repo, das
     Skript liest sie von dort und braucht dafür kein Netz.
@@ -600,37 +852,60 @@ def quell_verzeichnis() -> Path:
     return Path(__file__).resolve().parent.parent / "assets" / "ntfy-icons" / "src"
 
 
+def quellbild_laden(quelle: str) -> Image.Image:
+    """Lädt ein Quellbild aus ``assets/ntfy-icons/src/`` als RGBA-Bild."""
+    with Image.open(quell_verzeichnis() / quelle) as bild:
+        bild.load()
+        return bild.convert("RGBA")
+
+
 def logo_erzeugen(quelle: str) -> Image.Image:
     """Setzt ein Quellbild (echtes Logo) mittig auf eine transparente Zielfläche.
 
-    Eingepasst wird mit dem kleineren der beiden Faktoren — das Seitenverhältnis
-    bleibt also exakt erhalten, verzerrt wird nichts. Der Rest der Zielfläche
-    bleibt transparent, ein transparenter Rand des Quellbilds ebenso.
+    Eingepasst wird seitenverhältnistreu (siehe ``einpassen``), verzerrt wird
+    also nichts. Der Rest der Zielfläche bleibt transparent, ein transparenter
+    Rand des Quellbilds ebenso. Derzeit nutzt das kein Icon — der Weg bleibt für
+    ein Logo erhalten, das unverändert gezeigt werden soll.
     """
-    with Image.open(quell_verzeichnis() / quelle) as bild:
-        bild.load()
-        vorlage = bild.convert("RGBA")
-
-    nutzbar = KANTE - 2 * px(LOGO_RAND, KANTE)
-    faktor = min(nutzbar / vorlage.width, nutzbar / vorlage.height)
-    breite = max(1, round(vorlage.width * faktor))
-    hoehe = max(1, round(vorlage.height * faktor))
-    logo = vorlage.resize((breite, hoehe), Image.LANCZOS)
+    logo = einpassen(quellbild_laden(quelle), KANTE - 2 * px(LOGO_RAND, KANTE))
 
     ziel = Image.new("RGBA", (KANTE, KANTE), (0, 0, 0, 0))
-    ziel.alpha_composite(logo, ((KANTE - breite) // 2, (KANTE - hoehe) // 2))
+    ziel.alpha_composite(logo, ((KANTE - logo.width) // 2, (KANTE - logo.height) // 2))
     return ziel
 
 
-def icon_erzeugen(farbe: str, motiv: Motiv | None, quelle: str | None = None) -> Image.Image:
+def zeichen_erzeugen(quelle: str, farbe: str, anteil: float) -> Image.Image:
+    """Setzt ein echtes Zeichen in **Weiß** auf den farbigen Rahmen.
+
+    Die Form kommt aus den hellen Partien des Quellbilds (siehe
+    ``form_aus_bild``): bei ``src/home-assistant.png`` ist das die weiße
+    Zeichnung auf der blauen Originalkachel. Der Alphakanal dieser Kachel wäre
+    als Form unbrauchbar — er umreißt das ganze abgerundete Quadrat. Das Zeichen
+    wird seitenverhältnistreu auf ``anteil`` der Fläche eingepasst, mittig
+    gesetzt und mit denselben Rahmen-, Rand- und Überabtastungswerten wie die
+    gezeichneten Motive hinterlegt.
+    """
+    bild, _, _, kante = hintergrund(farbe)
+
+    form = einpassen(form_aus_bild(quellbild_laden(quelle)), px(anteil, kante))
+    weiss = Image.new("RGBA", form.size, WEISS)
+    weiss.putalpha(form)
+    bild.alpha_composite(weiss, ((kante - form.width) // 2, (kante - form.height) // 2))
+
+    return bild.resize((KANTE, KANTE), Image.LANCZOS)
+
+
+def icon_erzeugen(farbe: str, motiv: Motiv | None, quelle: Quellbild | None = None) -> Image.Image:
     """Baut ein einzelnes Icon als 256x256-PNG-taugliches RGBA-Bild.
 
-    Ist ``quelle`` gesetzt, entsteht das Icon aus diesem Quellbild (echtes Logo)
-    statt aus einem gezeichneten Piktogramm; ``farbe`` und ``motiv`` bleiben dann
-    unbenutzt.
+    Ist ``quelle`` gesetzt, entsteht das Icon aus diesem Quellbild statt aus
+    einem gezeichneten Piktogramm: entweder als **weiße Form** auf dem farbigen
+    Rahmen (``Quellbild.als_form``) oder als unverändert eingepasstes Logo.
     """
-    if quelle:
-        return logo_erzeugen(quelle)
+    if quelle is not None:
+        if quelle.als_form:
+            return zeichen_erzeugen(quelle.datei, farbe, ZEICHEN_ANTEIL)
+        return logo_erzeugen(quelle.datei)
     if motiv is None:
         raise ValueError(f"Icon ohne Motiv und ohne Quellbild: {farbe!r}")
 
@@ -642,25 +917,101 @@ def icon_erzeugen(farbe: str, motiv: Motiv | None, quelle: str | None = None) ->
     return bild.resize((KANTE, KANTE), Image.LANCZOS)
 
 
-def ziel_verzeichnis(argv: list[str]) -> Path:
+def ziel_verzeichnis(argumente: list[str]) -> Path:
     """Ermittelt den Ausgabeordner (Standard: <repo>/assets/ntfy-icons)."""
-    if len(argv) > 1:
-        return Path(argv[1]).expanduser().resolve()
+    if argumente:
+        return Path(argumente[0]).expanduser().resolve()
     repo_wurzel = Path(__file__).resolve().parent.parent
     return repo_wurzel / "assets" / "ntfy-icons"
 
 
+def schrift(groesse: int) -> ImageFont.ImageFont:
+    """Liefert eine Schrift in der gewünschten Größe (ohne Systemdateien, ohne Netz).
+
+    Pillow bringt sie mit. Ältere Pillow-Fassungen (< 10.1) kennen den
+    Größenparameter nicht — dann bleibt es bei der eingebauten Bitmap-Schrift
+    und die Übersicht ist nur kleiner beschriftet; das Bild selbst bleibt gleich.
+    """
+    try:
+        return ImageFont.load_default(size=groesse)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def uebersicht_erzeugen(ziel: Path, icons: list[tuple[str, Image.Image]]) -> Path:
+    """Schreibt ``uebersicht.png``: je Workspace 160 px und 56 px mit Namen.
+
+    Reine Sichtprüfung für die Motivwahl (kein Symbol für Meldungen). Aufbau:
+    heller Grund, oben die Titelzeile, darunter die Motive in vier Spalten und
+    zwei Zeilen — je Feld das Bild in 160 px, darunter dasselbe in 56 px
+    (Handy-Vorschau), ganz unten der Name. Jedes Bild wird vollständig
+    platziert, die Felder sind so bemessen, dass sich nichts überlappt.
+    """
+    schrift_titel = schrift(22)
+    schrift_name = schrift(17)
+
+    spalten = UEBERSICHT_SPALTEN
+    zeilen = (len(icons) + spalten - 1) // spalten
+    feld_breite = UEBERSICHT_GROSS + 24
+    feld_hoehe = UEBERSICHT_GROSS + 12 + UEBERSICHT_KLEIN + 10 + 22
+    kopf = 62
+
+    breite = 2 * UEBERSICHT_RAND + spalten * feld_breite
+    hoehe = kopf + zeilen * feld_hoehe + UEBERSICHT_RAND
+
+    bild = Image.new("RGBA", (breite, hoehe), (*hex_zu_rgb(UEBERSICHT_GRUND), 255))
+    zeichner = ImageDraw.Draw(bild)
+    zeichner.text((UEBERSICHT_RAND, 22), UEBERSICHT_TITEL, fill=UEBERSICHT_TEXT, font=schrift_titel)
+
+    for nummer, (name, icon) in enumerate(icons):
+        links = UEBERSICHT_RAND + (nummer % spalten) * feld_breite
+        oben = kopf + (nummer // spalten) * feld_hoehe
+
+        gross = icon.resize((UEBERSICHT_GROSS, UEBERSICHT_GROSS), Image.LANCZOS)
+        klein = icon.resize((UEBERSICHT_KLEIN, UEBERSICHT_KLEIN), Image.LANCZOS)
+        bild.alpha_composite(gross, (links + (feld_breite - UEBERSICHT_GROSS) // 2, oben))
+        bild.alpha_composite(
+            klein,
+            (links + (feld_breite - UEBERSICHT_KLEIN) // 2, oben + UEBERSICHT_GROSS + 12),
+        )
+
+        name_breite = zeichner.textlength(name, font=schrift_name)
+        zeichner.text(
+            (
+                int(links + (feld_breite - name_breite) / 2),
+                oben + UEBERSICHT_GROSS + 12 + UEBERSICHT_KLEIN + 10,
+            ),
+            name,
+            fill=UEBERSICHT_TEXT,
+            font=schrift_name,
+        )
+
+    pfad = ziel / "uebersicht.png"
+    bild.convert("RGB").save(pfad, format="PNG", optimize=True)
+    return pfad
+
+
 def main(argv: list[str]) -> int:
-    ziel = ziel_verzeichnis(argv)
+    schalter = {argument for argument in argv[1:] if argument.startswith("--")}
+    argumente = [argument for argument in argv[1:] if not argument.startswith("--")]
+    unbekannt = sorted(schalter - {"--uebersicht"})
+    if unbekannt:
+        print(f"Unbekannter Schalter: {', '.join(unbekannt)}", file=sys.stderr)
+        print("Aufruf: python3 tools/make-ntfy-icons.py [zielordner] [--uebersicht]", file=sys.stderr)
+        return 2
+
+    ziel = ziel_verzeichnis(argumente)
     ziel.mkdir(parents=True, exist_ok=True)
 
     print(f"Ausgabeordner: {ziel}")
     print()
 
+    erzeugt: list[tuple[str, Image.Image]] = []
     for name, farbe, motiv, beschreibung, quelle in ICONS:
         datei = ziel / f"{name}.png"
         icon = icon_erzeugen(farbe, motiv, quelle)
         icon.save(datei, format="PNG", optimize=True)
+        erzeugt.append((name, icon))
 
         groesse = datei.stat().st_size
         breite, hoehe = icon.size
@@ -670,6 +1021,11 @@ def main(argv: list[str]) -> int:
         )
 
     print()
+    if "--uebersicht" in schalter:
+        pfad = uebersicht_erzeugen(ziel, erzeugt)
+        print(f"Übersicht: {pfad.name} ({pfad.stat().st_size} B)")
+        print()
+
     print(f"{len(ICONS)} Icons erzeugt.")
     return 0
 

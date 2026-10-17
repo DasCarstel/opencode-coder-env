@@ -1653,7 +1653,7 @@ console.log("\nTopic-Name (NTFY_TOPIC_NAME)");
   eq(ohne.topic, "ai", "ohne NTFY_TOPIC_NAME bleibt das Topic bei NTFY_TOPIC");
   eq(
     mit.body.icon,
-    `${iconBase}/homeassistant.png?v=3`,
+    `${iconBase}/homeassistant.png?v=4`,
     "das icon zeigt weiter auf den Arbeitsbereich des Sitzungs-Verzeichnisses"
   );
   eq(mit.body.icon, ohne.body.icon, "NTFY_TOPIC_NAME ändert das icon-Feld nicht");
@@ -1667,7 +1667,7 @@ console.log("\nTopic-Name (NTFY_TOPIC_NAME)");
 // ── 40. Symbol je Meldung (NTFY_ICON_BASE) ────────────────────────────────
 //
 // Ist NTFY_ICON_BASE gesetzt und der Arbeitsbereich bekannt, trägt die Meldung
-// das ntfy-Feld `icon` = "<basis>/<workspace>.png?v=3" (JSON-Feld `icon`, als
+// das ntfy-Feld `icon` = "<basis>/<workspace>.png?v=4" (JSON-Feld `icon`, als
 // Header `Icon`; die Apps zeigen das Bild als Benachrichtigungssymbol). Die
 // Versionskennung umgeht den Icon-Cache der Apps (Konstante ICON_VERSION im
 // Plugin). Ohne die Basis oder ohne bekannten Arbeitsbereich entfällt das Feld
@@ -1686,7 +1686,7 @@ const ICON_BASE =
   eq(received.length, 1, "die Meldung geht raus");
   eq(
     received[0]?.body?.icon,
-    `${ICON_BASE}/server-management.png?v=3`,
+    `${ICON_BASE}/server-management.png?v=4`,
     "icon zeigt auf das PNG des Arbeitsbereichs (mit Versionskennung)"
   );
 }
@@ -1711,7 +1711,7 @@ const ICON_BASE =
   eq(received.length, 1, "die Meldung ohne Sitzungs-Verzeichnis geht raus");
   eq(
     received[0]?.body?.icon,
-    `${ICON_BASE}/server-management.png?v=3`,
+    `${ICON_BASE}/server-management.png?v=4`,
     "ein abschließender Slash der Basis ergibt kein doppeltes //"
   );
 }

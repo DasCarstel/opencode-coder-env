@@ -114,9 +114,10 @@ import { appendFileSync, readFileSync } from "node:fs";
 // Stunden, teils bis die Meldung gelöscht wird) — sie würden ein geändertes
 // Bild also weiter aus dem Cache zeigen. Die Kennung "?v=<n>" an der URL
 // umgeht den Cache und erzwingt einmalig ein Neuladen. Bei jeder inhaltlichen
-// Änderung der PNGs (tools/make-ntfy-icons.py) hochzählen — 3 ist der
-// ausgetauschte Symbolsatz.
-const ICON_VERSION = 3;
+// Änderung der PNGs (tools/make-ntfy-icons.py) hochzählen — 4 ist der Satz mit
+// Kistenstapel statt Proxmox-Zeichen (server-management), weißem
+// Home-Assistant-Zeichen auf blauem Rahmen und geflügeltem Helm (hermes).
+const ICON_VERSION = 4;
 
 const DEFAULT_URL = "https://ntfy.mueller-nas.de";
 const DEFAULT_TOPIC = "ai";

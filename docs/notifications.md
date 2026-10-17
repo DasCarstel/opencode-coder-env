@@ -247,7 +247,7 @@ Eigenschaften:
 | `NTFY_TOKEN` | Bearer-Token des ntfy-Nutzers `src-opencode`; ohne Token bleibt das Plugin still. |
 | `NTFY_TOPIC_NAME` | Arbeitsbereichs-Teil des Topics (nur zusammen mit `NTFY_TOPIC_PREFIX`), z. B. `oc` + `infrastructure` → `oc-infrastructure`. Lässt Titel und Icon unberührt. |
 | `NTFY_TOPIC_PREFIX` | Opt-in Topic je Arbeitsbereich: `<prefix>-<workspace>`; ohne Prefix bleibt es beim festen Topic (Default `ai`). |
-| `NTFY_ICON_BASE` | Basis-URL der PNG-Symbole; jede Meldung bekommt `icon = <basis>/<workspace>.png?v=3`. |
+| `NTFY_ICON_BASE` | Basis-URL der PNG-Symbole; jede Meldung bekommt `icon = <basis>/<workspace>.png?v=4`. |
 | `NTFY_LINK_STYLE` | `session` (Default) = Klickziel ist der Session-Deep-Link („Session öffnen"); `base` = nur die Startseite der Oberfläche. |
 | `NTFY_IGNORE_TITLES` | Kommagetrennte Titel-Teile, die stumm bleiben (z. B. `Ausfall-Probe`). |
 | `NTFY_REPLY_LOG` | Pfad des Diagnose-Logs (z. B. `/tmp/opencode/ntfy-diag.log`); leer = aus. |
