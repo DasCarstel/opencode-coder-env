@@ -16,6 +16,7 @@ import {
   parseReplyStream,
   replyRuntime,
   resetSharedState,
+  SHARED,
   startReplyBridge,
   subpathFromDirectory,
 } from "./ntfy-notify.js";
@@ -997,27 +998,85 @@ async function until(check, timeoutMs = 2000) {
   eq(published[0]?.priority, 2, "Hinweis ist leise (Priorität 2)");
 }
 
-// ── 24. Antwort-Brücke: NDJSON-Abfrage (fetch gemockt) ───────────────────
-console.log("\nAntwort-Brücke (Abfrage)");
+// ── 24. Antwort-Brücke: NDJSON-Strom (fetch gemockt) ─────────────────────
+console.log("\nAntwort-Brücke (Strom)");
+
+/**
+ * Gefälschte Antwort mit echtem Strom-Body: die Chunks werden als NDJSON
+ * eingespielt und der Strom danach geschlossen — so prüfen die Tests das
+ * inkrementelle, zeilenweise Lesen (auch über Chunk-Grenzen hinweg).
+ */
+function jsonStreamResponse(chunks, status = 200) {
+  if (status >= 400) {
+    return Promise.resolve({ ok: false, status, body: null, text: async () => "" });
+  }
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+  return Promise.resolve({ ok: true, status, body });
+}
+
+/** fetch-Ersatz, der jede Anfrage protokolliert und den Strom danach schließt. */
+function streamFetch(calls, chunks, status = 200) {
+  return (input, init = {}) => {
+    calls.push({ url: String(input), init, done: true, status });
+    return jsonStreamResponse(chunks, status);
+  };
+}
+
+/**
+ * fetch-Ersatz mit offenem Strom: die Zeilen kommen sofort, die Verbindung
+ * endet erst beim Abbruch (so wie der echte ntfy-Stream mit keepalive-Zeilen).
+ */
+function openStreamFetch(calls, chunks = []) {
+  return (input, init = {}) => {
+    const entry = { url: String(input), init, done: false, status: 200 };
+    calls.push(entry);
+    const encoder = new TextEncoder();
+    const body = new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        const finish = () => {
+          entry.done = true;
+          try {
+            controller.close();
+          } catch {
+            /* Strom war schon geschlossen */
+          }
+        };
+        if (init.signal?.aborted) finish();
+        else init.signal?.addEventListener("abort", finish, { once: true });
+      },
+      // Die Brücke bricht den wartenden read() über reader.cancel() ab — hier
+      // als „Verbindung ist zu“ sichtbar.
+      cancel() {
+        entry.done = true;
+      },
+    });
+    return Promise.resolve({ ok: true, status: 200, body });
+  };
+}
+
 {
   const requests = [];
   const runtime = { sentIds: [], lastSessionID: SESSION };
+  // Zeilenweise NDJSON; die erste Nachricht kommt absichtlich über eine
+  // Chunk-Grenze hinweg — eine halbe Zeile ist kein gültiges JSON und darf erst
+  // nach dem Zeilenende ausgewertet werden.
   let calls = 0;
-  const fetchStub = async (input, init) => {
-    requests.push({ url: String(input), init });
+  const fetchStub = (input, init = {}) => {
     calls += 1;
-    // Erste Abfrage liefert Nachrichten, danach ist das Topic leer.
-    const body =
-      calls === 1
-        ? [
-            JSON.stringify({ id: "msg_keep", event: "keepalive" }),
-            JSON.stringify({ id: "msg_a1", event: "message", title: "Antwort", message: "Weiter mit B" }),
-            "kein json",
-            JSON.stringify({ id: "msg_a2", event: "message", title: "Nachtrag", message: "Und danach C" }),
-            "",
-          ].join("\n")
-        : "";
-    return { ok: true, status: 200, text: async () => body };
+    // Nur die erste Verbindung liefert Zeilen; die zweite steht für einen
+    // Strom, in dem gerade nichts anliegt.
+    return streamFetch(requests, calls === 1 ? [
+      '{"id":"msg_keep","event":"keepalive"}\n{"id":"msg_a1","event":"message","tit',
+      'le":"Antwort","message":"Weiter mit B"}\nkein json\n',
+      '{"id":"msg_a2","event":"message","title":"Nachtrag","message":"Und danach C"}\n',
+    ] : [])(input, init);
   };
   const bridge = createReplyBridge({
     env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" },
@@ -1028,11 +1087,14 @@ console.log("\nAntwort-Brücke (Abfrage)");
     log: () => {},
   });
 
-  const round = await bridge.pollOnce("1700000000");
-  eq(round.messages.length, 2, "NDJSON wird zeilenweise gelesen (Nicht-JSON übersprungen)");
+  const round = await bridge.streamOnce("1700000000");
+  eq(round.count, 2, "NDJSON wird zeilenweise gelesen (Nicht-JSON übersprungen)");
+  eq(round.messages.length, 2, "beide Meldungen kommen aus dem Strom an");
+  eq(round.messages[0]?.id, "msg_a1", "die über die Chunk-Grenze geteilte Zeile kommt heil an");
+  eq(round.messages[1]?.message, "Und danach C", "auch die zweite Meldung wird gelesen");
   eq(round.nextSince, "msg_a2", "since zeigt danach auf die letzte Message-ID");
-  ok(String(requests[0]?.url).includes("/ai/json?poll=1"), "poll=1 wird abgefragt");
-  ok(String(requests[0]?.url).includes("since=1700000000"), "since wandert in die URL");
+  ok(String(requests[0]?.url).includes("/ai/json?since=1700000000"), "der Stream wird mit since angefragt");
+  ok(!String(requests[0]?.url).includes("poll=1"), "kein Kurzpoll mehr");
   eq(requests[0]?.init?.headers?.Authorization, "Bearer tk_test", "Bearer-Token bei der Abfrage");
 
   // Keepalive/open-Zeilen tragen keine Nachricht.
@@ -1040,34 +1102,14 @@ console.log("\nAntwort-Brücke (Abfrage)");
   eq(parsed.messages.length, 0, "open-Zeilen ergeben keine Nachricht");
   eq(parsed.nextSince, "msg_open", "die ID wird trotzdem übernommen");
 
-  // Leere Abfrage lässt `since` stehen — sonst gäbe es Endlos-Wiederholungen.
-  const emptyRound = await bridge.pollOnce("msg_a2");
-  eq(emptyRound.messages.length, 0, "leere Abfrage liefert keine Nachrichten");
-  eq(emptyRound.nextSince, "msg_a2", "since bleibt bei leerer Abfrage stehen");
+  // Leerer Strom lässt `since` stehen — sonst gäbe es Endlos-Wiederholungen.
+  const emptyRound = await bridge.streamOnce("msg_a2", undefined, null, null);
+  eq(emptyRound.messages.length, 0, "ein leerer Strom liefert keine Nachrichten");
+  eq(emptyRound.nextSince, "msg_a2", "since bleibt bei einem leeren Strom stehen");
 }
 
-// ── 25. Antwort-Brücke: Start, Ablösung und Cleanup ──────────────────────
+// ── 25. Antwort-Brücke: genau eine je Prozess (Referenzzählung) ──────────
 console.log("\nAntwort-Brücke (Start)");
-
-/**
- * fetch-Ersatz für die Lebensdauer-Tests: die Abfrage bleibt offen, bis der
- * Abort (Poll-Timeout ODER Ablösung durch die nächste Instanz) sie beendet —
- * so ist sichtbar, welche Schleife gerade pollt.
- */
-function hangFetch(calls) {
-  return (input, init = {}) => {
-    const entry = { url: String(input), done: false };
-    calls.push(entry);
-    return new Promise((resolve) => {
-      const finish = () => {
-        entry.done = true;
-        resolve({ ok: true, status: 200, text: async () => "" });
-      };
-      if (init.signal?.aborted) finish();
-      else init.signal?.addEventListener("abort", finish, { once: true });
-    });
-  };
-}
 
 {
   resetSharedState();
@@ -1078,7 +1120,6 @@ function hangFetch(calls) {
       NTFY_URL: SINK_URL,
       NTFY_TOKEN: "tk_test",
       NTFY_TOPIC: "ai",
-      NTFY_REPLY_POLL_SECONDS: "60",
     },
     runtime,
     client,
@@ -1092,45 +1133,135 @@ function hangFetch(calls) {
   );
   eq(off, null, "NTFY_REPLY_ENABLED=0 startet keine Brücke");
   eq(runtime.replyAbort, null, "ohne Start läuft auch kein Controller");
+  eq(SHARED.bridge, null, "ohne Start gibt es auch keinen Brückeneintrag");
 
   const calls = [];
-  const first = startReplyBridge(base({ fetch: hangFetch(calls), controller: new AbortController() }));
+  const first = startReplyBridge(base({ fetch: openStreamFetch(calls) }));
   ok(first !== null && typeof first.stop === "function", "Brücke startet und liefert stop()");
+  eq(first.shared, false, "der erste Start legt die Brücke an");
   eq(runtime.replyAbort, first.controller, "der Start setzt seinen Controller als aktuellen");
-  ok(await until(() => calls.length === 1), "die erste Schleife fragt im Hintergrund ab");
+  eq(SHARED.bridge?.refs, 1, "der Eintrag zählt den ersten Nutzer");
+  ok(await until(() => calls.length === 1), "die Schleife öffnet genau einen Strom");
 
-  // Zweite Instanz (Plugin-Reload): sie löst die erste ab.
-  const second = startReplyBridge(base({ fetch: hangFetch(calls), controller: new AbortController() }));
+  // Zweite Instanz (Plugin pro HTTP-Span): sie startet KEINE zweite Schleife,
+  // sondern benutzt die laufende Brücke mit.
+  const second = startReplyBridge(base({ fetch: openStreamFetch(calls) }));
   ok(second !== null, "ein zweiter Start ist möglich (kein dauerhaftes „läuft schon“)");
-  eq(first.controller.signal.aborted, true, "der zweite Start bricht die vorherige Schleife ab");
-  eq(second.controller.signal.aborted, false, "die neue Schleife läuft");
-  eq(runtime.replyAbort, second.controller, "aktuelle Schleife ist die der neuesten Instanz");
-  ok(await until(() => calls.length === 2), "auch die neue Schleife fragt ab");
-  eq(
-    calls.filter((call) => !call.done).length,
-    1,
-    "genau eine Schleife pollt (die alte ist wirklich beendet)"
-  );
+  eq(second.shared, true, "der zweite Start benutzt die laufende Brücke");
+  eq(second.bridge, first.bridge, "beide Instanzen teilen dasselbe Brückenobjekt");
+  eq(second.controller, first.controller, "beide Instanzen teilen denselben Controller");
+  eq(SHARED.bridge.refs, 2, "der zweite Start zählt nur hoch");
+  eq(calls.length, 1, "es läuft weiterhin genau eine Stromverbindung");
+  eq(first.controller.signal.aborted, false, "der zweite Start bricht die laufende Schleife nicht ab");
 
-  // Cleanup der alten Instanz darf die neue Schleife nicht töten.
+  // Cleanup der ersten Instanz darf die Brücke nicht mitnehmen.
   first.stop();
-  eq(second.controller.signal.aborted, false, "Cleanup der alten Instanz tötet die neue Schleife nicht");
-  eq(runtime.replyAbort, second.controller, "der aktuelle Controller bleibt unverändert");
+  eq(second.controller.signal.aborted, false, "Cleanup der ersten Instanz tötet die Brücke nicht");
+  eq(SHARED.bridge.refs, 1, "stop() zählt nur die eigene Referenz herunter");
+  eq(calls.filter((call) => !call.done).length, 1, "die Schleife läuft weiter");
 
-  // stop() der aktuellen Instanz beendet sie; ihr Promise wird erledigt.
+  // Dritte Instanz übernimmt, die zweite geht — die Brücke lebt weiter.
+  const third = startReplyBridge(base({ fetch: openStreamFetch(calls) }));
   second.stop();
-  eq(second.controller.signal.aborted, true, "stop() beendet die aktuelle Schleife");
+  eq(SHARED.bridge.refs, 1, "die dritte Instanz hält die Brücke am Leben");
+  eq(third.controller.signal.aborted, false, "die Brücke läuft weiter, obwohl zwei Instanzen weg sind");
+  eq(calls.length, 1, "weiterhin nur eine Verbindung");
+
+  // Erst der letzte Nutzer beendet die Schleife.
+  third.stop();
+  eq(third.controller.signal.aborted, true, "der letzte Nutzer beendet die laufende Schleife");
+  ok(await until(() => SHARED.bridge === null), "der Eintrag ist danach frei");
   ok(
     await until(() => runtime.replyPromise === null),
     "der Schleifen-Promise ist erledigt (Neustart möglich)"
   );
+  ok(await until(() => calls.every((call) => call.done)), "die Stromverbindung ist geschlossen");
 
   // Ein späterer setup() startet wieder — kein „läuft schon“-Zustand mehr.
-  const third = startReplyBridge(base({ fetch: hangFetch(calls), controller: new AbortController() }));
-  ok(third !== null, "nach dem Ende startet ein späterer setup() erneut");
-  third.stop();
+  const later = startReplyBridge(base({ fetch: openStreamFetch(calls) }));
+  ok(later !== null, "nach dem Ende startet ein späterer setup() erneut");
+  eq(later.shared, false, "und legt wieder eine frische Brücke an");
+  eq(SHARED.bridge.refs, 1, "der Zähler beginnt wieder bei 1");
+  later.stop();
   await until(() => runtime.replyPromise === null);
   resetSharedState();
+}
+
+// ── 25b. Genau eine Brücke, auch über mehrere setup()-Aufrufe ────────────
+//
+// Der Live-Befund: OpenCode V2 lädt das Plugin pro HTTP-Span, jedes setup()
+// startete seine eigene Brücke — im Diagnoseprotokoll standen drei `start:`-
+// Zeilen mit drei verschiedenen `since=`-Token. Hier laden zwei Runtimes im
+// selben Prozess (wie zwei Spans): es darf genau ein Brücken-Start sein, und
+// nach teardown() aller Nutzer muss sie stehen.
+console.log("\nAntwort-Brücke (mehrere setup()-Aufrufe)");
+{
+  resetSharedState();
+  const logPath = "/tmp/opencode/ntfy-reply-bridge-single.log";
+  rmSync(logPath, { force: true });
+  const readLog = () => {
+    try {
+      return readFileSync(logPath, "utf8");
+    } catch {
+      return "";
+    }
+  };
+  const starts = () => readLog().split("\n").filter((line) => line.includes(" start: since=")).length;
+  const env = {
+    NTFY_URL: SINK_URL,
+    NTFY_TOKEN: "tk_test",
+    NTFY_PAIR_BUTTON: "0",
+    NTFY_REPLY_LOG: logPath,
+  };
+  const calls = [];
+  const fetchStub = openStreamFetch(calls, ['{"id":"msg_open1","event":"keepalive"}\n']);
+  const makeCtx = () => {
+    const stream = makeStream();
+    return {
+      location: { directory: REPO_DIR },
+      session: { hook: async () => ({ dispose: async () => {} }), prompt: async () => {} },
+      event: {
+        subscribe: ({ signal } = {}) => {
+          if (signal) signal.addEventListener("abort", () => stream.close());
+          return stream.iterator;
+        },
+      },
+    };
+  };
+  const first = createPluginRuntime({
+    env,
+    argv: ["serve", "--service"],
+    fetch: fetchStub,
+    log: () => {},
+  });
+  const second = createPluginRuntime({
+    env,
+    argv: ["serve", "--service"],
+    fetch: fetchStub,
+    log: () => {},
+  });
+
+  const cleanup1 = await first.setup(makeCtx());
+  ok(await until(() => calls.length === 1), "die erste Instanz öffnet den Strom");
+  ok(await until(() => starts() === 1), "genau ein Brücken-Start im Diagnoseprotokoll");
+
+  const cleanup2 = await second.setup(makeCtx());
+  await wait(50);
+  eq(calls.length, 1, "die zweite Instanz startet keine zweite Brücke");
+  eq(starts(), 1, "auch im Protokoll bleibt es bei einem Start");
+  eq(SHARED.bridge?.refs, 2, "beide Instanzen teilen sich die eine Brücke");
+
+  cleanup1?.();
+  await wait(30);
+  eq(calls.length, 1, "der erste teardown() lässt die Brücke weiterlaufen");
+  eq(SHARED.bridge?.refs, 1, "nur die eigene Referenz wird abgezählt");
+
+  cleanup2?.();
+  ok(await until(() => SHARED.bridge === null), "nach teardown() aller Nutzer ist sie gestoppt");
+  ok(await until(() => calls.every((call) => call.done)), "die Stromverbindung ist geschlossen");
+  eq(starts(), 1, "es blieb bei einem einzigen Brücken-Start");
+  resetSharedState();
+  rmSync(logPath, { force: true });
 }
 
 // ── 26. Antwort-Brücke: since-Zeiger überlebt den Neustart ───────────────
@@ -1138,35 +1269,34 @@ console.log("\nAntwort-Brücke (Neustart)");
 {
   resetSharedState();
   const runtime = replyRuntime();
-  const urls = [];
-  const fetchStub = async (input) => {
-    urls.push(decodeURIComponent(String(input)));
-    // keepalive-Zeile mit ID: der Zeiger rückt weiter, ohne dass eine
-    // Nutzernachricht verarbeitet werden muss.
-    return { ok: true, status: 200, text: async () => '{"id":"msg_keep9","event":"keepalive"}\n' };
-  };
+  const calls = [];
+  const urls = () => calls.map((call) => decodeURIComponent(String(call.url)));
+  // keepalive-Zeile mit ID: der Zeiger rückt weiter, ohne dass eine
+  // Nutzernachricht verarbeitet werden muss. Der Strom endet danach — die
+  // Wiederverbindung ist hier gerade erwünscht (siehe 27b).
+  const fetchStub = streamFetch(calls, ['{"id":"msg_keep9","event":"keepalive"}\n']);
   const base = {
-    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai", NTFY_REPLY_POLL_SECONDS: "60" },
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai" },
     runtime,
     client: { session: { prompt: async () => {} } },
     publish: async () => true,
     fetch: fetchStub,
-    idleMs: 20,
+    reconnectMs: 20,
     log: () => {},
   };
 
   const first = startReplyBridge({ ...base, since: "1700000000" });
-  ok(await until(() => urls.length >= 1), "die erste Schleife fragt ab");
-  ok(urls[0].includes("since=1700000000"), "der Startwert wird für die erste Abfrage benutzt");
+  ok(await until(() => urls().length >= 1), "die erste Schleife verbindet sich");
+  ok(urls()[0].includes("since=1700000000"), "der Startwert wird für die erste Verbindung benutzt");
   ok(await until(() => runtime.replySince === "msg_keep9"), "der since-Zeiger wird fortgeschrieben");
   first.stop();
   await wait();
-  urls.length = 0;
+  calls.length = 0;
 
   const second = startReplyBridge({ ...base, since: "1700000000" });
-  ok(await until(() => urls.length >= 1), "die neue Schleife fragt wieder ab");
-  ok(urls[0].includes("since=msg_keep9"), "der fortgeschriebene Zeiger überlebt den Neustart");
-  ok(!urls[0].includes("1700000000"), "nicht der Startwert (keine Doppelverarbeitung)");
+  ok(await until(() => urls().length >= 1), "die neue Schleife verbindet sich wieder");
+  ok(urls()[0].includes("since=msg_keep9"), "der fortgeschriebene Zeiger überlebt den Neustart");
+  ok(!urls()[0].includes("1700000000"), "nicht der Startwert (keine Doppelverarbeitung)");
   second.stop();
   await until(() => runtime.replyPromise === null);
   resetSharedState();
@@ -1188,21 +1318,148 @@ console.log("\nAntwort-Brücke (Robustheit)");
     return { ok: true, status: 200, text: async () => "" };
   };
   const started = startReplyBridge({
-    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai", NTFY_REPLY_POLL_SECONDS: "60" },
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai" },
     runtime,
     controller: new AbortController(),
     client: { session: { prompt: async () => {} } },
     publish: async () => true,
     fetch: fetchStub,
-    errorMs: 20,
-    idleMs: 20,
+    reconnectMs: 20,
     log: () => {},
   });
-  ok(await until(() => requests.length >= 2), "nach einem fetch-Fehler fragt die Schleife erneut ab");
+  ok(await until(() => requests.length >= 2), "nach einem fetch-Fehler verbindet die Schleife erneut");
   eq(started.controller.signal.aborted, false, "der Fehler beendet die Schleife nicht");
   started.stop();
   await until(() => runtime.replyPromise === null);
   resetSharedState();
+}
+
+// ── 27b. Antwort-Brücke: Stromende → Wiederverbindung ────────────────────
+//
+// ntfy beendet Streams (Serverneustart, Netzwechsel, keepalive-Abbruch). Die
+// Brücke darf dann nicht still sterben, sondern muss sich neu verbinden — und
+// dabei am letzten `since` ansetzen, damit nichts doppelt oder gar nicht ankommt.
+console.log("\nAntwort-Brücke (Stromende)");
+{
+  resetSharedState();
+  const runtime = replyRuntime();
+  // Ziel der Antwort ist die zuletzt benachrichtigte Session (hier gesetzt,
+  // damit die Meldung als Prompt ankommt statt als Hinweis „ohne Ziel-Session“).
+  runtime.lastSessionID = SESSION;
+  const prompts = [];
+  const times = [];
+  let round = 0;
+  // Jeder Strom liefert genau eine Zeile und endet sofort: die Anzahl der
+  // Verbindungen zeigt damit direkt die Wiederverbindungen.
+  const fetchStub = (input, init = {}) => {
+    round += 1;
+    times.push(Date.now());
+    const line = `${JSON.stringify({
+      id: `msg_r${round}`,
+      event: "message",
+      title: "Nutzerantwort",
+      message: `Runde ${round}`,
+    })}\n`;
+    return streamFetch([], [line])(input, init);
+  };
+  const started = startReplyBridge({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_TOPIC: "ai" },
+    runtime,
+    controller: new AbortController(),
+    client: {
+      session: {
+        prompt: async (arg) => {
+          prompts.push(arg);
+          return {};
+        },
+      },
+    },
+    publish: async () => true,
+    fetch: fetchStub,
+    reconnectMs: 20,
+    // Kein API-Passwort: der Formular-Weg bleibt inaktiv, dieser Test prüft nur
+    // die Wiederverbindung (der fetch-Ersatz würde ihn sonst mitzählen).
+    apiPassword: "",
+    since: "1700000000",
+    log: () => {},
+  });
+
+  ok(await until(() => times.length >= 1), "die erste Verbindung liefert eine Nachricht");
+  ok(await until(() => prompts.length >= 1), "die Nachricht aus dem Strom kommt an");
+  eq(prompts[0]?.text, "Runde 1", "die Nachricht aus dem Strom kommt als Prompt an");
+  ok(await until(() => times.length >= 2), "nach dem Stromende verbindet die Brücke sich erneut");
+  ok(await until(() => prompts.length >= 2), "auch die zweite Runde kommt an");
+  eq(prompts[1]?.text, "Runde 2", "die Nachricht der zweiten Verbindung ist die neue");
+  eq(started.controller.signal.aborted, false, "das Stromende beendet die Schleife nicht");
+  ok(await until(() => times.filter(Boolean).length >= 3), "und die Schleife verbindet sich weiter");
+  eq(new Set(prompts.map((prompt) => prompt.text)).size, prompts.length, "keine Nachricht kommt doppelt an");
+  started.stop();
+  await until(() => runtime.replyPromise === null);
+  resetSharedState();
+}
+
+// ── 27c. Antwort-Brücke: HTTP 429 → wachsender Abstand ───────────────────
+//
+// ntfy drosselt Aufrufer (Standard: 60 Anfragen Burst, Auffüllung alle 5 s).
+// Eine 429-Antwort darf deshalb NICHT in einer schnellen Schleife wiederholt
+// werden: die Wartezeit wächst deutlich und verdoppelt sich je Drosselung.
+console.log("\nAntwort-Brücke (Drosselung)");
+{
+  resetSharedState();
+  const runtime = replyRuntime();
+  const logPath = "/tmp/opencode/ntfy-reply-bridge-429.log";
+  rmSync(logPath, { force: true });
+  const readLog = () => {
+    try {
+      return readFileSync(logPath, "utf8");
+    } catch {
+      return "";
+    }
+  };
+  const times = [];
+  const fetchStub = (input, init = {}) => {
+    times.push(Date.now());
+    return streamFetch([], [], 429)(input, init);
+  };
+  const started = startReplyBridge({
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_TOPIC: "ai",
+      NTFY_REPLY_LOG: logPath,
+    },
+    runtime,
+    controller: new AbortController(),
+    client: { session: { prompt: async () => {} } },
+    publish: async () => true,
+    fetch: fetchStub,
+    reconnectMs: 20, // kurze Wartezeit: bei 429 darf sie NICHT greifen
+    rateLimitMs: 100, // erste Wartezeit nach einer Drosselung
+    rateLimitMaxMs: 400,
+    since: "1700000000",
+    log: () => {},
+  });
+
+  ok(await until(() => times.length >= 1), "der erste Versuch läuft in die Drosselung");
+  await wait(60);
+  eq(times.length, 1, "nach 429 wird nicht in der kurzen Wartezeit erneut gefragt");
+  eq(started.controller.signal.aborted, false, "die Drosselung beendet die Schleife nicht");
+  ok(await until(() => readLog().includes("429")), "die Drosselung wird diagnostiziert");
+
+  ok(await until(() => times.length >= 2, 2000), "nach der langen Wartezeit wird erneut verbunden");
+  ok(times[1] - times[0] >= 80, "der zweite Versuch kommt erst nach der langen Wartezeit");
+  await wait(60);
+  eq(times.length, 2, "auch der zweite Fehlschlag wiederholt sich nicht schnell");
+
+  ok(await until(() => times.length >= 3, 2000), "die Schleife versucht es weiter");
+  ok(
+    times[2] - times[1] > times[1] - times[0],
+    "die Wartezeit wächst bei jeder weiteren Drosselung (verdoppelnd)"
+  );
+  started.stop();
+  await until(() => runtime.replyPromise === null);
+  resetSharedState();
+  rmSync(logPath, { force: true });
 }
 
 // ── 28. Antwort-Brücke: Fallback-Session ohne vorherige Meldung ──────────
@@ -1290,11 +1547,10 @@ console.log("\nAntwort-Brücke (Diagnose-Log)");
       NTFY_URL: SINK_URL,
       NTFY_TOKEN: "tk_test",
       NTFY_TOPIC: "ai",
-      NTFY_REPLY_POLL_SECONDS: "60",
       NTFY_REPLY_LOG: logPath,
     },
     runtime,
-    // Kein API-Passwort: dieser Test prüft Poll-Log + Prompt (kein Formular).
+    // Kein API-Passwort: dieser Test prüft den Strom-Log + Prompt (kein Formular).
     apiPassword: "",
     controller: new AbortController(),
     client: {
@@ -1307,7 +1563,7 @@ console.log("\nAntwort-Brücke (Diagnose-Log)");
     },
     publish: async () => true,
     fetch: fetchStub,
-    idleMs: 20,
+    reconnectMs: 20,
     log: () => {},
   });
   ok(await until(() => readLog().includes("injected")), "die Aktion wird protokolliert");

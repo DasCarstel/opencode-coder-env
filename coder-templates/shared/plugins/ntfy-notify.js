@@ -58,7 +58,9 @@
 // Prompt in die zuletzt benachrichtigte Session eingespeist):
 //   NTFY_REPLY_ENABLED      "0"/"false" schaltet die Brücke ab (Default: an)
 //   NTFY_REPLY_TOPIC        Topic zum Abholen (Default NTFY_TOPIC, also "ai")
-//   NTFY_REPLY_POLL_SECONDS Zeitlimit einer Abfrage in Sekunden (Default 60)
+//   (Abgeholt wird über den ntfy-Stream GET /<topic>/json?since=<id>: die
+//    Verbindung bleibt offen und liefert die Zeilen laufend. Endet sie, wird
+//    sie nach kurzer Wartezeit neu aufgebaut — bei HTTP 429 deutlich später.)
 //   NTFY_FORM_REPLY         "0"/"false" schaltet die direkte Antwort in eine
 //                           offene native Frage ab (Default: an). Aus heißt:
 //                           kein Formular-Abruf, nur Prompt-Einspeisung — dann
@@ -129,11 +131,17 @@ const FORM_QUESTION_HINT = "Antwort direkt hier möglich: Nummer der Option oder
 // Zugang zur lokalen OpenCode-API (HTTP-Basic, Nutzer "opencode").
 const FORM_API_USER = "opencode";
 const FORM_API_TIMEOUT_MS = 5000;
-const REPLY_POLL_SECONDS = 60;
-// poll=1 liefert sofort zurück — zwischen zwei Abfragen kurz warten, damit
-// daraus kein Hot-Loop gegen den Hub wird.
-const REPLY_IDLE_MS = 5000;
-const REPLY_ERROR_MS = 5000;
+// Abgeholt wird der ntfy-Stream des Topics (siehe startReplyBridge); die
+// Wartezeiten gelten für den Wiederaufbau nach einem Abbruch.
+const REPLY_RECONNECT_MS = 1000; // Grundwartezeit vor dem Neuverbinden
+const REPLY_RECONNECT_MAX_MS = 30000; // Obergrenze dieser Wartezeit
+// HTTP 429 heißt: ntfy drosselt diesen Aufrufer. Dann deutlich länger warten —
+// eine schnelle Wiederholung treibt das Limit nur weiter hoch.
+const REPLY_RATE_LIMIT_MS = 30000; // erste Wartezeit nach einer Drosselung
+const REPLY_RATE_LIMIT_MAX_MS = 300000; // Obergrenze (5 min)
+// Nur der Verbindungsaufbau hat ein Zeitlimit; steht der Strom, bleibt er
+// offen (ntfy schickt alle ~45 s eine keepalive-Zeile).
+const REPLY_CONNECT_TIMEOUT_MS = 30000;
 const MAX_REPLY_TEXT = 2000;
 const MAX_SENT_IDS = 200;
 // Schon verarbeitete Fremd-IDs — gleiche Begrenzung wie bei den eigenen IDs.
@@ -472,6 +480,9 @@ function newState() {
     working: new Set(), // Sessions, die gerade arbeiten
     lastText: new Map(), // letzter Assistenten-Text je Session
     lastSent: new Map(), // Dedup: "sessionID:art" → Zeitstempel
+    // Die eine Antwort-Brücke des Prozesses (siehe startReplyBridge): jede
+    // weitere Plugin-Instanz benutzt sie mit, statt eine eigene zu starten.
+    bridge: null,
   };
 }
 
@@ -512,6 +523,18 @@ export function resetSharedState() {
   }
   reply.replyAbort = null;
   reply.replyPromise = null;
+  // Die eine Brücke des Prozesses mit beenden und den Eintrag freigeben: sonst
+  // liefe nach dem Zurücksetzen eine Schleife weiter, die über stop() nicht
+  // mehr erreichbar wäre. Der nächste Start fängt wieder bei refs = 1 an.
+  const bridge = SHARED.bridge;
+  if (bridge) {
+    try {
+      bridge.stop();
+    } catch {
+      /* Zurücksetzen darf nie werfen */
+    }
+  }
+  SHARED.bridge = null;
 }
 
 // ── Prozessglobaler Zustand der Antwort-Brücke ────────────────────────────
@@ -521,11 +544,13 @@ export function resetSharedState() {
 // am Prozess und werden vom Notifier (send/sendOnce) genauso benutzt wie von
 // der Brücke selbst.
 //
-// Die Schleife darf je Prozess nur einmal laufen — aber NICHT über ein
-// dauerhaftes „läuft schon"-Flag: das überlebte den Plugin-Reload, die
-// Schleife selbst aber nicht, und danach lief gar keine mehr. Stattdessen
-// hält replyAbort/replyPromise die aktuelle Schleife fest; jeder setup()-
-// Aufruf bricht die vorherige ab und startet eine frische. replySince (letzter
+// Die Schleife darf je Prozess nur EINMAL laufen — und zwar genau einmal, auch
+// wenn nacheinander viele Instanzen laden: deshalb hält SHARED.bridge die
+// laufende Brücke samt Referenzzähler (siehe startReplyBridge). Früher startete
+// jede Instanz ihre eigene Schleife; im Diagnoseprotokoll war das an drei
+// verschiedenen `since`-Token zu sehen (drei Brücken, zusammen bis ~35
+// Anfragen/Minute) — bis ntfy mit HTTP 429 drosselte. replyAbort/replyPromise
+// halten weiterhin die aktuelle Schleife fest, replySince (letzter
 // `since`-Zeiger) und lastActiveSession (Fallback-Ziel) überleben den Wechsel
 // bewusst.
 
@@ -1161,8 +1186,9 @@ export function createNtfyNotifier(options = {}) {
 // Titel-Präfix) werden ignoriert — sonst würde das Plugin sich selbst
 // beantworten. Bereits verarbeitete IDs werden gemerkt (processedIds), weil
 // `since=<id>` sekundengenau aufgelöst wird und dieselbe Nachricht sonst mehr-
-// fach im Poll auftaucht. Die reine Logik steckt in createReplyBridge() und ist damit
-// ohne Netzwerk testbar; startReplyBridge() hängt nur die Schleife dran.
+// fach im Strom auftaucht. Die reine Logik steckt in createReplyBridge() und ist
+// damit ohne Netzwerk testbar; startReplyBridge() hängt die Schleife dran — je
+// Prozess genau eine, geteilt über einen Referenzzähler.
 
 /** "0"/"false"/"no"/"off" schalten die Brücke ab (Default: an). */
 function replyEnabled(env) {
@@ -1413,6 +1439,15 @@ function sleep(ms, signal) {
   });
 }
 
+/** Erste brauchbare Zahl (> 0) aus der Liste — sonst der letzte Wert. */
+function firstPositive(...values) {
+  for (const value of values) {
+    const num = Number(value);
+    if (Number.isFinite(num) && num > 0) return num;
+  }
+  return 0;
+}
+
 export function createReplyBridge(options = {}) {
   const env = options.env ?? process.env;
   const client = options.client ?? {};
@@ -1424,12 +1459,21 @@ export function createReplyBridge(options = {}) {
   const token = String(options.token ?? config.token ?? "");
   const topic = String(options.topic ?? env.NTFY_REPLY_TOPIC ?? config.topic ?? DEFAULT_TOPIC);
   const fetchImpl = options.fetch ?? globalThis.fetch;
-  const pollSeconds = Number(options.pollSeconds ?? env.NTFY_REPLY_POLL_SECONDS);
-  const pollMs = (pollSeconds > 0 ? pollSeconds : REPLY_POLL_SECONDS) * 1000;
-  // Wartezeiten sind übersteuerbar (Tests laufen damit schnell); die Defaults
-  // bleiben die 5 s aus REPLY_IDLE_MS/REPLY_ERROR_MS.
-  const idleMs = Number(options.idleMs ?? REPLY_IDLE_MS);
-  const errorMs = Number(options.errorMs ?? REPLY_ERROR_MS);
+  // Wartezeiten: im Betrieb gelten die Defaults oben (1 s vor dem Neuverbinden,
+  // verdoppelnd bis 30 s; nach HTTP 429 deutlich länger). Tests übersteuern sie
+  // — reconnectMs ersetzt dabei die früheren idleMs/errorMs, weil es keinen
+  // Kurzpoll mehr gibt, sondern nur noch den Wiederaufbau des Stroms.
+  const reconnectMs = firstPositive(
+    options.reconnectMs,
+    options.idleMs,
+    options.errorMs,
+    REPLY_RECONNECT_MS
+  );
+  const reconnectMaxMs = firstPositive(options.reconnectMaxMs, REPLY_RECONNECT_MAX_MS);
+  const rateLimitMs = firstPositive(options.rateLimitMs, REPLY_RATE_LIMIT_MS);
+  const rateLimitMaxMs = firstPositive(options.rateLimitMaxMs, REPLY_RATE_LIMIT_MAX_MS);
+  // Zeitlimit nur für den Verbindungsaufbau (Header).
+  const connectTimeoutMs = firstPositive(options.connectTimeoutMs, REPLY_CONNECT_TIMEOUT_MS);
   const diagPath = String(env.NTFY_REPLY_LOG ?? "").trim();
   // Formular-Antwort: Schalter, Basis-URL und API-Passwort. Das Passwort
   // (Option apiPassword) hat Vorrang, damit Tests ohne Dateizugriff und ohne
@@ -1466,30 +1510,104 @@ export function createReplyBridge(options = {}) {
   }
 
   /**
-   * Neue Nachrichten abholen (eine Runde, ohne Schleife). `since` bleibt
-   * stehen, wenn die Antwort leer war — sonst würde dieselbe Nachricht bei
-   * jeder Abfrage erneut verarbeitet.
+   * Eine Stream-Runde: mit dem ntfy-Stream des Topics verbinden und die
+   * NDJSON-Zeilen inkrementell lesen, solange die Verbindung steht. Der
+   * Kurzpoll (`?poll=1` alle 5 s) ist damit weg — er kostete bei mehreren
+   * Brücken bis ~35 Anfragen/Minute und lief in HTTP 429.
+   *
+   * `since` bleibt stehen, wenn nichts kam — sonst würde dieselbe Nachricht bei
+   * jedem Neuverbinden erneut verarbeitet.
+   *
+   * Jede Nachricht geht sofort an `onMessage`; `onSince` schreibt den
+   * `since`-Zeiger mit, damit ein lange offener Strom nach einem Plugin-Reload
+   * an der richtigen Stelle weiterläuft. Ohne `onMessage` werden die
+   * Nachrichten stattdessen gesammelt und zurückgegeben (Tests, Direktnutzung) —
+   * im Betrieb wüchse der Speicher sonst mit der Laufzeit des Stroms.
+   *
+   * Rückgabe: { count, messages, nextSince }. Wirft bei Netz-/HTTP-Fehlern;
+   * eine Drosselung (HTTP 429) trägt dabei `rateLimited`.
    */
-  async function pollOnce(since = "", signal) {
+  async function streamOnce(since = "", signal, onMessage = null, onSince = null) {
     if (!url || !token || typeof fetchImpl !== "function") {
-      return { messages: [], nextSince: since };
+      return { count: 0, messages: [], nextSince: since };
     }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), pollMs);
-    const onAbort = () => controller.abort();
-    if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    // Der Abbruch des Aufrufers (teardown/Reset) muss den laufenden fetch
+    // treffen — deshalb ein eigener Controller, an den beide Signale hängen.
+    const connect = new AbortController();
+    const abortConnect = () => connect.abort();
+    if (signal) signal.addEventListener("abort", abortConnect, { once: true });
+    const connectTimer = setTimeout(() => connect.abort(), connectTimeoutMs);
+    let res;
     try {
-      const res = await fetchImpl(
-        `${url}/${encodeURIComponent(topic)}/json?poll=1&since=${encodeURIComponent(since)}`,
-        { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal }
+      res = await fetchImpl(
+        // Ohne poll=1: der ntfy-Stream hält die Verbindung und liefert die
+        // Zeilen laufend nach (format=json ist der NDJSON-Standard des Servers).
+        `${url}/${encodeURIComponent(topic)}/json?since=${encodeURIComponent(since)}`,
+        { headers: { Authorization: `Bearer ${token}` }, signal: connect.signal }
       );
-      if (!res?.ok) throw new Error(`HTTP ${res?.status ?? "?"}`);
-      const raw = typeof res.text === "function" ? await res.text() : "";
-      return parseReplyStream(raw, since);
     } finally {
-      clearTimeout(timer);
-      if (signal) signal.removeEventListener("abort", onAbort);
+      clearTimeout(connectTimer);
+      if (signal) signal.removeEventListener("abort", abortConnect);
     }
+    if (!res?.ok) {
+      const status = Number(res?.status ?? 0);
+      const error = new Error(`HTTP ${status || "?"}`);
+      // 429 = gedrosselt: der Aufrufer soll deutlich länger warten.
+      if (status === 429) error.rateLimited = true;
+      throw error;
+    }
+
+    const messages = [];
+    let nextSince = since;
+    let count = 0;
+    let rest = "";
+    const emit = async (line) => {
+      const parsed = parseReplyStream(line, nextSince);
+      if (parsed.nextSince !== nextSince) {
+        nextSince = parsed.nextSince;
+        if (onSince) onSince(nextSince);
+      }
+      for (const message of parsed.messages) {
+        count += 1;
+        if (onMessage) await onMessage(message);
+        else messages.push(message);
+      }
+    };
+
+    const reader = res.body?.getReader?.();
+    if (reader) {
+      // Ein Abbruch muss auch den wartenden read() lösen: sonst hinge die
+      // Schleife an einer Verbindung, die nie mehr etwas liefert.
+      const cancel = () => {
+        try {
+          const pending = reader.cancel();
+          if (pending && typeof pending.catch === "function") pending.catch(() => {});
+        } catch {
+          /* Abbrechen darf nie werfen */
+        }
+      };
+      if (signal) signal.addEventListener("abort", cancel, { once: true });
+      const decoder = new TextDecoder();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          // Bis zum Zeilenende puffern: eine halbe Zeile ist kein gültiges JSON.
+          rest += decoder.decode(value, { stream: true });
+          const lines = rest.split("\n");
+          rest = lines.pop() ?? "";
+          for (const line of lines) await emit(line);
+        }
+      } finally {
+        if (signal) signal.removeEventListener("abort", cancel);
+      }
+    } else if (typeof res.text === "function") {
+      // Kein Strom im Body (z. B. eine Antwort ohne Body): am Stück lesen. Bei
+      // einer echten Stream-Antwort käme das nie zurück.
+      rest = String(await res.text());
+    }
+    if (rest.trim()) await emit(rest);
+    return { count, messages, nextSince };
   }
 
   async function hint(text) {
@@ -1760,57 +1878,125 @@ export function createReplyBridge(options = {}) {
     return { action: "injected", sessionID, text };
   }
 
-  /** Endlosschleife: abholen, verarbeiten, kurz warten. Wirft nie heraus. */
+  /**
+   * Endlosschleife: den Strom lesen, Nachrichten verarbeiten, nach einem
+   * Abbruch neu verbinden. Wirft nie heraus.
+   */
   async function loop(signal, startSince) {
     let since = String(startSince ?? Math.floor(Date.now() / 1000));
     runtime.replySince = since;
     diag("start", `since=${since} topic=${topic}`);
+    // Wiederholungen ohne eine einzige Nachricht: damit wächst die Wartezeit vor
+    // dem Neuverbinden (1 s → 2 s → … bis 30 s) und die Schleife wird kein
+    // Hot-Loop, wenn der Strom sofort wieder endet.
+    let failures = 0;
+    // Dasselbe für HTTP 429 — nur mit deutlich längeren Schritten (bis 5 min).
+    let limits = 0;
     while (!signal?.aborted) {
+      let count = 0;
+      let error = null;
       try {
-        const round = await pollOnce(since, signal);
-        // Zeiger fortschreiben: er liegt am Prozess und überlebt deshalb den
-        // nächsten Plugin-Reload — sonst würde dieselbe Nachricht erneut
-        // abgeholt (oder eine verpasste ganz übersprungen).
+        const round = await streamOnce(
+          since,
+          signal,
+          async (message) => {
+            if (signal?.aborted) return;
+            try {
+              const result = await handleMessage(message);
+              diag("aktion", `${result?.action ?? "?"}${result?.reason ? ` (${result.reason})` : ""}`);
+            } catch (cause) {
+              log("Antwort konnte nicht verarbeitet werden:", cause?.message ?? String(cause));
+              diag("fehler", `verarbeiten: ${cause?.message ?? String(cause)}`);
+            }
+          },
+          // Zeiger laufend mitschreiben: so setzt auch ein lange offener Strom
+          // nach einem Plugin-Reload an der richtigen Stelle an.
+          (next) => {
+            since = next;
+            runtime.replySince = next;
+          }
+        );
         if (round.nextSince) {
           since = round.nextSince;
           runtime.replySince = since;
         }
-        diag("runde", `${round.messages.length} neue Nachricht(en), since=${since}`);
-        for (const message of round.messages) {
-          if (signal?.aborted) break;
-          try {
-            const result = await handleMessage(message);
-            diag("aktion", `${result?.action ?? "?"}${result?.reason ? ` (${result.reason})` : ""}`);
-          } catch (error) {
-            log("Antwort konnte nicht verarbeitet werden:", error?.message ?? String(error));
-            diag("fehler", `verarbeiten: ${error?.message ?? String(error)}`);
-          }
-        }
-      } catch (error) {
-        // Ein Fehler beendet die Schleife nicht: kurz warten, weiterlaufen.
+        count = round.count;
+        diag("runde", `${count} neue Nachricht(en), since=${since}`);
+      } catch (cause) {
         if (signal?.aborted) break;
-        log("Antwort-Abfrage fehlgeschlagen:", error?.message ?? String(error));
-        diag("fehler", `abfrage: ${error?.message ?? String(error)}`);
-        await sleep(errorMs, signal);
+        error = cause;
+        log("Antwort-Strom abgebrochen:", cause?.message ?? String(cause));
+        diag("fehler", `strom: ${cause?.message ?? String(cause)}`);
+      }
+      if (signal?.aborted) break;
+      // Eine Drosselung beendet die Schleife nicht, sie wartet nur lange: eine
+      // schnelle Wiederholung würde das Limit weiter hochtreiben.
+      if (error?.rateLimited) {
+        limits += 1;
+        failures = 0;
+        const waitMs = Math.min(rateLimitMs * 2 ** (limits - 1), rateLimitMaxMs);
+        diag("429", `gedrosselt, warte ${Math.round(waitMs / 1000)} s`);
+        await sleep(waitMs, signal);
         continue;
       }
-      await sleep(idleMs, signal);
+      // Nach einem Strom mit Nachrichten wieder bei der Grundwartezeit anfangen
+      // — sonst würde ein abendfüllender Strom die Wartezeit hochschaukeln.
+      failures = error || count === 0 ? failures + 1 : 0;
+      if (count > 0) limits = 0;
+      const waitMs = Math.min(reconnectMs * 2 ** Math.max(0, failures - 1), reconnectMaxMs);
+      await sleep(waitMs, signal);
     }
     diag("ende", `since=${since}`);
   }
 
-  return { shouldIgnore, ignoreReason, handleMessage, pollOnce, loop, url, topic };
+  return { shouldIgnore, ignoreReason, handleMessage, streamOnce, loop, url, topic };
 }
 
 /**
- * Startet die Antwort-Brücke und löst dabei eine eventuell laufende Schleife ab.
+ * Nutzungsrecht (Lease) an einer laufenden Brücke.
  *
- * Bewusst KEIN dauerhaftes „läuft schon"-Flag mehr: das überlebte den
- * Plugin-Reload, die Schleife selbst aber nicht — danach lief gar keine mehr.
- * Stattdessen gilt: jeder Aufruf (also jedes setup()) bricht die vorherige
- * Schleife ab und startet eine frische. Damit lebt immer genau eine Schleife,
- * und zwar die der neuesten Instanz; auch beim Erststart mehrerer Locations
- * ersetzt jede die vorherige.
+ * stop() zählt nur die eigene Referenz herunter — erst wenn kein Nutzer mehr
+ * übrig ist, wird die Schleife wirklich beendet. So kann der Span einer
+ * einzelnen Plugin-Instanz die Brücke nicht mit in den Tod nehmen, solange
+ * andere Instanzen sie noch benutzen.
+ */
+function leaseFor(entry, shared) {
+  const lease = {
+    bridge: entry.bridge,
+    controller: entry.controller,
+    // true, wenn diese Instanz eine bereits laufende Brücke mitbenutzt.
+    shared: Boolean(shared),
+    released: false,
+    stop() {
+      if (lease.released) return; // ein zweites stop() ist folgenlos
+      lease.released = true;
+      entry.refs -= 1;
+      if (entry.refs > 0) return; // andere Instanzen nutzen sie weiter
+      entry.stopped = true;
+      if (SHARED.bridge === entry) SHARED.bridge = null;
+      entry.stop();
+    },
+  };
+  return lease;
+}
+
+/**
+ * Startet die Antwort-Brücke — je Prozess genau EINMAL.
+ *
+ * OpenCode V2 lädt das Plugin pro HTTP-Span, im Prozess leben also viele
+ * Modul-Instanzen und jede rief hier setup() auf. Jede startete damit ihre
+ * eigene Schleife: im Diagnoseprotokoll war das an drei verschiedenen
+ * `since`-Token zu sehen (drei Brücken, zusammen bis ~35 Anfragen/Minute) — bis
+ * ntfy mit HTTP 429 drosselte.
+ *
+ * Deshalb liegt die laufende Brücke in SHARED.bridge und wird über einen
+ * Referenzzähler geteilt: der erste Start startet sie (refs = 1) und liefert
+ * ein Nutzungsrecht zurück, jeder weitere Start zählt nur hoch (refs++) und
+ * bekommt ein Recht auf dieselbe Brücke. Dessen stop() zählt herunter; erst der
+ * letzte Nutzer beendet die Schleife.
+ *
+ * Bewusst KEIN dauerhaftes „läuft schon"-Flag: endet die Schleife, räumt sie
+ * ihren Eintrag selbst weg, und der nächste Start legt wieder eine an.
  *
  * Rückgabe: { bridge, controller, stop } oder null (abgeschaltet/ohne Token).
  */
@@ -1823,9 +2009,13 @@ export function startReplyBridge(options = {}) {
   const config = options.config ?? resolveConfig(env);
   if (!config.token) return null;
 
-  // Vorherige Schleife ablösen. Deren stop() bleibt danach folgenlos (siehe
-  // unten), eine veraltete Instanz kann die neue also nicht mehr töten.
-  runtime.replyAbort?.abort();
+  // Läuft schon eine Brücke? Dann nur mitzählen: jede weitere Schleife würde
+  // denselben `since`-Zeiger ein zweites Mal abfragen.
+  const running = SHARED.bridge;
+  if (running && !running.stopped) {
+    running.refs += 1;
+    return leaseFor(running, true);
+  }
 
   const bridge = createReplyBridge({
     ...options,
@@ -1838,10 +2028,19 @@ export function startReplyBridge(options = {}) {
   const controller = options.controller ?? new AbortController();
   runtime.replyAbort = controller;
 
-  // Zeiger aus dem Prozesszustand: eine neue Instanz setzt dort an, wo die
-  // vorherige aufgehört hat. Mit dem Startwert würde sie alte Nachrichten
-  // erneut verarbeiten.
+  // Zeiger aus dem Prozesszustand: ein Neustart setzt dort an, wo die vorherige
+  // Schleife aufgehört hat. Mit dem Startwert würde sie alte Nachrichten erneut
+  // verarbeiten.
   const startSince = runtime.replySince ? runtime.replySince : options.since;
+
+  const entry = {
+    bridge,
+    controller,
+    refs: 1, // dieser Start ist der erste Nutzer
+    startedAt: Date.now(),
+    stopped: false,
+    stop: () => controller.abort(),
+  };
 
   const promise = (async () => {
     try {
@@ -1860,14 +2059,15 @@ export function startReplyBridge(options = {}) {
     .catch(() => {})
     .finally(() => {
       if (runtime.replyPromise === settled) runtime.replyPromise = null;
+      // Die Schleife ist beendet: den Eintrag nicht als „läuft" stehen lassen,
+      // sonst würde der nächste Start nur mitzählen und nie eine Schleife
+      // beginnen.
+      if (SHARED.bridge === entry) SHARED.bridge = null;
     });
   runtime.replyPromise = settled;
+  SHARED.bridge = entry;
 
-  /** Beendet nur die eigene Schleife — nicht die einer neueren Instanz. */
-  const stop = () => {
-    if (runtime.replyAbort === controller) controller.abort();
-  };
-  return { bridge, controller, stop };
+  return leaseFor(entry, false);
 }
 
 // ── V2-Plugin-Definition ───────────────────────────────────────────────────
@@ -1939,7 +2139,11 @@ export function createPluginRuntime(options = {}) {
         ...(options.fetch ? { fetch: options.fetch } : {}),
       });
       if (replyBridge) {
-        debug(`Antwort-Brücke aktiv (topic ${cfg.topic})`);
+        debug(
+          replyBridge.shared
+            ? `Antwort-Brücke mitbenutzt (topic ${cfg.topic})`
+            : `Antwort-Brücke aktiv (topic ${cfg.topic})`
+        );
       }
 
       const controller = new AbortController();
@@ -2003,6 +2207,8 @@ export function createPluginRuntime(options = {}) {
 
       return () => {
         controller.abort();
+        // Nur die eigene Referenz abzählen: erst der letzte Nutzer beendet die
+        // Antwort-Brücke (weitere Instanzen brauchen sie weiter).
         replyBridge?.stop();
       };
     },
