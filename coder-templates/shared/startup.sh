@@ -1256,9 +1256,16 @@ if pw:
 json.dump(d, open(p, "w"), indent=2)
 PY
 opencode service restart >/dev/null 2>&1 || true
-ss -tlnp 2>/dev/null | grep 49374 >/dev/null \
+# `ss` ist in den Images nicht installiert – der frühere Check griff nie und
+# meldete immer "Binding unklar". Stattdessen die Erreichbarkeit direkt
+# prüfen (kurz nachziehen, der Service braucht einen Moment zum Binden).
+for _ in $(seq 1 10); do
+  curl -fsS --max-time 2 "http://127.0.0.1:49374/" >/dev/null 2>&1 && break
+  sleep 1
+done
+curl -fsS --max-time 2 "http://127.0.0.1:49374/" >/dev/null 2>&1 \
   && echo "  ✓ OpenCode-Server: 0.0.0.0:49374" \
-  || echo "  ⚠ OpenCode-Server-Binding unklar"
+  || echo "  ⚠ OpenCode-Server auf 49374 nicht erreichbar"
 
 # Profil-spezifische Token-Env + Hard-Guardrail (jeder Workspace sieht nur
 # seinen eigenen Space; das jeweils andere Token wird aktiv entfernt).
