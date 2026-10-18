@@ -22,8 +22,22 @@ OpenBao (Vault-Fork) verwaltet alle Secrets für die Coder-Infrastruktur.
 | `mcp-general` | mcp-server-general | 0 (nie) | 0 (unbegrenzt) | 24h |
 | `mcp-uni` | mcp-server-uni | 0 (nie) | 0 (unbegrenzt) | 24h |
 
-Role-ID `mcp-uni` (live): `0727dc69-cf01-014c-d3c5-a907499d0e43` — das Skript liest sie
-zur Laufzeit aus und gibt sie am Ende aus; sie ist **nicht** hart im Skript hinterlegt.
+Role-IDs (live, Stand 2026-10-18) — das Skript liest sie zur Laufzeit aus und gibt
+sie am Ende aus; sie sind **nicht** hart im Skript hinterlegt:
+
+| AppRole | Role-ID (live) |
+|---------|----------------|
+| `mcp-server` | `b55cb212-c69d-379d-6cc7-3409637b0692` |
+| `mcp-general` | `800908ff-cc97-6c55-31bc-4110d2144868` |
+| `mcp-uni` | `4f142084-153c-1382-7a96-1bbd311f01ad` |
+
+⚠️ Wird eine Rolle in OpenBao **neu angelegt**, bekommt sie eine neue Role-ID.
+Die Workspaces merken das nicht: ihr Login scheitert dann mit
+`invalid role or secret ID`, `startup.sh` bricht fail-closed ab (kein OpenCode,
+keine MCP-/oCIS-Secrets, kein `service.json`). Genau dieser Zustand lag am
+2026-10-18 in allen vier Workspaces vor. Nach dem Neu-Anlegen daher immer die
+Role-ID hier, in `coder-templates/{infrastructure,muellerconnect}/main.tf` und in
+den Workspace-Parametern nachziehen (siehe „AppRole-Reparatur" unten).
 
 ## Secrets
 
@@ -102,11 +116,61 @@ ein. Role-ID und Secret-ID sind **Coder-Parameter** des Templates
 (`openbao_role_id`, `openbao_approle_secret_id`; beide Default leer, `mutable`)
 — im Repo liegt kein Secret.
 
-* **Role-ID** von `mcp-uni`: `0727dc69-cf01-014c-d3c5-a907499d0e43` (steht auch
-  in der Ausgabe von `bootstrap-hosts.sh`).
+* **Role-ID** von `mcp-uni`: `4f142084-153c-1382-7a96-1bbd311f01ad` (die Tabelle
+  im Abschnitt „AppRoles" ist die Quelle; die Ausgabe von `bootstrap-hosts.sh`
+  nennt sie ebenfalls).
 * **Secret-ID**: wie oben ausstellen und aus der Datei lesen
   (`cat ~/.openbao/mcp-uni.secret-id`) — nie in Logs oder Ausgaben kopieren.
 * Für einen neuen Workspace beide Werte setzen, z. B.
   `coder update <workspace> --parameter openbao_role_id=… --parameter openbao_approle_secret_id=…`
   oder im Coder-Panel unter „Parameters". Fehlen sie, bricht `startup.sh`
   fail-closed ab (Docker/Jupyter/`~/uni` laufen, OpenCode/Secrets/Sync nicht).
+
+## AppRole-Reparatur (Login: `invalid role or secret ID`)
+
+Symptom im Workspace-Container:
+
+    # im Container:
+    echo $OPENBAO_ROLE_ID                       # stimmt mit der Live-Role-ID nicht überein
+    tail -3 /tmp/entrypoint-setup.log           # endet: ERROR: OpenBao-Authentifizierung fehlgeschlagen.
+
+Der AppRole-Login antwortet mit HTTP 400 `{"errors":["invalid role or secret ID"]}`.
+Folgen: `startup.sh` bricht sofort ab → kein OpenCode (bei frischen Workspaces),
+keine MCP-/oCIS-Secrets (oCIS/oCIS-MCP antwortet dann HTTP 401), kein
+`service.json` → die Credential-Kette kann nie heilen und die Pipeline läuft rot.
+Ursache ist eine **veraltete Role-ID** (Rolle neu angelegt) oder eine
+ungültige/gelöschte Secret-ID — nicht die Pipeline selbst.
+
+Reparatur:
+
+    # 1. Live-Role-ID ablesen (Docker-Host, Root-Token dort in bootstrap.env)
+    set -a; . /opt/docker-compose/openbao/bootstrap.env; set +a
+    base=https://openbao.mueller-nas.de
+    curl -sS -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+      "$base/v1/auth/approle/role/mcp-server/role-id"       # → data.role_id
+
+    # 2. Frische Secret-ID ausstellen (landet 0600 in ~/.openbao/<rolle>.secret-id,
+    #    niemals auf stdout)
+    curl -sS -X POST -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+      "$base/v1/auth/approle/role/mcp-server/secret-id" > /tmp/sid.json
+    sed -n 's/.*"secret_id":"\([^"]*\)".*/\1/p' /tmp/sid.json > ~/.openbao/mcp-server.secret-id
+    chmod 600 ~/.openbao/mcp-server.secret-id; rm -f /tmp/sid.json
+
+    # 3. Beide Werte als Workspace-Parameter setzen (löst einen Rebuild aus)
+    coder login --url https://coder.mueller-nas.de --token <token>
+    coder update <workspace> --parameter openbao_role_id=<live> \
+                             --parameter openbao_approle_secret_id="$(cat ~/.openbao/<rolle>.secret-id)"
+
+Zuordnung: `infrastructure` + `muellerconnect` → `mcp-server`, `general` →
+`mcp-general`, `datascience` → `mcp-uni`.
+
+Der `infrastructure`- und der `muellerconnect`-Template geben die Live-Role-ID
+als Parameter-Default vor (`coder-templates/*/main.tf`); die Secret-ID ist dort
+bewusst **leer** und muss pro Workspace gesetzt werden — im Repo liegt kein
+Secret. Nach dem Rebuild prüfen:
+
+    docker exec <container> sh -lc 'echo $OPENBAO_ROLE_ID; tail -3 /tmp/entrypoint-setup.log'
+
+Der Setup-Log muss ohne `ERROR: OpenBao-Authentifizierung fehlgeschlagen.`
+durchlaufen; danach existieren `/root/.config/opencode/service.json` und
+`/usr/bin/opencode`.

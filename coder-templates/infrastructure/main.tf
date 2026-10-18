@@ -39,10 +39,23 @@ variable "git_branch" {
   default     = "master"
 }
 
-variable "openbao_role_id" {
-  type        = string
-  description = "OpenBao AppRole Role-ID (UUID, nicht der Rollenname)"
-  default     = "a18d13b0-9ccd-304b-da63-db3545546b1d"
+# Die Role-ID ist KEIN Secret (vergleichbar einem Benutzernamen) und darf im
+# Repo stehen. Die zugehörige Secret-ID kommt als Workspace-Parameter und steht
+# NIEMALS im Repo (siehe unten / OPENBAO.md).
+#
+# ⚠️ Wird eine AppRole in OpenBao neu angelegt, ändert sich ihre Role-ID. Dann
+# müssen dieser Default UND die Workspace-Parameter nachgezogen werden, sonst
+# scheitert der AppRole-Login in startup.sh mit "invalid role or secret ID"
+# (beobachtet am 2026-10-18: alle vier Workspaces standen still, weil die IDs
+# nach einem Neu-Anlegen der Rollen veraltet waren).
+data "coder_parameter" "openbao_role_id" {
+  name         = "openbao_role_id"
+  display_name = "OpenBao AppRole Role-ID (mcp-server)"
+  description  = "Role-ID der AppRole 'mcp-server' in OpenBao (Ausgabe von scripts/bootstrap-hosts.sh)."
+  type         = "string"
+  default      = "b55cb212-c69d-379d-6cc7-3409637b0692"
+  order        = 0
+  mutable      = true
 }
 
 variable "openbao_addr" {
@@ -56,7 +69,11 @@ data "coder_parameter" "openbao_approle_secret_id" {
   display_name = "OpenBao AppRole Secret-ID"
   description  = "Secret-ID für die AppRole 'mcp-server' in OpenBao."
   type         = "string"
-  default      = "0f3d31dc-cd9f-a62d-5b47-9148a4e1004b"
+  # Bewusst leer: die Secret-ID ist ein Secret und wird pro Workspace gesetzt
+  # (Coder-UI → Workspace → Settings → Secrets oder
+  #  coder update <workspace> --parameter openbao_approle_secret_id=…).
+  # Fehlt sie, bricht startup.sh fail-closed ab.
+  default      = ""
   order        = 1
   mutable      = true
 }
@@ -95,7 +112,7 @@ resource "docker_container" "workspace" {
     "CODER_AGENT_TOKEN=${coder_agent.main.token}",
     "OPENBAO_APPROLE_SECRET_ID=${data.coder_parameter.openbao_approle_secret_id.value}",
     "OPENBAO_ADDR=https://openbao.mueller-nas.de",
-    "OPENBAO_ROLE_ID=${var.openbao_role_id}",
+    "OPENBAO_ROLE_ID=${data.coder_parameter.openbao_role_id.value}",
   ]
 
   # Coder-Agent-Bootstrap (offizielles init_script) als Payload nach dem ENTRYPOINT-Wrapper
