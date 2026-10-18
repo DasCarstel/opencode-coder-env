@@ -65,13 +65,14 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 | tail -2 \
  && /opt/jupyter/bin/jupyter --version
 
 # ── npm-Toolchain (OpenCode, DCP) ──────────────────────────────────────────
-# Die Stempel-Datei .dcp-version ist genau die, die startup.sh prüft – ohne
-# sie würde es trotz Bake erneut installieren. Der npm-Cache bleibt bewusst im
-# Image: er beschleunigt die Laufzeit-Nachinstallation (OpenCode ist ungepinnt).
-RUN npm install -g "@opencode/cli@${OPENCODE_VERSION}" \
+# Der npm-Cache wird NICHT ins Image geschrieben, sondern per BuildKit-Cache-
+# Mount gehalten: er liegt einmal im Build-Cache des Hosts (von allen vier
+# Templates geteilt) statt 4× à ~1 GB im Image. Zur Laufzeit bindet main.tf
+# denselben Cache als Host-Ordner /etc/npm-cache nach /root/.npm ein.
+RUN --mount=type=cache,target=/root/.npm,sharing=shared \
+    npm install -g "@opencode/cli@${OPENCODE_VERSION}" \
  && npm install -g "@tarquinen/opencode-dcp@${DCP_VERSION}" \
  && echo "${DCP_VERSION}" > /root/.local/bin/.dcp-version \
- && rm -rf /root/.npm/_cacache/tmp \
  && opencode --version
 
 # ── ocis-mcp-server (ownCloud, Go-Binary aus den GitHub-Releases) ──────────

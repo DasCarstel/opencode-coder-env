@@ -189,6 +189,15 @@ resource "docker_container" "workspace" {
     read_only      = true
   }
 
+  # Gemeinsamer npm-Cache (Host-Bind): alle Workspaces nutzen denselben warmen
+  # Download-Cache für Nachinstallationen bei veraltetem Bake. Liegt außerhalb
+  # von Terraform (/etc/npm-cache), überlebt destroy und ersetzt den früheren
+  # ~1 GB npm-Cache je Image (der liegt jetzt im BuildKit-Cache des Builds).
+  volumes {
+    host_path      = "/etc/npm-cache"
+    container_path = "/root/.npm"
+  }
+
   # Persistentes Volume für Repo + Workspace-Daten (überlebt Container-Neuerstellung)
   volumes {
     volume_name    = docker_volume.workspace_data.name

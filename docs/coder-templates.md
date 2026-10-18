@@ -643,12 +643,31 @@ Was **nicht** ins Image wandert: Herdr (kommt aus dem Host-Bind
 `/opt/opencode-bin/herdr`) und der OpenCode-Plugin-Cache (`~/.cache/opencode`,
 den legt der Service beim ersten Start selbst an).
 
+### npm-Cache: zentral statt vier Mal im Image (2026-10-18)
+
+Der npm-Download-Cache (`~/.npm`, gemessen ~1 GB je Image) liegt **nicht mehr
+im Image** — er ist reiner Ballast für den Start (Docker kopiert beim
+Container-Start nichts aus dem Image) und existierte vier Mal identisch:
+
+| Ebene | Umsetzung | Wirkung |
+|-------|-----------|---------|
+| Bake | `RUN --mount=type=cache,target=/root/.npm,sharing=shared` in allen vier `Dockerfile`s (BuildKit, Docker 29) | Cache liegt einmal im Build-Cache des Hosts, alle Templates teilen ihn; Image **2,32 GB → 1,33 GB** (−994 MB, per Test-Build gemessen) |
+| Laufzeit | Host-Bind `/etc/npm-cache` → `/root/.npm` (eigener `volumes`-Block in jedem `main.tf`, außerhalb Terraform) | Nachinstallation bei veraltetem Bake bleibt schnell (sonst reiner Download), ohne das Image zu vergrößern |
+
+Der Cache wird also **einmal** zentral gehalten statt vier Mal im Image:
+`/etc/npm-cache` auf dem Coder-Host (vorbelegt mit dem Inhalt des letzten
+Images) plus derselbe Inhalt im BuildKit-Cache für den Bake.
+
+Wartung: Der Ordner wächst nur bei Drift-Installationen; bei Bedarf leeren
+(die Container füllen ihn neu) — `rm -rf /etc/npm-cache/*` auf dem Coder-Host
+oder `npm cache clean --force` in einem Workspace.
+
 ## Versions-Pins (`versions.env`)
 
 ```ini
-SSH_MCP_VERSION=2.18.0
+SSH_MCP_VERSION=2.19.1
 OCIS_MCP_VERSION=1.1.0
-HERDR_VERSION=0.9.3
+HERDR_VERSION=0.9.5
 DCP_VERSION=3.2.0
 OPENCODE_VERSION=2.0.32   # nur Bake-Baseline (Dockerfile-ARG), Laufzeit = npm-latest
 ```
