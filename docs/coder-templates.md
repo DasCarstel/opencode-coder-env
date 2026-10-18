@@ -574,6 +574,16 @@ sind idempotent: was das Image schon mitbringt (Stempel-Dateien in
     | `infrastructure` | Home Assistant, Server Management, Svelte, Cleve |
     | `general` | General |
     | `muellerconnect` | MuellerConnect |
+    | `datascience` | Data Science |
+
+    Die Workspaces sind voneinander unabhängig und laufen deshalb **parallel**
+    als Hintergrund-Jobs über dieselbe `bg`/`wait_bg`-Mechanik wie das
+    Parallel-Setup (Funktion `start_ws`, je Workspace ein Log unter
+    `/tmp/bg-ws-<label>.log`). Der Endzustand ist identisch — es wird nur nicht
+    mehr auf den vorherigen Workspace gewartet, **kein** Lazy-Start. Bei
+    `infrastructure` (4 Workspaces) sank der Kaltstart dadurch von ~25 s auf
+    ~10 s; ein fehlschlagender Workspace wird von `wait_bg` nur als
+    „⚠ mit Fehler beendet“ gemeldet und bricht die anderen nicht ab.
 
 17. **`ha-forward.py`** — startet bei Bedarf das HA-Kleve-TCP-Relay
     (`127.0.0.1:18123` → HA Kleve), damit Container ohne Tailscale den

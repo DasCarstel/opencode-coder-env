@@ -1401,7 +1401,15 @@ if [ -x "$HERDR_BIN" ]; then
       ;;
   esac
 
-  for entry in "${WS_LIST[@]}"; do
+  # Einen Workspace anlegen (idempotent) und den OpenCode-Agent darin starten.
+  # Läuft als Hintergrund-Job (bg): die Workspaces sind voneinander unabhängig,
+  # daher starten sie parallel statt nacheinander – bei infrastructure (4
+  # Workspaces) verkürzt das den Kaltstart um ~15 s. Der Endzustand ist
+  # identisch (alle Workspaces laufen, kein Lazy-Start), es wartet nur nichts
+  # mehr auf das vorherige. Logs: /tmp/bg-ws-<label>.log
+  start_ws() {
+    local entry="$1"
+    local LABEL REST RELPATH NAME WS_DIR PANE
     LABEL="${entry%%:*}"; REST="${entry#*:}"; RELPATH="${REST%%:*}"; NAME="${REST##*:}"
     if [ "$RELPATH" = "." ]; then WS_DIR="$WS_BASE"; else WS_DIR="$WS_BASE/$RELPATH"; fi
 
@@ -1430,7 +1438,13 @@ except Exception:
         echo "  ✓ OpenCode läuft bereits: $LABEL"
       fi
     fi
+  }
+
+  for entry in "${WS_LIST[@]}"; do
+    WS_TAG="${entry%%:*}"
+    bg "Workspace ${WS_TAG}" "/tmp/bg-ws-${WS_TAG// /-}.log" start_ws "$entry"
   done
+  wait_bg
 else
   echo "  ⚠ Herdr nicht installiert – Server und Workspaces übersprungen"
 fi
