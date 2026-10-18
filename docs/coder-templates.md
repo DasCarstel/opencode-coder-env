@@ -594,6 +594,18 @@ sind idempotent: was das Image schon mitbringt (Stempel-Dateien in
     nicht hochkommt) und lädt die Theme-Konfiguration per `server reload-config`
     nach.
 
+    Auch der **Agent-Start** blockiert das Setup nicht mehr: er läuft abgekoppelt
+    (`setsid nohup`) und das Setup ist fertig, sobald die Workspaces angelegt und
+    die Starts angestoßen sind. Grund: `herdr agent start` wartet per Default bis
+    zu **30 s** auf die interaktive Bereitschaft des Agenten — gemessen **~3,9 s**,
+    in denen der Agent bereits läuft (reine Wartezeit). Die Workspaces und Agents
+    werden weiterhin **beim Boot** gestartet (**kein** Lazy-Start); Herdr
+    registriert den Agenten rund 4 s nach dem Setup-Ende, die Antwort je Workspace
+    steht in `/tmp/bg-ws-start-<label>.log`.
+    ⚠️ Ein kleineres `--timeout` ist **keine** Alternative: unter 3000 ms bricht
+    der Start mit `timeout` ab und der Agent wird **gar nicht** registriert
+    (2026-10-18 in einem Probe-Workspace gemessen).
+
 17. **`ha-forward.py`** — startet bei Bedarf das HA-Kleve-TCP-Relay
     (`127.0.0.1:18123` → HA Kleve), damit Container ohne Tailscale den
     HA-MCP-Endpunkt erreichen. Läuft das Relay schon, wird es nicht neu gestartet.

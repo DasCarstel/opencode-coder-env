@@ -1442,9 +1442,19 @@ except Exception:
 ")
     if [ -n "$PANE" ]; then
       if ! "$HERDR_BIN" agent list 2>/dev/null | grep -q "\"$NAME\""; then
-        "$HERDR_BIN" agent start "$NAME" --kind opencode --pane "$PANE" >/dev/null 2>&1 \
-          && echo "  ✓ OpenCode gestartet: $LABEL ($PANE)" \
-          || echo "  ⚠ OpenCode-Start fehlgeschlagen: $LABEL"
+        # Abgekoppelt starten (setsid): `agent start` wartet per Default bis zu
+        # 30 s darauf, dass der Agent "interactive_ready" meldet (gemessen
+        # ~3,9 s). Das ist reine Wartezeit auf einen Prozess, der ohnehin läuft:
+        # der Agent wird weiterhin beim Boot gestartet (kein Lazy-Start), nur
+        # das Setup wartet nicht darauf. Herdr registriert ihn, sobald er ihn
+        # erkannt hat (2026-10-18 mit Probe-Workspace verifiziert: Start
+        # überlebt das Skript-Ende und erscheint als interactive_ready).
+        # Achtung: mit zu kleinem --timeout bricht der Start ab und der Agent
+        # wird GAR NICHT registriert — deshalb kein Timeout-Tuning.
+        # Antwort/Fehler pro Workspace: /tmp/bg-ws-start-<label>.log
+        setsid nohup "$HERDR_BIN" agent start "$NAME" --kind opencode --pane "$PANE" \
+          > "/tmp/bg-ws-start-${LABEL// /-}.log" 2>&1 < /dev/null &
+        echo "  → OpenCode-Start angestoßen: $LABEL ($PANE)"
       else
         echo "  ✓ OpenCode läuft bereits: $LABEL"
       fi
