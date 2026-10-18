@@ -1519,4 +1519,15 @@ if [ "$PROFILE" = "infrastructure" ]; then
     echo "  ⚠ Tailscale-Status nicht abrufbar"
   fi
 fi
+# Hinweis auf gesicherte Arbeit: entrypoint.sh legt vor dem Repo-Reset einen
+# Auto-Stash an, wenn uncommittete Änderungen vorhanden sind — hier sichtbar
+# machen, sonst bleibt wiederherstellbare Arbeit unbemerkt liegen.
+if [ -d "$REPO_DIR/.git" ]; then
+  STASHED=$(git -C "$REPO_DIR" stash list 2>/dev/null | head -3 || true)
+  if [ -n "$STASHED" ]; then
+    echo ""
+    echo "  ⚠ Uncommittete Änderungen im Stash gesichert (git stash list / git stash pop):"
+    echo "$STASHED" | sed 's/^/     /'
+  fi
+fi
 echo "=== Setup abgeschlossen in $((SECONDS-SETUP_T0))s ($PROFILE) ==="

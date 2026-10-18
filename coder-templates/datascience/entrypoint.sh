@@ -52,10 +52,30 @@ fi
 mkdir -p "$(dirname "$REPO_DIR")"
 if [ -d "$REPO_DIR/.git" ]; then
   echo "  → Repo aktualisieren..."
-  cd "$REPO_DIR" \
-    && git fetch --depth 1 origin master 2>&1 \
-    && git -c core.fileMode=false reset --hard FETCH_HEAD 2>&1 \
-    && git clean -fdq -- workspaces 2>/dev/null || true
+  # Rettungsanker: der Hestia-Rollout startet diese Container regelmäßig neu
+  # (Push auf .opencode/opencode-model-router.overrides.jsonc) und der harte
+  # Reset unten verwirft dabei uncommittete Arbeit. Vorher alles in den Stash
+  # legen — der liegt im .git des persistenten Volumes und bleibt per
+  # `git stash list` / `git stash pop` wiederherstellbar.
+  SKIP_RESET=""
+  if cd "$REPO_DIR"; then
+    if [ -n "$(git status --porcelain 2>/dev/null || true)" ]; then
+      STASH_MSG="auto-stash vor Rollout $(date -Is)"
+      if git stash push --include-untracked -m "$STASH_MSG" >/dev/null 2>&1; then
+        echo "  ✓ Uncommittete Änderungen gesichert: $STASH_MSG (git stash list)"
+      else
+        echo "  ⚠ Auto-Stash fehlgeschlagen – Repo-Reset wird übersprungen (Arbeit bleibt liegen)"
+        SKIP_RESET="1"
+      fi
+    fi
+    if [ -z "$SKIP_RESET" ]; then
+      git fetch --depth 1 origin master 2>&1 \
+        && git -c core.fileMode=false reset --hard FETCH_HEAD 2>&1 \
+        && git clean -fdq -- workspaces 2>/dev/null || true
+    fi
+  else
+    echo "  ⚠ Repo-Verzeichnis nicht erreichbar – Repo-Abgleich übersprungen"
+  fi
 else
   echo "  → Repo klonen..."
   find "$REPO_DIR" -mindepth 1 -delete 2>/dev/null || true
