@@ -1,27 +1,27 @@
 {
-  "updatedAt": "2026-10-18T21:06:52Z",
+  "updatedAt": "2026-10-18T22:06:59Z",
   "tiers": {
     "fast": {
       "model": "opencode-go/deepseek-v4.1-flash#low",
       "ok": false,
-      "failStreak": 4,
-      "lastFailAt": "2026-10-18T21:06:52Z",
+      "failStreak": 5,
+      "lastFailAt": "2026-10-18T22:06:58Z",
       "lastFailureKind": "quota",
       "quarantineUntil": ""
     },
     "medium": {
       "model": "opencode-go/glm-5.3-flash",
       "ok": false,
-      "failStreak": 4,
-      "lastFailAt": "2026-10-18T21:06:52Z",
+      "failStreak": 5,
+      "lastFailAt": "2026-10-18T22:06:58Z",
       "lastFailureKind": "quota",
       "quarantineUntil": ""
     },
     "heavy": {
       "model": "opencode-go/glm-5.3#max",
       "ok": false,
-      "failStreak": 4,
-      "lastFailAt": "2026-10-18T21:06:52Z",
+      "failStreak": 5,
+      "lastFailAt": "2026-10-18T22:06:59Z",
       "lastFailureKind": "quota",
       "quarantineUntil": ""
     }
@@ -29,20 +29,20 @@
   "models": {
     "opencode-go/deepseek-v4.1-flash#low": {
       "model": "opencode-go/deepseek-v4.1-flash#low",
-      "failStreak": 4,
-      "lastFailAt": "2026-10-18T21:06:52Z",
+      "failStreak": 5,
+      "lastFailAt": "2026-10-18T22:06:58Z",
       "lastFailureKind": "quota"
     },
     "opencode-go/glm-5.3-flash": {
       "model": "opencode-go/glm-5.3-flash",
-      "failStreak": 4,
-      "lastFailAt": "2026-10-18T21:06:52Z",
+      "failStreak": 5,
+      "lastFailAt": "2026-10-18T22:06:58Z",
       "lastFailureKind": "quota"
     },
     "opencode-go/glm-5.3#max": {
       "model": "opencode-go/glm-5.3#max",
-      "failStreak": 4,
-      "lastFailAt": "2026-10-18T21:06:52Z",
+      "failStreak": 5,
+      "lastFailAt": "2026-10-18T22:06:59Z",
       "lastFailureKind": "quota"
     }
   }
