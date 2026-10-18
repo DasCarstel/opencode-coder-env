@@ -212,6 +212,70 @@ bodies.clear()
 real_dispatch_workflow("rollout.yml")
 check("ohne inputs kein inputs-Block", bodies[0][2] == {"ref": "master"}, str(bodies[0][2]))
 
+print("== 10) expiring-Hysterese (Flip-Flop-Schutz) ==")
+# Hintergrund (2026-10-18): Die expiring-Regel sah nur die NICHT-aktiven Konten
+# an. Laufen zwei Abos gleichzeitig bald ab, zeigt jede Prüfung nach Ablauf des
+# Cooldowns auf das jeweils andere — der aktive Account wechselte im
+# 30-Minuten-Takt endlos hin und her (default2 <-> default3). Erwartet wird
+# jetzt: solange das AKTIVE Konto selbst bald abläuft, wird es abgearbeitet.
+
+
+def acc(aid, weekly_free, weekly_reset_h, weekly_status="ok",
+        monthly_free=50.0, monthly_reset_h=500.0):
+    from datetime import datetime, timedelta, timezone
+
+    def iso(h):
+        return (datetime.now(timezone.utc) + timedelta(hours=h)).isoformat()
+
+    return {
+        "id": aid, "ok": True,
+        "windows": {
+            "weekly": {"free": weekly_free, "used": 100.0 - weekly_free,
+                       "status": weekly_status, "resetsAt": iso(weekly_reset_h)},
+            "monthly": {"free": monthly_free, "used": 100.0 - monthly_free,
+                        "status": "ok", "resetsAt": iso(monthly_reset_h)},
+        },
+    }
+
+
+EXP_POLICY = {
+    "mode": "auto",
+    "expiring": {"enabled": True, "withinHours": 24, "minRemainingPercent": 5,
+                 "windows": ["weekly", "monthly"]},
+    "switchWhenExhausted": True,
+    "balance": {"enabled": True, "windows": ["weekly", "monthly"],
+                "maxSpreadPercentPoints": 25, "minHeadroomPercent": 30},
+}
+
+
+def eval_cfg(active_id, accs):
+    cfg = {"active": active_id, "policy": EXP_POLICY, "accounts": [], "providers": {}}
+    return accounts.evaluate(cfg, accs)
+
+
+# (a) BEIDE Abos laufen bald ab → kein Wechsel (das war die Endlos-Schleife).
+two_expiring = [acc("default3", 80, 5), acc("default2", 90, 3)]
+r = eval_cfg("default3", two_expiring)
+check("a1 aktives Abo laeuft selbst ab -> kein Wechsel",
+      r.get("switchRecommended") is False, str(r))
+r = eval_cfg("default2", two_expiring)
+check("a2 Richtung egal -> kein Wechsel",
+      r.get("switchRecommended") is False, str(r))
+
+# (b) Nur ein anderes Abo laeuft bald ab → weiterhin wechseln ("use it or lose it").
+r = eval_cfg("default1", [acc("default1", 90, 300), acc("default2", 90, 3)])
+check("b1 anderes Abo laeuft ab -> Wechsel", r.get("switchRecommended") is True, str(r))
+check("b2 Ziel = default2", r.get("target") == "default2", str(r.get("target")))
+check("b3 Grund 'bald ablaufend'", (r.get("reason") or "").startswith("bald ablaufend"), str(r.get("reason")))
+
+# (c) Erschoepft-Regel greift weiter, auch wenn das aktive Konto 'bald ablaufend' ist.
+#     default3 hat im Woche-Fenster 0 % frei (rate-limited), default2 laeuft nicht ab.
+r = eval_cfg("default3", [acc("default3", 0.0, 5, weekly_status="rate-limited"),
+                          acc("default2", 60, 200)])
+check("c1 erschoepft -> Wechsel trotz Hysterese", r.get("switchRecommended") is True, str(r))
+check("c2 Ziel = default2", r.get("target") == "default2", str(r.get("target")))
+check("c3 Grund 'aktiv erschoepft'", (r.get("reason") or "").startswith("aktiv erschöpft"), str(r.get("reason")))
+
 print()
 print(f"FEHLGESCHLAGEN: {len(fails)}" + (f" -> {fails}" if fails else ""))
 shutil.rmtree(_TMP, ignore_errors=True)

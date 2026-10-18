@@ -257,14 +257,22 @@ def evaluate(cfg: dict, accounts: list) -> dict:
         within = float(exp.get("withinHours") or 24)
         min_rem = float(exp.get("minRemainingPercent") or 0)
         ewin = exp.get("windows") or ["weekly", "monthly"]
-        soon = [(a, _expiring(a, ewin, within, min_rem)) for a in others]
-        soon = [(a, e) for a, e in soon if e]
-        if soon:
-            best_acc, best_exp = min(soon, key=lambda p: p[1]["hoursLeft"])
-            out.update({"switchRecommended": True, "target": best_acc["id"],
-                        "reason": (f"bald ablaufend ({best_exp['window']}-Reset in "
-                                   f"{best_exp['hoursLeft']:.1f} h, {best_exp['free']:.0f} % frei)")})
-            return out
+        # Hysterese: Ist das AKTIVE Konto selbst bald ablaufend (und hat dort noch
+        # Guthaben), wird es bis zu seinem Reset abgearbeitet — genau das ist die
+        # Absicht von "use it or lose it". Ohne diese Sperre betrachtet die Regel
+        # in `others` nur die jeweils ANDEREN Konten: laufen zwei Abos gleichzeitig
+        # bald ab, zeigt jede Prüfung nach Ablauf des Cooldowns auf das jeweils
+        # andere Konto → Endlos-Ping-Pong im Cooldown-Takt (beobachtet am
+        # 2026-10-18 zwischen default2 und default3, alle ~30 min).
+        if active is not None and _expiring(active, ewin, within, min_rem) is None:
+            soon = [(a, _expiring(a, ewin, within, min_rem)) for a in others]
+            soon = [(a, e) for a, e in soon if e]
+            if soon:
+                best_acc, best_exp = min(soon, key=lambda p: p[1]["hoursLeft"])
+                out.update({"switchRecommended": True, "target": best_acc["id"],
+                            "reason": (f"bald ablaufend ({best_exp['window']}-Reset in "
+                                       f"{best_exp['hoursLeft']:.1f} h, {best_exp['free']:.0f} % frei)")})
+                return out
 
     # --- Regel 1: aktives Konto erschöpft (0 % frei oder rate-limited) ---
     if policy.get("switchWhenExhausted", True) and active and active.get("ok"):
