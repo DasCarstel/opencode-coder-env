@@ -8,7 +8,7 @@
   ],
   "plugins": [
     "opencode-model-router",
-    "@tarquinen/opencode-dcp"
+    "@tarquinen/opencode-dcp@3.2.0"
   ],
   "mcp": {
     "servers": {

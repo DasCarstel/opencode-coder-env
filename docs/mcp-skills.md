@@ -7,13 +7,45 @@ und Skills werden dabei **nicht** zusammengeführt, sondern **pro Workspace gese
 was in der Workspace-Config nicht steht, ist für den Agenten nicht sichtbar.
 
 ```
-coder-templates/infrastructure/config/global-opencode.json   ← Basis (nur Plugin opencode-model-router, leere mcp.servers)
+coder-templates/infrastructure/config/global-opencode.json   ← Basis (Plugins opencode-model-router + @tarquinen/opencode-dcp, leere mcp.servers)
         +
 workspaces/<bereich>/<space>/opencode.json                   ← MCPs + Skills + optional model/small_model
 workspaces/<bereich>/workspace-global.json                   ← dito für general / minijob
 ```
 
 Server-spezifische Details: [workspaces.md](workspaces.md#wie-die-trennung-funktioniert).
+
+## Plugins
+
+Neben den MCP-Servern laden die Container zwei OpenCode-**Plugins** (Eintrag
+`plugins` in den globalen Config-Dateien):
+
+| Plugin | Zweck | Version |
+|--------|-------|---------|
+| `opencode-model-router` | Tier-Routing (`fast`/`medium`/`heavy`), siehe [`hestia.md`](hestia.md) | bare — kein Pin |
+| `@tarquinen/opencode-dcp` | **Dynamic Context Pruning** — kompaktiert den Kontext automatisch bei Token-Schwellenwerten | gepinnt über `DCP_VERSION` (`versions.env`) |
+
+### `@tarquinen/opencode-dcp` (Dynamic Context Pruning)
+
+Ergänzt OpenCodes native Kompaktierung um eine schwellenwertbasierte, fein
+steuerbare Variante: ab `compress.minContextLimit` werden Kompaktierungs-Hinweise
+aktiv, ab `compress.maxContextLimit` verstärkt; zusätzlich räumen die Strategien
+`deduplication` und `purgeErrors` veraltete Tool-Ausgaben auf.
+
+- **Konfiguration (SOT):** `.opencode/dcp.jsonc` im Repo-Root. `startup.sh` kopiert
+  sie nach `/root/.config/opencode/dcp.jsonc` (global). DCP liest die Datei global
+  **und** projektlokal (`.opencode/`) — beide liegen identisch vor, das
+  Projekt-File wird per cwd-Suche nach oben gefunden.
+- **Version:** `DCP_VERSION` in `versions.env` ist die einzige Wahrheit. Wichtig:
+  ein **blanker** Plugin-Name würde von OpenCode selbst als `@latest` aufgelöst und
+  aus dem eigenen Cache geladen — deshalb pinnt `startup.sh` den Spec nach dem
+  Config-Copy auf `@tarquinen/opencode-dcp@${DCP_VERSION}`. `autoUpdate` steht in
+  `dcp.jsonc` auf `false`, damit das Plugin sich nicht selbst aktualisiert.
+- **Steuerung:** Aktiv-Schalter, Schwellenwerte und Presets (`light` 250k/150k,
+  `moderate` 175k/100k, `max` 100k/50k) über das Hestia-Panel
+  (`GET /api/dcp`, `POST /api/dcp/settings` → SOT-Commit + Rollout).
+- **Prüfung:** `hestia/ci/validate.py` validiert JSONC + Schwellenwerte (Typ,
+  `max ≥ min`); `scripts/check-updates.sh` meldet Drift gegen npm `latest`.
 
 ## MCP-Server im Überblick
 

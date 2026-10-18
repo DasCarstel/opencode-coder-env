@@ -71,15 +71,17 @@ Container bekommen:
 
 ```json
 {
-  "plugins": ["opencode-model-router"],
+  "plugins": ["opencode-model-router", "@tarquinen/opencode-dcp@3.2.0"],
   "mcp": { "servers": {} }
 }
 ```
 
-Sie enthält **ausschließlich das Router-Plugin** — bewusst keine MCP-Server und keine
-Skills. Alles Weitere kommt pro Workspace dazu. `workspace-global.json` in `general`
-und `minijob` aktiviert das Plugin ebenfalls explizit, weil sie keine
-Coder-Template-Basis bekommen.
+Sie enthält **ausschließlich die Plugins** (Model-Router + DCP) — bewusst keine
+MCP-Server und keine Skills. Alles Weitere kommt pro Workspace dazu.
+`workspace-global.json` in `general`, `minijob` und `uni` aktiviert dieselben
+Plugins ebenfalls explizit, weil sie keine Coder-Template-Basis bekommen. Den
+DCP-Pin (`@3.2.0`) setzt `startup.sh` aus `DCP_VERSION` in `versions.env` — siehe
+[Plugins](mcp-skills.md#plugins).
 
 ## Wie die Trennung funktioniert
 

@@ -813,6 +813,39 @@ else
   echo "  ⚠ Config nicht gefunden: $GLOBAL_CFG_SRC"
 fi
 
+# DCP-Plugin im globalen Config auf den Pin aus versions.env festschreiben.
+# OpenCode loest einen blanken Plugin-Namen selbst als @latest auf und laedt aus
+# seinem eigenen Cache — nur ein versionierter Spec bindet die Laufzeitversion.
+# So bleibt DCP_VERSION in versions.env die einzige Wahrheit (kein Drift zwischen
+# den vier Config-Dateien).
+if [ -n "${DCP_VERSION:-}" ] && [ -f /root/.config/opencode/opencode.json ]; then
+  if python3 - "$DCP_VERSION" <<'PY'
+import json, re, sys
+p = "/root/.config/opencode/opencode.json"
+ver = sys.argv[1]
+try:
+    d = json.load(open(p))
+except Exception:
+    sys.exit(1)
+pl = d.get("plugins")
+if isinstance(pl, list):
+    d["plugins"] = [
+        re.sub(r"^@tarquinen/opencode-dcp(?:@[^@]+)?$",
+               f"@tarquinen/opencode-dcp@{ver}", x)
+        if isinstance(x, str) else x
+        for x in pl
+    ]
+    with open(p, "w") as f:
+        json.dump(d, f, indent=2)
+        f.write("\n")
+PY
+  then
+    echo "  ✓ DCP-Plugin auf @${DCP_VERSION} gepinnt"
+  else
+    echo "  ⚠ DCP-Plugin-Pin konnte nicht gesetzt werden"
+  fi
+fi
+
 # ── ntfy: Benachrichtigungen aus OpenCode (alle Profile) ────────────────────
 # Das Plugin liegt in ~/.config/opencode/plugins/ und wird von OpenCode beim
 # Start des Dienstes automatisch geladen (wie das herdr-Plugin daneben).

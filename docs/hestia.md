@@ -73,7 +73,7 @@ Schwellenwerte) steht als Klartext in `hestia/docker-compose.yml`.
 
 ## Single Sources of Truth
 
-Acht Dateien unter `.opencode/` im Repo-Root, alle von Hestia verwaltet:
+Neun Dateien unter `.opencode/` im Repo-Root, alle von Hestia verwaltet:
 
 | Datei | Inhalt | Wer liest sie |
 |-------|--------|---------------|
@@ -85,6 +85,7 @@ Acht Dateien unter `.opencode/` im Repo-Root, alle von Hestia verwaltet:
 | `hestia-failover.jsonc` | **Ausfallschutz-Einstellungen**: `enabled`, `threshold`, `intervalSeconds`, `timeoutSeconds` | Hestia (`failover.py`) |
 | `hestia-suggest.jsonc` | **KI-Vorschlag-Automatik**: `enabled`, `checkIntervalSeconds`, `cooldownSeconds`, `analysisModel` | Hestia (`suggest.py`) |
 | `hestia-benchmarks.jsonc` | **Modell-Benchmarks**: `enabled`, `refreshDays`, `fields`, `aliases` (Quelle OpenRouter) | Hestia (`benchmarks.py`) |
+| `dcp.jsonc` | **DCP-Kontext-Schwellenwerte**: `enabled`, `compress.maxContextLimit`/`minContextLimit`, `modelMaxLimits`/`modelMinLimits` | Plugin `@tarquinen/opencode-dcp` (global kopiert von `startup.sh`), Hestia (`dcp.py`) |
 
 Das Overrides-File ist JSONC (Kommentare erlaubt) und wird vom Router-Plugin per
 **cwd-Suche nach oben** bis zur Repo-Root gefunden. Deshalb braucht kein Workspace
@@ -127,6 +128,7 @@ Autorisierung; ein GET auf einen POST-only-Endpunkt liefert 405 mit Klartext-Hin
 | `/api/suggest/status` | KI-Vorschlag-Zustand (läuft gerade? welches Modell, welcher Versuch, Laufzeit) + `auto` (Automatik-Einstellungen, Fingerprint, nächste Prüfung) + `proposal` (letzter automatischer Vorschlag) |
 | `/api/accounts`, `/api/accounts/status` | Kontostand, Restbudget je Fenster, `isActive`, `expiring`, Modus |
 | `/api/hermes`, `/api/hermes/status` | aktuell an Hermes verteiltes Modell, Fallback-Kette, Pool |
+| `/api/dcp` | DCP-Kontext-Schwellenwerte (`enabled`, `maxContextLimit`, `minContextLimit`, `modelMax/MinLimits`) + Pfad der SOT |
 
 ### POST
 
@@ -141,6 +143,7 @@ Autorisierung; ein GET auf einen POST-only-Endpunkt liefert 405 mit Klartext-Hin
 | `/api/accounts/check` | Budget aller Konten sofort neu abfragen |
 | `/api/accounts/switch` | manueller Kontowechsel |
 | `/api/hermes/apply` | Hermes-Konfiguration verteilen |
+| `/api/dcp/settings` | DCP-Schwellenwerte + Aktiv-Schalter speichern (SOT-Commit, Rollout) |
 | `/api/rollout` | Rollout erneut auslösen |
 
 ## Ablauf „Anwenden"
