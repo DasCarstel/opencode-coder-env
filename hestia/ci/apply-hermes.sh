@@ -163,6 +163,18 @@ if ! "${SSH[@]}" "docker inspect -f '{{.State.Running}}' '$HERMES_CONTAINER' 2>/
   exit 1
 fi
 
+# Ist-Zustand festhalten, BEVOR irgendetwas geschrieben wird: nur wenn sich
+# config.yaml bzw. .env danach tatsächlich unterscheiden, wird Hermes neu
+# gestartet. Der 30-Minuten-Abgleich aus Hestia setzte den Container sonst bei
+# jedem Lauf neu auf — inklusive Shutdown-Meldung nach ntfy und Abbruch der
+# laufenden Aufgabe, obwohl sich nichts geändert hatte (16 Meldungen in einer
+# Nacht). Gehasht werden nur die Dateien, die Hermes liest (inkl. Profile).
+hermes_state_hash() {
+  "${SSH[@]}" "docker exec -u 0 '$HERMES_CONTAINER' sh -lc 'find /opt/data -maxdepth 3 \( -name \"config.yaml\" -o -name \".env\" \) -type f 2>/dev/null | sort | xargs cat 2>/dev/null | sha256sum'" 2>/dev/null | awk '{print $1}'
+}
+STATE_BEFORE="$(hermes_state_hash)"
+echo "→ Ist-Zustand (config.yaml + .env) vor dem Schreiben: ${STATE_BEFORE:-<nicht lesbar>}"
+
 # --- 2) Backup ---------------------------------------------------------------
 echo "→ Backup der aktuellen config.yaml"
 "${SSH[@]}" "docker exec '$HERMES_CONTAINER' sh -lc 'cp -a $CONFIG_IN_CONTAINER $CONFIG_IN_CONTAINER.bak-hestia-\$(date +%s)'"
@@ -619,8 +631,18 @@ echo "→ hermes config check"
 }
 
 # --- 7) Neustart + Health-Wait ----------------------------------------------
-if [[ "$RESTART" == "true" ]]; then
-  echo "→ Neustart $HERMES_CONTAINER"
+# Nur bei echter Änderung neu starten (STATE_BEFORE oben): ein Neustart bricht
+# die laufende Hermes-Aufgabe ab und schickt eine Shutdown-Meldung nach ntfy —
+# für einen No-Op-Abgleich ist das reines Rauschen.
+RESTARTED=0
+STATE_AFTER="$(hermes_state_hash)"
+if [[ "$RESTART" != "true" ]]; then
+  echo "→ Neustart nicht nötig (SOT restart=false)"
+elif [[ -n "$STATE_BEFORE" && "$STATE_BEFORE" == "$STATE_AFTER" ]]; then
+  echo "→ keine Änderung an config.yaml/.env — Hermes bleibt unangetastet (kein Neustart)"
+else
+  RESTARTED=1
+  echo "→ Neustart $HERMES_CONTAINER (Konfiguration hat sich geändert)"
   "${SSH[@]}" "docker restart '$HERMES_CONTAINER' >/dev/null"
   echo "→ warte auf Health (max. 30s)"
   UP=0
@@ -648,7 +670,7 @@ if [[ "$RESTART" == "true" ]]; then
 fi
 
 # --- 8) Zusammenfassung ------------------------------------------------------
-echo "✓ Hermes angewendet: primary=$PRIMARY_PROVIDER/$PRIMARY_MODEL · fallbacks=$FALLBACKS_JSON · pool=$POOL_FOLLOW · single=$SINGLE · restart=$RESTART"
+echo "✓ Hermes angewendet: primary=$PRIMARY_PROVIDER/$PRIMARY_MODEL · fallbacks=$FALLBACKS_JSON · pool=$POOL_FOLLOW · single=$SINGLE · restart=$RESTART (ausgeführt=$RESTARTED)"
 echo "✓ API-Server laut SOT: enabled=$API_ENABLED · $API_HOST:$API_PORT (API_SERVER_KEY unveraendert)"
 if [[ "$PROFILES_JSON" != "[]" ]]; then
   echo "✓ Profile angewendet: $PROFILES_APPLIED · $PROFILES_JSON"

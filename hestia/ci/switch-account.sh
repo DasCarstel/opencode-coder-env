@@ -98,7 +98,20 @@ for c in $NAMES; do
   # kein blindes '>>', sonst sammeln sich über die Wechsel Duplikate an.
   # service.json (/root/.config/opencode/service.json) ist ephemer → nach jedem
   # Container-Neustart wird der Key hier neu gesetzt.
-  "${SSH[@]}" "docker exec '$c' sh -lc 'K=\$(cat $KEY_PATH_REMOTE); opencode service set env OPENCODE_API_KEY \"\$K\"; sed -i \"/^export OPENCODE_API_KEY=/d\" /root/.bashrc; printf \"export OPENCODE_API_KEY=%s\n\" \"\$K\" >> /root/.bashrc; opencode service restart >/dev/null 2>&1 || true; rm -f $KEY_PATH_REMOTE'"
+  #
+  # 'opencode service restart' NUR bei echtem Wechsel: jeder Service-Neustart
+  # reißt die laufenden OpenCode-Sitzungen im Workspace ab. Im 30-Minuten-Takt
+  # des automatischen Konto-Wechsels hat das zuvor jede Sitzung beendet, auch
+  # wenn der Key schon stimmte. Container ohne OpenCode-CLI (startup.sh nicht
+  # durchgelaufen, z. B. wegen fehlgeschlagenem OpenBao-Login) bekommen nur die
+  # .bashrc-Zeile — dort gibt es keinen Service neu zu starten.
+  OUT="$("${SSH[@]}" "docker exec '$c' sh -lc 'K=\$(cat $KEY_PATH_REMOTE); b=\$(grep -m1 \"^export OPENCODE_API_KEY=\" /root/.bashrc 2>/dev/null | cut -d= -f2- | tr -d \"\\\"\\047\"); s=\$(tr \",\" \"\n\" < /root/.config/opencode/service.json 2>/dev/null | grep \"OPENCODE_API_KEY\" | head -n1 | cut -d\\\" -f4); if ! command -v opencode >/dev/null 2>&1; then sed -i \"/^export OPENCODE_API_KEY=/d\" /root/.bashrc; printf \"export OPENCODE_API_KEY=%s\n\" \"\$K\" >> /root/.bashrc; rm -f $KEY_PATH_REMOTE; echo no-cli; elif [ \"\$b\" = \"\$K\" ] && [ \"\$s\" = \"\$K\" ]; then rm -f $KEY_PATH_REMOTE; echo unchanged; else opencode service set env OPENCODE_API_KEY \"\$K\"; sed -i \"/^export OPENCODE_API_KEY=/d\" /root/.bashrc; printf \"export OPENCODE_API_KEY=%s\n\" \"\$K\" >> /root/.bashrc; opencode service restart >/dev/null 2>&1 || true; rm -f $KEY_PATH_REMOTE; echo restarted; fi'" || true)"
+  case "$OUT" in
+    unchanged) echo "   ✓ Key war bereits aktiv — kein Service-Neustart" ;;
+    no-cli)    echo "   ⚠ kein OpenCode-CLI im Container — nur .bashrc gesetzt (startup.sh prüfen)" ;;
+    restarted) echo "   ✓ Key gesetzt + OpenCode-Service neu gestartet" ;;
+    *)         echo "   ⚠ unerwartete Antwort des Containers: ${OUT:-<leer>}" ;;
+  esac
   "${SSH[@]}" "rm -f '$KEY_PATH_REMOTE'"
   COUNT=$((COUNT + 1))
 done

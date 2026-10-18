@@ -23,6 +23,8 @@
 #   3. Der Key steht im Service-Env (service.json) des Containers.
 #   4. Mini-Modellaufruf mit dem 'active'-Key antwortet mit HTTP 200 (Account
 #      nutzbar, nicht gesperrt/ohne Guthaben).
+#   Container ohne OpenCode-CLI (startup.sh nicht durchgelaufen) werden mit
+#   Warnung übersprungen — das ist kein Verstoß gegen die Credential-Kette.
 #
 # Aufruf: läuft auf dem Self-hosted Runner (Docker-Host), am Ende von
 # switch-account.sh und periodisch per .github/workflows/verify-oc-credentials.yml
@@ -158,7 +160,26 @@ fix_container() {
   FIXED=$((FIXED + 1))
 }
 
+# Container ohne OpenCode-CLI können nicht geprüft werden: dort läuft kein
+# OpenCode-Service, es gibt also weder service.json noch 'opencode auth list'.
+# Typische Ursache ist ein abgebrochener Container-Start: startup.sh bricht
+# fail-closed ab, wenn der OpenBao-AppRole-Login scheitert (HTTP 400 'invalid
+# role or secret ID'), und installiert dann auch OpenCode nicht mehr. Das ist
+# ein Workspace-Problem, aber kein Credential-Problem des aktiven Abos — solche
+# Container werden mit Warnung übersprungen, statt den ganzen Lauf (und damit
+# die Pipeline alle 30 Minuten) rot zu machen. Sie bleiben bewusst aus der
+# Recheck-Schleife unten heraus.
+CHECKED=()
+SKIPPED=0
 for c in $NAMES; do
+  if [ "$("${SSH[@]}" "docker exec '$c' sh -lc 'command -v opencode >/dev/null 2>&1 && echo yes || echo no'" 2>/dev/null | tail -n1)" != "yes" ]; then
+    echo "::warning title=kein OpenCode-CLI::$c hat kein 'opencode' im PATH — Credential-Prüfung übersprungen (startup.sh / OpenBao-AppRole prüfen)"
+    echo "⚠ $c: kein OpenCode-CLI im Container — übersprungen (startup.sh nicht durchgelaufen?)"
+    SKIPPED=$((SKIPPED + 1))
+    continue
+  fi
+  CHECKED+=("$c")
+
   # 3a) Shadowing-Check: In der Integration 'OpenCode Go' darf KEIN 'stored' stehen
   if "${SSH[@]}" "docker exec '$c' sh -lc 'opencode auth list 2>/dev/null'" \
        | grep -E "OpenCode Go" | grep -q "stored"; then
@@ -211,10 +232,14 @@ for c in $NAMES; do
   fi
 done
 
+if [[ "$SKIPPED" != "0" ]]; then
+  echo "⚠ $SKIPPED Container ohne OpenCode-CLI übersprungen (kein Kettenfehler, aber startup.sh/OpenBao-AppRole prüfen)."
+fi
+
 if [[ "$FIX" == "1" && "$FIXED" != "0" ]]; then
   echo "→ $FIXED Container geheilt — jetzt erneut prüfen"
   RECHECK_FAIL=0
-  for c in $NAMES; do
+  for c in "${CHECKED[@]}"; do
     BASHRC_KEY="$("${SSH[@]}" "docker exec '$c' sh -lc 'grep -m1 \"^export OPENCODE_API_KEY=\" /root/.bashrc 2>/dev/null | cut -d= -f2- | tr -d \"\\\"\\047\"'" || true)"
     SVC_KEY="$("${SSH[@]}" "docker exec '$c' sh -lc 'tr \",\" \"\n\" < /root/.config/opencode/service.json 2>/dev/null | grep \"OPENCODE_API_KEY\" | head -n1 | cut -d\\\" -f4'" || true)"
     if [[ -n "$BASHRC_KEY" && -n "$SVC_KEY" \
