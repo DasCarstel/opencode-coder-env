@@ -82,7 +82,8 @@ Neun Dateien unter `.opencode/` im Repo-Root, alle von Hestia verwaltet:
 | `hestia-fallbacks.json` | Ausfallmodell je Tier (Model + Variant) | Hestia (`failover.py`), CI |
 | `hestia-hermes.jsonc` | Hermes-Modell, Fallback-Kette, Pool-Regeln, Profil-Overrides | Hestia (`hermes.py`), Workflow `apply-hermes` |
 | `hestia-primary-agents.json` | Agent→Modell-Zuordnung für `build` und `plan` | Hestia (`/api/config`) |
-| `hestia-failover.jsonc` | **Ausfallschutz-Einstellungen**: `enabled`, `threshold`, `intervalSeconds`, `timeoutSeconds` | Hestia (`failover.py`) |
+| `hestia-failover.jsonc` | **Ausfallschutz-Einstellungen**: `enabled`, `threshold`, `intervalSeconds`, `timeoutSeconds`, `quarantineHours` | Hestia (`failover.py`) |
+| `hestia-model-health.json` | **Modell-Gedächtnis**: Zustand je Tier sowie Fehlschlagsserie, Fehlerart (Kontingent/Ausfall) und Quarantäne je Modell | Hestia (`failover.py`), Panel-Anzeige |
 | `hestia-suggest.jsonc` | **KI-Vorschlag-Automatik**: `enabled`, `checkIntervalSeconds`, `cooldownSeconds`, `analysisModel` | Hestia (`suggest.py`) |
 | `hestia-benchmarks.jsonc` | **Modell-Benchmarks**: `enabled`, `refreshDays`, `fields`, `aliases` (Quelle OpenRouter) | Hestia (`benchmarks.py`) |
 | `dcp.jsonc` | **DCP-Kontext-Schwellenwerte**: `enabled`, `compress.maxContextLimit`/`minContextLimit`, `modelMaxLimits`/`modelMinLimits` | Plugin `@tarquinen/opencode-dcp` (global kopiert von `startup.sh`), Hestia (`dcp.py`) |
@@ -314,6 +315,7 @@ nur noch als Startwerte, wenn die SOT fehlt:
 | Prüfintervall | `intervalSeconds` | `HESTIA_PROBE_INTERVAL` (`900`) | Intervall der Erreichbarkeitsproben (60..86400 s) |
 | Fehlerschwelle | `threshold` | `HESTIA_FAIL_THRESHOLD` (`2`) | Fehlversuche bis zum Umschalten (1..10) |
 | Probe-Timeout | `timeoutSeconds` | `HESTIA_PROBE_TIMEOUT` (`35`) | Zeitfenster je Probe (5..300 s) |
+| Modell-Quarantäne | `quarantineHours` | `HESTIA_QUARANTINE_HOURS` (`6`) | Stunden, in denen ein mehrfach echt ausgefallenes Modell nicht als Ausweich-Ziel gewählt wird (0..72; `0` = aus) |
 
 Änderungen wirken **sofort**: Beim Umschalten von `enabled` startet bzw. stoppt der
 Hintergrund-Thread live, Intervall und Schwelle werden je Iteration neu gelesen —
@@ -329,6 +331,26 @@ ein Container-Neustart ist nicht nötig.
 > gewesen, nicht für die Chat-Agenten.
 
 Status über `/api/failover/status`, Sofort-Prüfung per `POST /api/failover/check`.
+
+### Warum der Wächter nicht mehr grundlos neu startet
+
+Der Wächter wechselt nur noch, wenn der Wechsel tatsächlich etwas ändert. Jede
+Regel schließt einen konkreten Fehlfall aus, der zuvor stündlich Rollouts mit
+Container-Neustarts auslöste, ohne dass sich etwas geändert hatte:
+
+| Regel | Verhindert |
+|-------|-----------|
+| **Kontingent ≠ Ausfall** — ist das aktive Konto erschöpft/rate-limited (429), passiert nichts; das Feld übernimmt `accounts.py` (Kontowechsel) | Modellwechsel, der gegen ein leeres Kontingent nichts hilft |
+| **Kein No-op-Swap** — steht das Tier schon auf seinem Ausweich-Modell, wird nicht committet; `github_api.put_files` überspringt identische Inhalte generell | Leere Commits + Rollout (die Ursache der Dauer-Neustarts) |
+| **Ausweich-Modell wird vorher geprobt** | Wechsel auf ein Modell, das selbst nicht antwortet |
+| **Modell-Quarantäne** (`hestia-model-health.json`) — ein mehrfach echt ausgefallenes Modell wird `quarantineHours` lang nicht als Ziel gewählt | Hin-und-Her-Wechseln (Flip-Flop) zwischen zwei Modellen |
+| **Ein Rollout pro Prüflauf** — mehrere gleichzeitig ausgefallene Tiers werden in einem Commit gebündelt und lösen genau einen Rollout aus (zusätzlich `concurrency` in `rollout.yml`) | Parallele Rollouts, die die Workspaces mehrfach neu starten |
+
+Das Gedächtnis (`hestia-model-health.json`) liegt **außerhalb** des `paths`-Filters
+von `rollout.yml`: ein Schreiben dokumentiert nur den Zustand und startet nichts neu.
+Im Panel zeigt der Ausfallschutz-Kasten je Tier `Modell · n× Fehlerart` und listet
+Modelle in laufender Quarantäne mit Endzeitpunkt — so ist sofort sichtbar, welches
+Modell gerade Probleme macht.
 
 ## KI-Vorschlag
 

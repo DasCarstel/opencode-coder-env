@@ -7,6 +7,7 @@ pflegt die Single Source of Truth direkt über GitHub:
 Der Push feuert automatisch die CI/CD-Workflows (Validate → Coder-Restart).
 """
 import base64
+import hashlib
 import json
 import os
 import urllib.request
@@ -151,8 +152,24 @@ def get_file(path: str) -> str | None:
     return base64.b64decode(d.get("content", "")).decode()
 
 
+def _blob_sha(content: str) -> str:
+    """Git-Blob-Hash eines Textinhalts (identisch zu dem, was GitHub vergibt)."""
+    data = content.encode("utf-8")
+    h = hashlib.sha1()
+    h.update(b"blob %d\0" % len(data))
+    h.update(data)
+    return h.hexdigest()
+
+
 def put_files(files: dict, message: str) -> dict:
-    """Mehrere Dateien in EINEM Commit schreiben (Git-Data-API) — ein Push = ein Rollout."""
+    """Mehrere Dateien in EINEM Commit schreiben (Git-Data-API) — ein Push = ein Rollout.
+
+    Enthält der Commit inhaltlich nichts Neues (alle Blobs identisch zum
+    aktuellen Tree), wird KEIN Commit erzeugt: Rückgabe {"unchanged": True}.
+    Ohne diese Prüfung erzeugte jeder Aufruf einen Push — und damit einen
+    Rollout mit Container-Neustarts, auch wenn sich nichts geändert hat
+    (genau das war der Dauer-Restart des Ausfallschutzes).
+    """
     st, refd = _req("GET", f"{GITHUB_API}/repos/{GITHUB_REPO}/git/ref/heads/{GITHUB_REF}")
     if st != 200:
         raise ConfigError(f"Ref nicht lesbar ({st}): {refd.get('message','')}")
@@ -161,6 +178,11 @@ def put_files(files: dict, message: str) -> dict:
     if st != 200:
         raise ConfigError(f"Commit nicht lesbar ({st})")
     base_tree = cm["tree"]["sha"]
+
+    st, tb = _req("GET", f"{GITHUB_API}/repos/{GITHUB_REPO}/git/trees/{base_tree}?recursive=1")
+    existing = {e.get("path"): e.get("sha") for e in (tb.get("tree") or [])} if st == 200 else {}
+    if existing and all(existing.get(p) == _blob_sha(c) for p, c in files.items()):
+        return {"unchanged": True, "sha": base_commit, "html_url": "", "branch": GITHUB_REF}
 
     entries = []
     for path, content in files.items():

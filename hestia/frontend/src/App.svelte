@@ -29,7 +29,7 @@ let dcpSaveBusy = $state(false)
 let dcpSaveResult = $state(null)
 let dcpForm = $state({ enabled: true, maxContextLimit: 100000, minContextLimit: 50000 })
 // Auto-Failover-Einstellungen (POST /api/failover/settings)
-let foSettings = $state({ enabled: true, threshold: 3, intervalSeconds: 300, timeoutSeconds: 30 })
+let foSettings = $state({ enabled: true, threshold: 3, intervalSeconds: 300, timeoutSeconds: 30, quarantineHours: 6 })
 let foSaveBusy = $state(false)
 let foSaveResult = $state(null)
 let accStatus = $state(null)
@@ -734,6 +734,7 @@ async function loadFailover() {
       threshold: Number(st?.threshold) || foSettings.threshold,
       intervalSeconds: Number(st?.interval) || foSettings.intervalSeconds,
       timeoutSeconds: Number(st?.timeout) || foSettings.timeoutSeconds,
+      quarantineHours: Number.isFinite(Number(st?.quarantineHours)) ? Number(st.quarantineHours) : foSettings.quarantineHours,
     }
   } catch { /* ignore */ }
 }
@@ -802,6 +803,7 @@ async function saveFailoverSettings() {
         threshold: Number(foSettings.threshold) || 1,
         intervalSeconds: Number(foSettings.intervalSeconds) || 60,
         timeoutSeconds: Number(foSettings.timeoutSeconds) || 5,
+        quarantineHours: Number.isFinite(Number(foSettings.quarantineHours)) ? Number(foSettings.quarantineHours) : 0,
       },
     })
     foSaveResult = res
@@ -825,6 +827,14 @@ async function runFailoverCheck() {
   } finally {
     foBusy = false
   }
+}
+
+// Modelle, deren Quarantäne noch läuft (Modell-Gedächtnis des Ausfallschutzes).
+// Sie werden bewusst nicht als Ausweich-Ziel gewählt → kein Hin-und-Her.
+function quarantinedModels() {
+  const now = new Date().toISOString().slice(0, 19) + 'Z'
+  return Object.entries(foStatus?.health?.models || {})
+    .filter(([, m]) => m.quarantineUntil && m.quarantineUntil > now)
 }
 
 // Budget-System (OpenCode Go): Konten + Verbrauchsfenster (Anzeige + Kontowechsel)
@@ -1473,6 +1483,31 @@ setInterval(loadSuggestStatus, 60000)
       {/each}
     </p>
   {/if}
+  {#if foStatus?.quota?.blocked}
+    <p class="muted" style="margin-top:2px; color:var(--err)">
+      ⚠ {foStatus.quota.reason} — das ist Kontingent, kein Modellausfall. Der Ausfallschutz hält
+      deshalb still (Modellwechsel würde nichts helfen); es wechselt das Konto
+      (Karte „OpenCode Go — Budget").
+    </p>
+  {/if}
+  {#if foStatus?.health?.tiers && Object.keys(foStatus.health.tiers).length}
+    <p class="muted" style="margin-top:2px">
+      Modell-Gedächtnis:
+      {#each Object.entries(foStatus.health.tiers) as [tier, h]}
+        <span class="badge {h.ok ? 'active' : 'err'}" title={h.quarantineUntil ? 'Quarantäne bis ' + h.quarantineUntil : ''}>
+          {tier}: {h.model}{h.failStreak ? ` · ${h.failStreak}× ${h.lastFailureKind === 'quota' ? 'Kontingent' : 'Fehler'}` : ''}
+        </span>
+      {/each}
+    </p>
+  {/if}
+  {#if quarantinedModels().length}
+    <p class="muted" style="margin-top:2px">
+      In Quarantäne (wird nicht als Ausweich-Ziel gewählt):
+      {#each quarantinedModels() as [label, m]}
+        <span class="mono">{label}</span> bis {m.quarantineUntil}{' '}
+      {/each}
+    </p>
+  {/if}
 
   <div class="foBox">
     <h3>🛡 Ausfallschutz (Einstellungen)</h3>
@@ -1480,6 +1515,13 @@ setInterval(loadSuggestStatus, 60000)
       Der Failover-Wächter prüft die Tiers selbstständig und schaltet bei gehäuften Fehlern auf das
       Ausfall-Modell um — die Auswahl oben (je Tier) wird mit „Anwenden“ gespeichert, diese
       Werte hier im Backend.
+    </p>
+    <p class="muted" style="margin-top:6px">
+      Der Wächter wechselt nur, wenn es wirklich hilft: erschöpftes Kontingent (429) ist
+      <em>kein</em> Modellausfall, das Ausweich-Modell wird vorher geprobt, und ein Modell, das
+      mehrfach ausgefallen ist, bleibt für die Quarantäne-Zeit gesperrt (Rückwechsel erst danach) —
+      so hört das Hin-und-Her auf. Ein Tier, das schon auf seinem Ausweich-Modell steht, erzeugt
+      keinen Commit und keinen Rollout mehr.
     </p>
     <div class="row" style="margin-top:8px">
       <label class="foCheck">
@@ -1498,6 +1540,10 @@ setInterval(loadSuggestStatus, 60000)
         Probe-Timeout (Sekunden)
         <input type="number" min="5" max="300" step="5" bind:value={foSettings.timeoutSeconds} disabled={foSaveBusy} />
       </label>
+      <label>
+        Quarantäne (Stunden)
+        <input type="number" min="0" max="72" step="1" bind:value={foSettings.quarantineHours} disabled={foSaveBusy} />
+      </label>
     </div>
     <div class="row">
       <button onclick={saveFailoverSettings} disabled={foSaveBusy}>
@@ -1514,6 +1560,7 @@ setInterval(loadSuggestStatus, 60000)
         Status: {foStatus?.autoFailover ? 'aktiv' : 'inaktiv'}
         · Schwelle {foStatus?.threshold ?? '—'}
         · alle {foStatus?.interval ?? '—'}s · Timeout {foStatus?.timeout ?? '—'}s
+        · Quarantäne {foStatus?.quarantineHours ?? '—'}h
       </span>
     </div>
   </div>
