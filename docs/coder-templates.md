@@ -92,9 +92,13 @@ Hadoop-Edge + 2 Worker) hochzieht, und dazu alpine-/mongodb-Container aus Notebo
   `memory = 8192`. Nutzbar sind `deds candle` (nur Client, 2 GiB) und
   `deds firework` (mit `docker-compose-small.yml`: 768M + 1408M + 1408M + 512M
   ≈ 4 GiB). Verifiziert 2026-10-15 im Workspace `ds-test`.
-- Ein Coder-`restart` baut das Workspace-Image neu (`CACHE_DATE` im `Dockerfile`)
-  — der Neustart dauert dadurch ~4–6 min. Der Host-Ordner `~/uni` und die
-  beiden workspace-eigenen Volumes bleiben dabei erhalten.
+- Ein Coder-`restart` baut das Workspace-Image neu. Bis 2026-10-18 stand das
+  `ARG CACHE_DATE` **am Anfang** des `Dockerfile` (auf `timestamp()` aus `main.tf`)
+  und riss damit bei *jedem* Apply/Neustart alle Install-Layer auf — daher die
+  damals gemessenen **~4–6 min**. Seit dem Umbau steht der Cache-Buster
+  **hinter** allen Install-Layern (am Dateiende): der Neustart kostet nur noch
+  den Repo-Abgleich, die Toolchain kommt aus dem Image. Der Host-Ordner `~/uni`
+  und die beiden workspace-eigenen Volumes bleiben dabei erhalten.
 - **`~/uni` ist ein Host-Bind-Mount** auf `/etc/coder/uni-data` (seit 2026-10-16;
   vorher ein festes Docker-Volume `coder-uni-<owner>-data` mit
   `lifecycle { prevent_destroy = true }`): Löschen und Neuanlegen des Workspace
@@ -461,12 +465,22 @@ Python-Umgebungen (idempotent, Marker `.ready`, Hintergrund, Log `~/uni/logs/env
 
 ```
 Docker-Start
-  └─ ENTRYPOINT /usr/local/bin/entrypoint.sh
-       1. Grund-Tools + Node 22 (nur wenn fehlend)
+  └─ ENTRYPOINT /usr/local/bin/entrypoint.sh        ← BLOCKIEREND vor dem Agenten
+       1. Grund-Tools + Node 22 (nur wenn fehlend; im Image vorhanden → no-op)
        2. Repo klonen bzw. git fetch + reset --hard FETCH_HEAD
-       3. nohup: coder-templates/shared/startup.sh <profil>
+       3. nohup: coder-templates/shared/startup.sh <profil>   → Hintergrund
+            └─ Setup-Jobs + Herdr-Server
        4. exec "$@"  → Coder-Agent-Bootstrap aus main.tf
 ```
+
+Vor dem Coder-Agenten („verbunden“) liegt also **nur** Schritt 1 + 2; alles
+ab Schritt 3 läuft im Hintergrund. Beim `datascience`-Template kommt noch
+`uni-bootstrap.sh` dazu (dockerd, `~/uni`, JupyterLab), das selbst per `nohup`
+startet. Messmarken im Log:
+
+- `=== entrypoint.sh: Payload starten (nach Ns) ===` — alles bis hierhin lief
+  blockierend (das ist die gefühlte Startdauer).
+- `=== Setup abgeschlossen in Ns (<profil>) ===` — Ende des Hintergrund-Setups.
 
 `general` und `muellerconnect` nutzen denselben Ablauf mit eigenem `PROFILE`.
 
@@ -474,6 +488,28 @@ Docker-Start
 
 Aufruf: `startup.sh <infrastructure|general|muellerconnect|datascience>` — ein anderes oder
 fehlendes Profil bricht mit Fehler ab.
+
+### Parallel-Setup in `startup.sh` (2026-10-18)
+
+Direkt nach dem Git-Credentials-Block startet `startup.sh` die Installationen
+als Hintergrund-Jobs (`bg <label> <log> <befehl>`) statt sie nacheinander
+abzuarbeiten — sie hängen nicht voneinander ab und brauchen nur Netz:
+
+| Job | Inhalt | Log |
+|-----|--------|-----|
+| `npm_chain` | OpenCode-CLI (npm-latest), `ssh-mcp` (Pin; `infrastructure`/`general`), DCP (Pin) | `/tmp/bg-npm.log` |
+| `install_uv` | uv/uvx (für uvx-basierte MCP-Server) | `/tmp/bg-uv.log` |
+| `install_ocis_mcp` | `ocis-mcp-server` (Pin, Go-Binary) | `/tmp/bg-ocis-mcp.log` |
+| `install_herdr` | Herdr (Pin; Host-Bind oder `herdr.dev`) | `/tmp/bg-herdr.log` |
+| `setup_tailscale` | Tailscale (`infrastructure`) — **nicht getrackt**, nichts hängt davon ab | `/tmp/bg-tailscale.log` |
+
+Die drei npm-Pakete bleiben bewusst in **einem** Job (`npm_chain`) hintereinander:
+`npm install -g` verträgt keine Parallelität (gemeinsames
+`/usr/lib/node_modules`). Die Barriere `wait_bg` sammelt alle Jobs ein und sitzt
+**vor der Env-Injektion** — erst dort wird die OpenCode-CLI wirklich benutzt
+(`opencode service set env …`), alles davor ist Datei- und Netzarbeit. Alle Jobs
+sind idempotent: was das Image schon mitbringt (Stempel-Dateien in
+`/root/.local/bin`), melden sie nur als „bereits vorhanden“.
 
 1. **Versions-Pins laden** — `source ../versions.env`; fehlt die Datei, werden alle
    Pins leer gesetzt (Blöcke warnen, laufende Version bleibt).
@@ -491,17 +527,22 @@ fehlendes Profil bricht mit Fehler ab.
 4. **Git-Credentials** — `scripts/setup-git-credentials.sh` (GitHub-PAT aus OpenBao).
 5. **SSH + ssh-mcp** *(`infrastructure`; `general` nur ssh-mcp mit PC-Config)* — ed25519-Key erzeugen, per
    `ssh/sign/host-access` (24 h) signieren, `~/.ssh/config` schreiben; statischen
-   ssh-mcp-Key aus OpenBao installieren; `uvx` (für authentik) und **`ssh-mcp` per
-   npm** installieren (Stempel-Datei, idempotent); `config.toml`,
+   ssh-mcp-Key aus OpenBao installieren; `config.toml`,
    `config-full.toml` (Krefeld+Kleve+Carsten-PC)
    und `config-cleve.toml` (nur Kleve) unter `/root/.config/ssh-mcp/` erzeugen.
-   Für `general` läuft ein eigener Abschnitt: `ssh-mcp` installieren, den exklusiven
+   `uvx` und `ssh-mcp` kommen aus dem Image (Bake); nur bei Versions-Drift lädt
+   der Hintergrund-Job `install_uv`/`npm_chain` nach (Stempel-Datei, idempotent).
+   Für `general` läuft ein eigener Abschnitt: den exklusiven
    PC-Key `secret/data/mcp/ssh-mcp-pc` nach `/root/.ssh/id_ed25519_mcp_pc` schreiben und
    ausschließlich `config-general.toml` (Profil `carsten-pc`) erzeugen.
-6. **Tailscale** *(nur `infrastructure`)* — `tailscaled` starten, `tailscale up`
-   mit Auth-Key, `--accept-routes`, `--ssh=false`.
-7. **OpenCode-CLI** — Abgleich gegen npm-latest, ggf. Neuinstallation + Service-Neustart
-   (bewusst ungepinnt).
+6. **Tailscale** *(nur `infrastructure`)* — läuft als **nicht getrackter**
+   Hintergrund-Job: `tailscaled` starten (auf den Socket warten statt `sleep 3`),
+   `tailscale up` mit Auth-Key, `--accept-routes`, `--ssh=false`, Timeout
+   **10 s** statt 30 s (Tailscale wird nur für die Kleve-Hosts gebraucht und darf
+   den Start nicht ausbremsen). Den Status meldet der Abschluss am Ende.
+7. **OpenCode-CLI** — Abgleich gegen npm-latest im Hintergrund-Job `npm_chain`,
+   ggf. Neuinstallation (bewusst ungepinnt). **Kein** Service-Neustart mehr an
+   dieser Stelle: der eine Restart am Ende (Schritt 12) nimmt die neue Version mit.
 8. **Globale MCP-Config** — profilabhängig installiert:
    `infrastructure` → `coder-templates/infrastructure/config/global-opencode.json`
    (bewusst **leer**, MCP-Trennung läuft über die Projekt-Configs),
@@ -517,12 +558,14 @@ fehlendes Profil bricht mit Fehler ab.
 12. **OpenCode-Server** — `hostname 0.0.0.0`, Port **49374**, Passwort aus
     `hermes-opencode-service` (Fleet-Zugriff für Hestia/Hermes), Service-Restart.
 13. **`ocis-mcp-server`** — gepinntes Go-Binary aus GitHub Releases nach
-    `/root/.local/bin/ocis-mcp-server` (Stempel-Datei).
+    `/root/.local/bin/ocis-mcp-server` (Stempel-Datei). Im Normalfall kommt es
+    aus dem Image, sonst lädt der Hintergrund-Job `install_ocis_mcp` nach.
 14. **oCIS-Guardrail** — das eigene Profil-Token wird ins Service-Env gesetzt, das
     jeweils andere aktiv **entfernt** (`opencode service unset env`). Ein
     Infrastructure-/General-Workspace kann den Arbeits-Vault physisch nicht sehen.
-15. **Herdr** — Install auf Pin: Host-Bind-Mount `/opt/opencode-bin/herdr` bzw.
-    Download von `herdr.dev`, Version wird verifiziert.
+15. **Herdr** — Install auf Pin als Hintergrund-Job `install_herdr`:
+    Host-Bind-Mount `/opt/opencode-bin/herdr` bzw. Download von `herdr.dev`,
+    Version wird verifiziert.
 16. **Herdr-Workspaces** — Server starten, Workspaces idempotent anlegen und je
     einen OpenCode-Agenten starten:
 
@@ -574,19 +617,50 @@ Ein asyncio-TCP-Relay: `[LISTEN_PORT] [TARGET_HOST] [TARGET_PORT]`, Standard
 nur über das Tailnet erreichen; Container ohne Tailscale — vor allem `hermes` —
 brauchen diesen Relay-Weg.
 
+## Workspace-Image (Bake-Baseline)
+
+Alle vier `Dockerfile`s backen die Toolchain ins Image — der Container
+installiert beim Start normalerweise **nichts** mehr nach:
+
+| Layer | Inhalt | Stempel-Datei |
+|-------|--------|---------------|
+| 1 | Node.js (`ARG NODE_MAJOR=22`, NodeSource) | — |
+| 2 | uv / uvx (+ Symlinks nach `/usr/local/bin`) | — |
+| 3 | `@opencode/cli` (ungepinnt), `@tarquinen/opencode-dcp` (Pin), `ssh-mcp` (Pin; nur `infrastructure`/`general`) | `.dcp-version`, `.ssh-mcp-version` |
+| 4 | `ocis-mcp-server` (Go-Binary, Pin) | `.ocis-mcp-server-version` |
+
+Die Stempel-Dateien in `/root/.local/bin` sind genau die, die `startup.sh`
+prüft — ohne sie würde trotz Bake erneut installiert. `muellerconnect` und
+`datascience` backen **kein** `ssh-mcp` (ihr Profil braucht es nicht);
+`datascience` bringt zusätzlich Docker CE und Python 3.12/JupyterLab mit.
+
+⚠️ **Reihenfolge-Regel:** `ARG CACHE_DATE` (von `main.tf` auf `timestamp()`
+gesetzt) steht in **jedem** `Dockerfile` **hinter** allen Install-Layern. Stünde
+der Cache-Buster oben, würde er bei jedem Apply/Neustart genau diese Layers
+wieder aufreißen — das war die Ursache der früheren 4–6-min-Neustarts.
+
+Was **nicht** ins Image wandert: Herdr (kommt aus dem Host-Bind
+`/opt/opencode-bin/herdr`) und der OpenCode-Plugin-Cache (`~/.cache/opencode`,
+den legt der Service beim ersten Start selbst an).
+
 ## Versions-Pins (`versions.env`)
 
 ```ini
 SSH_MCP_VERSION=2.18.0
 OCIS_MCP_VERSION=1.1.0
 HERDR_VERSION=0.9.3
+DCP_VERSION=3.2.0
+OPENCODE_VERSION=2.0.32   # nur Bake-Baseline (Dockerfile-ARG), Laufzeit = npm-latest
 ```
 
-Die **OpenCode-CLI ist bewusst nicht gepinnt** (Hybrid, siehe
-[`architecture.md`](architecture.md)). Update-Ablauf: eine Version in
+Die **OpenCode-CLI bleibt zur Laufzeit ungepinnt** (Hybrid, siehe
+[`architecture.md`](architecture.md)): `OPENCODE_VERSION` ist ausschließlich der
+`ARG`-Default des Images — `startup.sh` gleicht bei jedem Start gegen npm-latest
+ab und installiert bei Bedarf nach. Update-Ablauf: eine Version in
 `versions.env` anpassen, committen, pushen — beim nächsten Workspace-Start ziehen
-alle Container automatisch und identisch nach. Veraltete Pins zeigt
-`scripts/check-updates.sh` (read-only).
+alle Container automatisch und identisch nach. Veraltete Pins **und** Drift
+zwischen Dockerfile-ARGs und `versions.env` zeigt
+`scripts/check-updates.sh` (read-only, Abschnitt „Bake-Abgleich“).
 
 ## Template veröffentlichen
 

@@ -57,5 +57,30 @@ else
   row "opencode-dcp" "${DCP_VERSION:-?}" "${DCP_LATEST:-?}" "aktuell"
 fi
 
+# ── Bake-Abgleich (Dockerfile-ARGs vs. versions.env) ───────────────────────
+# Die Dockerfiles backen die Toolchain über ARG-Defaults ins Image. Driftet so
+# ein Default gegen versions.env, läuft der Container zwar weiter (startup.sh
+# korrigiert zur Laufzeit nach), aber der Kaltstart verliert seinen Vorteil.
+BAKE_OK=1
+for df in "$REPO_DIR"/coder-templates/*/Dockerfile; do
+  [ -f "$df" ] || continue
+  tmpl="$(basename "$(dirname "$df")")"
+  for key in NODE_MAJOR OPENCODE_VERSION DCP_VERSION SSH_MCP_VERSION OCIS_MCP_VERSION; do
+    arg=$(grep -E "^ARG ${key}=" "$df" | head -1 | cut -d= -f2-)
+    [ -z "$arg" ] && continue     # z. B. SSH_MCP_VERSION in muellerconnect/datascience
+    env_val="${!key:-}"
+    [ -z "$env_val" ] && continue # kein Pin in versions.env (z. B. NODE_MAJOR)
+    if [ "$arg" != "$env_val" ]; then
+      echo "  ⚠ Bake-Drift [$tmpl]: ARG ${key}=${arg} ≠ versions.env ${key}=${env_val}"
+      BAKE_OK=0
+    fi
+  done
+done
+if [ "$BAKE_OK" = "1" ]; then
+  echo "Bake-Abgleich: ok – Bake-ARGs und Versions-Pins stimmen überein."
+else
+  echo "Bake-Abgleich: Drift gefunden – Dockerfile-ARGs an versions.env angleichen (nur Anzeige)."
+fi
+
 echo "--------------------------------------------------------------------"
 echo "Aenderung dann: 'versions.env' bearbeiten, commit + push, Workspace neu starten."

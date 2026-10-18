@@ -6,8 +6,26 @@
 
 FROM buildpack-deps:22.04-curl
 
-# Cache-Buster für das Image (erzwingt Rebuild beim Template-Push)
-ARG CACHE_DATE=1
+# ── Bake-Baseline: Toolchain ins Image (Kaltstart-Verkürzung) ───────────────
+# Ohne diese Layer installiert der Container bei JEDER Neuerstellung alles
+# nach: OpenCode-CLI (~500 MB), DCP (~96 MB), ocis-mcp-server – plus npm-Cache.
+# Der Node-Teil lief dabei *blockierend vor* dem Coder-Agenten, der Workspace
+# wurde also erst nach 20–40 s als „verbunden“ angezeigt.
+#
+# ⚠️ Reihenfolge: ALLE Install-Layer stehen VOR dem Cache-Buster
+# `ARG CACHE_DATE` (jetzt am Dateiende). Stünde der Buster oben, würde er bei
+# jedem Apply/Neustart genau diese Layers wieder aufreißen – main.tf setzt ihn
+# auf timestamp(), also bei jedem Workspace-Start.
+#
+# Die ARG-Defaults müssen mit coder-templates/versions.env übereinstimmen.
+# Maßgeblich bleibt trotzdem shared/startup.sh: es prüft die Stempel-Dateien in
+# /root/.local/bin und installiert bei Abweichung zur Laufzeit nach.
+# Drift anzeigen: scripts/check-updates.sh
+# ssh-mcp wird hier bewusst NICHT gebacken (Profil datascience braucht es nicht).
+ARG NODE_MAJOR=22
+ARG OPENCODE_VERSION=2.0.32
+ARG DCP_VERSION=3.2.0
+ARG OCIS_MCP_VERSION=1.1.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 # Interpreter, die `uv` installiert (im Image, nicht im ephemeren /root)
@@ -32,7 +50,7 @@ RUN install -m 0755 -d /etc/apt/keyrings \
  && rm -rf /var/lib/apt/lists/*
 
 # ── Node.js 22 (NodeSource) – wie general ──────────────────────────────────
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+RUN curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
  && apt-get install -y -qq nodejs \
  && rm -rf /var/lib/apt/lists/*
 
@@ -46,6 +64,24 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 | tail -2 \
  && uv pip install --python /opt/jupyter/bin/python jupyterlab ipykernel \
  && /opt/jupyter/bin/jupyter --version
 
+# ── npm-Toolchain (OpenCode, DCP) ──────────────────────────────────────────
+# Die Stempel-Datei .dcp-version ist genau die, die startup.sh prüft – ohne
+# sie würde es trotz Bake erneut installieren. Der npm-Cache bleibt bewusst im
+# Image: er beschleunigt die Laufzeit-Nachinstallation (OpenCode ist ungepinnt).
+RUN npm install -g "@opencode/cli@${OPENCODE_VERSION}" \
+ && npm install -g "@tarquinen/opencode-dcp@${DCP_VERSION}" \
+ && echo "${DCP_VERSION}" > /root/.local/bin/.dcp-version \
+ && rm -rf /root/.npm/_cacache/tmp \
+ && opencode --version
+
+# ── ocis-mcp-server (ownCloud, Go-Binary aus den GitHub-Releases) ──────────
+RUN curl -fsSL -o /tmp/ocis-mcp.tar.gz \
+      "https://github.com/owncloud/ocis-mcp-server/releases/download/v${OCIS_MCP_VERSION}/ocis-mcp-server_${OCIS_MCP_VERSION}_linux_amd64.tar.gz" \
+ && tar xzf /tmp/ocis-mcp.tar.gz -C /tmp \
+ && install -m 0755 /tmp/ocis-mcp-server /root/.local/bin/ocis-mcp-server \
+ && echo "${OCIS_MCP_VERSION}" > /root/.local/bin/.ocis-mcp-server-version \
+ && rm -f /tmp/ocis-mcp.tar.gz /tmp/ocis-mcp-server
+
 # ── Entrypoint-Wrapper + DinD-Bootstrap ────────────────────────────────────
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY uni-bootstrap.sh /usr/local/bin/uni-bootstrap.sh
@@ -56,3 +92,8 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/uni-bootstrap.sh \
 
 # ENTRYPOINT: Wrapper startet DinD + Uni-Setup im Hintergrund, dann exec "$@"
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
+# ── Cache-Buster für das Image (erzwingt Rebuild beim Template-Push) ────────
+# ⚠️ MUSS am Dateiende stehen (siehe oben): nur so bleiben die Install-Layers
+# über Apply/Neustarts hinweg im Docker-Layer-Cache.
+ARG CACHE_DATE=1

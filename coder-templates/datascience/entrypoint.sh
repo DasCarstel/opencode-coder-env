@@ -27,6 +27,10 @@ PROFILE="datascience"
 export WS_OWNER UNI_DIR
 
 echo "=== entrypoint.sh: Container-Start ($PROFILE, owner=$WS_OWNER) ==="
+# Messbasis: alles bis „Payload starten“ läuft BLOCKIEREND vor dem Coder-Agenten
+# – genau diese Zahl ist die gefühlte Startdauer (Node/Repo sind ins Image
+# gebacken, hier sollte nur noch der Repo-Abgleich übrig bleiben).
+T0=$SECONDS
 
 # ── 1. Grund-Tools (nur wenn fehlend) ─────────────────────────────────────
 export DEBIAN_FRONTEND=noninteractive
@@ -68,5 +72,5 @@ else
 fi
 
 # ── 4. Payload aus main.tf ausführen (Coder-Agent-Bootstrap) ──────────────
-echo "=== entrypoint.sh: Payload starten ==="
+echo "=== entrypoint.sh: Payload starten (nach $((SECONDS-T0))s) ==="
 exec "$@"

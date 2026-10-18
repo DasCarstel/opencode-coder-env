@@ -14,6 +14,10 @@ REPO_DIR="/home/carstenmueller2002/opencode-coder-env"
 PROFILE="general"
 
 echo "=== entrypoint.sh: Container-Start ($PROFILE) ==="
+# Messbasis: alles bis „Payload starten“ läuft BLOCKIEREND vor dem Coder-Agenten
+# – genau diese Zahl ist die gefühlte Startdauer (Node/Repo sind ins Image
+# gebacken, hier sollte nur noch der Repo-Abgleich übrig bleiben).
+T0=$SECONDS
 
 # ── 1. Grund-Tools (nur wenn fehlend) ─────────────────────────────────────
 export DEBIAN_FRONTEND=noninteractive
@@ -53,7 +57,10 @@ nohup bash -c "
   if ! herdr status 2>/dev/null | grep -q 'running'; then
     echo '  → herdr starten...'
     nohup herdr server > /tmp/herdr-server.log 2>&1 &
-    sleep 3
+    for _ in \$(seq 1 20); do
+      herdr status 2>/dev/null | grep -q 'running' && break
+      sleep 0.5
+    done
   fi
   if herdr status 2>/dev/null | grep -q 'running'; then
     echo '  ✓ herdr läuft'
@@ -63,5 +70,5 @@ nohup bash -c "
 " > /tmp/entrypoint-setup.log 2>&1 &
 
 # ── 4. Payload aus main.tf ausführen (Coder-Agent-Bootstrap) ──────────────
-echo "=== entrypoint.sh: Payload starten ==="
+echo "=== entrypoint.sh: Payload starten (nach $((SECONDS-T0))s) ==="
 exec "$@"

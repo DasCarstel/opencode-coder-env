@@ -60,6 +60,220 @@ else
   OCIS_MCP_VERSION=""
   HERDR_VERSION=""
 fi
+# ── Hintergrund-Setup (Kaltstart-Verkürzung) ────────────────────────────────
+# Die Installationen (OpenCode/ssh-mcp/DCP, uv, ocis-mcp-server, Herdr) hängen
+# nicht voneinander ab und brauchen nur Netz – deshalb laufen sie parallel
+# statt nacheinander. Der Barrier ist wait_bg() vor der Env-Injektion, also vor
+# dem ersten Schritt, der die OpenCode-CLI wirklich benutzt.
+#
+# ACHTUNG: die npm-Aufrufe bleiben in EINEM Job (npm_chain) hintereinander –
+# npm -g verträgt keine Parallelität (gemeinsames /usr/lib/node_modules).
+BG_PIDS=()
+BG_LABELS=()
+# Startzeit des Setups für die Dauer-Meldung am Ende (Messbasis).
+SETUP_T0=$SECONDS
+bg() {   # bg <Label> <Logdatei> <Befehl…>
+  local label="$1" log="$2"; shift 2
+  ( "$@" ) >>"$log" 2>&1 &
+  BG_PIDS+=("$!")
+  BG_LABELS+=("$label")
+  echo "  → ${label}: läuft im Hintergrund (Log: ${log})"
+}
+wait_bg() {   # alle Hintergrund-Jobs einsammeln und Ergebnis melden
+  local i
+  for i in "${!BG_PIDS[@]}"; do
+    if wait "${BG_PIDS[$i]}"; then
+      echo "  ✓ ${BG_LABELS[$i]}: fertig"
+    else
+      echo "  ⚠ ${BG_LABELS[$i]}: mit Fehler beendet"
+    fi
+  done
+  BG_PIDS=(); BG_LABELS=()
+}
+
+# ssh-mcp wird nur von infrastructure und general gebraucht.
+case "$PROFILE" in infrastructure|general) WANT_SSH_MCP=1 ;; *) WANT_SSH_MCP=0 ;; esac
+
+# OpenCode-CLI + ssh-mcp + DCP. OpenCode bleibt bewusst ungepinnt (npm-latest,
+# Bake-Baseline siehe versions.env/Dockerfile); ssh-mcp und DCP sind gepinnt
+# und werden über Stempel-Dateien in /root/.local/bin geprüft – genau die
+# Stempel setzt auch das Dockerfile beim Bake, so dass hier im Normalfall
+# nichts zu tun bleibt.
+npm_chain() {
+  local cur new got stamp
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "  ⚠ npm nicht verfügbar – OpenCode kann nicht installiert werden"
+    return 0
+  fi
+
+  cur=$(opencode --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  new=$(npm view @opencode/cli version 2>/dev/null | tail -1)
+  if [ -z "$cur" ] || { [ -n "$new" ] && [ "$cur" != "$new" ]; }; then
+    echo "  → OpenCode installieren/aktualisieren: ${cur:-fehlt} → ${new:-latest} ..."
+    npm uninstall -g opencode 2>/dev/null || true
+    npm uninstall -g @opencode-ai/opencode 2>/dev/null || true
+    rm -f /usr/bin/opencode
+    npm install -g @opencode/cli 2>&1 | tail -3
+    got=$(opencode --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    if [ -n "$got" ]; then
+      echo "  ✓ OpenCode: $(opencode --version 2>&1)"
+      # Bewusst KEIN Service-Restart hier: der eine Restart am Ende
+      # (OpenCode-Server-Binding) nimmt die neue Version mit.
+    else
+      echo "  ⚠ OpenCode-Installation fehlgeschlagen: $(opencode --version 2>&1)"
+    fi
+  elif [ -z "$new" ]; then
+    echo "  ⚠ npm-Abfrage fehlgeschlagen – OpenCode ${cur:-?} bleibt bestehen"
+  else
+    echo "  ✓ OpenCode bereits aktuell: $(opencode --version 2>&1)"
+  fi
+
+  if [ "$WANT_SSH_MCP" = "1" ]; then
+    stamp="$HOME/.local/bin/.ssh-mcp-version"
+    if [ -z "${SSH_MCP_VERSION}" ]; then
+      echo "  ⚠ SSH_MCP_VERSION nicht gesetzt – ssh-mcp läuft weiter in aktueller Version"
+    elif [ "$(cat "$stamp" 2>/dev/null)" != "${SSH_MCP_VERSION}" ]; then
+      echo "  → ssh-mcp ${SSH_MCP_VERSION} installieren..."
+      if npm install -g "ssh-mcp@${SSH_MCP_VERSION}" >/tmp/npm-ssh-mcp.log 2>&1; then
+        tail -2 /tmp/npm-ssh-mcp.log
+        echo "${SSH_MCP_VERSION}" > "$stamp"
+        echo "  ✓ ssh-mcp ${SSH_MCP_VERSION} installiert"
+      else
+        tail -3 /tmp/npm-ssh-mcp.log
+        echo "  ⚠ ssh-mcp ${SSH_MCP_VERSION} konnte nicht installiert werden – bisherige Version bleibt"
+      fi
+    else
+      echo "  ✓ ssh-mcp bereits auf Pin (${SSH_MCP_VERSION})"
+    fi
+  fi
+
+  stamp="$HOME/.local/bin/.dcp-version"
+  if [ -z "${DCP_VERSION:-}" ]; then
+    echo "  ⚠ DCP_VERSION nicht gesetzt"
+  elif [ "$(cat "$stamp" 2>/dev/null)" != "${DCP_VERSION}" ]; then
+    echo "  → DCP ${DCP_VERSION} installieren..."
+    if npm install -g "@tarquinen/opencode-dcp@${DCP_VERSION}" >/tmp/npm-dcp.log 2>&1; then
+      tail -2 /tmp/npm-dcp.log
+      echo "${DCP_VERSION}" > "$stamp"
+      echo "  ✓ DCP ${DCP_VERSION} installiert"
+    else
+      tail -3 /tmp/npm-dcp.log
+      echo "  ⚠ DCP konnte nicht installiert werden"
+    fi
+  else
+    echo "  ✓ DCP bereits auf Pin (${DCP_VERSION})"
+  fi
+}
+
+# uv/uvx – von uvx-basierten MCP-Servern (authentik) gebraucht.
+install_uv() {
+  if [ -x "$HOME/.local/bin/uvx" ]; then
+    echo "  ✓ uv/uvx bereits vorhanden"
+  else
+    echo "  → uv/uvx installieren..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 | tail -2 || true
+  fi
+}
+
+# oCIS MCP Server (OpenCloud / Obsidian), gepinntes Go-Binary.
+install_ocis_mcp() {
+  local bin="/root/.local/bin/ocis-mcp-server"
+  local stamp="/root/.local/bin/.ocis-mcp-server-version"
+  if [ -z "${OCIS_MCP_VERSION}" ]; then
+    echo "  ⚠ OCIS_MCP_VERSION nicht gesetzt – ocis-mcp-server läuft weiter in aktueller Version"
+  elif [ ! -x "$bin" ] || [ "$(cat "$stamp" 2>/dev/null)" != "${OCIS_MCP_VERSION}" ]; then
+    echo "  → lade ocis-mcp-server v${OCIS_MCP_VERSION} herunter..."
+    if curl -fsSL -o /tmp/ocis-mcp.tar.gz \
+        "https://github.com/owncloud/ocis-mcp-server/releases/download/v${OCIS_MCP_VERSION}/ocis-mcp-server_${OCIS_MCP_VERSION}_linux_amd64.tar.gz" \
+       && tar xzf /tmp/ocis-mcp.tar.gz -C /tmp \
+       && install -m 0755 /tmp/ocis-mcp-server "$bin" \
+       && rm -f /tmp/ocis-mcp.tar.gz /tmp/ocis-mcp-server; then
+      echo "${OCIS_MCP_VERSION}" > "$stamp"
+      echo "  ✓ ocis-mcp-server installiert (v${OCIS_MCP_VERSION})"
+    else
+      echo "  ⚠ ocis-mcp-server konnte nicht auf v${OCIS_MCP_VERSION} gebracht werden – alte Version (falls vorhanden) bleibt"
+    fi
+  else
+    echo "  ✓ ocis-mcp-server bereits auf Pin (v${OCIS_MCP_VERSION})"
+  fi
+}
+
+# Herdr: Quelle herdr.dev-API, Fallback Host-Bind-Mount /opt/opencode-bin.
+herdrver() { "$1" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1; }
+install_herdr() {
+  local cur hostbin="/opt/opencode-bin/herdr"
+  cur=$(herdrver "$HERDR_BIN")
+  if [ -z "${HERDR_VERSION}" ]; then
+    echo "  ⚠ HERDR_VERSION nicht gesetzt – Herdr läuft weiter in Version ${cur:-?}"
+  elif [ "$cur" = "${HERDR_VERSION}" ]; then
+    echo "  ✓ Herdr bereits auf Pin (${HERDR_VERSION})"
+  elif [ -x "$hostbin" ] && [ "$(herdrver "$hostbin")" = "${HERDR_VERSION}" ]; then
+    cp "$hostbin" "$HERDR_BIN" \
+      && chmod +x "$HERDR_BIN" \
+      && echo "  ✓ Herdr ${HERDR_VERSION} aus /opt/opencode-bin installiert" \
+      || echo "  ⚠ Herdr aus /opt/opencode-bin konnte nicht installiert werden"
+  else
+    echo "  → Herdr ${HERDR_VERSION} wird heruntergeladen (herdr.dev)..."
+    if curl -fsSL --max-time 60 -o "$HERDR_BIN.tmp" \
+        "https://herdr.dev/api/releases/v${HERDR_VERSION}/linux-amd64" \
+       && chmod +x "$HERDR_BIN.tmp" \
+       && [ "$(herdrver "$HERDR_BIN.tmp")" = "${HERDR_VERSION}" ]; then
+      mv "$HERDR_BIN.tmp" "$HERDR_BIN"
+      echo "  ✓ Herdr installiert (${HERDR_VERSION})"
+    else
+      rm -f "$HERDR_BIN.tmp"
+      if [ -x "$hostbin" ]; then
+        cp "$hostbin" "$HERDR_BIN" && chmod +x "$HERDR_BIN" \
+          && echo "  ⚠ Download fehlgeschlagen – bleibe bei Version $(herdrver "$HERDR_BIN") aus /opt/opencode-bin" \
+          || echo "  ⚠ Download fehlgeschlagen und Host-Fallback nicht installierbar"
+      else
+        echo "  ⚠ Herdr ${HERDR_VERSION} weder per Download noch Host-Fallback verfügbar"
+      fi
+    fi
+  fi
+}
+
+# Tailscale (nur infrastructure, Cleve-Zugang). Läuft bewusst als NICHT
+# getrackter Job: nichts im Setup hängt davon ab, und ein hängender
+# Auth-Vorgang darf den Start nicht aufhalten.
+TS_SOCK="/var/run/tailscale/tailscaled.sock"
+setup_tailscale() {
+  if [ -z "${TS_AUTHKEY:-}" ]; then
+    echo "  ⚠ TS_AUTHKEY nicht gesetzt (secret/data/mcp/tailscale)"
+    return 0
+  fi
+  if ! command -v tailscale >/dev/null 2>&1; then
+    echo "  → Tailscale wird installiert..."
+    curl -fsSL https://tailscale.com/install.sh | sh 2>&1 | tail -2 || true
+  fi
+  command -v tailscale >/dev/null 2>&1 || { echo "  ⚠ Tailscale nicht verfügbar"; return 0; }
+  mkdir -p /var/lib/tailscale /var/run/tailscale
+  if ! tailscale --socket="$TS_SOCK" status >/dev/null 2>&1; then
+    echo "  → tailscaled wird gestartet..."
+    nohup tailscaled --state=/var/lib/tailscale/tailscaled.state --socket="$TS_SOCK" \
+      > /tmp/tailscaled.log 2>&1 &
+    # auf den Socket warten statt blind sleep 3
+    local i
+    for i in $(seq 1 20); do
+      [ -S "$TS_SOCK" ] && break
+      sleep 0.5
+    done
+  fi
+  # Timeout bewusst 10 s statt 30 s: Tailscale ist nur für die Kleve-Hosts
+  # nötig und darf den Start nicht ausbremsen.
+  tailscale --socket="$TS_SOCK" up \
+    --authkey="$TS_AUTHKEY" \
+    --hostname="coder-${PROFILE}" \
+    --accept-routes \
+    --accept-dns=false \
+    --ssh=false \
+    --timeout=10s 2>&1 | tail -3 || echo "  ⚠ tailscale up fehlgeschlagen"
+  if tailscale --socket="$TS_SOCK" status >/dev/null 2>&1; then
+    echo "  ✓ Tailscale aktiv: $(tailscale --socket="$TS_SOCK" ip -4 2>/dev/null | head -1)"
+  else
+    echo "  ⚠ Tailscale-Status nicht abrufbar"
+  fi
+}
 
 # ── /etc/opencode.env vorbereiten ───────────────────────────────────────────
 : > /etc/opencode.env
@@ -178,6 +392,21 @@ else
   echo "  ⚠ scripts/setup-git-credentials.sh nicht gefunden"
 fi
 
+# ── Parallel-Setup starten (unabhängig voneinander, brauchen nur Netz) ──────
+echo ""
+echo "=== Parallel-Setup (Hintergrund) ==="
+bg "OpenCode/ssh-mcp/DCP" /tmp/bg-npm.log npm_chain
+bg "uv/uvx"               /tmp/bg-uv.log install_uv
+bg "ocis-mcp-server"      /tmp/bg-ocis-mcp.log install_ocis_mcp
+bg "Herdr"                /tmp/bg-herdr.log install_herdr
+
+# Tailscale (nur infrastructure): bewusst NICHT getrackt – nichts im Setup
+# hängt davon ab, ein hängender Auth-Vorgang darf den Start nicht aufhalten.
+if [ "$PROFILE" = "infrastructure" ]; then
+  ( setup_tailscale ) > /tmp/bg-tailscale.log 2>&1 &
+  echo "  → Tailscale: läuft im Hintergrund (Log: /tmp/bg-tailscale.log)"
+fi
+
 # ── SSH via OpenBao-CA + ssh-mcp (nur infrastructure) ──────────────────────
 if [ "$PROFILE" = "infrastructure" ]; then
   echo ""
@@ -271,29 +500,6 @@ except Exception:
     echo "  ✓ Carsten-PC Key installiert ($SSH_MCP_PC_KEY)"
   else
     echo "  ⚠ Carsten-PC Key nicht gefunden (secret/data/mcp/ssh-mcp-pc)"
-  fi
-
-  # ── uvx + ssh-mcp installieren (Pin via versions.env, Stempel-Datei) ──────
-  echo ""
-  echo "=== uvx / ssh-mcp ==="
-  if [ ! -x "$HOME/.local/bin/uvx" ]; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 | tail -2 || true
-  fi
-  SSH_MCP_STAMP="$HOME/.local/bin/.ssh-mcp-version"
-  if [ -z "${SSH_MCP_VERSION}" ]; then
-    echo "  ⚠ SSH_MCP_VERSION nicht gesetzt – ssh-mcp läuft weiter in aktueller Version"
-  elif [ "$(cat "$SSH_MCP_STAMP" 2>/dev/null)" != "${SSH_MCP_VERSION}" ]; then
-    echo "  → ssh-mcp ${SSH_MCP_VERSION} installieren..."
-    if npm install -g "ssh-mcp@${SSH_MCP_VERSION}" >/tmp/npm-ssh-mcp.log 2>&1; then
-      tail -2 /tmp/npm-ssh-mcp.log
-      echo "${SSH_MCP_VERSION}" > "$SSH_MCP_STAMP"
-      echo "  ✓ ssh-mcp ${SSH_MCP_VERSION} installiert"
-    else
-      tail -3 /tmp/npm-ssh-mcp.log
-      echo "  ⚠ ssh-mcp ${SSH_MCP_VERSION} konnte nicht installiert werden – bisherige Version bleibt"
-    fi
-  else
-    echo "  ✓ ssh-mcp bereits auf Pin (${SSH_MCP_VERSION})"
   fi
 
   # ── ssh-mcp Konfiguration ───────────────────────────────────────────────────
@@ -671,27 +877,6 @@ except Exception:
     echo "  ⚠ Carsten-PC Key nicht gefunden (secret/data/mcp/ssh-mcp-pc)"
   fi
 
-  # uv (für uvx) sicherstellen, ssh-mcp per npm installieren (Pin + Stempel).
-  if [ ! -x "$HOME/.local/bin/uvx" ]; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 | tail -2 || true
-  fi
-  SSH_MCP_STAMP="$HOME/.local/bin/.ssh-mcp-version"
-  if [ -z "${SSH_MCP_VERSION}" ]; then
-    echo "  ⚠ SSH_MCP_VERSION nicht gesetzt – ssh-mcp läuft weiter in aktueller Version"
-  elif [ "$(cat "$SSH_MCP_STAMP" 2>/dev/null)" != "${SSH_MCP_VERSION}" ]; then
-    echo "  → ssh-mcp ${SSH_MCP_VERSION} installieren..."
-    if npm install -g "ssh-mcp@${SSH_MCP_VERSION}" >/tmp/npm-ssh-mcp.log 2>&1; then
-      tail -2 /tmp/npm-ssh-mcp.log
-      echo "${SSH_MCP_VERSION}" > "$SSH_MCP_STAMP"
-      echo "  ✓ ssh-mcp ${SSH_MCP_VERSION} installiert"
-    else
-      tail -3 /tmp/npm-ssh-mcp.log
-      echo "  ⚠ ssh-mcp ${SSH_MCP_VERSION} konnte nicht installiert werden – bisherige Version bleibt"
-    fi
-  else
-    echo "  ✓ ssh-mcp bereits auf Pin (${SSH_MCP_VERSION})"
-  fi
-
   # config-general.toml: ausschließlich der Carsten-PC (harte Grenze,
   # analog zu config-cleve.toml — Krefeld-/Kleve-Profile existieren hier nicht).
   mkdir -p /root/.config/ssh-mcp /root/.ssh-mcp-transfers && chmod 700 /root/.ssh-mcp-transfers
@@ -723,79 +908,12 @@ MCPCFG
   echo "  ✓ ssh-mcp Config (config-general.toml) erstellt"
 fi
 
-# ── Tailscale (Cleve-Zugang, nur infrastructure) ────────────────────────────
-if [ "$PROFILE" = "infrastructure" ]; then
-  echo ""
-  echo "=== Tailscale (Cleve) ==="
-  if [ -n "${TS_AUTHKEY:-}" ]; then
-    if ! command -v tailscale >/dev/null 2>&1; then
-      echo "  → Tailscale wird installiert..."
-      curl -fsSL https://tailscale.com/install.sh | sh 2>&1 | tail -2 || true
-    fi
-    if command -v tailscale >/dev/null 2>&1; then
-      mkdir -p /var/lib/tailscale /var/run/tailscale
-      TS_SOCK=/var/run/tailscale/tailscaled.sock
-      if ! tailscale --socket="$TS_SOCK" status >/dev/null 2>&1; then
-        echo "  → tailscaled wird gestartet..."
-        nohup tailscaled --state=/var/lib/tailscale/tailscaled.state --socket="$TS_SOCK" \
-          > /tmp/tailscaled.log 2>&1 &
-        sleep 3
-      fi
-      tailscale --socket="$TS_SOCK" up \
-        --authkey="$TS_AUTHKEY" \
-        --hostname="coder-${PROFILE}" \
-        --accept-routes \
-        --accept-dns=false \
-        --ssh=false \
-        --timeout=30s 2>&1 | tail -3 || echo "  ⚠ tailscale up fehlgeschlagen"
-      if tailscale --socket="$TS_SOCK" status >/dev/null 2>&1; then
-        echo "  ✓ Tailscale aktiv: $(tailscale --socket="$TS_SOCK" ip -4 2>/dev/null | head -1)"
-      else
-        echo "  ⚠ Tailscale-Status nicht abrufbar"
-      fi
-    else
-      echo "  ⚠ Tailscale nicht verfügbar"
-    fi
-  else
-    echo "  ⚠ TS_AUTHKEY nicht gesetzt (secret/data/mcp/tailscale)"
-  fi
-fi
-
-# ── OpenCode V2 (Hybrid: bei jedem Start auf npm-latest abgleichen) ────────
-echo ""
-echo "=== OpenCode V2 (immer latest) ==="
+# ── OpenCode-Basisverzeichnis ──────────────────────────────────────────────
 mkdir -p ~/.config/opencode
 # Model-Router-Konfiguration liegt in .opencode/opencode-model-router.overrides.jsonc
 # am Repo-Root (das Plugin durchsucht von cwd aufwärts bis Repo-Root) —
 # kein Symlink/Cache-Eingriff mehr nötig. tiers.json entfernt (Historie in git).
 echo 'alias update-opencode-config="cd ~/opencode-coder-env && git pull --ff-only"' >> ~/.bashrc
-
-if command -v npm >/dev/null 2>&1; then
-  CUR=$(opencode --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-  NEW=$(npm view @opencode/cli version 2>/dev/null | tail -1)
-  if [ -z "$CUR" ] || { [ -n "$NEW" ] && [ "$CUR" != "$NEW" ]; }; then
-    echo "  → OpenCode installieren/aktualisieren: ${CUR:-fehlt} → ${NEW:-latest} ..."
-    npm uninstall -g opencode 2>/dev/null || true
-    npm uninstall -g @opencode-ai/opencode 2>/dev/null || true
-    rm -f /usr/bin/opencode
-    npm install -g @opencode/cli 2>&1 | tail -3
-    GOT=$(opencode --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-    if [ -n "$GOT" ]; then
-      echo "  ✓ OpenCode: $(opencode --version 2>&1)"
-      opencode service restart >/dev/null 2>&1 \
-        && echo "  ✓ OpenCode-Service neu gestartet" \
-        || echo "  ⚠ OpenCode-Service läuft noch nicht – Neustart wird ohnehin beim Boot erfolgen"
-    else
-      echo "  ⚠ OpenCode-Installation fehlgeschlagen: $(opencode --version 2>&1)"
-    fi
-  elif [ -z "$NEW" ]; then
-    echo "  ⚠ npm-Abfrage fehlgeschlagen – OpenCode ${CUR:-?} bleibt bestehen"
-  else
-    echo "  ✓ OpenCode bereits aktuell: $(opencode --version 2>&1)"
-  fi
-else
-  echo "  ⚠ npm nicht verfügbar – OpenCode kann nicht installiert werden"
-fi
 
 # ── MCP-Konfiguration (Config installieren, profil-spezifisch) ──────────────
 echo ""
@@ -863,25 +981,6 @@ else
 fi
 read_secret "secret/data/mcp/notify" "opencode_token" "NTFY_TOKEN"
 
-# ── DCP: Dynamic Context Pruning Plugin (npm, gepinnt) ─────────────────────
-echo ""
-echo "=== DCP (Dynamic Context Pruning) ==="
-DCP_STAMP="$HOME/.local/bin/.dcp-version"
-if [ -z "${DCP_VERSION:-}" ]; then
-  echo "  ⚠ DCP_VERSION nicht gesetzt"
-elif [ "$(cat "$DCP_STAMP" 2>/dev/null)" != "${DCP_VERSION}" ]; then
-  echo "  → DCP ${DCP_VERSION} installieren..."
-  if npm install -g "@tarquinen/opencode-dcp@${DCP_VERSION}" >/tmp/npm-dcp.log 2>&1; then
-    tail -2 /tmp/npm-dcp.log
-    echo "${DCP_VERSION}" > "$DCP_STAMP"
-    echo "  ✓ DCP ${DCP_VERSION} installiert"
-  else
-    tail -3 /tmp/npm-dcp.log
-    echo "  ⚠ DCP konnte nicht installiert werden"
-  fi
-else
-  echo "  ✓ DCP bereits auf Pin (${DCP_VERSION})"
-fi
 read_secret "secret/data/mcp/notify" "url" "NTFY_URL"
 if [ -n "${NTFY_TOKEN:-}" ]; then
   printf 'NTFY_TOKEN="%s"\n' "$NTFY_TOKEN" >> /etc/opencode.env
@@ -960,6 +1059,11 @@ with open(p, "w") as f:
     json.dump(d, f, indent=2)
 os.chmod(p, 0o600)
 PY
+
+# ── Barriere: ab hier wird die OpenCode-CLI wirklich benutzt ────────────────
+echo ""
+echo "=== Parallel-Setup: warte auf Hintergrund-Jobs ==="
+wait_bg
 
 # ── Env-Injektion: HA / authentik (nur infrastructure) ──────────────────────
 if [ "$PROFILE" = "infrastructure" ]; then
@@ -1150,29 +1254,6 @@ ss -tlnp 2>/dev/null | grep 49374 >/dev/null \
   && echo "  ✓ OpenCode-Server: 0.0.0.0:49374" \
   || echo "  ⚠ OpenCode-Server-Binding unklar"
 
-# ── oCIS MCP Server (OpenCloud / Obsidian) ──────────────────────────────────
-echo ""
-echo "=== oCIS MCP Server (OpenCloud) ==="
-OCIS_MCP_BIN="/root/.local/bin/ocis-mcp-server"
-OCIS_MCP_STAMP="/root/.local/bin/.ocis-mcp-server-version"
-if [ -z "${OCIS_MCP_VERSION}" ]; then
-  echo "  ⚠ OCIS_MCP_VERSION nicht gesetzt – ocis-mcp-server läuft weiter in aktueller Version"
-elif [ ! -x "$OCIS_MCP_BIN" ] || [ "$(cat "$OCIS_MCP_STAMP" 2>/dev/null)" != "${OCIS_MCP_VERSION}" ]; then
-  echo "  → lade ocis-mcp-server v${OCIS_MCP_VERSION} herunter..."
-  if curl -fsSL -o /tmp/ocis-mcp.tar.gz \
-      "https://github.com/owncloud/ocis-mcp-server/releases/download/v${OCIS_MCP_VERSION}/ocis-mcp-server_${OCIS_MCP_VERSION}_linux_amd64.tar.gz" \
-     && tar xzf /tmp/ocis-mcp.tar.gz -C /tmp \
-     && install -m 0755 /tmp/ocis-mcp-server "$OCIS_MCP_BIN" \
-     && rm -f /tmp/ocis-mcp.tar.gz /tmp/ocis-mcp-server; then
-    echo "${OCIS_MCP_VERSION}" > "$OCIS_MCP_STAMP"
-    echo "  ✓ ocis-mcp-server installiert (v${OCIS_MCP_VERSION})"
-  else
-    echo "  ⚠ ocis-mcp-server konnte nicht auf v${OCIS_MCP_VERSION} gebracht werden – alte Version (falls vorhanden) bleibt"
-  fi
-else
-  echo "  ✓ ocis-mcp-server bereits auf Pin (v${OCIS_MCP_VERSION})"
-fi
-
 # Profil-spezifische Token-Env + Hard-Guardrail (jeder Workspace sieht nur
 # seinen eigenen Space; das jeweils andere Token wird aktiv entfernt).
 case "$PROFILE" in
@@ -1212,43 +1293,6 @@ case "$PROFILE" in
     unset OCIS_PRIVATE_USER OCIS_PRIVATE_TOKEN OCIS_MUELLERCONNECT_USER OCIS_MUELLERCONNECT_TOKEN
     ;;
 esac
-
-# ── Herdr installieren (Pin via versions.env; Quelle: herdr.dev-API,
-#    Fallback: Host-Bind-Mount /opt/opencode-bin) ───────────────────────────
-echo ""
-echo "=== Herdr ==="
-herdrver() { "$1" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1; }
-
-HERDR_CUR=$(herdrver "$HERDR_BIN")
-HERDR_HOSTBIN=/opt/opencode-bin/herdr
-if [ -z "${HERDR_VERSION}" ]; then
-  echo "  ⚠ HERDR_VERSION nicht gesetzt – Herdr läuft weiter in Version ${HERDR_CUR:-?}"
-elif [ "$HERDR_CUR" = "${HERDR_VERSION}" ]; then
-  echo "  ✓ Herdr bereits auf Pin (${HERDR_VERSION})"
-elif [ -x "$HERDR_HOSTBIN" ] && [ "$(herdrver "$HERDR_HOSTBIN")" = "${HERDR_VERSION}" ]; then
-  cp "$HERDR_HOSTBIN" "$HERDR_BIN" \
-    && chmod +x "$HERDR_BIN" \
-    && echo "  ✓ Herdr ${HERDR_VERSION} aus /opt/opencode-bin installiert" \
-    || echo "  ⚠ Herdr aus /opt/opencode-bin konnte nicht installiert werden"
-else
-  echo "  → Herdr ${HERDR_VERSION} wird heruntergeladen (herdr.dev)..."
-  if curl -fsSL --max-time 60 -o "$HERDR_BIN.tmp" \
-      "https://herdr.dev/api/releases/v${HERDR_VERSION}/linux-amd64" \
-     && chmod +x "$HERDR_BIN.tmp" \
-     && [ "$(herdrver "$HERDR_BIN.tmp")" = "${HERDR_VERSION}" ]; then
-    mv "$HERDR_BIN.tmp" "$HERDR_BIN"
-    echo "  ✓ Herdr installiert (${HERDR_VERSION})"
-  else
-    rm -f "$HERDR_BIN.tmp"
-    if [ -x "$HERDR_HOSTBIN" ]; then
-      cp "$HERDR_HOSTBIN" "$HERDR_BIN" && chmod +x "$HERDR_BIN" \
-        && echo "  ⚠ Download fehlgeschlagen – bleibe bei Version $(herdrver "$HERDR_BIN") aus /opt/opencode-bin" \
-        || echo "  ⚠ Download fehlgeschlagen und Host-Fallback nicht installierbar"
-    else
-      echo "  ⚠ Herdr ${HERDR_VERSION} weder per Download noch Host-Fallback verfügbar"
-    fi
-  fi
-fi
 
 # ── Herdr-Server + Workspaces ───────────────────────────────────────────────
 echo ""
@@ -1298,7 +1342,11 @@ if [ -x "$HERDR_BIN" ]; then
   echo "  → Herdr-Server wird gestartet..."
   if ! "$HERDR_BIN" status 2>/dev/null | grep -q "status: running"; then
     nohup "$HERDR_BIN" server > /tmp/herdr-server.log 2>&1 &
-    sleep 3
+    # auf den Server warten statt blind sleep 3
+    for _ in $(seq 1 20); do
+      "$HERDR_BIN" status 2>/dev/null | grep -q "status: running" && break
+      sleep 0.5
+    done
   fi
   if "$HERDR_BIN" status 2>/dev/null | grep -q "status: running"; then
     echo "  ✓ Herdr-Server läuft"
@@ -1449,3 +1497,13 @@ if [ -f "$HA_FORWARD_SCRIPT" ]; then
 fi
 
 echo ""
+
+# Dauer des gesamten Setups (Messbasis: SETUP_T0 aus dem Parallel-Setup-Block)
+if [ "$PROFILE" = "infrastructure" ]; then
+  if tailscale --socket="$TS_SOCK" status >/dev/null 2>&1; then
+    echo "  ✓ Tailscale aktiv: $(tailscale --socket="$TS_SOCK" ip -4 2>/dev/null | head -1)"
+  else
+    echo "  ⚠ Tailscale-Status nicht abrufbar"
+  fi
+fi
+echo "=== Setup abgeschlossen in $((SECONDS-SETUP_T0))s ($PROFILE) ==="
