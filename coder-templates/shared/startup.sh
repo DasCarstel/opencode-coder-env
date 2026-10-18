@@ -1081,6 +1081,17 @@ echo "=== Parallel-Setup: warte auf Hintergrund-Jobs ==="
 wait_bg
 STAMP "Barriere: fertig"
 
+# ── Herdr-Server vorziehen ──────────────────────────────────────────────────
+# Er braucht nur das Herdr-Binary aus dem Parallel-Setup (Barriere oben), NICHT
+# den OpenCode-Service. Vorgezogen läuft er während der Agents-/Env- und
+# Service-Phase warm; der Herdr-Block unten wartet weiterhin auf
+# "status: running" (dort greift auch der Fallback-Start, falls er hier nicht
+# hochkommt) und lädt die Theme-Konfiguration per reload-config nach.
+if [ -x "$HERDR_BIN" ] && ! "$HERDR_BIN" status 2>/dev/null | grep -q "status: running"; then
+  nohup "$HERDR_BIN" server > /tmp/herdr-server.log 2>&1 &
+  echo "  → Herdr-Server startet im Hintergrund (Log: /tmp/herdr-server.log)"
+fi
+
 # ── Env-Injektion: HA / authentik (nur infrastructure) ──────────────────────
 if [ "$PROFILE" = "infrastructure" ]; then
   if [ -n "${HA_LLA_TOKEN:-}" ]; then

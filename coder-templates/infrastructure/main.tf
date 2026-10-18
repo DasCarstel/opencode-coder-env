@@ -10,7 +10,7 @@ terraform {
   required_providers {
     coder = {
       source  = "coder/coder"
-      version = ">= 1.0"
+      version = "~> 2.18"
     }
     docker = {
       source  = "kreuzwerker/docker"
@@ -180,8 +180,9 @@ resource "docker_container" "workspace" {
 resource "coder_agent" "main" {
   os   = "linux"
   arch = data.coder_provisioner.me.arch
-
-  dir = "/home/${data.coder_workspace_owner.me.name}"
+  # Bewusst kein `dir`: Standard ist $HOME des Workspace-Users (= /home/<owner>).
+  # Explizites `dir` ist im Coder-Provider abgekündigt ("dir" is deprecated) und
+  # bricht bei Werten != $HOME den Datei-Sync der Coder-Desktop-App.
 }
 
 # ─── Coder Apps (Shortcuts in der UI) ────────────────────────────────────────

@@ -585,6 +585,15 @@ sind idempotent: was das Image schon mitbringt (Stempel-Dateien in
     ~10 s; ein fehlschlagender Workspace wird von `wait_bg` nur als
     „⚠ mit Fehler beendet“ gemeldet und bricht die anderen nicht ab.
 
+    Der **Herdr-Server** wird seit 2026-10-18 schon direkt nach der
+    Parallel-Setup-Barriere (Schritt 4) als Hintergrundjob gestartet: er braucht
+    nur das Herdr-Binary aus dem Parallel-Setup, **nicht** den OpenCode-Service.
+    Dadurch läuft er während der Agents-/Service-Phase warm und der Kaltstart
+    verkürzt sich um ~2–4 s (`infrastructure` 11 s → ~8–9 s). Der Herdr-Block
+    wartet weiterhin auf `status: running` (mit Fallback-Start, falls er vorher
+    nicht hochkommt) und lädt die Theme-Konfiguration per `server reload-config`
+    nach.
+
 17. **`ha-forward.py`** — startet bei Bedarf das HA-Kleve-TCP-Relay
     (`127.0.0.1:18123` → HA Kleve), damit Container ohne Tailscale den
     HA-MCP-Endpunkt erreichen. Läuft das Relay schon, wird es nicht neu gestartet.
@@ -671,6 +680,23 @@ Images) plus derselbe Inhalt im BuildKit-Cache für den Bake.
 Wartung: Der Ordner wächst nur bei Drift-Installationen; bei Bedarf leeren
 (die Container füllen ihn neu) — `rm -rf /etc/npm-cache/*` auf dem Coder-Host
 oder `npm cache clean --force` in einem Workspace.
+
+### Terraform-Provider-Pin und kein `coder_agent.dir` (2026-10-18)
+
+- Der Coder-Provider ist in allen vier `main.tf` auf **`~> 2.18`** gepinnt
+  (vorher `>= 1.0`), analog zum schon gepinnten `kreuzwerker/docker` (`~> 3.0`).
+  Damit zieht kein Apply unbemerkt eine neue Major-Version; installiert ist
+  derzeit **coder/coder v2.18.0**. Bei einem gewollten Provider-Update: Pin
+  anheben, committen, ausrollen.
+- **`coder_agent.dir` wird nicht mehr gesetzt.** Der Provider hat das Attribut
+  abgekündigt (`Warning: Argument is deprecated` / `dir has been deprecated and
+  will be removed in a future release.`) und warnte zusätzlich:
+  `Setting "dir" to a value other than $HOME will break Coder Desktop file sync.`
+  Unser Wert war exakt `$HOME` (`/home/<owner>`) — also identisch zum Default.
+  Das explizite Setzen war damit wirkungslos und erzeugte bei **jedem**
+  Plan/Apply zwei Warnungen. Verhalten unverändert: Shell-Sessions starten
+  weiterhin in `/home/<owner>`, und das Setup arbeitet ohnehin mit absoluten
+  Pfaden (`REPO_DIR` aus `SCRIPT_DIR`).
 
 ## Versions-Pins (`versions.env`)
 
