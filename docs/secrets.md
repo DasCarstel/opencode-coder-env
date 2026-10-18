@@ -38,7 +38,7 @@ ausschließlich in `/etc/opencode.env` (Mode 0600) ab.
 | `secret/data/mcp/grafana` | `GRAFANA_API_KEY` (`api_key`) |
 | `secret/data/mcp/opencloud` | `OPENCLOUD_API_KEY`, `OPENCLOUD_USERNAME` |
 | `secret/data/mcp/opencloud-ocis` | `OCIS_PRIVATE_USER/TOKEN`, `OCIS_MUELLERCONNECT_USER/TOKEN` |
-| `secret/data/mcp/opencode-go` | `OC_GO_DEFAULT1..3` — **nur diese drei Felder** |
+| `secret/data/mcp/opencode-go` | `OC_GO_DEFAULT1..4` — `default1`–`default3` sind die Go-Accounts der Hestia-Rotation, `default4` ist ein Reserve-Key (kein Go-Abo) |
 | `secret/data/mcp/ssh-mcp` | statischer ed25519-Key → `/root/.ssh/id_ed25519_mcp` |
 | `secret/data/mcp/ssh-mcp-pc` | exklusiver ed25519-Key für den Carsten-PC (Windows) → `/root/.ssh/id_ed25519_mcp_pc` (Profile `general` + `infrastructure`; **nicht** der gemeinsame Key) |
 | `secret/data/mcp/tailscale` | `TS_AUTHKEY` |
@@ -50,7 +50,7 @@ ausschließlich in `/etc/opencode.env` (Mode 0600) ab.
 | `secret/data/uni/moodle` | `username`, `password`, `base_url` – FernUni-Moodle-Zugang für die Sync-Pipeline (lokaler Login, kein SSO/2FA) |
 
 > **Hinweis zu `opencode-go`:** Der Pfad enthält ausschließlich die drei Keys
-> `default1`, `default2`, `default3`. Das frühere Feld `active` wird weder
+> `default1`, `default2`, `default3` (Go-Rotation) und `default4` (Reserve). Das frühere Feld `active` wird weder
 > gelesen noch geschrieben — die aktive Konto-Wahl lebt im Repo (siehe unten).
 
 **AppRoles** (Details in [`OPENBAO.md`](../OPENBAO.md)): `mcp-server` für die
@@ -81,7 +81,7 @@ ephemer bzw. aus OpenBao befüllt.
 | Befehl | Wirkung |
 |--------|---------|
 | `oc-go list` | zeigt die im Container verfügbaren Keys (`default1..3`) und welcher **lokal** als `OPENCODE_API_KEY` gesetzt ist (nur Key-Länge, nie der Wert) |
-| `oc-go use default1\|default2\|default3` | setzt den Key **in diesem Container**: `.bashrc` (dedupliziert) + OpenCode-Service-Env |
+| `oc-go use default1\|default2\|default3\|default4` | setzt den Key **in diesem Container**: `.bashrc` (dedupliziert) + OpenCode-Service-Env |
 
 - Die **Keys** kommen aus OpenBao (`secret/data/mcp/opencode-go`).
 - Der **aktive Account** kommt aus der SOT `.opencode/hestia-accounts.jsonc`

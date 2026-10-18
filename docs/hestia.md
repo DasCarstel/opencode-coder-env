@@ -66,7 +66,7 @@ Zwei Konsequenzen aus dem Setup:
 | `secret/data/mcp/github` | `api_key` | `GITHUB_TOKEN` |
 | `secret/data/mcp/hermes-opencode-service` | `password` | `OC_SERVER_PASSWORD` |
 | `secret/data/mcp/hestia` | `password` | `HESTIA_PASSWORD` (optional) |
-| `secret/data/mcp/opencode-go` | `default1`, `default2`, `default3` | `OC_GO_DEFAULT1..3` |
+| `secret/data/mcp/opencode-go` | `default1`, `default2`, `default3` (Hestia-Rotation), `default4` (Reserve) | `OC_GO_DEFAULT1..4` |
 
 Der Rest der Env (`OPENBAO_ADDR`, `GITHUB_REPO`, `OC_SERVER_URL`, Timeout- und
 Schwellenwerte) steht als Klartext in `hestia/docker-compose.yml`.

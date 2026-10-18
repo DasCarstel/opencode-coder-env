@@ -163,6 +163,7 @@ esac
 read_secret "secret/data/mcp/opencode-go" "default1" "OC_GO_DEFAULT1"
 read_secret "secret/data/mcp/opencode-go" "default2" "OC_GO_DEFAULT2"
 read_secret "secret/data/mcp/opencode-go" "default3" "OC_GO_DEFAULT3"
+read_secret "secret/data/mcp/opencode-go" "default4" "OC_GO_DEFAULT4"
 # KEIN read_secret mehr auf "active": der aktive Account wird allein von Hestia
 # über die SOT .opencode/hestia-accounts.jsonc bestimmt (siehe unten).
 # OpenCode-Server-Password (Fleet-Zugriff: Hestia + Hermes space-matrix)
@@ -1040,7 +1041,7 @@ source /etc/opencode.env 2>/dev/null
 case "${1:-list}" in
   list)
     echo "Verfügbare OpenCode-Go-Keys:"
-    for n in default1 default2 default3; do
+    for n in default1 default2 default3 default4; do
       v="OC_GO_${n^^}"; [ -n "${!v:-}" ] && echo "  - $n"
     done
     # Aktiv ist der LOKAL gesetzte Key (nicht mehr OpenBao). Quelle der Wahrheit
@@ -1052,7 +1053,7 @@ case "${1:-list}" in
     [ -z "$ACT_KEY" ] && ACT_KEY="${OPENCODE_API_KEY:-}"
     ACT="unbekannt"
     if [ -n "$ACT_KEY" ]; then
-      for n in default1 default2 default3; do
+      for n in default1 default2 default3 default4; do
         v="OC_GO_${n^^}"
         [ -n "${!v:-}" ] && [ "$v" = "$ACT_KEY" ] && ACT="$n"
       done
@@ -1064,7 +1065,7 @@ case "${1:-list}" in
     ;;
   use)
     NAME="${2:-}"
-    [ -z "$NAME" ] && { echo "Nutzung: oc-go use <default1|default2|default3>"; exit 1; }
+    [ -z "$NAME" ] && { echo "Nutzung: oc-go use <default1|default2|default3|default4>"; exit 1; }
     VAR="OC_GO_${NAME^^}"; KEY="${!VAR:-}"
     [ -z "$KEY" ] && { echo "Unbekannter Key: $NAME"; exit 1; }
     # .bashrc erst deduppen, dann genau EINE Zeile anhängen (kein blindes >>).
@@ -1078,7 +1079,7 @@ case "${1:-list}" in
     echo "✗ 'oc-go default' ist entfernt."
     echo "  Der aktive OpenCode-Go-Account wird ausschließlich von Hestia (Panel)"
     echo "  über die SOT .opencode/hestia-accounts.jsonc (Feld \"active\") bestimmt."
-    echo "  Für einen lokalen Test: oc-go use <default1|default2|default3>"
+    echo "  Für einen lokalen Test: oc-go use <default1|default2|default3|default4>"
     exit 1
     ;;
   *) echo "Nutzung: oc-go [list | use <name>]";;

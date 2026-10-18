@@ -12,7 +12,7 @@ Secrets (AppRole-Policy muss covered paths freigeben):
                                            Fehlt der Pfad oder das Feld (403/404),
                                            ist das kein Fehler: Benchmarks laufen
                                            dann mit OpenRouter allein weiter.
-  secret/data/mcp/opencode-go               → OC_GO_DEFAULT1..3 (je ein Feld)
+  secret/data/mcp/opencode-go               → OC_GO_DEFAULT1..4 (je ein Feld)
                                           ('active' wird NICHT mehr geladen — die
                                            SOT .opencode/hestia-accounts.jsonc
                                            bestimmt den aktiven Account)
@@ -39,7 +39,8 @@ GO_ACCOUNTS_PATH = "secret/data/mcp/opencode-go"
 # im OpenBao-Secret bleibt zwar bestehen, hat aber keine Wirkung mehr.
 GO_FIELDS = [("default1", "OC_GO_DEFAULT1"),
              ("default2", "OC_GO_DEFAULT2"),
-             ("default3", "OC_GO_DEFAULT3")]
+             ("default3", "OC_GO_DEFAULT3"),
+             ("default4", "OC_GO_DEFAULT4")]
 
 # Artificial Analysis (Primärquelle der Benchmarks) — OPTIONAL.
 # Fehlt der Pfad (403/404) oder das Feld, wird nur geloggt: benchmarks.py
