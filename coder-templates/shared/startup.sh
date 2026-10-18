@@ -198,7 +198,7 @@ install_ocis_mcp() {
   fi
 }
 
-# Herdr: Quelle herdr.dev-API, Fallback Host-Bind-Mount /opt/opencode-bin.
+# Herdr: Quelle GitHub-Release-Asset, Fallback Host-Bind-Mount /opt/opencode-bin.
 herdrver() { "$1" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1; }
 install_herdr() {
   local cur hostbin="/opt/opencode-bin/herdr"
@@ -213,9 +213,15 @@ install_herdr() {
       && echo "  ✓ Herdr ${HERDR_VERSION} aus /opt/opencode-bin installiert" \
       || echo "  ⚠ Herdr aus /opt/opencode-bin konnte nicht installiert werden"
   else
-    echo "  → Herdr ${HERDR_VERSION} wird heruntergeladen (herdr.dev)..."
-    if curl -fsSL --max-time 60 -o "$HERDR_BIN.tmp" \
-        "https://herdr.dev/api/releases/v${HERDR_VERSION}/linux-amd64" \
+    # Release-Assets liegen auf GitHub als herdr-linux-<arch>. Die frühere URL
+    # herdr.dev/api/releases/... liefert nur eine HTML-Seite (~51 KB) – der
+    # Download schlug damit still fehl und fiel auf /opt/opencode-bin (alte
+    # Version) zurück.
+    local asset="herdr-linux-x86_64"
+    case "$(uname -m)" in aarch64|arm64) asset="herdr-linux-aarch64" ;; esac
+    echo "  → Herdr ${HERDR_VERSION} wird heruntergeladen (GitHub)..."
+    if curl -fsSL --max-time 120 -o "$HERDR_BIN.tmp" \
+        "https://github.com/herdrdev/herdr/releases/download/v${HERDR_VERSION}/${asset}" \
        && chmod +x "$HERDR_BIN.tmp" \
        && [ "$(herdrver "$HERDR_BIN.tmp")" = "${HERDR_VERSION}" ]; then
       mv "$HERDR_BIN.tmp" "$HERDR_BIN"

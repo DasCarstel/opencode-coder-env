@@ -500,7 +500,7 @@ abzuarbeiten — sie hängen nicht voneinander ab und brauchen nur Netz:
 | `npm_chain` | OpenCode-CLI (npm-latest), `ssh-mcp` (Pin; `infrastructure`/`general`), DCP (Pin) | `/tmp/bg-npm.log` |
 | `install_uv` | uv/uvx (für uvx-basierte MCP-Server) | `/tmp/bg-uv.log` |
 | `install_ocis_mcp` | `ocis-mcp-server` (Pin, Go-Binary) | `/tmp/bg-ocis-mcp.log` |
-| `install_herdr` | Herdr (Pin; Host-Bind oder `herdr.dev`) | `/tmp/bg-herdr.log` |
+| `install_herdr` | Herdr (Pin; Host-Bind oder GitHub-Release-Asset) | `/tmp/bg-herdr.log` |
 | `setup_tailscale` | Tailscale (`infrastructure`) — **nicht getrackt**, nichts hängt davon ab | `/tmp/bg-tailscale.log` |
 
 Die drei npm-Pakete bleiben bewusst in **einem** Job (`npm_chain`) hintereinander:
@@ -564,8 +564,8 @@ sind idempotent: was das Image schon mitbringt (Stempel-Dateien in
     jeweils andere aktiv **entfernt** (`opencode service unset env`). Ein
     Infrastructure-/General-Workspace kann den Arbeits-Vault physisch nicht sehen.
 15. **Herdr** — Install auf Pin als Hintergrund-Job `install_herdr`:
-    Host-Bind-Mount `/opt/opencode-bin/herdr` bzw. Download von `herdr.dev`,
-    Version wird verifiziert.
+    Host-Bind-Mount `/opt/opencode-bin/herdr` bzw. Download des
+    GitHub-Release-Assets `herdr-linux-<arch>`, Version wird verifiziert.
 16. **Herdr-Workspaces** — Server starten, Workspaces idempotent anlegen und je
     einen OpenCode-Agenten starten:
 

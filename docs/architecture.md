@@ -91,7 +91,7 @@ Adressen und verwirft keine bestehenden Verbindungen.
 
 - Das Binary liegt auf dem Coder-Host unter `/opt/opencode-bin/herdr` und wird
   **read-only** in den Container gemountet.
-- `startup.sh` installiert daraus (bzw. per Download von `herdr.dev`, siehe
+- `startup.sh` installiert daraus (bzw. per Download des GitHub-Release-Assets, siehe
   [`coder-templates.md`](coder-templates.md)) `/usr/local/bin/herdr`, startet
   `herdr server` und legt die Workspaces des Profils an.
 - Die Coder-App (`coder_app` in `main.tf`, slug `herdr`) startet `/usr/local/bin/herdr`
