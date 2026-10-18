@@ -1376,8 +1376,8 @@ if [ -x "$HERDR_BIN" ] && "$HERDR_BIN" status 2>/dev/null | grep -q "status: run
 fi
 
 if [ -x "$HERDR_BIN" ]; then
-  echo "  → Herdr-Server wird gestartet..."
   if ! "$HERDR_BIN" status 2>/dev/null | grep -q "status: running"; then
+    echo "  → Herdr-Server wird gestartet..."
     nohup "$HERDR_BIN" server > /tmp/herdr-server.log 2>&1 &
     # auf den Server warten statt blind sleep 3
     for _ in $(seq 1 20); do
