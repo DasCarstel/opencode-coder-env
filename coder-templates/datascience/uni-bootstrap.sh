@@ -280,9 +280,22 @@ fi
 GATE_PY="$REPO_DIR/coder-templates/datascience/fernuni-gate.py"
 GATE_LOG="$LOG_DIR/fernuni-gate.log"
 GATE_LISTEN="127.0.0.1:8891"
+# Port-Check ohne 'ss': ss ist in den Workspace-Images nicht installiert, der
+# frühere Check griff dadurch nie und stufte ein laufendes Tor stets als
+# "nicht laufend" ein (parallel gestartete zweite Instanz). Fallback ist ein
+# reiner TCP-Connect über bash (/dev/tcp) – funktioniert hier, weil das Tor
+# auf Loopback lauscht und ein refused sofort zurückkommt.
+port_open() {  # port_open <host> <port>
+  if command -v ss >/dev/null 2>&1; then
+    ss -tln 2>/dev/null | grep -qE "(^|[^0-9])${1}:${2}([^0-9]|\$)"
+  else
+    (exec 3<>"/dev/tcp/${1}/${2}") 2>/dev/null
+  fi
+}
+
 if [ ! -f "$GATE_PY" ]; then
   echo "  ⚠ fernuni-gate.py fehlt ($GATE_PY) – die FernUni-App startet den Stack nicht mehr von selbst"
-elif ss -tln 2>/dev/null | grep -qE '(^|[^0-9])127\.0\.0\.1:8891([^0-9]|$)'; then
+elif port_open 127.0.0.1 8891; then
   echo "  ✓ FernUni-Tor läuft bereits auf $GATE_LISTEN"
 else
   echo "  → FernUni-Tor starten ($GATE_LISTEN → 127.0.0.1:8888, Log: $GATE_LOG)"

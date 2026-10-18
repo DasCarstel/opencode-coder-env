@@ -72,6 +72,9 @@ BG_PIDS=()
 BG_LABELS=()
 # Startzeit des Setups für die Dauer-Meldung am Ende (Messbasis).
 SETUP_T0=$SECONDS
+# Zeitmarken im Setup-Log: macht die Anteile der Startdauer direkt
+# ablesbar (kostet nichts, schreibt nur eine Zeile).
+STAMP() { printf '  [%3ss] %s\n' "$((SECONDS-SETUP_T0))" "$1"; }
 bg() {   # bg <Label> <Logdatei> <Befehl…>
   local label="$1" log="$2"; shift 2
   ( "$@" ) >>"$log" 2>&1 &
@@ -316,6 +319,7 @@ echo "  ✓ OpenBao-Token erhalten"
 
 # ── OpenBao: Secrets laden ──────────────────────────────────────────────────
 echo ""
+STAMP "OpenBao-Login fertig"
 echo "=== OpenBao: Secrets laden ==="
 read_secret() {
   local path="$1" key="$2" varname="$3"
@@ -391,6 +395,7 @@ read_secret "secret/data/mcp/hermes-opencode-service" "password" "OPENCODE_SERVE
 
 # ── GitHub-Credentials (git clone/push privater Repos) ──────────────────────
 echo ""
+STAMP "Secrets geladen"
 echo "=== Git-Credentials (GitHub) ==="
 if [ -f "$REPO_DIR/scripts/setup-git-credentials.sh" ]; then
   bash "$REPO_DIR/scripts/setup-git-credentials.sh" || echo "  ⚠ setup-git-credentials fehlgeschlagen"
@@ -400,6 +405,7 @@ fi
 
 # ── Parallel-Setup starten (unabhängig voneinander, brauchen nur Netz) ──────
 echo ""
+STAMP "Parallel-Setup: Start"
 echo "=== Parallel-Setup (Hintergrund) ==="
 bg "OpenCode/ssh-mcp/DCP" /tmp/bg-npm.log npm_chain
 bg "uv/uvx"               /tmp/bg-uv.log install_uv
@@ -923,6 +929,7 @@ echo 'alias update-opencode-config="cd ~/opencode-coder-env && git pull --ff-onl
 
 # ── MCP-Konfiguration (Config installieren, profil-spezifisch) ──────────────
 echo ""
+STAMP "MCP-Config: Start"
 echo "=== MCP-Konfiguration ==="
 case "$PROFILE" in
   infrastructure) GLOBAL_CFG_SRC="$REPO_DIR/coder-templates/infrastructure/config/global-opencode.json" ;;
@@ -975,6 +982,7 @@ fi
 # Start des Dienstes automatisch geladen (wie das herdr-Plugin daneben).
 # Ohne Token bleibt es still — es blockiert also nichts, wenn das Secret fehlt.
 echo ""
+STAMP "MCP-Config: fertig"
 echo "=== ntfy: OpenCode-Benachrichtigungen ==="
 NTFY_PLUGIN_SRC="$REPO_DIR/coder-templates/shared/plugins/ntfy-notify.js"
 mkdir -p ~/.config/opencode/plugins
@@ -1068,8 +1076,10 @@ PY
 
 # ── Barriere: ab hier wird die OpenCode-CLI wirklich benutzt ────────────────
 echo ""
+STAMP "Barriere: warte auf Jobs"
 echo "=== Parallel-Setup: warte auf Hintergrund-Jobs ==="
 wait_bg
+STAMP "Barriere: fertig"
 
 # ── Env-Injektion: HA / authentik (nur infrastructure) ──────────────────────
 if [ "$PROFILE" = "infrastructure" ]; then
@@ -1164,6 +1174,7 @@ fi
 # build = @medium (Standardvariante), plan = @medium mit höchster Variante.
 # Nutzt den laufenden OpenCode-Server für die Varianten-Liste.
 echo ""
+STAMP "Agents: Start"
 echo "=== Primary-Agents (build/plan) ==="
 if [ -f "$OVERRIDES_SRC" ]; then
   # OpenCode-Server sicherstellen — die Varianten-Liste kommt von /api/model
@@ -1236,6 +1247,7 @@ echo "  ✓ Helper 'oc-go' installiert"
 # bindet loopback — für Hestia/Hermes-Fleet-Zugriff (Port 49374) brauchen wir
 # 0.0.0.0 + das Passwort aus secret/data/mcp/hermes-opencode-service (Goldquelle).
 echo ""
+STAMP "Agents + Env-Injektion: fertig"
 echo "=== OpenCode-Server-Binding (Service) ==="
 if [ -n "${OPENCODE_SERVER_PASSWORD:-}" ]; then
   opencode service set env OPENCODE_SERVER_PASSWORD "${OPENCODE_SERVER_PASSWORD}" >/dev/null 2>&1 || true
@@ -1309,6 +1321,7 @@ esac
 
 # ── Herdr-Server + Workspaces ───────────────────────────────────────────────
 echo ""
+STAMP "OpenCode-Service: fertig"
 echo "=== Herdr-Server & Workspaces ==="
 export PATH="/root/.local/bin:$PATH"
 
@@ -1530,4 +1543,5 @@ if [ -d "$REPO_DIR/.git" ]; then
     echo "$STASHED" | sed 's/^/     /'
   fi
 fi
+STAMP "Herdr + Workspaces: fertig"
 echo "=== Setup abgeschlossen in $((SECONDS-SETUP_T0))s ($PROFILE) ==="
