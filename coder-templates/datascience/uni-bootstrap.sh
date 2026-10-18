@@ -299,7 +299,11 @@ fi
 
 # ── 6. startup.sh (Profil datascience) ────────────────────────────────────
 echo "  → startup.sh $PROFILE starten (Log: /tmp/uni-startup.log)"
-if [ -x "$REPO_DIR/coder-templates/shared/startup.sh" ]; then
+# -f statt -x: startup.sh wird hier ohnehin per 'bash' aufgerufen, das
+# Ausführungsbit ist also nicht nötig. Der frühere -x-Test machte den Aufruf
+# davon abhängig und ließ die gesamte Setup-Kette still ausfallen, nachdem
+# das Bit in Git verloren ging (737826e: 100755 -> 100644).
+if [ -f "$REPO_DIR/coder-templates/shared/startup.sh" ]; then
   bash "$REPO_DIR/coder-templates/shared/startup.sh" "$PROFILE" > /tmp/uni-startup.log 2>&1 \
     || echo "  ⚠ startup.sh wurde mit Fehler beendet (siehe /tmp/uni-startup.log)"
 else
