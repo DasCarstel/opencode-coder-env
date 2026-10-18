@@ -192,6 +192,11 @@ Restbudget hat. Konfiguriert in `policy.expiring`:
 | `windows` | welche Fenster zählen — bewusst **nicht** `rolling`/5 h |
 | `minRemainingPercent` | nur bevorzugen, wenn noch ≥ X % frei sind |
 
+Gesperrte Abos sind **ausgenommen**: Steht irgendein Fenster des Kontos bei 0 %
+frei (Status `rate-limited`), lässt es sich nicht leerverbrauchen — das Panel
+markiert es dann auch nicht mit `⚡`. Die Empfehlung bleibt in diesem Fall bei
+den Regeln 2 und 3 (Erschöpfung/Ausgleich).
+
 Die Bevorzugung gilt, **bevor** die Ausgleichs- und Erschöpfungsregeln greifen. Eine
 abgelaufene Bevorzugung im aktiven Konto wird also nicht zurückgenommen.
 

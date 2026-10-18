@@ -221,7 +221,7 @@ print("== 10) expiring-Hysterese (Flip-Flop-Schutz) ==")
 
 
 def acc(aid, weekly_free, weekly_reset_h, weekly_status="ok",
-        monthly_free=50.0, monthly_reset_h=500.0):
+        monthly_free=50.0, monthly_reset_h=500.0, monthly_status="ok"):
     from datetime import datetime, timedelta, timezone
 
     def iso(h):
@@ -233,7 +233,7 @@ def acc(aid, weekly_free, weekly_reset_h, weekly_status="ok",
             "weekly": {"free": weekly_free, "used": 100.0 - weekly_free,
                        "status": weekly_status, "resetsAt": iso(weekly_reset_h)},
             "monthly": {"free": monthly_free, "used": 100.0 - monthly_free,
-                        "status": "ok", "resetsAt": iso(monthly_reset_h)},
+                        "status": monthly_status, "resetsAt": iso(monthly_reset_h)},
         },
     }
 
@@ -275,6 +275,41 @@ r = eval_cfg("default3", [acc("default3", 0.0, 5, weekly_status="rate-limited"),
 check("c1 erschoepft -> Wechsel trotz Hysterese", r.get("switchRecommended") is True, str(r))
 check("c2 Ziel = default2", r.get("target") == "default2", str(r.get("target")))
 check("c3 Grund 'aktiv erschoepft'", (r.get("reason") or "").startswith("aktiv erschöpft"), str(r.get("reason")))
+
+print("== 11) gesperrtes Abo wird nicht leergefahren ==")
+# Hintergrund (2026-10-18): Das Panel zeigte "⚡ OpenCode Go #3 wird jetzt
+# bevorzugt leergefahren — Reset in 10 h (Woche), noch 100 % frei", obwohl das
+# Konto im Monatsfenster gesperrt war (0 % frei). Leerfahren setzt aber voraus,
+# dass sich das Konto überhaupt noch nutzen lässt; ein gesperrtes Abo kann
+# nichts mehr "retten".
+# Aufbau 1:1 aus dem Screenshot — alle drei Konten im Monat gesperrt, die
+# Wochenfenster laufen in 10 h bei 29/77/100 % frei zurueck.
+shot = [
+    acc("default1", 0.0, 10, weekly_status="rate-limited", monthly_free=29.0),
+    acc("default2", 77.0, 10, monthly_free=0.0, monthly_status="rate-limited"),
+    acc("default3", 100.0, 10, monthly_free=0.0, monthly_status="rate-limited"),
+]
+check("d1 gesperrtes Wochen-Fenster zaehlt nicht",
+      accounts._expiring(shot[0], ["weekly", "monthly"], 24, 5) is None)
+check("d2 Konto mit gesperrtem Monat zaehlt nicht",
+      accounts._expiring(shot[2], ["weekly", "monthly"], 24, 5) is None)
+check("d3 gesundes Konto zaehlt weiter",
+      accounts._expiring(acc("default9", 100.0, 10), ["weekly", "monthly"], 24, 5) is not None)
+r = eval_cfg("default3", shot)
+check("d4 kein Leerfahr-Wechsel", r.get("switchRecommended") is False, str(r))
+check("d5 kein Grund 'bald ablaufend'",
+      not (r.get("reason") or "").startswith("bald ablaufend"), str(r.get("reason")))
+# Gegenprobe: dasselbe Wochenfenster ohne Monats-Sperre wird weiter bevorzugt.
+r = eval_cfg("default1", [acc("default1", 90, 300), acc("default2", 90, 3)])
+check("d6 gesundes Abo wird weiter bevorzugt",
+      r.get("switchRecommended") is True and r.get("target") == "default2", str(r))
+# Erschoepfungsregel (Regel 1) waehlt weiterhin nur freie Ziele: das gesperrte
+# default2 darf nicht als Ziel durchkommen.
+r = eval_cfg("default1", [acc("default1", 0.0, 1, weekly_status="rate-limited"),
+                          acc("default2", 90, 3, monthly_free=0.0, monthly_status="rate-limited"),
+                          acc("default3", 60, 200)])
+check("d7 erschoepft: gesperrtes Ziel uebersprungen",
+      r.get("target") == "default3", str(r))
 
 print()
 print(f"FEHLGESCHLAGEN: {len(fails)}" + (f" -> {fails}" if fails else ""))

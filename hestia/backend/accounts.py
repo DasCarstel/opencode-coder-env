@@ -200,11 +200,40 @@ def _probe(key: str, provider: dict) -> tuple:
         return False, str(e)
 
 
+def _exhausted(account: dict) -> bool:
+    """Konto aktuell gesperrt? — irgendein Fenster 0 % frei oder rate-limited.
+
+    Gleiche Definition wie Regel 1 (`switchWhenExhausted`) und das
+    "gesperrt"-Badge im Panel. Ein gesperrtes Abo lässt sich nicht
+    leerverbrauchen: "use it or lose it" kann dort nichts retten, und die
+    Usage-API setzt `free` für rate-limited Fenster ohnehin auf 0.
+    """
+    for w in (account.get("windows") or {}).values():
+        if not isinstance(w, dict):
+            continue
+        if w.get("status") == "rate-limited":
+            return True
+        try:
+            if float(w.get("free") or 0) <= 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
 def _expiring(account: dict, windows, within_hours: float, min_remaining: float):
     """Fenster, das innerhalb von within_hours zurücksetzt und noch >= min_remaining % frei hat.
 
     Rückgabe: {"window": <name>, "hoursLeft": float, "free": float} oder None.
+
+    Gesperrte Konten liefern immer None (siehe _exhausted): Ein Abo, das in
+    einem anderen Fenster bei 0 % steht, kann man nicht mehr leerverbrauchen —
+    das Panel zeigte sonst "⚡ wird jetzt bevorzugt leergefahren" für bereits
+    leere Konten (beobachtet 2026-10-18: Monatsfenster 0 %, Wochenfenster
+    100 % frei).
     """
+    if _exhausted(account):
+        return None
     best = None
     for name in (windows or []):
         w = (account.get("windows") or {}).get(name) or {}
@@ -264,6 +293,8 @@ def evaluate(cfg: dict, accounts: list) -> dict:
         # bald ab, zeigt jede Prüfung nach Ablauf des Cooldowns auf das jeweils
         # andere Konto → Endlos-Ping-Pong im Cooldown-Takt (beobachtet am
         # 2026-10-18 zwischen default2 und default3, alle ~30 min).
+        # Ein selbst gesperrtes aktives Konto (siehe _exhausted) bremst die
+        # Regel bewusst nicht: es lässt sich ohnehin nicht abarbeiten.
         if active is not None and _expiring(active, ewin, within, min_rem) is None:
             soon = [(a, _expiring(a, ewin, within, min_rem)) for a in others]
             soon = [(a, e) for a, e in soon if e]

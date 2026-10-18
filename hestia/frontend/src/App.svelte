@@ -1545,6 +1545,7 @@ setInterval(loadSuggestStatus, 60000)
     <p class="muted" style="margin:6px 0 0">
       Ablauf-Bevorzugung aktiv: Ein Abo wird bevorzugt leergefahren, sobald ein Fenster in
       ≤ {accStatus.policy.expiring.withinHours} h zurücksetzt und noch ≥ {accStatus.policy.expiring.minRemainingPercent} % frei ist.
+      Bereits gesperrte Abos (ein Fenster bei 0 % frei) sind ausgenommen — die lassen sich nicht mehr leerverbrauchen.
     </p>
   {/if}
 
@@ -1605,6 +1606,10 @@ setInterval(loadSuggestStatus, 60000)
       💡 Wechsel empfohlen → <span class="mono">{accStatus.recommendation.target}</span>
       ({accStatus.recommendation.reason})
       <button class="mini" onclick={() => runAccountsSwitch(accStatus.recommendation.target)} disabled={accBusy}>⇄ jetzt wechseln</button>
+    </p>
+  {:else if accStatus?.recommendation?.reason}
+    <p class="muted" style="margin-top:10px; border-top:1px solid var(--line); padding-top:8px">
+      ℹ {accStatus.recommendation.reason}
     </p>
   {/if}
 </div>
