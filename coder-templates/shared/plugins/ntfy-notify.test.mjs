@@ -1280,6 +1280,46 @@ const UI_ENV = {
   );
 }
 
+// b2) NTFY_LINK_HOST steuert die Host-Endung nach dem Owner (inkl. Trennzeichen);
+//     leer/ungesetzt bleibt beim bisherigen Default "-<Host der CODER_AGENT_URL>".
+{
+  const LINK_BASE =
+    "https://49374--main--infrastructure--carstenmueller2002.apps.mueller-nas.de";
+  const LINK_KEY = serverKeyOf(LINK_BASE);
+  const linked = makeNotifier({ env: { ...UI_ENV, NTFY_LINK_HOST: ".apps.mueller-nas.de" } });
+  received.length = 0;
+  await linked.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  linked.markWorking(SESSION);
+  await linked.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Fertig-Meldung mit NTFY_LINK_HOST geht raus");
+  eq(
+    linked.linkFor(SESSION),
+    `${LINK_BASE}/server/${LINK_KEY}/session/${SESSION}`,
+    "NTFY_LINK_HOST ergänzt die Endung nach dem Owner (Schlüssel bleibt base64url des Ursprungs)"
+  );
+  eq(
+    received[0]?.body?.click,
+    `${LINK_BASE}/server/${LINK_KEY}/session/${SESSION}`,
+    "das Klickziel trägt die NTFY_LINK_HOST-Endung"
+  );
+
+  const blank = makeNotifier({ env: { ...UI_ENV, NTFY_LINK_HOST: "   " } });
+  await blank.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  eq(
+    blank.linkFor(SESSION),
+    `${UI_BASE}/server/${UI_KEY}/session/${SESSION}`,
+    "ein nur-Whitespace-Wert fällt auf den Standard-Host zurück"
+  );
+
+  const empty = makeNotifier({ env: { ...UI_ENV, NTFY_LINK_HOST: "" } });
+  await empty.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  eq(
+    empty.linkFor(SESSION),
+    `${UI_BASE}/server/${UI_KEY}/session/${SESSION}`,
+    "ein leerer Wert fällt auf den Standard-Host zurück"
+  );
+}
+
 // b) NTFY_SERVER_KEY gewinnt als Override; leer → berechneter Schlüssel.
 {
   const sidecar = makeNotifier({ env: { ...UI_ENV, NTFY_SERVER_KEY: "sidecar" } });

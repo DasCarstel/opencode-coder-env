@@ -75,6 +75,11 @@
 //                     unabhängig vom Prozess-Check
 //   NTFY_SESSION_PORT Port der laufenden `opencode serve`-Web-UI für den
 //                     Klick-Link (Default 49374)
+//   NTFY_LINK_HOST    Host-Endung nach dem Owner, inklusive des Trenn-
+//                     zeichens, z. B. ".apps.mueller-nas.de" — ergibt
+//                     `<port>--<agent>--<workspace>--<owner>.apps.mueller-
+//                     nas.de`. Ohne Angabe bleibt es bei "-<Host der
+//                     CODER_AGENT_URL>" (Default coder.mueller-nas.de).
 //   NTFY_SESSION_URL  feste Session-URL — schlägt die automatische Ableitung
 //   NTFY_SERVER_KEY   Optionaler Override; sonst base64url des Ursprungs der
 //                     Basis. Serverschlüssel der OpenCode-Oberfläche im
@@ -928,8 +933,10 @@ export function createNtfyNotifier(options = {}) {
     const workspace = env.CODER_WORKSPACE_NAME || parsed.workspace;
     const user = env.CODER_WORKSPACE_OWNER_NAME || owner;
     const port = env.NTFY_SESSION_PORT || "49374";
-    const coderHost = hostFromUrl(env.CODER_AGENT_URL) || "coder.mueller-nas.de";
-    return `https://${port}--${agent}--${workspace}--${user}-${coderHost}`;
+    const suffix =
+      String(env.NTFY_LINK_HOST ?? "").trim() ||
+      `-${hostFromUrl(env.CODER_AGENT_URL) || "coder.mueller-nas.de"}`;
+    return `https://${port}--${agent}--${workspace}--${user}${suffix}`;
   }
 
   /**
