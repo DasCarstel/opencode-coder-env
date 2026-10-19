@@ -244,10 +244,24 @@ Eigenschaften:
 - Topic default `ai`, Klick-URL zeigt auf die Coder-App der Workspace
   (`https://herdr--<workspace>--<owner>-coder.mueller-nas.de`).
 - Subagent-Sessions (`parentID`) werden geschluckt — nur die Eltern-Session meldet.
+- Session-Metadaten (Titel, Arbeitsbereich, Eltern-Session) liest das Plugin aus
+  dem Ereignis selbst. In OpenCode **2.0.x** steht die Info direkt in `data`
+  (`session.created` liefert dort `sessionID`, `title`, `subpath`,
+  `location.directory`, `parentID`) — nicht mehr unter `properties.info`. Fehlt
+  sie, hießen Meldungen `Session <id>` mit dem Rückfall-Projekt `opencode`, und
+  `NTFY_IGNORE_TITLES` konnte nicht greifen (Hestias stündliche Ausfall-Proben
+  meldeten sich dann als „✅ Fertig — opencode"). Bei künftigen
+  OpenCode-Aktualisierungen zuerst diese Feldnamen prüfen. Titel und Pfad werden
+  beim Eintreffen des Ereignisses übernommen, nicht erst beim Senden: die
+  Probe-Session ist beim Versand schon gelöscht, ein Nachladen über
+  `session.get` liefe dann ins Leere (`sendOnce` versucht es trotzdem).
 - Leere Sessions lösen nichts aus (gemeldet wird nur, wenn die Session vorher
   wirklich gearbeitet hat).
 - Ohne Token bleibt das Plugin still, es bricht nichts.
-- Dedup-Fenster 15 s je Session + Art.
+- Dedup-Fenster 15 s je Session + Art. Zusätzlich wird derselbe **Fehlertext**
+  gedrosselt: höchstens einmal je `NTFY_ERROR_THROTTLE_MS` (Default 24 h),
+  Zustand in `NTFY_STATE_FILE` — ein wiederkehrendes Provider-Limit erzeugt so
+  eine Meldung pro Tag statt einer pro Turn.
 
 #### Umgebungsvariablen
 
@@ -260,7 +274,9 @@ Eigenschaften:
 | `NTFY_ICON_BASE` | Basis-URL der PNG-Symbole; jede Meldung bekommt `icon = <basis>/<workspace>.png?v=4`. |
 | `NTFY_LINK_STYLE` | `session` (Default) = Klickziel ist der Session-Deep-Link („Session öffnen"); `base` = nur die Startseite der Oberfläche. |
 | `NTFY_IGNORE_TITLES` | Kommagetrennte Titel-Teile, die stumm bleiben (z. B. `Ausfall-Probe`). |
-| `NTFY_DEBOUNCE_MS` | Verzögerung für „Fertig"-Meldungen in Millisekunden (Default `60000`): eine Meldung wird erst nach N ms ohne neue Aktivität verschickt; neue Aktivität bricht den Timer ab. `0` = sofort (Vorgängerverhalten). |
+| `NTFY_DEBOUNCE_MS` | Verzögerung für „Fertig"-Meldungen in Millisekunden (im Workspace `0` = sofort, siehe `startup.sh`): eine Meldung wird erst nach N ms ohne neue Aktivität verschickt; neue Aktivität bricht den Timer ab. Ohne Wert meldet das Plugin sofort. Zu groß gewählt kostet nur Reaktionszeit (die Meldung kommt, wenn der Chat längst gelesen ist), zu klein erzeugt in aktiv geführten Gesprächen eine Meldung je Antwort. |
+| `NTFY_ERROR_THROTTLE_MS` | Fenster der Fehler-Drossel in Millisekunden (Default `86400000` = 24 h): denselben Fehlertext meldet das Plugin höchstens einmal je Fenster, ein anderer Fehlertext kommt weiterhin sofort. `0` = Drossel aus (jeder Fehlschlag wird gemeldet). |
+| `NTFY_STATE_FILE` | Datei mit den Zeitstempeln der Fehler-Drossel (Default `~/.local/share/opencode/ntfy-notify-state.json`). Liegt im OpenCode-Datenverzeichnis (im Container `/etc/opencode-data/<nutzer>`, siehe `coder-templates/*/main.tf`) und übersteht damit die Neuerstellung des Containers. Die Datei enthält nur Fehler-Fingerabdrücke und Zeitstempel, keine Fehlertexte. |
 | `NTFY_REPLY_LOG` | Pfad des Diagnose-Logs (z. B. `/tmp/opencode/ntfy-diag.log`); leer = aus. |
 
 Alle Werte liest das Plugin zusätzlich aus der Env-Datei `/etc/opencode.env`
@@ -292,9 +308,28 @@ sonst `/etc/opencode.env` (Pfad über `NTFY_ENV_FILE` änderbar) → Default-URL
 > Der Token muss also nicht mehr im Service-Env stehen.
 
 **Plugin-Datei ändern genügt:** der Service lädt Plugins bei Aktivität neu
-(kein Neustart nötig); nur Änderungen an `/etc/opencode.env` bzw. am Secret
-brauchen einen Neustart des Containers/Service, weil die Datei nur von
-`startup.sh` geschrieben wird.
+(kein Neustart nötig). **Env-Änderungen** wirken dagegen nicht von selbst: jede
+Plugin-Instanz liest `/etc/opencode.env` genau **einmal**, bei ihrem Erzeugen,
+und behält diese Werte, bis sie ersetzt wird. (`startup.sh` schreibt die Datei
+nur beim Start; die Datei allein zu ändern erreicht die laufenden Instanzen
+nicht.) Werte ändern heißt deshalb:
+
+- `/etc/opencode.env` ändern **und** die Plugin-Datei anfassen
+  (`touch ~/.config/opencode/plugins/ntfy-notify.js`) — der Neulade-Zyklus
+  ersetzt alle Instanzen, die neuen lesen die Datei und schreiben ihre
+  tatsächlichen Werte als `notifier-bereit: debounce=… ms, cooldown=… ms,
+  fehler-drossel=… ms` ins Diagnose-Log;
+- oder den Dienst/Container neu starten.
+
+Ohne einen dieser Schritte läuft still die alte Einstellung weiter. Genau das
+passierte am 18.10.2026: `NTFY_DEBOUNCE_MS` wurde in der Datei von `60000` über
+`15000` auf `0` gesetzt, während die Instanzen seit 14:16:39 unverändert liefen
+— die „Fertig"-Meldungen blieben bei ~60 s.
+
+Wieviel Zeit zwischen Turn-Ende und Versand liegt, steht ebenfalls im
+Diagnose-Log: `fertig-ausgeloest` (Turn-Ende verarbeitet) → `fertig-versand`
+(POST geht raus). Bei `debounce=0` liegen beide Zeilen wenige Millisekunden
+auseinander.
 
 Diagnose im Container (Token aus der Env-Datei, echte Nachricht):
 
@@ -353,6 +388,11 @@ Empirisch im Container (OpenCode 2.0.29) geprüft:
 - `crit` bleibt ungefiltert (Ausfälle dürfen nie untergehen).
 - Ein Topic pro Zweck statt eines Sammel-Topics — Filter und später „Zustellen
   nur zu diesen Zeiten“ (ntfy: *Do not disturb*) greifen pro Topic.
+- Wiederkehrende Fehler drosselt das Plugin selbst: denselben Fehlertext meldet
+  es höchstens einmal je `NTFY_ERROR_THROTTLE_MS` (Default 24 h). Tritt der
+  Fehler zwischenzeitlich wieder auf, nennt die nächste Meldung die Zahl der
+  unterdrückten Wiederholungen. Frage, Freigabe und „Fertig" bleiben ungedrosselt
+  (der Debounce für „Fertig" ist `NTFY_DEBOUNCE_MS`).
 - Der Hub ersetzt nicht die HA-`mobile_app`-Benachrichtigungen: Doppelmeldungen
   sind zu vermeiden (siehe Phase 4 — Umstellung der 26 Routinenachrichten in
   `/etc/docker/homeassistant/automations.yaml`).

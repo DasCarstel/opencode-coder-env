@@ -1023,10 +1023,22 @@ set_env_default NTFY_ICON_BASE     "$NTFY_ICON_BASE_DEFAULT"
 set_env_default NTFY_IGNORE_TITLES "Ausfall-Probe"
 set_env_default NTFY_LINK_STYLE    "session"
 set_env_default NTFY_REPLY_LOG     "/tmp/opencode/ntfy-diag.log"
-# Debounce für „Fertig"-Meldungen: eine Meldung wird erst nach N ms ohne
-# neue Aktivität verschickt (unterdrückt Spam bei schnellen aufeinander-
-# folgenden Turns / hängenden Sessions). 0 = sofort (Vorgängerverhalten).
-set_env_default NTFY_DEBOUNCE_MS  "60000"
+# Debounce für „Fertig"-Meldungen: eine Meldung wird erst nach N ms ohne neue
+# Aktivität verschickt — das unterdrückt Spam bei schnell aufeinanderfolgenden
+# Turns, kostet aber genau diese Zeit zwischen Turn-Ende und Meldung. 60 s und
+# 15 s wurden beide als zu spät empfunden (die Meldung kam, als der Chat längst
+# gelesen war), deshalb steht der Wert derzeit auf 0 = sofort. Wer es ruhiger
+# will, setzt hier z. B. 15000 ein — Doppelmeldungen bei sehr schnellen
+# Doppel-Turns verhindert weiterhin der 15-s-Cooldown je Session im Plugin.
+set_env_default NTFY_DEBOUNCE_MS  "0"
+# Fehler-Drossel (siehe docs/notifications.md): denselben Fehlertext höchstens
+# einmal je Fenster melden (24 h). Ein wiederkehrendes Provider-Limit
+# ("Go usage limit exceeded") erzeugte bisher pro Turn eine Meldung. Der Zustand
+# liegt im OpenCode-Datenverzeichnis — das ist im Container ein Host-Pfad
+# (/etc/opencode-data/<nutzer>, siehe main.tf) und übersteht damit die
+# Neuerstellung des Containers (~/.config/opencode wäre beim nächsten Start leer).
+set_env_default NTFY_ERROR_THROTTLE_MS "86400000"
+set_env_default NTFY_STATE_FILE        "$HOME/.local/share/opencode/ntfy-notify-state.json"
 echo "  ✓ ntfy-Standardoptionen in /etc/opencode.env sichergestellt"
 
 # Topic je Workspace (opt-in über den Namen, siehe Tabelle):

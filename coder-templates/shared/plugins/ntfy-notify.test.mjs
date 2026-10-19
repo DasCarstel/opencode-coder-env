@@ -13,6 +13,7 @@ import path from "node:path";
 import {
   createNtfyNotifier as createNtfyNotifierRaw,
   createPluginRuntime as createPluginRuntimeRaw,
+  errorFingerprint,
   isServiceProcess,
   resetSharedState,
   SHARED,
@@ -38,9 +39,15 @@ const TEST_URL_FALLBACK = "https://ntfy-test.invalid";
 const testPath = (...parts) => path.join(TEST_DIR, ...parts);
 
 /** Env jeder Test-Instanz: Testpfade zuerst, ausdrückliche Werte gewinnen. */
+let stateFileSeq = 0;
 function testEnv(env = {}) {
   return {
     NTFY_ENV_FILE: TEST_ENV_FILE,
+    // Eigene Zustandsdatei je Instanz: die Fehler-Drossel schreibt Zeitstempel
+    // dorthin, und kein Test darf einen anderen (oder gar einen Live-Pfad)
+    // beeinflussen. Tests, die die Drossel über einen "Neustart" hinweg prüfen,
+    // geben denselben Pfad ausdrücklich mit.
+    NTFY_STATE_FILE: testPath(`drossel-${++stateFileSeq}.json`),
     ...env,
   };
 }
@@ -176,6 +183,7 @@ function freshState() {  return {
     working: new Set(),
     lastText: new Map(),
     lastSent: new Map(),
+    errorThrottle: { file: "", loaded: false, sent: new Map() },
   };
 }
 
@@ -901,6 +909,122 @@ console.log("\nFehlermeldungen (Dämpfung)");
 }
 
 
+// ── 20b. Fehler-Drossel: gleicher Fehlertext nur einmal je Fenster ────────
+//
+// Ein Provider-Limit ("Go usage limit exceeded") schlägt bei jedem weiteren
+// Turn wieder zu. Ohne Drossel stünde den ganzen Tag dieselbe Meldung im Topic;
+// deshalb meldet das Plugin denselben Fehlertext höchstens einmal je
+// NTFY_ERROR_THROTTLE_MS. Der Zustand liegt in NTFY_STATE_FILE und übersteht
+// damit einen Neustart des Dienstes. Frage/Freigabe/"Fertig" bleiben sofort.
+console.log("\nFehler-Drossel");
+{
+  const logPath = testPath("ntfy-drossel.log");
+  const stateFile = testPath("drossel-verlauf.json");
+  rmSync(logPath, { force: true });
+  writeFileSync(logPath, "");
+  rmSync(stateFile, { force: true });
+  const env = {
+    NTFY_URL: SINK_URL,
+    NTFY_TOKEN: "tk_test",
+    NTFY_STATE_FILE: stateFile,
+    NTFY_REPLY_LOG: logPath,
+    NTFY_ERROR_THROTTLE_MS: String(24 * 60 * 60 * 1000),
+  };
+
+  // a) Gleicher Text im Fenster: eine Meldung, die zweite wird unterdrückt.
+  //    `fail` wartet nach jedem Fehlschlag kurz: sonst fasst das Plugin mehrere
+  //    Fehlschläge zu EINER Meldung zusammen (Dämpfungsfenster) und die Drossel
+  //    würde gar nicht einzeln befragt.
+  const fail = async (notifier, message) => {
+    await notifier.handleEvent(v2("session.error", { error: { message } }));
+    await wait(30);
+  };
+  received.length = 0;
+  const n = makeNotifier({ errorHoldMs: 0, cooldownMs: 0, env });
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  await fail(n, "Go usage limit exceeded");
+  eq(received.length, 1, "der erste Fehler wird gemeldet");
+  await fail(n, "Go usage limit exceeded");
+  eq(received.length, 1, "derselbe Fehlertext wird kein zweites Mal gemeldet");
+  ok(
+    readFileSync(logPath, "utf8").includes("erneut in ~"),
+    "die Drossel ist im Diagnose-Log belegt (fehler-gedrosselt, erneut in ~…)"
+  );
+
+  // b) Anderer Fehlertext: kommt weiterhin sofort durch.
+  await fail(n, "Provider 500");
+  eq(received.length, 2, "ein anderer Fehlertext wird weiterhin gemeldet");
+  ok(
+    String(received[1]?.body?.message ?? "").includes("Provider 500"),
+    "die zweite Meldung trägt den neuen Fehlertext"
+  );
+
+  // c) Neustart des Dienstes: neue Instanz, leerer Laufzeitzustand, dieselbe
+  //    Zustandsdatei — der Fehler bleibt gedrosselt.
+  const afterRestart = makeNotifier({ errorHoldMs: 0, cooldownMs: 0, env });
+  await afterRestart.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  await fail(afterRestart, "Go usage limit exceeded");
+  eq(received.length, 2, "nach dem fiktiven Neustart keine weitere Meldung (Zustand aus der Datei)");
+  ok(
+    JSON.parse(readFileSync(stateFile, "utf8")).errors?.["go usage limit exceeded"] !== undefined,
+    "die Zustandsdatei hält den Fingerabdruck des Fehlers"
+  );
+
+  // d) Fenster abgelaufen: wieder eine Meldung — mit der Zahl der Unterdrückungen.
+  const short = makeNotifier({
+    errorHoldMs: 0,
+    cooldownMs: 0,
+    env: {
+      ...env,
+      NTFY_STATE_FILE: testPath("drossel-kurz.json"),
+      NTFY_ERROR_THROTTLE_MS: "600",
+    },
+  });
+  received.length = 0;
+  await short.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  await fail(short, "Kalte Kiste");
+  eq(received.length, 1, "kurzes Fenster: die erste Meldung geht raus");
+  await fail(short, "Kalte Kiste");
+  await fail(short, "Kalte Kiste");
+  eq(received.length, 1, "innerhalb des kurzen Fensters kommt nichts nach");
+  await wait(700);
+  await fail(short, "Kalte Kiste");
+  eq(received.length, 2, "nach Ablauf des Fensters wird wieder gemeldet");
+  ok(
+    String(received[1]?.body?.message ?? "").includes("2× unterdrückt"),
+    "die Meldung nennt die unterdrückten Wiederholungen"
+  );
+
+  // e) Drossel abgeschaltet: jeder Fehlschlag kommt wieder durch.
+  const off = makeNotifier({
+    errorHoldMs: 0,
+    cooldownMs: 0,
+    env: { ...env, NTFY_STATE_FILE: testPath("drossel-aus.json"), NTFY_ERROR_THROTTLE_MS: "0" },
+  });
+  received.length = 0;
+  await off.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  await fail(off, "Immer dasselbe");
+  await fail(off, "Immer dasselbe");
+  eq(received.length, 2, "mit NTFY_ERROR_THROTTLE_MS=0 kommt jede Meldung durch");
+
+  // f) Fingerabdruck: wechselnde Zahlen und Kennungen ergeben denselben Schlüssel.
+  eq(
+    errorFingerprint("Go  Usage LIMIT exceeded"),
+    "go usage limit exceeded",
+    "Groß-/Kleinschreibung und Leerzeichen werden normalisiert"
+  );
+  eq(
+    errorFingerprint("rate limit 1200/min fuer ses_ab12cd34ef, Code 4291"),
+    errorFingerprint("rate limit 7000/min fuer ses_99ff88ee77, Code 5000"),
+    "wechselnde Zahlen und Session-Kennungen ändern den Schlüssel nicht"
+  );
+  ok(
+    errorFingerprint("Go usage limit exceeded") !== errorFingerprint("Provider 500"),
+    "unterschiedliche Fehler behalten unterschiedliche Schlüssel"
+  );
+  rmSync(logPath, { force: true });
+}
+
 // ── 21. Subagent-Sessions melden nicht (parentID nur via session.get) ─────
 console.log("\nSubagent-Filter");
 {
@@ -1379,6 +1503,98 @@ console.log("\nStummschalten per Titel");
   n.markWorking(SESSION);
   await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
   eq(received.length, 1, "ohne NTFY_IGNORE_TITLES wird auch dieser Titel gemeldet");
+}
+
+// ── 37b. Ereignisform 2.0.x: Session-Infos stehen direkt in `data` ───────
+//
+// OpenCode 2.0.x liefert die Session-Metadaten nicht mehr verschachtelt unter
+// properties.info, sondern in data selbst: { sessionID, title, subpath,
+// location, parentID }. Vorher hießen Meldungen „Session <id>" mit dem
+// Rückfall-Projekt „opencode", und NTFY_IGNORE_TITLES konnte nicht greifen —
+// genau so meldeten sich Hestias stündliche Ausfall-Proben. Diese Tests
+// benutzen absichtlich Ereignisse OHNE Wurzel-Location, damit nur `data` die
+// Metadaten liefert (die frühere Fassung fiel hier auf die Rückfallnamen
+// zurück).
+console.log("\nEreignisform 2.0.x (Metadaten in data)");
+{
+  // a) Titel, Arbeitsbereich und Verzeichnis kommen aus data.
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent(
+    v2(
+      "session.created",
+      {
+        title: "Ablauf prüfen",
+        subpath: "workspaces/infrastructure/server-management",
+        location: { directory: `${REPO_DIR}/workspaces/infrastructure/server-management` },
+      },
+      { noLocation: true }
+    )
+  );
+  n.markWorking(SESSION);
+  await n.handleEvent(v2("session.idle", {}, { noLocation: true }));
+  eq(received.length, 1, "die Fertig-Meldung geht raus");
+  eq(
+    received[0]?.body?.title,
+    "[server-management] ✅ Fertig — server-management",
+    "Projekt und Kennung stammen aus data (vorher: „✅ Fertig — opencode“)"
+  );
+  ok(
+    String(received[0]?.body?.message).includes("Ablauf prüfen"),
+    "der Sessiontitel steht jetzt im Meldungskopf"
+  );
+}
+{
+  // b) Damit greift NTFY_IGNORE_TITLES auch in dieser Ereignisform.
+  const n = makeNotifier({ env: { NTFY_IGNORE_TITLES: "Ausfall-Probe" } });
+  received.length = 0;
+  await n.handleEvent(
+    v2(
+      "session.created",
+      {
+        title: "Hestia Ausfall-Probe",
+        subpath: "workspaces/infrastructure/server-management",
+        location: { directory: `${REPO_DIR}/workspaces/infrastructure/server-management` },
+      },
+      { noLocation: true }
+    )
+  );
+  n.markWorking(SESSION);
+  await n.handleEvent(v2("session.idle", {}, { noLocation: true }));
+  eq(received.length, 0, "die Probe-Session bleibt stumm (Titel kommt nur aus data)");
+  eq(n._state.lastSent.size, 0, "der Cooldown wird auch hier nicht angefasst");
+}
+{
+  // c) Ein Subagent (parentID nur in data) meldet nicht — die Erkennung darf
+  //    nicht davon abhängen, dass noch eine properties.info-Form ankommt.
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent(
+    v2("session.created", { parentID: SESSION, title: "Subagent" }, {
+      sessionID: "ses_child0001",
+      noLocation: true,
+    })
+  );
+  n.markWorking("ses_child0001");
+  await n.handleEvent(v2("session.idle", {}, { sessionID: "ses_child0001", noLocation: true }));
+  eq(received.length, 0, "der Subagent meldet nicht");
+}
+{
+  // d) Gegenprobe: eine Prompt-Nutzlast (id + sessionID, aber ohne
+  //    Metadaten) wird nicht als Session-Info missverstanden.
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent(
+    v2("session.inbox.enqueued", { id: "msg_1", payload: { text: "hallo" } }, { noLocation: true })
+  );
+  n.markWorking(SESSION);
+  await n.handleEvent(v2("session.idle", {}, { noLocation: true }));
+  eq(received.length, 1, "die Meldung geht raus");
+  eq(
+    received[0]?.body?.title,
+    "✅ Fertig — opencode",
+    "ohne echte Session-Infos bleibt es beim Rückfallnamen"
+  );
 }
 
 // ── 38. Klickziel-Stil (NTFY_LINK_STYLE) ─────────────────────────────────

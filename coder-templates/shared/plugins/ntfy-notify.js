@@ -40,7 +40,9 @@
 // (session.execution.interrupted) oder startet der Dienst neu
 // (location.shutdown), wird die noch offene Meldung verworfen — sonst käme
 // "⚠️ Fehler" auch für einen selbst abgebrochenen Turn. Fehlschläge derselben
-// Session im Fenster werden zu einer Meldung zusammengefasst.
+// Session im Fenster werden zu einer Meldung zusammengefasst; derselbe
+// Fehlertext wird zusätzlich gedrosselt (siehe errorThrottleDecision) und
+// höchstens einmal je NTFY_ERROR_THROTTLE_MS gemeldet.
 //
 // Umgebungsvariablen:
 //   NTFY_URL    Basis-URL        (Default https://ntfy.mueller-nas.de)
@@ -83,6 +85,19 @@
 //                     Kleinschreibung egal): enthält der Titel einer Session
 //                     einen davon, wird für sie gar nichts gemeldet — weder
 //                     Frage noch Fertig noch Fehler. Leer/ungesetzt = aus.
+//   NTFY_ERROR_THROTTLE_MS  Drossel für wiederkehrende Fehlermeldungen, in
+//                     Millisekunden (Default 86400000 = 24 h). Derselbe
+//                     Fehlertext wird höchstens einmal je Fenster gemeldet —
+//                     sonst erzeugt ein Provider-Limit ("Go usage limit
+//                     exceeded") bei jedem weiteren Turn eine neue Meldung.
+//                     Unterschiedlicher Fehlertext kommt weiterhin sofort an.
+//                     0 schaltet die Drossel ab (Vorgängerverhalten).
+//   NTFY_STATE_FILE   Datei, in der die Drossel ihre Zeitstempel ablegt
+//                     (Default ~/.local/share/opencode/ntfy-notify-state.json);
+//                     dadurch übersteht die Drossel einen Neustart des
+//                     Dienstes. Die Datei enthält nur Fehler-Fingerabdrücke und
+//                     Zeitstempel, keine Fehlertexte. Leer/ungesetzt = Default;
+//                     ohne ermittelbaren Pfad wirkt die Drossel nur im Prozess.
 //   NTFY_LINK_STYLE   "session" (Default) = Klickziel ist der Session-Deep-Link
 //                     (<basis>/server/<schlüssel>/session/<id>); "base" = nur
 //                     die Basis (Startseite der Oberfläche, Übergangslösung).
@@ -107,7 +122,8 @@
 // Installation: coder-templates/shared/plugins/ntfy-notify.js
 //               → ~/.config/opencode/plugins/ (dort automatisch geladen)
 
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 // Fassung der Symbol-Bilder (NTFY_ICON_BASE). ntfy und die Apps halten ein
 // einmal geladenes Icon lokal im Zwischenspeicher (laut ntfy-Doku bis zu 24
@@ -141,6 +157,17 @@ const PLUGIN_ID = "das.ntfy-notify";
 // werden zu einer Meldung zusammengefasst. options.errorHoldMs uebersteuert
 // die Wartezeit nur in Tests.
 const ERROR_HOLD_MS = 3000;
+// Drossel für wiederkehrende Fehlermeldungen (NTFY_ERROR_THROTTLE_MS): derselbe
+// Fehlertext wird höchstens einmal je Fenster gemeldet. Ein Provider-Limit wie
+// "Go usage limit exceeded" schlägt bei jedem weiteren Turn wieder zu — ohne
+// Drossel stünde den ganzen Tag dieselbe Meldung im Topic.
+const ERROR_THROTTLE_MS = 24 * 60 * 60 * 1000;
+// Zustandsdatei der Drossel (NTFY_STATE_FILE), relativ zum Home-Verzeichnis.
+// Der Pfad liegt bewusst im OpenCode-Datenverzeichnis: das ist im Container ein
+// Host-Pfad (/etc/opencode-data/<nutzer>, siehe coder-templates/*/main.tf) und
+// übersteht damit die Neuerstellung des Containers — ~/.config/opencode wäre
+// beim nächsten Start wieder leer, und die Drossel begänne von vorn.
+const STATE_FILE_RELATIVE = ".local/share/opencode/ntfy-notify-state.json";
 // Ereignisstrom: endet er (z. B. Plugin-Neuladen) oder wirft er, wird er nach
 // einer kurzen Wartezeit neu aufgebaut; bei wiederholtem Sofort-Ende wächst die
 // Wartezeit bis EVENT_RETRY_MAX_MS. options.eventRetryMs übersteuert die
@@ -258,6 +285,26 @@ function titleMuted(parts, title) {
     .toLowerCase();
   if (!needle) return false;
   return parts.some((part) => needle.includes(part));
+}
+
+/**
+ * Fingerabdruck eines Fehlertexts — der Schlüssel der Fehler-Drossel.
+ *
+ * Kleinschreibung und zusammengezogene Leerzeichen allein reichen nicht: derselbe
+ * Fehler trägt oft wechselnde Zahlen und Kennungen ("rate limit 12/min" ↔ "rate
+ * limit 7/min", "session ses_ab12… fehlgeschlagen"). Deshalb werden Ziffern- und
+ * Hex-Ketten neutralisiert; der Text bleibt sonst unverändert, damit
+ * unterschiedliche Fehler unterschiedliche Schlüssel behalten.
+ */
+export function errorFingerprint(text) {
+  return String(text ?? "")
+    .toLowerCase()
+    .replace(/\bses_[a-z0-9]+/g, "ses")
+    .replace(/\b[0-9a-f]{8,}\b/g, "#")
+    .replace(/\d{4,}/g, "#")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200);
 }
 
 /** Nur der Hintergrund-Service soll melden — sonst doppelte Events aus TUI/CLI. */
@@ -488,7 +535,35 @@ function pick(event, key) {
   return undefined;
 }
 
-/** Session-Metadaten (id, title, subpath, location.directory, parentID). */
+/**
+ * Sieht der Wert aus wie Session-Metadaten? Verlangt eine Session-ID UND
+ * mindestens ein Metadatenfeld — sonst würde z. B. eine Prompt-Nutzlast
+ * ({ id: "msg_…", sessionID, payload: { text } }) fälschlich übernommen.
+ */
+function looksLikeSessionInfo(value) {
+  if (!value || typeof value !== "object") return false;
+  const id = value.id ?? value.sessionID;
+  if (typeof id !== "string" || !id) return false;
+  return Boolean(
+    (typeof value.title === "string" && value.title.trim()) ||
+      (typeof value.subpath === "string" && value.subpath) ||
+      value.location?.directory ||
+      value.location?.path ||
+      value.directory ||
+      value.parentID
+  );
+}
+
+/**
+ * Session-Metadaten (id, title, subpath, location.directory, parentID).
+ *
+ * Zwei Formen sind im Umlauf: die verschachtelte (`properties.info`) und — in
+ * OpenCode 2.0.x — die flache, bei der `data`/`payload` die Session-Info
+ * SELBST ist (`session.created` liefert dort sessionID, title, subpath und
+ * location.directory). Ohne die zweite Form blieben Titel und Arbeitsbereich
+ * unbekannt: Meldungen hießen „Session <id>" mit Fallback-Projekt „opencode",
+ * und NTFY_IGNORE_TITLES konnte nicht greifen (Ausfall-Proben meldeten sich).
+ */
 function sessionInfo(event) {
   const list = [
     event?.properties?.info,
@@ -500,6 +575,9 @@ function sessionInfo(event) {
   ];
   for (const value of list) {
     if (value && typeof value === "object" && (value.id || value.sessionID)) return value;
+  }
+  for (const value of [event?.data, event?.payload]) {
+    if (looksLikeSessionInfo(value)) return value;
   }
   return undefined;
 }
@@ -663,6 +741,10 @@ function newState() {
     lastText: new Map(), // letzter Assistenten-Text je Session
     lastSent: new Map(), // Dedup: "sessionID:art" → Zeitstempel
     turnFailed: new Set(), // Sessions, deren aktueller Turn fehlgeschlagen ist
+    // Drossel wiederkehrender Fehlermeldungen: { file, loaded, sent } — siehe
+    // errorThrottleDecision. Prozessweit geteilt wie der übrige Zustand, damit
+    // nicht jede Modul-Instanz ihre eigene Liste führt.
+    errorThrottle: { file: "", loaded: false, sent: new Map() },
   };
 }
 
@@ -686,6 +768,9 @@ export function resetSharedState() {
   for (const map of Object.values(SHARED)) {
     if (map instanceof Map || map instanceof Set) map.clear();
   }
+  // Drossel-Zustand mit zurücksetzen: die Zustandsdatei wird beim nächsten
+  // Zugriff neu gelesen (Tests brauchen einen sauberen Anfang).
+  SHARED.errorThrottle = { file: "", loaded: false, sent: new Map() };
 }
 
 function prune() {
@@ -720,6 +805,14 @@ export function createNtfyNotifier(options = {}) {
   const now = options.now ?? (() => Date.now());
   const logger = options.log ?? debug;
   const cooldownMs = Number(options.cooldownMs ?? COOLDOWN_MS);
+  // Fenster der Fehler-Drossel (siehe errorThrottleDecision). 0 = aus
+  // (Vorgängerverhalten); ein leerer Wert bedeutet "Default", nicht "aus".
+  const errorThrottleMs = (() => {
+    const raw = String(options.errorThrottleMs ?? env.NTFY_ERROR_THROTTLE_MS ?? "").trim();
+    if (!raw) return ERROR_THROTTLE_MS;
+    const value = Number(raw);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  })();
   const contextDirectory = options.directory ?? "";
   const client = options.client;
   const state = options.state ?? SHARED;
@@ -745,6 +838,17 @@ export function createNtfyNotifier(options = {}) {
     return Number.isFinite(v) && v >= 0 ? v : 0;
   })();
   const pendingFinish = new Map(); // sessionID → { timer }
+
+  // Welche Werte DIESE Instanz benutzt, gehört ins Diagnose-Log: die
+  // Einstellungen werden beim Erzeugen einmal gelesen. Eine spätere Änderung an
+  // /etc/opencode.env erreicht eine bereits laufende Instanz nicht — sie wirkt
+  // erst nach dem Neuladen des Plugins (Datei anfassen/installieren) oder nach
+  // einem Neustart des Dienstes. Ohne diese Zeile ist im Betrieb nicht
+  // erkennbar, mit welchem Fenster eine Instanz tatsächlich arbeitet.
+  diag(
+    "notifier-bereit",
+    `debounce=${debounceMs} ms, cooldown=${cooldownMs} ms, fehler-drossel=${errorThrottleMs} ms`
+  );
 
   function cancelPendingFinish(sessionID) {
     const entry = pendingFinish.get(sessionID);
@@ -857,16 +961,24 @@ export function createNtfyNotifier(options = {}) {
   }
 
   function absorb(info) {
-    if (!info || typeof info !== "object" || typeof info.id !== "string" || !info.id) return;
-    if (info.parentID) state.children.set(info.id, info.parentID);
-    const entry = state.meta.get(info.id) ?? {};
+    if (!info || typeof info !== "object") return;
+    // 2.0.x nennt die Kennung `sessionID`, die verschachtelte Form `id`.
+    const id =
+      typeof info.id === "string" && info.id
+        ? info.id
+        : typeof info.sessionID === "string" && info.sessionID
+          ? info.sessionID
+          : "";
+    if (!id) return;
+    if (info.parentID) state.children.set(id, info.parentID);
+    const entry = state.meta.get(id) ?? {};
     if (typeof info.title === "string" && info.title.trim()) entry.title = info.title.trim();
     if (typeof info.subpath === "string" && info.subpath) entry.subpath = info.subpath;
     const dir = info.location?.directory ?? info.location?.path ?? info.directory;
     if (typeof dir === "string" && dir) entry.directory = dir;
     if (!entry.subpath && entry.directory) entry.subpath = subpathFromDirectory(entry.directory);
     if (info.parentID) entry.parentID = info.parentID;
-    state.meta.set(info.id, entry);
+    state.meta.set(id, entry);
   }
 
   /** Projekt-Kontext aus dem Event übernehmen (V2: location.directory). */
@@ -964,13 +1076,133 @@ export function createNtfyNotifier(options = {}) {
   async function sendOnce(sessionID, kind, payload) {
     // NTFY_IGNORE_TITLES: für diese Session geht gar nichts raus — weder Frage
     // noch Fertig noch Fehler. Der Cooldown wird dabei nicht angefasst.
-    if (sessionID && isMuted(sessionID)) return false;
+    //
+    // Vorher die Metadaten nachladen: der Titel steht nicht in jedem Ereignis
+    // (2.0.x liefert ihn nur in `data` von session.created/updated). Eine
+    // Instanz, die dieses Ereignis verpasst hat, würde die Stummschaltung sonst
+    // übergehen — genau das ließ Hestias Ausfall-Proben durchkommen.
+    if (sessionID) {
+      await ensureMeta(sessionID);
+      if (isMuted(sessionID)) return false;
+    }
     const key = `${sessionID ?? "?"}:${kind}`;
     const t = now();
     if (t - (state.lastSent.get(key) ?? 0) < cooldownMs) return false;
     state.lastSent.set(key, t);
     prune();
     return send(payload, sessionID);
+  }
+
+  // ── Drossel wiederkehrender Fehlermeldungen ─────────────────────────────
+  //
+  // Fragen, Freigaben und "Fertig" wirken sofort (der Nutzer wartet darauf);
+  // ein und derselbe FEHLER wird dagegen höchstens einmal je
+  // errorThrottleMs gemeldet. Solche Fehler wiederholen sich sonst bei jedem
+  // Turn ("Go usage limit exceeded"), und pro Tag entstünden Dutzende
+  // identischer Meldungen. Der Zustand liegt in einer Datei, damit ein
+  // Neustart des Dienstes das Fenster nicht zurücksetzt.
+
+  /** Pfad der Drossel-Zustandsdatei (NTFY_STATE_FILE); "" = keine Persistenz. */
+  function stateFilePath() {
+    const configured = String(env.NTFY_STATE_FILE ?? "").trim();
+    if (configured) return configured;
+    const home = String(env.HOME ?? process.env.HOME ?? "").trim();
+    if (!home) return "";
+    return `${home.replace(/\/+$/, "")}/${STATE_FILE_RELATIVE}`;
+  }
+
+  /** Zustand aus der Datei lesen — nur Einträge, die noch im Fenster liegen. */
+  function loadThrottleEntries(file) {
+    const out = new Map();
+    if (!file) return out;
+    let raw;
+    try {
+      raw = JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      // Datei fehlt oder ist unlesbar: dann zählt nur der Laufzeitzustand.
+      return out;
+    }
+    const errors =
+      raw && typeof raw === "object" && raw.errors && typeof raw.errors === "object"
+        ? raw.errors
+        : {};
+    const t = now();
+    for (const [key, value] of Object.entries(errors)) {
+      const ts = Number(value?.t ?? value);
+      const count = Number(value?.n ?? 0);
+      if (!Number.isFinite(ts) || t - ts >= errorThrottleMs) continue;
+      out.set(key, { t: ts, n: Number.isFinite(count) && count > 0 ? count : 0 });
+    }
+    return out;
+  }
+
+  /** Zustand schreiben (0600). Ein Fehler hier darf nie eine Meldung stören. */
+  function saveThrottle(box) {
+    if (!box.file) return;
+    const errors = {};
+    for (const [key, value] of box.sent) errors[key] = { t: value.t, n: value.n };
+    try {
+      mkdirSync(dirname(box.file), { recursive: true });
+      writeFileSync(
+        box.file,
+        `${JSON.stringify(
+          { version: 1, updated: new Date(now()).toISOString(), errors },
+          null,
+          2
+        )}\n`,
+        { mode: 0o600 }
+      );
+    } catch (error) {
+      logger("Drossel-Zustand nicht gespeichert:", error?.message ?? String(error));
+    }
+  }
+
+  /**
+   * Der Drossel-Zustand dieser Instanz. Er hängt am geteilten Prozesszustand
+   * (mehrere Modul-Instanzen sehen dieselben Events); wechselt die Zustandsdatei
+   * (andere Instanz, anderer Pfad), wird sie einmal neu gelesen.
+   */
+  function throttleBox() {
+    const box = (state.errorThrottle ??= { file: "", loaded: false, sent: new Map() });
+    const file = errorThrottleMs > 0 ? stateFilePath() : "";
+    if (!box.loaded || box.file !== file) {
+      box.file = file;
+      box.sent = loadThrottleEntries(file);
+      box.loaded = true;
+    }
+    return box;
+  }
+
+  /**
+   * Soll diese Fehlermeldung raus?
+   *
+   * Der Schlüssel ist der Fingerabdruck des Fehlertexts (errorFingerprint).
+   * Läuft das Fenster noch, wird nur mitgezählt: { send: false } — wie oft
+   * zwischenzeitlich unterdrückt wurde, nennt die nächste Meldung. Ist das
+   * Fenster abgelaufen, gilt der Fehler als neu und wird wieder gemeldet.
+   */
+  function errorThrottleDecision(text) {
+    if (errorThrottleMs <= 0) return { send: true, suppressed: 0 };
+    const box = throttleBox();
+    const key = errorFingerprint(text) || "(ohne Text)";
+    const t = now();
+    const entry = box.sent.get(key);
+    if (entry && t - entry.t < errorThrottleMs) {
+      entry.n += 1;
+      box.sent.set(key, entry);
+      saveThrottle(box);
+      const rest = Math.max(1, Math.ceil((errorThrottleMs - (t - entry.t)) / 60000));
+      diag("fehler-gedrosselt", `${key} (erneut in ~${rest} min, ${entry.n} unterdrueckt)`);
+      return { send: false, suppressed: entry.n };
+    }
+    const suppressed = entry?.n ?? 0;
+    box.sent.set(key, { t, n: 0 });
+    saveThrottle(box);
+    diag(
+      "fehler-gedrosselt",
+      `${key} (gemeldet${suppressed ? `, ${suppressed} zuvor unterdrueckt` : ""})`
+    );
+    return { send: true, suppressed };
   }
 
   /**
@@ -1013,8 +1245,12 @@ export function createNtfyNotifier(options = {}) {
       return;
     }
     await ensureMeta(sessionID);
+    // Zeitstempel-Beweis: zwischen „fertig-ausgeloest" (Turn-Ende verarbeitet)
+    // und „fertig-versand" (POST geht raus) liegt genau das Debounce-Fenster.
+    diag("fertig-ausgeloest", `debounce=${debounceMs} ms`);
     const doSend = async () => {
       pendingFinish.delete(sessionID);
+      diag("fertig-versand", `${projectFor(sessionID)}`);
       await sendOnce(sessionID, "idle", {
         title: `✅ Fertig — ${projectFor(sessionID)}`,
         message: withHeader(sessionID, summary),
@@ -1089,18 +1325,31 @@ export function createNtfyNotifier(options = {}) {
     if (count) diag("fehler-verworfen", "dienst-neustart");
   }
 
-  /** Die zurückgehaltene Fehlermeldung jetzt verschicken. */
+  /**
+   * Die zurückgehaltene Fehlermeldung jetzt verschicken.
+   *
+   * Vor dem Versand greift die Drossel (errorThrottleDecision): derselbe
+   * Fehlertext wird höchstens einmal je Fenster gemeldet. Wurde er
+   * zwischenzeitlich unterdrückt, nennt die Meldung die Anzahl — sonst wäre
+   * nicht erkennbar, dass der Fehler mehrfach auftrat.
+   */
   async function flushError(sessionID, pending) {
     if (await isSubagent(sessionID)) return;
     state.working.add(sessionID);
     await ensureMeta(sessionID);
     const body = errorBody(pending.event) || fallbackBody(pending.event);
+    const decision = errorThrottleDecision(body);
+    if (!decision.send) return;
     // Mehrere Fehlschläge im Fenster ergeben eine Meldung — die Anzahl wird
     // genannt, damit der Zusammenhang nicht verloren geht.
     const hint = pending.count > 1 ? `\n\n(${pending.count} Fehlschläge zusammengefasst)` : "";
+    const quiet =
+      decision.suppressed > 0
+        ? `\n\n(seit der letzten Meldung ${decision.suppressed}× unterdrückt)`
+        : "";
     await sendOnce(sessionID, "error", {
       title: `⚠️ Fehler — ${projectFor(sessionID)}`,
-      message: withHeader(sessionID, `${body}${hint}`),
+      message: withHeader(sessionID, `${body}${hint}${quiet}`),
       priority: 2,
 
       tags: ["warning"],
