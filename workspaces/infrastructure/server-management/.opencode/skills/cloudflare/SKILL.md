@@ -1,6 +1,6 @@
 ---
 name: cloudflare
-description: Cloudflare-Tunnel und DNS für neue Dienste auf mueller-nas.de (OpenCode-Workspace-URLs, Apps hinter Traefik) — Tunnel-Ingress per API, DNS wetten separat, Free-Plan-SSL-Falle beachten. Nur laden, wenn ein neuer Dienst via Tunnel/DNS veröffentlicht oder ein Zugriff von außen debugged wird.
+description: Cloudflare-Tunnel und DNS für neue Dienste auf mueller-nas.de (OpenCode-Workspace-URLs, Apps hinter Traefik) — Tunnel-Ingress per API, DNS-Records separat, Free-Plan-SSL-Falle beachten. Nur laden, wenn ein neuer Dienst via Tunnel/DNS veröffentlicht oder ein Zugriff von außen debugged wird.
 license: MIT
 ---
 
