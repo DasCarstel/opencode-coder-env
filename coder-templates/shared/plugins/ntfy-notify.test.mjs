@@ -177,12 +177,16 @@ function v2(type, data = {}, opts = {}) {
 }
 
 /** Eigener Zustand je Test (die echte Implementierung teilt ihn prozessweit). */
-function freshState() {  return {
+function freshState() {
+  return {
     meta: new Map(),
     children: new Map(),
     working: new Set(),
     lastText: new Map(),
     lastSent: new Map(),
+    // Sessions mit tatsächlich gesendeter Meldung — Grundlage des Ausblendens
+    // beim nächsten Nutzer-Turn (NTFY_CLEAR_ON_RESUME, siehe Plugin).
+    notified: new Set(),
     errorThrottle: { file: "", loaded: false, sent: new Map() },
   };
 }
@@ -1961,6 +1965,192 @@ const ICON_BASE =
     !Object.prototype.hasOwnProperty.call(received[0]?.body ?? {}, "icon"),
     "ohne bekannten Arbeitsbereich gibt es kein icon-Feld"
   );
+}
+
+// ── 42. Ausblenden beim nächsten Nutzer-Turn (Sequenz-ID + clear) ─────────
+//
+// Jede Meldung einer Session trägt die Sequenz-ID "oc-<sessionID>"
+// (X-Sequence-ID): im Client ersetzt eine neue Meldung derselben Session die
+// vorherige, statt sich zu stapeln. Die Aktionsknöpfe tragen clear: true —
+// Antippen blendet aus. Der prompt-Hook ruft beim nächsten Nutzer-Turn
+// clearLastNotification: best-effort PUT <basis>/<topic>/<sequenz>/clear —
+// nur für Sessions mit tatsächlich gesendeter Meldung, höchstens einmal je
+// Turn, Fehler still; abschaltbar per NTFY_CLEAR_ON_RESUME=0/false.
+console.log("\nAusblenden (Sequenz-ID, clear, NTFY_CLEAR_ON_RESUME)");
+{
+  // a) Die Fertig-Meldung trägt die Sequenz-ID; der Session-Knopf blendet aus.
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Fertig-Meldung geht raus");
+  eq(
+    received[0]?.headers?.["x-sequence-id"],
+    `oc-${SESSION}`,
+    "die Meldung trägt X-Sequence-ID: oc-<sessionID>"
+  );
+  eq(received[0]?.body?.actions?.[0]?.clear, true, "die Session-Aktion trägt clear: true");
+  eq(n._state.notified.has(SESSION), true, "die Session gilt als benachrichtigt");
+}
+{
+  // b) Mitgegebene view-Aktionen erhalten clear ebenfalls (sofern nicht gesetzt).
+  const n = makeNotifier();
+  received.length = 0;
+  await n.send(
+    {
+      title: "Probe",
+      message: "Probe",
+      click: "https://beispiel.test/x",
+      actions: [{ action: "view", label: "Extern", url: "https://beispiel.test/y" }],
+    },
+    SESSION
+  );
+  eq(received.length, 1, "die Meldung mit eigener Aktion geht raus");
+  const actions = received[0]?.body?.actions ?? [];
+  eq(actions.length, 2, "beide Aktionen sind vorhanden");
+  eq(actions[0]?.clear, true, "die mitgegebene view-Aktion trägt clear: true");
+  eq(actions[1]?.clear, true, "die erzeugte Session-Aktion trägt clear: true");
+  eq(
+    received[0]?.headers?.["x-sequence-id"],
+    `oc-${SESSION}`,
+    "auch die Nutzlast-Meldung trägt die Sequenz-ID"
+  );
+}
+{
+  // c) Der nächste Nutzer-Turn (prompt-Hook: markWorking +
+  //    clearLastNotification) blendet die letzte Meldung aus — URL und Auth
+  //    wie beim Publish; genau einmal, auch bei wiederholtem Aufruf.
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Meldung geht raus");
+  received.length = 0;
+  n.markWorking(SESSION);
+  await wait(60);
+  eq(received.length, 0, "markWorking allein schickt keinen Clear-Aufruf");
+  n.clearLastNotification(SESSION);
+  ok(
+    await until(() =>
+      received.some((r) => r.method === "PUT" && r.url === `/ai/oc-${SESSION}/clear`)
+    ),
+    "der nächste Nutzer-Turn schickt PUT <topic>/oc-<sessionID>/clear"
+  );
+  const clear = received.find((r) => r.method === "PUT");
+  eq(clear?.headers?.authorization, "Bearer tk_test", "der Clear-Aufruf nutzt denselben Token");
+  received.length = 0;
+  n.clearLastNotification(SESSION);
+  n.clearLastNotification(SESSION);
+  await wait(60);
+  eq(received.length, 0, "ohne neue Meldung kein zweiter Clear-Aufruf");
+}
+{
+  // d) NTFY_CLEAR_ON_RESUME=0/false: der nächste Nutzer-Turn bleibt still.
+  for (const wert of ["0", "false"]) {
+    const n = makeNotifier({
+      env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test", NTFY_CLEAR_ON_RESUME: wert },
+    });
+    received.length = 0;
+    await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+    n.markWorking(SESSION);
+    await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+    eq(received.length, 1, `die Meldung geht auch mit NTFY_CLEAR_ON_RESUME=${wert} raus`);
+    received.length = 0;
+    n.clearLastNotification(SESSION);
+    await wait(60);
+    eq(received.length, 0, `mit NTFY_CLEAR_ON_RESUME=${wert} wird nicht ausgeblendet`);
+  }
+}
+{
+  // e) Ohne gesendete Meldung (Probe-/stumme Sessions) kein Clear-Aufruf.
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.clearLastNotification(SESSION);
+  await wait(60);
+  eq(received.length, 0, "ohne gesendete Meldung geht kein Clear-Aufruf raus");
+  eq(n._state.notified.size, 0, "die Session gilt nicht als benachrichtigt");
+}
+{
+  // f) Ein fehlgeschlagener Clear-Aufruf bricht nichts und erzeugt keine Meldung.
+  let clearAttempts = 0;
+  const n = makeNotifier({
+    fetch: async (input, init) => {
+      if (String(init?.method ?? "") === "PUT") {
+        clearAttempts += 1;
+        throw new Error("hub weg");
+      }
+      return globalThis.fetch(input, init);
+    },
+  });
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "die Fertig-Meldung geht raus");
+  received.length = 0;
+  n.clearLastNotification(SESSION);
+  await wait(60);
+  eq(clearAttempts, 1, "der Clear-Aufruf wurde versucht");
+  eq(received.length, 0, "ein fehlgeschlagener clear erzeugt keine Ersatzmeldung");
+  // Danach arbeitet das Plugin ganz normal weiter:
+  await n.handleEvent({
+    type: "question.asked",
+    properties: {
+      sessionID: SESSION,
+      questions: [{ question: "Noch da?", options: [{ label: "Ja" }] }],
+    },
+  });
+  eq(received.length, 1, "nach dem fehlgeschlagenen Clear läuft das Plugin normal weiter");
+}
+{
+  // g) V2-Anbindung: der prompt-Hook ruft markWorking UND
+  //    clearLastNotification — der nächste Prompt blendet die Meldung aus.
+  resetSharedState();
+  received.length = 0;
+  const stream = makeStream();
+  const hooks = [];
+  const runtime = createPluginRuntime({
+    env: { NTFY_URL: SINK_URL, NTFY_TOKEN: "tk_test" },
+    argv: ["serve", "--service"],
+    log: () => {},
+  });
+  const cleanup = await runtime.setup({
+    location: { directory: REPO_DIR },
+    session: {
+      hook: async (name, callback) => {
+        hooks.push({ name, callback });
+        return { dispose: async () => {} };
+      },
+    },
+    event: {
+      subscribe: ({ signal } = {}) => {
+        if (signal) signal.addEventListener("abort", () => stream.close());
+        return stream.iterator;
+      },
+    },
+  });
+  hooks[0].callback({ sessionID: SESSION });
+  stream.push({ type: "session.created", properties: { info: info(SESSION) } });
+  stream.push({
+    type: "message.part.updated",
+    properties: { sessionID: SESSION, part: { type: "text", text: "Bericht steht." } },
+  });
+  stream.push({ type: "session.idle", properties: { sessionID: SESSION } });
+  ok(await until(() => received.length >= 1, 1000), "die Fertig-Meldung ist raus");
+  received.length = 0;
+  hooks[0].callback({ sessionID: SESSION }); // der nächste Nutzer-Turn
+  ok(
+    await until(
+      () => received.some((r) => r.method === "PUT" && r.url === `/ai/oc-${SESSION}/clear`),
+      1000
+    ),
+    "der prompt-Hook blendet die letzte Meldung aus (PUT …/clear)"
+  );
+  cleanup();
+  await wait();
 }
 
 sink.close();

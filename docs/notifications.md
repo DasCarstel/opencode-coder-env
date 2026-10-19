@@ -263,6 +263,22 @@ Eigenschaften:
   Zustand in `NTFY_STATE_FILE` — ein wiederkehrendes Provider-Limit erzeugt so
   eine Meldung pro Tag statt einer pro Turn.
 
+#### Meldungen verschwinden: Sequenz-ID + Ausblenden (statt Löschen)
+
+Das Plugin stapelt Meldungen derselben Session nicht mehr: jede Meldung trägt
+die ntfy-**Sequenz-ID** `oc-<sessionID>` (Header `X-Sequence-ID`) — eine neue
+Meldung derselben Session **ersetzt** im Web-/Android-Client die vorherige,
+statt sich zu stapeln. Und ist der Turn vorbei, blendet das Plugin die letzte
+Meldung beim **nächsten Nutzer-Turn** zusätzlich aus (als gelesen markieren,
+**nicht löschen**): best-effort `PUT <hub>/<topic>/oc-<sessionID>/clear` mit
+demselben Token und Topic — die Clients nehmen die Meldung aus der
+Benachrichtigungsleiste, im Topic bleibt sie erhalten. Der Aufruf geht nur
+raus, wenn für die Session tatsächlich eine Meldung verschickt wurde (Probe-
+und stummgeschaltete Sessions bleiben unberührt), höchstens einmal je Turn,
+und Fehler werden still ignoriert. Abschaltbar mit `NTFY_CLEAR_ON_RESUME=0`
+(bzw. `false`). Die Aktionsknöpfe („Session öffnen") tragen zudem
+`clear: true` — tippt man sie an, blendet der Client die Meldung ebenfalls aus.
+
 #### Umgebungsvariablen
 
 | Variable | Wirkung |
@@ -274,6 +290,7 @@ Eigenschaften:
 | `NTFY_ICON_BASE` | Basis-URL der PNG-Symbole; jede Meldung bekommt `icon = <basis>/<workspace>.png?v=4`. |
 | `NTFY_LINK_STYLE` | `session` (Default) = Klickziel ist der Session-Deep-Link („Session öffnen"); `base` = nur die Startseite der Oberfläche. |
 | `NTFY_IGNORE_TITLES` | Kommagetrennte Titel-Teile, die stumm bleiben (z. B. `Ausfall-Probe`). |
+| `NTFY_CLEAR_ON_RESUME` | Ausblenden der letzten Meldung beim nächsten Nutzer-Turn (Default **an**): `PUT <hub>/<topic>/oc-<sessionID>/clear` — die Meldung verschwindet aus der Benachrichtigungsleiste, bleibt aber im Topic. `0`/`false` = aus. |
 | `NTFY_DEBOUNCE_MS` | Verzögerung für „Fertig"-Meldungen in Millisekunden (im Workspace `0` = sofort, siehe `startup.sh`): eine Meldung wird erst nach N ms ohne neue Aktivität verschickt; neue Aktivität bricht den Timer ab. Ohne Wert meldet das Plugin sofort. Zu groß gewählt kostet nur Reaktionszeit (die Meldung kommt, wenn der Chat längst gelesen ist), zu klein erzeugt in aktiv geführten Gesprächen eine Meldung je Antwort. |
 | `NTFY_ERROR_THROTTLE_MS` | Fenster der Fehler-Drossel in Millisekunden (Default `86400000` = 24 h): denselben Fehlertext meldet das Plugin höchstens einmal je Fenster, ein anderer Fehlertext kommt weiterhin sofort. `0` = Drossel aus (jeder Fehlschlag wird gemeldet). |
 | `NTFY_STATE_FILE` | Datei mit den Zeitstempeln der Fehler-Drossel (Default `~/.local/share/opencode/ntfy-notify-state.json`). Liegt im OpenCode-Datenverzeichnis (im Container `/etc/opencode-data/<nutzer>`, siehe `coder-templates/*/main.tf`) und übersteht damit die Neuerstellung des Containers. Die Datei enthält nur Fehler-Fingerabdrücke und Zeitstempel, keine Fehlertexte. |

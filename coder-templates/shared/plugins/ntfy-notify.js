@@ -113,6 +113,19 @@
 //                     nicht gesetzt, wird der Name aus dem letzten Pfadstück
 //                     des Sitzungs-Verzeichnisses abgeleitet; ist auch das nicht
 //                     möglich, bleibt der Titel unverändert.
+//   NTFY_CLEAR_ON_RESUME  Letzte Meldung beim nächsten Nutzer-Turn ausblenden
+//                     (Default: an; "0"/"false" = aus). Jede Meldung trägt die
+//                     Sequenz-ID "oc-<sessionID>" (X-Sequence-ID) — eine neue
+//                     Meldung derselben Session ersetzt im Client die
+//                     vorherige, statt sich zu stapeln. Reagiert der prompt-
+//                     Hook auf den nächsten Prompt, blendet das Plugin die
+//                     letzte Meldung best-effort aus:
+//                     PUT <basis>/<topic>/oc-<sessionID>/clear — als gelesen
+//                     markieren, NICHT löschen (im Topic bleibt sie). Nur für
+//                     Sessions mit tatsächlich gesendeter Meldung, höchstens
+//                     einmal je Turn; Fehler werden still ignoriert. Die
+//                     Aktionsknöpfe tragen zudem clear: true (Antippen blendet
+//                     ebenfalls aus).
 //
 //   Alle NTFY_*-Einstellungen liest das Plugin zusätzlich aus der Env-Datei
 //   /etc/opencode.env (Pfad über NTFY_ENV_FILE änderbar): die Service-Umgebung
@@ -337,6 +350,16 @@ function oneLine(value, max) {
 function shortId(id) {
   const s = String(id ?? "");
   return s.length > 10 ? s.slice(4, 12) : s || "session";
+}
+
+/**
+ * Stabile Sequenz-ID je Session ("oc-" + Session-ID): als X-Sequence-ID beim
+ * Publish und als Pfadstück des clear-Aufrufs. Der Server ersetzt bei einer
+ * neuen Meldung mit derselben Sequenz-ID die bestehende — eine Session hat im
+ * Client also genau eine aktuelle Meldung statt eines Stapels.
+ */
+function sequenceIdFor(sessionID) {
+  return `oc-${String(sessionID ?? "").trim()}`;
 }
 
 /** "workspaces/infrastructure/server-management" → { workspace, project } */
@@ -741,6 +764,10 @@ function newState() {
     lastText: new Map(), // letzter Assistenten-Text je Session
     lastSent: new Map(), // Dedup: "sessionID:art" → Zeitstempel
     turnFailed: new Set(), // Sessions, deren aktueller Turn fehlgeschlagen ist
+    // Sessions, für die tatsächlich eine Meldung rausging — nur sie kommen
+    // beim nächsten Nutzer-Turn fürs Ausblenden in Frage (siehe
+    // clearLastNotification). Probe-/stumme Sessions stehen hier nie drin.
+    notified: new Set(),
     // Drossel wiederkehrender Fehlermeldungen: { file, loaded, sent } — siehe
     // errorThrottleDecision. Prozessweit geteilt wie der übrige Zustand, damit
     // nicht jede Modul-Instanz ihre eigene Liste führt.
@@ -820,6 +847,10 @@ export function createNtfyNotifier(options = {}) {
   // (NTFY_LINK_STYLE) einmal auswerten — die Env ändert sich im Betrieb nicht.
   const mutedTitles = ignoredTitleParts(env);
   const baseOnlyLinks = linkStyle(env) === "base";
+  // NTFY_CLEAR_ON_RESUME (Default an, "0"/"false" = aus): beim nächsten
+  // Nutzer-Turn die letzte Meldung der Session ausblenden (siehe
+  // clearLastNotification).
+  const clearOnResume = !/^(?:0|false)$/i.test(String(env.NTFY_CLEAR_ON_RESUME ?? "").trim());
   const diag = options.diag ?? makeDiag(env);
   // Wartezeit, in der eine Fehlermeldung zurückgehalten wird (siehe
   // reportError). options.errorHoldMs übersteuert sie — nur in Tests.
@@ -1029,25 +1060,42 @@ export function createNtfyNotifier(options = {}) {
     const icon = iconUrlFor(env, workspaceForIcon(sessionID));
     if (icon) body.icon = icon;
     // Aktionen aufbauen (ntfy erlaubt höchstens drei je Nachricht): vorhandene
-    // übernehmen, dann das Klick-Ziel. Das Klick-Ziel selbst bleibt unverändert.
+    // übernehmen, dann das Klick-Ziel. Mitgegebene View-Knöpfe blenden die
+    // Meldung beim Antippen ebenfalls aus (ntfy-Feld "clear") — sofern der
+    // Aufrufer nichts anderes bestimmt hat.
     const actions = Array.isArray(payload.actions)
-      ? payload.actions.filter((action) => action && typeof action === "object")
+      ? payload.actions
+          .filter((action) => action && typeof action === "object")
+          .map((action) =>
+            action.action === "view" && action.clear === undefined
+              ? { ...action, clear: true }
+              : action
+          )
       : [];
     if (payload.click) {
       body.click = payload.click;
       if (!actions.some((action) => action.action === "view" && action.url === payload.click)) {
         // Im Basis-Stil führt der Knopf nur auf die Startseite — dann heißt er auch so.
+        // clear: beim Antippen blendet der Client die Meldung zusätzlich aus.
         actions.push({
           action: "view",
           label: baseOnlyLinks ? "OpenCode öffnen" : "Session öffnen",
           url: payload.click,
+          clear: true,
         });
       }
     }
     if (actions.length) body.actions = actions;
+    // Sequenz-ID je Session (X-Sequence-ID): im Client ersetzt eine neue
+    // Meldung derselben Session die vorherige, statt sich zu stapeln — und der
+    // clear-Aufruf beim nächsten Nutzer-Turn adressiert genau diese Meldung
+    // (siehe clearSentNotification).
+    const sid = typeof sessionID === "string" ? sessionID.trim() : "";
+    const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+    if (sid) headers["X-Sequence-ID"] = sequenceIdFor(sid);
     const init = {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(body),
     };
     if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
@@ -1061,6 +1109,10 @@ export function createNtfyNotifier(options = {}) {
       }
       // Die Meldung ist raus. Der Antwort-Body wird nicht mehr ausgewertet: die
       // Message-ID diente allein dem Antwortweg (Selbsterkennung im Topic).
+      // Als benachrichtigt merken — Grundlage des Ausblendens beim nächsten
+      // Nutzer-Turn; ohne echten Versand (Probe-/stumme Sessions) bleibt der
+      // Eintrag aus.
+      if (sid) state.notified?.add?.(sid);
       return true;
     } catch (error) {
       logger("Publish-Fehler:", error?.message ?? String(error));
@@ -1396,6 +1448,47 @@ export function createNtfyNotifier(options = {}) {
     return body ? `${title}\n\n${body}` : title;
   }
 
+  /**
+   * Die letzte Meldung dieser Session ausblenden (als gelesen markieren —
+   * NICHT löschen): PUT <basis>/<topic>/<sequenz>/clear. Der Server sendet
+   * darauf message_clear; Web- und Android-Clients nehmen die Meldung aus der
+   * Benachrichtigungsleiste, im Topic bleibt sie erhalten. Basis-URL, Topic
+   * und Auth sind dieselben wie beim Publish. Best-effort: ein Fehlschlag wird
+   * still ignoriert (kein Wiederholen, kein Log-Spam) — der Aufruf darf weder
+   * eine Meldung noch den Turn stören.
+   */
+  async function clearSentNotification(sessionID) {
+    if (!url || !token || !sessionID) return;
+    const init = { method: "PUT", headers: { Authorization: `Bearer ${token}` } };
+    if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+      init.signal = AbortSignal.timeout(8000);
+    }
+    try {
+      const res = await fetchImpl(
+        `${url}/${encodeURIComponent(topic)}/${encodeURIComponent(sequenceIdFor(sessionID))}/clear`,
+        init
+      );
+      if (res?.ok) diag("meldung-ausgeblendet", topic);
+    } catch {
+      /* best-effort: ein fehlgeschlagener Clear-Aufruf bleibt ohne Folge */
+    }
+  }
+
+  /**
+   * "Beim nächsten Nutzer-Turn ausblenden": der prompt-Hook ruft dies neben
+   * markWorking auf, wenn die Session wieder arbeitet. Nur Sessions mit
+   * tatsächlich gesendeter Meldung (state.notified, siehe send) kommen in
+   * Frage; das delete nimmt die Session sofort aus der Auswahl — also
+   * höchstens ein Aufruf je Meldung/Turn, auch wenn der Hook mehrfach
+   * eintrifft. Abschaltbar per NTFY_CLEAR_ON_RESUME=0/false.
+   */
+  function clearLastNotification(sessionID) {
+    const sid = typeof sessionID === "string" ? sessionID.trim() : "";
+    if (!clearOnResume || !sid) return;
+    if (!state.notified?.delete?.(sid)) return;
+    void clearSentNotification(sid).catch(() => {});
+  }
+
   function markWorking(sessionID) {
     if (typeof sessionID === "string" && sessionID && !state.children.has(sessionID)) {
       state.working.add(sessionID);
@@ -1586,6 +1679,9 @@ export function createNtfyNotifier(options = {}) {
   return {
     handleEvent,
     markWorking,
+    // Blendet die letzte Meldung der Session aus (NTFY_CLEAR_ON_RESUME) —
+    // aufgerufen vom prompt-Hook, neben markWorking.
+    clearLastNotification,
     send,
     sendOnce,
     finishTurn,
@@ -1659,10 +1755,15 @@ export function createPluginRuntime(options = {}) {
         `[ntfy-notify] aktiv (topic ${notifier.topic}, location ${ctx?.location?.directory ?? "?"})`
       );
 
-      // "Arbeitet gerade": jeder abgeschickte Prompt markiert die Session.
+      // "Arbeitet gerade": jeder abgeschickte Prompt markiert die Session — und
+      // blendet zugleich die letzte Meldung dieser Session aus (als gelesen
+      // markieren, NICHT löschen; NTFY_CLEAR_ON_RESUME, siehe
+      // clearLastNotification).
       try {
         await ctx.session.hook("prompt", (event) => {
-          notifier.markWorking(event?.sessionID ?? event?.session?.id);
+          const sessionID = event?.sessionID ?? event?.session?.id;
+          notifier.markWorking(sessionID);
+          notifier.clearLastNotification(sessionID);
         });
       } catch (error) {
         console.error("[ntfy-notify] prompt-Hook nicht registriert:", error?.message ?? error);
