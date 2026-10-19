@@ -22,7 +22,9 @@ Zugang über Coder/Authentik läuft.
 
 **Warum das sicher ist:** Der Proxy ist nur am Loopback gebunden und von
 außen nicht adressierbar; erreichbar ist er ausschließlich über den
-Coder-Agent (automatische zweite Port-App `49375--main--…` hinter Authentik).
+Coder-Agent (Port-App `49375--main--…` hinter Authentik). Ob Coder den
+Loopback-Port als App anzeigt, hängt an der Port-Erkennung des Agents – der
+Zugriff selbst läuft über den Agent, eine Template-Änderung ist nicht nötig.
 Der OpenCode-Server auf 49374 bleibt unverändert geschützt — er verlangt
 weiterhin Basic-Auth für jede `/api/*`-Anfrage. Ein mitgeschicktes
 `Authorization` wird vom Proxy ersetzt; WebSocket (Terminal) und SSE
