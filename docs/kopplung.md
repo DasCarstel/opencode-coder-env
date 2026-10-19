@@ -11,6 +11,40 @@ erzeugen und im Browser einlösen — das Backend setzt ein 30-Tage-Cookie. Das
 ersetzt kein Login: Der Zugang zur Port-App läuft weiterhin über
 Coder/Authentik, das Basic-Auth-Passwort kommt aus OpenBao.
 
+## SSO-Proxy (empfohlener Weg)
+
+Noch einfacher geht es ohne jeden Kopplungslink: Der SSO-Proxy
+(`coder-templates/shared/opencode-sso-proxy.js`, vom `startup.sh` gestartet)
+lauscht **ausschließlich** auf `127.0.0.1:49375`, injiziert das Basic-Auth in
+jede Anfrage und reicht alles an den OpenCode-Server (49374) weiter. Die
+Oberfläche funktioniert damit auf jedem Gerät ohne Kopplung — solange der
+Zugang über Coder/Authentik läuft.
+
+**Warum das sicher ist:** Der Proxy ist nur am Loopback gebunden und von
+außen nicht adressierbar; erreichbar ist er ausschließlich über den
+Coder-Agent (automatische zweite Port-App `49375--main--…` hinter Authentik).
+Der OpenCode-Server auf 49374 bleibt unverändert geschützt — er verlangt
+weiterhin Basic-Auth für jede `/api/*`-Anfrage. Ein mitgeschicktes
+`Authorization` wird vom Proxy ersetzt; WebSocket (Terminal) und SSE
+(Ereignis-Stream) laufen transparent durch.
+
+- **Deep-Links:** Die ntfy-Session-Links nutzen dann Port 49375
+  (`NTFY_SESSION_PORT` — setzt `startup.sh` erst nach erfolgreichem
+  Proxy-Health-Check).
+- **Opt-out:** `OPENCODE_SSO_PROXY=0` lässt den Proxy weg und
+  `NTFY_SESSION_PORT` unangetastet.
+
+**Gegenprobe** (im Container, bewusst ohne Zugangsdaten — `200` beweist die
+Injektion):
+
+```bash
+curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:49375/api/info   # → 200
+```
+
+**Kopplung als Fallback:** Weiterhin der Weg für Clients ohne Coder-Login
+(direkter Zugriff auf 49374) — das unten beschriebene Verfahren bleibt
+unverändert bestehen.
+
 ## Port-App-URL-Muster
 
 | Bestandteil | Wert |

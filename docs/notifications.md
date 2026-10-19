@@ -25,6 +25,8 @@ und **liest nichts** aus dem Topic. Aufs Handy geht
 Der Deep-Link setzt eine **gekoppelte Web-UI** voraus — bleibt die Oberfläche
 leer („Connect to Server"), fehlt die Browser-Kopplung; das Verfahren steht in
 **[Kopplungslink für die OpenCode-Web-UI](kopplung.md)**.
+Der Port im Deep-Link folgt `NTFY_SESSION_PORT` (Standard `49374`) — im
+SSO-Proxy-Betrieb (siehe [Kopplung](kopplung.md), „empfohlener Weg") `49375`.
 
 **Geantwortet wird in der OpenCode-Session** — im Chat, im Fragenfenster oder im
 Freigabe-Dialog. Es gibt keinen Weg zurück: keine Brücke, kein Einspeisen von

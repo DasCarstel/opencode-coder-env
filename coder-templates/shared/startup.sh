@@ -1290,6 +1290,33 @@ if pw:
     d["password"] = pw
 json.dump(d, open(p, "w"), indent=2)
 PY
+# ── SSO-Proxy (nur Loopback): transparente Basic-Injektion für die Web-UI ────
+# Die Web-UI verlangt für /api/* HTTP-Basic; der Proxy auf 127.0.0.1:49375
+# injiziert es und reicht alles an 49374 weiter. Da er ausschließlich am
+# Loopback lauscht, ist er nur über den Coder-Agent erreichbar (Port-App
+# hinter Authentik) — 49374 bleibt unverändert geschützt. Opt-out:
+# OPENCODE_SSO_PROXY=0.
+if [ "${OPENCODE_SSO_PROXY:-1}" != "0" ] && [ "${OPENCODE_SSO_PROXY:-1}" != "false" ]; then
+  SSO_PROXY_SRC="$SCRIPT_DIR/opencode-sso-proxy.js"
+  if [ -f "$SSO_PROXY_SRC" ]; then
+    pkill -f "opencode-sso-proxy.js" 2>/dev/null || true
+    setsid nohup node "$SSO_PROXY_SRC" > /tmp/opencode-sso-proxy.log 2>&1 < /dev/null &
+    _sso_ready=0
+    for _ in $(seq 1 10); do
+      _sso_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 http://127.0.0.1:49375/api/info 2>/dev/null)
+      if [ -n "$_sso_code" ] && [ "$_sso_code" != "000" ]; then _sso_ready=1; break; fi
+      sleep 0.5
+    done
+    if [ "$_sso_ready" = "1" ]; then
+      # Deep-Links (ntfy „Session öffnen") nutzen künftig die Proxy-Port-App.
+      opencode service set env NTFY_SESSION_PORT 49375 >/dev/null 2>&1 || true
+      set_env_default NTFY_SESSION_PORT 49375
+      echo "  ✓ SSO-Proxy: 127.0.0.1:49375 (Deep-Links nutzen Port 49375)"
+    else
+      echo "  ⚠ SSO-Proxy auf 49375 nicht bereit — Log: /tmp/opencode-sso-proxy.log (NTFY_SESSION_PORT bleibt unverändert)"
+    fi
+  fi
+fi
 opencode service restart >/dev/null 2>&1 || true
 # `ss` ist in den Images nicht installiert – der frühere Check griff nie und
 # meldete immer "Binding unklar". Stattdessen die Erreichbarkeit direkt
@@ -1301,6 +1328,15 @@ done
 curl -fsS --max-time 2 "http://127.0.0.1:49374/" >/dev/null 2>&1 \
   && echo "  ✓ OpenCode-Server: 0.0.0.0:49374" \
   || echo "  ⚠ OpenCode-Server auf 49374 nicht erreichbar"
+# SSO-Proxy-Gegenprobe: der curl schickt bewusst KEINE Zugangsdaten mit —
+# ein 200 beweist die Basic-Injektion. Der Proxy selbst ist durch
+# Coder/Authentik geschützt, weil er nur am Loopback lauscht.
+_sso_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:49375/api/info 2>/dev/null)
+if [ "$_sso_code" = "200" ]; then
+  echo "  ✓ SSO-Proxy ohne Zugangsdaten erreichbar (Authentik-Schutz)"
+else
+  echo "  ⚠ SSO-Proxy-Check: HTTP ${_sso_code:---} auf 49375 (Log: /tmp/opencode-sso-proxy.log)"
+fi
 
 # Profil-spezifische Token-Env + Hard-Guardrail (jeder Workspace sieht nur
 # seinen eigenen Space; das jeweils andere Token wird aktiv entfernt).
