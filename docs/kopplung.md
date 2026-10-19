@@ -47,6 +47,43 @@ curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:49375/api/info   # → 2
 (direkter Zugriff auf 49374) — das unten beschriebene Verfahren bleibt
 unverändert bestehen.
 
+## Zugriff von außen (Cloudflare-Tunnel)
+
+Von außerhalb des LAN/Tailnet sind die Port-Apps über den Cloudflare-Tunnel
+erreichbar — unter genau demselben Hostnamen, den das Plugin für die
+Deep-Links nutzt:
+
+```
+https://<port>--<agent>--<workspace>--<owner>-coder.mueller-nas.de
+```
+
+Beispiel: `49375--main--infrastructure--carstenmueller2002-coder.mueller-nas.de`
+(Port `49375` = SSO-Proxy, siehe oben). Der Weg einer Anfrage:
+
+| Station | Detail |
+|---------|--------|
+| DNS | Proxied CNAME des Hostnamens → `9bb7fb4d-2b17-4ed6-98a4-b316c6566b1f.cfargotunnel.com` (Universal-Zertifikat deckt die eine Ebene ab) |
+| Tunnel-Ingress | `hostname → https://traefik`, `http2Origin`, `originServerName` = derselbe Hostname |
+| Traefik | Router `coder-wildcard`, Zertifikat `*.mueller-nas.de` (aus dem Cloudflare-Resolver) |
+| Coder | `http://10.0.10.17:7080` → Coder-App-Proxy |
+| Workspace | `127.0.0.1:49375` (SSO-Proxy) → opencode `49374` |
+
+Schutz: der Coder-Login (Authentik-SSO) davor — kein zusätzliches Passwort,
+keine Kopplungsprozedur nötig. Die gleichen Links funktionieren im
+LAN/Tailnet unverändert ohne Cloudflare.
+
+> **Verworfen:** Eigene Kurznamen `oc-<workspace>.mueller-nas.de`
+> (z. B. `oc-infrastructure.mueller-nas.de`) — am Ursprung gemessen gibt es
+> dafür **404**, weil das Traefik-Coder-Routing das `--`-Muster der
+> Port-App-Hostnamen braucht. Kein weiterer Weg über `oc-*`-Hostnamen.
+
+Kurzer Test (erwartet `303` zum Coder-Login bzw. `200` nach Login):
+
+```bash
+curl -s -o /dev/null -w '%{http_code}' --resolve <hostname>:443:127.0.0.1 \
+  https://<hostname>/api/info
+```
+
 ## Port-App-URL-Muster
 
 | Bestandteil | Wert |
