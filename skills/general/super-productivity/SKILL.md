@@ -53,9 +53,25 @@ heute an", „leg einen Task an", „welche Tasks sind offen", „such nach X".
   abgelehnt, Lesen funktioniert weiter.
 - **Nicht** unterstützt: Zeittracking, Wiederholungs-Konfigurationen,
   Archivierung, Erinnerungen, Umsortierung, Löschen von Projekten/Tags.
-- Der MCP läuft im **Read-only-Modus**, solange der WebDAV-Shim
-  `permissions: R` hat. Schreib-Tools antworten dann mit **403**. Vor
-  Schreibaktionen prüfen: `sync_status` bzw. ein Test-`update_task`.
+- **Schreiben ist aktiv** (WebDAV-Shim `permissions: CRUD` seit 2026-10-19).
+  Notfall-Abschaltung: im Shim-Config
+  `/etc/docker/webdav-super-productivity/config/webdav-shim.yaml` **beide**
+  `permissions`-Zeilen auf `R` setzen, dann
+  `docker restart super-productivity-webdav-shim-1`. Ein `docker compose up -d`
+  allein reicht **nicht** — die Config wird nur beim Containerstart gelesen.
+
+## Werkzeug-Parameter
+
+Die Tool-Argumente sind **snake_case**: `task_id`, `project_id`, `tag_ids`,
+`due_day`, `time_estimate_minutes`. `taskId`/`projectId` (camelCase) werden mit
+einem Pydantic-Fehler `task_id Field required` abgelehnt.
+
+## Last-Writer-Wins (wichtig)
+
+`hacdias/webdav` ignoriert `If-Match`. Der MCP kann Schreibkonflikte daher
+**nicht** serverseitig erkennen; seine Retry-Logik greift nur teilweise. Bei
+gleichzeitigen Änderungen in der Desktop-/Web-App gewinnt der letzte Schreiber.
+Deshalb: keine Massenänderungen, während jemand in SP aktiv arbeitet.
 
 ## Backup
 

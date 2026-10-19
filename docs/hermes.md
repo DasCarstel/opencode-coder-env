@@ -57,6 +57,12 @@ Aktuell: `homeassistant` (http), `notion` (http/oauth), `ocis-private` und
 `ocis-muellerconnect` (stdio) sowie `super-productivity` (http,
 `https://mcp-superproductivity.mueller-nas.de/mcp`, Bearer-Token).
 
+> **Je Toolset eine eigene Listenzeile.** `- mcp-homeassistant - mcp-ocis-private`
+> in einer Zeile ist **ein** Eintrag namens `mcp-homeassistant - mcp-ocis-private`
+> — dann wird keiner der beiden Server geladen. Genau das war bis 2026-10-19 der
+> Fall; seit dem Fix sind `ocis-private` (79 Tools) und `super-productivity`
+> (28 Tools) verbunden.
+
 ## Deploy
 
 ```text
