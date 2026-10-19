@@ -1318,24 +1318,11 @@ if [ "${OPENCODE_SSO_PROXY:-1}" != "0" ] && [ "${OPENCODE_SSO_PROXY:-1}" != "fal
       python3 - <<'PY' >/dev/null 2>&1 || true
 import json, os
 p = os.path.expanduser("~/.config/opencode/service.json")
-try:
-    d = json.load(open(p))
-except Exception:
-    d = {}
+d = json.load(open(p))
 d.setdefault("env", {})["NTFY_SESSION_PORT"] = "49375"
-# Öffentliche Workspace-UI (Cloudflare-Tunnel) als Deep-Link-URL. Nur
-# ergänzen, wenn nichts vorhanden ist: ein bereits gesetzter Env-Wert oder
-# Eintrag in service.json gewinnt immer.
-_e = d.setdefault("env", {})
-_u = "https://oc-%s.mueller-nas.de" % os.environ["CODER_WORKSPACE_NAME"] if os.environ.get("CODER_WORKSPACE_NAME") else ""
-if _u and not (os.environ.get("NTFY_SESSION_URL") or _e.get("NTFY_SESSION_URL")):
-    _e["NTFY_SESSION_URL"] = _u
 json.dump(d, open(p, "w"), indent=2)
 PY
       set_env_default NTFY_SESSION_PORT 49375
-      if [ -z "${NTFY_SESSION_URL:-}" ] && [ -n "${CODER_WORKSPACE_NAME:-}" ]; then
-        set_env_default NTFY_SESSION_URL "https://oc-${CODER_WORKSPACE_NAME}.mueller-nas.de"
-      fi
       echo "  ✓ SSO-Proxy: 127.0.0.1:49375 (Deep-Links nutzen Port 49375)"
     else
       echo "  ⚠ SSO-Proxy auf 49375 nicht bereit — Log: /tmp/opencode-sso-proxy.log (NTFY_SESSION_PORT bleibt unverändert)"
