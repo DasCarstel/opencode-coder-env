@@ -1309,7 +1309,17 @@ if [ "${OPENCODE_SSO_PROXY:-1}" != "0" ] && [ "${OPENCODE_SSO_PROXY:-1}" != "fal
     done
     if [ "$_sso_ready" = "1" ]; then
       # Deep-Links (ntfy „Session öffnen") nutzen künftig die Proxy-Port-App.
-      opencode service set env NTFY_SESSION_PORT 49375 >/dev/null 2>&1 || true
+      # Bewusst direkt in service.json statt `opencode service set env`: Letzteres
+      # startet den Dienst sofort neu und kann laufende Sitzungen mitten im
+      # Startskript abbrechen. Der Neustart weiter unten greift den Wert auf;
+      # alle übrigen Env-Schlüssel bleiben erhalten.
+      python3 - <<'PY' >/dev/null 2>&1 || true
+import json, os
+p = os.path.expanduser("~/.config/opencode/service.json")
+d = json.load(open(p))
+d.setdefault("env", {})["NTFY_SESSION_PORT"] = "49375"
+json.dump(d, open(p, "w"), indent=2)
+PY
       set_env_default NTFY_SESSION_PORT 49375
       echo "  ✓ SSO-Proxy: 127.0.0.1:49375 (Deep-Links nutzen Port 49375)"
     else
