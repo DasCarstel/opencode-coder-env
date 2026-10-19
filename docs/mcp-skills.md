@@ -58,6 +58,7 @@ aktiv, ab `compress.maxContextLimit` verstärkt; zusätzlich räumen die Strateg
 | `svelte` | remote | `https://mcp.svelte.dev/mcp` | – | svelte |
 | `pdf` | local | `npx -y @sylphx/anymd@8.5.1` | – | general, minijob |
 | `ssh-mcp` | local (stdio) | `ssh-mcp` v2.18.0, eigener Container-Pfad | statischer ed25519-Key aus OpenBao | server-management, homeassistant, svelte (**config-full**), cleve (**config-cleve**), general (**config-general**, nur Carsten-PC) |
+| `super-productivity` | remote | `https://mcp-superproductivity.mueller-nas.de/mcp` — `ghcr.io/samuelb/superproductivity-sync-mcp:0.2.0` auf CT 100 (liest/schreibt die WebDAV-Sync-Datei) | `Authorization: Bearer {env:SP_MCP_TOKEN}` (OpenBao `secret/data/mcp/super-productivity`) | general, Hermes (manuell in `config.yaml`) |
 
 ### `ocis` (OpenCloud)
 
@@ -319,7 +320,8 @@ Inhalt der Gruppen:
 - `skills/server/` — `authentik`, `authentik-integration`,
   `authentik-troubleshooting`, `docker-host-location` (→ Krefeld)
 - `skills/cleve/` — `docker-host-location` (→ Kleve)
-- `skills/general/` — `carsten-pc` (→ ssh-mcp Carsten-PC, Profil `carsten-pc`)
+- `skills/general/` — `carsten-pc` (→ ssh-mcp Carsten-PC, Profil `carsten-pc`),
+  `super-productivity` (→ Remote-MCP, Tasks lesen/anlegen)
 - `skills/homeassistant/` — `home-assistant`, `google-home-exposure`
 - `skills/obsidian/` — `obsidian` (Vault-Zugriff)
 - `skills/minijob/` — `obsidian` (Vault-Zugriff mit MuellerConnect-Zugang)

@@ -45,6 +45,18 @@ Beides liegt **außerhalb** des Repos und ist bewusst nicht versioniert:
 Der OpenCode-Pool (Abo-Keys) landet ebenfalls in dieser `.env`; ohne
 `opencode-go`-Pool bricht der Lauf bewusst **vor** dem Schreiben ab.
 
+## MCP-Server (manuell gepflegt)
+
+Die MCP-Server stehen in `config.yaml` unter `mcp_servers:` und werden von
+Hestia **nicht** verwaltet — `hestia/ci/apply-hermes.sh` schreibt nur Modell-,
+Fallback-, Pool- und API-Server-Felder. Neue Server werden dort manuell
+ergänzt und in `toolsets.enabled` als `mcp-<name>` freigeschaltet (danach
+`docker restart hermes`).
+
+Aktuell: `homeassistant` (http), `notion` (http/oauth), `ocis-private` und
+`ocis-muellerconnect` (stdio) sowie `super-productivity` (http,
+`https://mcp-superproductivity.mueller-nas.de/mcp`, Bearer-Token).
+
 ## Deploy
 
 ```text

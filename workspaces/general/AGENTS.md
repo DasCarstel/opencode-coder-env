@@ -18,10 +18,15 @@ Obsidian-Vault (oCIS) und lokales PDF-Lesen.
   - Env: `OCIS_PRIVATE_USER` / `OCIS_PRIVATE_TOKEN` (aus OpenBao)
 - **pdf** (lokal) – `npx @sylphx/anymd@8.5.1`
   - lokales Lesen von PDFs und URLs, kein API-Key
+- **super-productivity** (remote) – `https://mcp-superproductivity.mueller-nas.de/mcp`
+  - Auth: `Authorization: Bearer {env:SP_MCP_TOKEN}` (aus OpenBao
+    `secret/data/mcp/super-productivity`, Feld `token`)
+  - Todolisten lesen/anlegen; Datenquelle ist die WebDAV-Sync-Datei auf CT 100.
+    Siehe Skill `super-productivity` (Backup-/Restore-Regeln!).
 
 ## OpenBao
 Eigene, minimal berechtigte AppRole `mcp-general` (Policy `mcp-server-general`) —
-liest nur `secret/data/mcp/{github,opencloud-ocis,opencode-go,hermes-opencode-service,ssh-mcp-pc}`.
+liest nur `secret/data/mcp/{github,opencloud-ocis,opencode-go,hermes-opencode-service,ssh-mcp-pc,super-productivity}`.
 Nicht die gemeinsame `mcp-server`.
 
 ## Richtlinien

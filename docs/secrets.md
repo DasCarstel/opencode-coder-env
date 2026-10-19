@@ -44,6 +44,7 @@ ausschließlich in `/etc/opencode.env` (Mode 0600) ab.
 | `secret/data/mcp/tailscale` | `TS_AUTHKEY` |
 | `secret/data/mcp/github` | GitHub-PAT (via `scripts/setup-git-credentials.sh`) |
 | `secret/data/mcp/hermes-opencode-service` | `OPENCODE_SERVER_PASSWORD` |
+| `secret/data/mcp/super-productivity` | `token` — Bearer-Token des Super-Productivity-MCP (`SP_MCP_TOKEN`), gelesen vom General-Workspace |
 | `secret/data/mcp/artificialanalysis` | `AA_API_KEY` (Artificial Analysis, **optional** — ohne Key laufen die Benchmarks nur über OpenRouter) |
 | `secret/data/mcp/notify` | `NTFY_TOKEN` (`opencode_token`), `url` — Zugang zum ntfy-Hub, siehe [`notifications.md`](notifications.md). **Noch nicht angelegt** (Stand: ntfy ist live, Token liegt in `/etc/docker/ntfy/credentials.env`); bis dahin bleibt das OpenCode-Plugin still |
 | `secret/data/uni/fernuni-ocis` | `user`, `token`, `password`, `space_id`, `url` – oCIS App-Token des Service-Accounts `fernuni-obsidian` für den Space „FernUni" (FernUni/Obsidian-Second-Brain) |
@@ -56,7 +57,7 @@ ausschließlich in `/etc/opencode.env` (Mode 0600) ab.
 **AppRoles** (Details in [`OPENBAO.md`](../OPENBAO.md)): `mcp-server` für die
 Coder-Workspaces (`secret/data/mcp/*` und `secret/data/uni/*` lesen, `ssh/sign/host-access`),
 `mcp-general` (Policy `mcp-server-general`) für den General-Workspace — minimal
-berechtigt, liest nur `secret/data/mcp/{github,opencloud-ocis,opencode-go,hermes-opencode-service,ssh-mcp-pc}` —
+berechtigt, liest nur `secret/data/mcp/{github,opencloud-ocis,opencode-go,hermes-opencode-service,ssh-mcp-pc,super-productivity}` —
 `mcp-uni` (Policy `mcp-server-uni`, Role-ID `0727dc69-cf01-014c-d3c5-a907499d0e43`)
 für den uni-Workspace — liest `secret/data/uni/*` plus dieselbe mcp-Auswahl wie
 `mcp-general` — und `host-access` nur für die SSH-CA-Signierung. Die Host-/SSH-Credentials der

@@ -356,6 +356,8 @@ case "$PROFILE" in
   general)
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_private_user"  "OCIS_PRIVATE_USER"
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_private_token" "OCIS_PRIVATE_TOKEN"
+    # Super-Productivity-MCP (Remote-HTTP, Bearer-Token)
+    read_secret "secret/data/mcp/super-productivity" "token" "SP_MCP_TOKEN"
     ;;
   muellerconnect)
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_muellerconnect_user"  "OCIS_MUELLERCONNECT_USER"
@@ -1356,6 +1358,10 @@ case "$PROFILE" in
       opencode service set env OCIS_PRIVATE_USER "$OCIS_PRIVATE_USER" >/dev/null 2>&1 || true
       opencode service set env OCIS_PRIVATE_TOKEN "$OCIS_PRIVATE_TOKEN" >/dev/null 2>&1 || true
       echo "  ✓ oCIS Private-Token im OpenCode-Service gesetzt"
+    fi
+    if [ -n "${SP_MCP_TOKEN:-}" ]; then
+      opencode service set env SP_MCP_TOKEN "$SP_MCP_TOKEN" >/dev/null 2>&1 || true
+      echo "  ✓ Super-Productivity-MCP-Token im OpenCode-Service gesetzt"
     fi
     opencode service unset env OCIS_MUELLERCONNECT_USER  >/dev/null 2>&1 || true
     opencode service unset env OCIS_MUELLERCONNECT_TOKEN >/dev/null 2>&1 || true
