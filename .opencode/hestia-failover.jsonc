@@ -4,7 +4,7 @@
 {
   "enabled": true,
   "threshold": 2,
-  "intervalSeconds": 3600,
+  "intervalSeconds": 10800,
   "timeoutSeconds": 35,
   "quarantineHours": 6
 }
