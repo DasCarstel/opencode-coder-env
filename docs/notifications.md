@@ -22,6 +22,10 @@ und **liest nichts** aus dem Topic. Aufs Handy geht
   OpenCode-Session (`NTFY_LINK_STYLE=session`, Klickziel
   `<basis>/server/<schlüssel>/session/<id>`).
 
+Der Deep-Link setzt eine **gekoppelte Web-UI** voraus — bleibt die Oberfläche
+leer („Connect to Server"), fehlt die Browser-Kopplung; das Verfahren steht in
+**[Kopplungslink für die OpenCode-Web-UI](kopplung.md)**.
+
 **Geantwortet wird in der OpenCode-Session** — im Chat, im Fragenfenster oder im
 Freigabe-Dialog. Es gibt keinen Weg zurück: keine Brücke, kein Einspeisen von
 Prompts, keine Kopplung, keine Formularantworten, keinen Zustandsspeicher und
