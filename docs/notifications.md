@@ -27,6 +27,14 @@ leer („Connect to Server"), fehlt die Browser-Kopplung; das Verfahren steht in
 **[Kopplungslink für die OpenCode-Web-UI](kopplung.md)**.
 Der Port im Deep-Link folgt `NTFY_SESSION_PORT` (Standard `49374`) — im
 SSO-Proxy-Betrieb (siehe [Kopplung](kopplung.md), „empfohlener Weg") `49375`.
+Die **Basis** des Deep-Links folgt `NTFY_SESSION_URL`: Wenn gesetzt, gewinnt
+sie immer; sonst leitet das Plugin die Port-App-URL selbst ab.
+`startup.sh` setzt `NTFY_SESSION_URL` automatisch auf
+`https://oc-${CODER_WORKSPACE_NAME}.mueller-nas.de` (öffentlicher
+Cloudflare-Tunnel-Hostname) — aber nur, wenn eine Workspace-Angabe vorhanden
+ist und weder Env noch `service.json` bereits einen Wert tragen. Bleibt sie leer,
+steuern `NTFY_SESSION_PORT`/`NTFY_LINK_HOST` weiterhin die port-basierten
+Fallback-Links (Port-App, nur LAN/Tailnet).
 
 **Geantwortet wird in der OpenCode-Session** — im Chat, im Fragenfenster oder im
 Freigabe-Dialog. Es gibt keinen Weg zurück: keine Brücke, kein Einspeisen von
@@ -295,6 +303,7 @@ und Fehler werden still ignoriert. Abschaltbar mit `NTFY_CLEAR_ON_RESUME=0`
 | `NTFY_TOPIC_PREFIX` | Opt-in Topic je Arbeitsbereich: `<prefix>-<workspace>`; ohne Prefix bleibt es beim festen Topic (Default `ai`). |
 | `NTFY_ICON_BASE` | Basis-URL der PNG-Symbole; jede Meldung bekommt `icon = <basis>/<workspace>.png?v=4`. |
 | `NTFY_LINK_STYLE` | `session` (Default) = Klickziel ist der Session-Deep-Link („Session öffnen"); `base` = nur die Startseite der Oberfläche. |
+| `NTFY_SESSION_URL` | Feste Basis des Deep-Links — überschreibt die automatische Ableitung. `startup.sh` setzt sie automatisch auf `https://oc-<workspace>.mueller-nas.de` (Cloudflare-Tunnel), nur wenn nicht schon gesetzt (Env oder `service.json`); ohne Workspace-Name bleibt sie unset und `NTFY_SESSION_PORT`/`NTFY_LINK_HOST` steuern die Fallback-Links. |
 | `NTFY_IGNORE_TITLES` | Kommagetrennte Titel-Teile, die stumm bleiben (z. B. `Ausfall-Probe`). |
 | `NTFY_CLEAR_ON_RESUME` | Ausblenden der letzten Meldung beim nächsten Nutzer-Turn (Default **an**): `PUT <hub>/<topic>/oc-<sessionID>/clear` — die Meldung verschwindet aus der Benachrichtigungsleiste, bleibt aber im Topic. `0`/`false` = aus. |
 | `NTFY_DEBOUNCE_MS` | Verzögerung für „Fertig"-Meldungen in Millisekunden (im Workspace `0` = sofort, siehe `startup.sh`): eine Meldung wird erst nach N ms ohne neue Aktivität verschickt; neue Aktivität bricht den Timer ab. Ohne Wert meldet das Plugin sofort. Zu groß gewählt kostet nur Reaktionszeit (die Meldung kommt, wenn der Chat längst gelesen ist), zu klein erzeugt in aktiv geführten Gesprächen eine Meldung je Antwort. |

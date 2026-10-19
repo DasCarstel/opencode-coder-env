@@ -47,6 +47,28 @@ curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:49375/api/info   # → 2
 (direkter Zugriff auf 49374) — das unten beschriebene Verfahren bleibt
 unverändert bestehen.
 
+## Öffentlicher Hostname (Cloudflare-Tunnel)
+
+Neben der Port-App gibt es einen **öffentlichen Hostname pro Workspace** über
+den Cloudflare-Tunnel: `https://oc-<workspace>.mueller-nas.de` (z. B.
+`oc-infrastructure.mueller-nas.de`).
+
+| Bestandteil | Wert |
+|-------------|------|
+| DNS | Proxied CNAME `oc-<workspace>.mueller-nas.de` → `9bb7fb4d-2b17-4ed6-98a4-b316c6566b1f.cfargotunnel.com` |
+| Tunnel-Ingress | `hostname oc-<workspace>.mueller-nas.de → https://traefik`, `originServerName` = derselbe Hostname |
+| Traefik-Router | `coder-wildcard` liefert das Zertifikat für `*.mueller-nas.de` |
+| Ziel | SSO-Proxy auf `127.0.0.1:49375` (im Workspace-Container, hinter Coder/Authentik) |
+
+`startup.sh` setzt dafür automatisch `NTFY_SESSION_URL=https://oc-<workspace>.mueller-nas.de`
+(siehe [notifications.md](notifications.md)), damit die ntfy-Deep-Links von
+überall funktionieren. Die **Kopplung bleibt als Fallback** bestehen (unten).
+
+> **Hinweis:** Die alten `<port>--…-coder.mueller-nas.de`-Links
+> (Port-App-Muster, nächster Abschnitt) funktionieren weiter — aber nur im
+> LAN/Tailnet. Der öffentliche `oc-<workspace>`-Host ist der Weg aus dem
+> Fremdnetz.
+
 ## Port-App-URL-Muster
 
 | Bestandteil | Wert |
