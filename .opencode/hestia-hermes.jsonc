@@ -1,8 +1,8 @@
 {
   "enabled": true,
   "primary": {
-    "provider": "opencode-go",
-    "model": "beam-free"
+    "provider": "opencode",
+    "model": "deepseek-v4.1-flash-free"
   },
   "fallback": [
     {
@@ -26,13 +26,27 @@
   "restart": true,
   "profiles": {
     "kleve": {
-      "enabled": true
+      "enabled": true,
+      "primary": {
+        "provider": "opencode-go",
+        "model": "beam-free"
+      },
+      "fallback": [
+        {
+          "provider": "opencode-go",
+          "model": "glm-5.3-flash"
+        },
+        {
+          "provider": "opencode-go",
+          "model": "longcat-2.5-preview-free"
+        }
+      ],
+      "pool": {
+        "followActive": true,
+        "onlyActiveWhenExpiring": false
+      }
     }
   },
-  // Erweiterte Sektionen (Hermes Voice): Das Panel schickt sie nicht mit —
-  // hermes.py traegt sie beim Apply von der aktuellen SOT weiter (Deep-Merge,
-  // z. B. bleibt platforms.ntfy erhalten) und apply-hermes.sh merged sie per
-  // Deep-Merge in die config.yaml im Container (alles andere bleibt unangetastet).
   "agent": {
     "reasoning_effort": "low",
     "api_max_retries": 1,
@@ -45,33 +59,67 @@
     }
   },
   "platform_toolsets": {
-    // API/Voice: Notion und Obsidian laufen über /opt/data/bin/*_fast.py (terminal),
-    // nicht über die großen MCP-Toolkataloge. Die Default-MCP-Server werden für
-    // den API-Turn nicht mehr automatisch dazugemischt; oCIS bleibt deshalb
-    // CLI/PC-only. Home Assistant bleibt als MCP für die spätere Voice-Integration
-    // sichtbar. Super Productivity und MuellerConnect bleiben ebenfalls CLI/PC-only.
-    "api_server": ["web", "todo", "memory", "clarify", "skills", "terminal", "mcp-homeassistant"]
+    "api_server": [
+      "web",
+      "todo",
+      "memory",
+      "clarify",
+      "skills",
+      "terminal",
+      "mcp-homeassistant"
+    ]
   },
   "platforms": {},
-  // Deaktivierte Skills (Hermes Voice): Alles, was nicht gebraucht wird, ist
-  // hier aus — aktiv bleiben space-matrix, notion-database, model-curator,
-  // hermes-agent, hermes-agent-skill-authoring, maps, grounded-citations,
-  // blocked-page-recovery und obsidian-ocis (hestia/skills/obsidian-ocis).
-  // apply-hermes.sh ersetzt die Liste 1:1 in der config.yaml (Listen werden
-  // im Deep-Merge ersetzt, nie konkateniert).
   "skills": {
     "disabled": [
-      "airtable", "architecture-diagram", "arxiv", "ascii-video", "baoyu-infographic",
-      "box", "claude-code", "claude-design", "codebase-inspection", "codex",
-      "competitor-news-monitor", "computer-use", "design-md", "document-to-action-items",
-      "docx", "dogfood", "email-inbox-triage", "gif-search", "github",
-      "google-workspace", "himalaya", "humanizer", "inspecting-hermes-desktop-dom",
-      "llm-wiki", "manim-video", "meeting-action-items", "node-inspect-debugger",
-      "notion", "obsidian", "opencode", "p5js", "pdf", "popular-web-designs",
-      "powerpoint", "product-price-monitor", "python-debugpy", "requesting-code-review",
-      "simplify-code", "songsee", "songwriting-and-ai-music", "spike",
-      "systematic-debugging", "teams-meeting-pipeline", "test-driven-development",
-      "weekly-review-planning", "xlsx", "xurl", "youtube-content"
+      "airtable",
+      "architecture-diagram",
+      "arxiv",
+      "ascii-video",
+      "baoyu-infographic",
+      "box",
+      "claude-code",
+      "claude-design",
+      "codebase-inspection",
+      "codex",
+      "competitor-news-monitor",
+      "computer-use",
+      "design-md",
+      "document-to-action-items",
+      "docx",
+      "dogfood",
+      "email-inbox-triage",
+      "gif-search",
+      "github",
+      "google-workspace",
+      "himalaya",
+      "humanizer",
+      "inspecting-hermes-desktop-dom",
+      "llm-wiki",
+      "manim-video",
+      "meeting-action-items",
+      "node-inspect-debugger",
+      "notion",
+      "obsidian",
+      "opencode",
+      "p5js",
+      "pdf",
+      "popular-web-designs",
+      "powerpoint",
+      "product-price-monitor",
+      "python-debugpy",
+      "requesting-code-review",
+      "simplify-code",
+      "songsee",
+      "songwriting-and-ai-music",
+      "spike",
+      "systematic-debugging",
+      "teams-meeting-pipeline",
+      "test-driven-development",
+      "weekly-review-planning",
+      "xlsx",
+      "xurl",
+      "youtube-content"
     ]
   }
 }
