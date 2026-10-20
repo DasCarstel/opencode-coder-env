@@ -839,10 +839,12 @@ def main():
     check("Kostenbremse: freies Modell + genau eine bezahlte Probe",
           paid_probed == ["opencode-go/free-a", "opencode-go/paid-a"], str(paid_probed))
     st2 = _read_state(mod)
-    check("Kostenbremse: Tageszähler steht auf 1, zweites bezahltes Modell bleibt fällig",
+    skipped = next(c for c in st2["candidates"] if c["ref"] == "opencode-go/paid-b")
+    check("Kostenbremse: Tageszähler 1, zweites bezahltes Modell auf morgen verschoben",
           st2.get("paidToday", {}).get("count") == 1
-          and next(c for c in st2["candidates"] if c["ref"] == "opencode-go/paid-b")["schedule"]["nextProbeAt"] == past,
-          str(st2.get("paidToday")))
+          and skipped["status"] == "monitoring"
+          and mod._to_epoch(skipped["schedule"]["nextProbeAt"]) > now + 3600,
+          str(skipped.get("schedule")))
 
     # d) run_discovery: neue Kandidaten werden SOFORT geprobt (mit Schedule)
     mod = reset()

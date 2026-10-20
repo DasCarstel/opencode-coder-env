@@ -882,8 +882,14 @@ def run_monitoring(samples: int | None = None) -> dict:
         n = samples or STABILITY_SAMPLES
         for cand in watch:
             if not cand.get("free") and _paid_today(st) >= MAX_PAID_PER_DAY:
+                # Nicht fällig lassen: sonst würde der Loop alle 60 s erneut
+                # anklopfen. Auf den nächsten Tag verschieben (Cap-Reset).
+                sch = cand.get("schedule") if isinstance(cand.get("schedule"), dict) \
+                    else _new_schedule()
+                sch["nextProbeAt"] = _now_iso(time.time() + 24 * 3600)
+                cand["schedule"] = sch
                 _log(f"Kostenbremse: bezahlte Monitoring-Probe für {cand['ref']} "
-                     f"übersprungen ({MAX_PAID_PER_DAY}/Tag)")
+                     f"übersprungen ({MAX_PAID_PER_DAY}/Tag), nächster Termin morgen")
                 continue
             res = _probe_and_update(cand, known, samples=n, mode="monitoring")
             if not cand.get("free"):
