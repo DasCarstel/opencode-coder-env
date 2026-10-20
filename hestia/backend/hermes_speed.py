@@ -281,9 +281,13 @@ def _single_run(ref: str, variant: str = "", timeout: int = PROBE_TIMEOUT) -> di
     ersten .delta-Event (via on_first_delta-Callback von suggest._event_watch —
     fehlt der Callback/das Event, bleibt ttfbMs None).
     """
+    # Der Zusatz "Ausfall-Probe" ist der Stumm-Marker, den die bereits
+    # laufenden OpenCode-ntfy-Instanzen aus ihrer Startkonfiguration kennen.
+    # So bleiben Speed-Proben auch dann stumm, wenn eine alte Plugin-Instanz
+    # die neuere NTFY_IGNORE_TITLES-Liste noch nicht geladen hat.
     sstatus, sres = suggest._req("POST", f"{suggest.OC_SERVER_URL}/api/session",
                                  {"location": {"directory": suggest.OC_SUGGEST_DIR},
-                                  "title": "Hestia Speed-Probe"})
+                                  "title": "Hestia Speed-Probe (Ausfall-Probe)"})
     if sstatus not in (200, 201):
         return {"ok": False, "detail": f"Session-Anlegen fehlgeschlagen ({sstatus})",
                 "ttfbMs": None, "totalMs": None}

@@ -603,6 +603,10 @@ def main():
     check("suggest._event_watch nimmt on_first_delta an",
           watch_args is not None and "on_first_delta" in watch_args, str(watch_args))
 
+    speed_src = open(os.path.join(BACKEND, "hermes_speed.py"), encoding="utf-8").read()
+    check("Speed-Probe-Titel trägt den ntfy-Stumm-Marker",
+          "Hestia Speed-Probe (Ausfall-Probe)" in speed_src)
+
     snap_path = os.path.join(ROOT, "hestia", "telemetry_snapshot.py")
     snap_src = open(snap_path, encoding="utf-8").read()
     ok, detail = True, ""
