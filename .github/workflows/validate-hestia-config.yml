@@ -35,3 +35,5 @@ jobs:
         run: python hestia/ci/test_switch_account.py
       - name: Hermes-Panel testen (kein Netz)
         run: python hestia/ci/test_hermes.py
+      - name: Hermes-Speed + O19-Telemetrie testen (kein Netz)
+        run: python hestia/ci/test_hermes_speed.py

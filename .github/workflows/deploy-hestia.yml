@@ -41,9 +41,12 @@ jobs:
       - name: Datenordner anlegen (auf Coder-Host)
         # Bind-Mount-Ziel des Panels (/etc/hestia → /app/data): muss existieren und
         # root gehören, sonst legt Docker einen root:root-Ordner mit falschen Rechten an.
+        # /etc/hestia/hermes-telemetry ist das Ziel des O19-Snapshot-Seitenwagens
+        # (telemetry-snapshot) — nur dieser Snapshot geht ans Panel, die Live-DB
+        # /etc/docker/hermes/data sieht das Hestia-Panel nie.
         run: |
           ssh -i ~/.ssh/id_ed25519_coderdeploy -o IdentitiesOnly=yes root@10.0.10.17 \
-            "mkdir -p /etc/hestia && chmod 0755 /etc/hestia"
+            "mkdir -p /etc/hestia /etc/hestia/hermes-telemetry && chmod 0755 /etc/hestia /etc/hestia/hermes-telemetry"
 
       - name: docker compose build + up -d (auf Coder-Host)
         run: |

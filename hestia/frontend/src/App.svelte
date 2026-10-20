@@ -47,6 +47,11 @@ let hermesPool = $state(false)
 let hermesApiEnabled = $state(true)
 let hermesApiPort = $state(8642)
 let hermesApiHost = $state('0.0.0.0')
+// Hermes Voice/Speed (Phase 2): Kandidaten-Benchmark + O19-Telemetrie
+let speed = $state(null)
+let speedError = $state('')
+let speedBusy = $state(false)
+let speedSel = $state('')
 
 const VARIANT_RANK = { minimal: 1, none: 2, low: 3, medium: 4, thinking: 4, high: 5, xhigh: 6, max: 7 }
 function highestVariantOf(ref) {
@@ -953,16 +958,91 @@ async function runHermesApply() {
   }
 }
 
+// Hermes Voice/Speed (Phase 2): Kandidaten-Benchmark + O19-Telemetrie
+// Backend: hestia/backend/hermes_speed.py (GET /api/hermes/speed, POST /run, POST /apply)
+async function loadSpeed() {
+  try {
+    speed = await api('/api/hermes/speed')
+    speedError = ''
+  } catch (e) {
+    speedError = e?.message || String(e)
+  }
+}
+
+// Referenzen für die manuelle Messung: Kandidaten, sonst Monitoring-Referenzen aus der Config
+function speedRefs() {
+  const cands = (speed?.state?.candidates || []).map((c) => c.ref).filter(Boolean)
+  if (cands.length) return cands
+  const mon = speed?.config?.monitoring?.refs || speed?.config?.monitoringRefs
+  return Array.isArray(mon) ? mon.filter(Boolean) : []
+}
+
+async function runSpeed(mode) {
+  if (mode === 'probe' && !speedSel) {
+    speedError = 'Speed: kein Kandidat für die Messung gewählt'
+    return
+  }
+  speedBusy = true
+  try {
+    const body = mode === 'probe' ? { mode, refs: [speedSel], samples: 3 } : { mode }
+    await api('/api/hermes/speed/run', { body })
+    speedError = ''
+    // Messung läuft im Backend — Panel erst nach ~1,5 s frisch laden, dann Buttons wieder frei geben
+    setTimeout(() => {
+      loadSpeed()
+      speedBusy = false
+    }, 1500)
+  } catch (e) {
+    speedError = 'Speed: ' + (e?.message || String(e))
+    speedBusy = false
+  }
+}
+
+async function applySpeed(ref) {
+  if (!ref) return
+  if (!confirm(`"${ref}" als Hermes-Primary übernehmen?\n\nHermes wird neu gestartet, laufende Sessions brechen ab.`)) return
+  speedBusy = true
+  try {
+    await api('/api/hermes/speed/apply', { body: { ref } })
+    speedError = ''
+    await loadHermes()
+    await loadSpeed()
+  } catch (e) {
+    speedError = 'Speed: ' + (e?.message || String(e))
+  } finally {
+    speedBusy = false
+  }
+}
+
+// Formatier-Helfer für die Speed-Karte (p50-Werte können Zahl oder {p50,p95} sein)
+function speedP50(v) {
+  if (v == null) return null
+  return typeof v === 'number' ? v : (v.p50 ?? null)
+}
+function speedMs(v) {
+  const n = speedP50(v)
+  return n == null ? '—' : `${Math.round(n)} ms`
+}
+function speedNum(v) {
+  return v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toLocaleString('de-DE')
+}
+function speedTs(v) {
+  if (!v) return '—'
+  return typeof v === 'number' ? fmtTime(v) : String(v)
+}
+
 load()
 loadRolloutStatus()
 loadFailover()
 loadAccounts()
 loadHermes()
+loadSpeed()
 loadSuggestStatus()
 loadDcp()
 loadDcp()
 setInterval(loadAccounts, 60000)
 setInterval(loadHermes, 60000)
+setInterval(loadSpeed, 60000)
 setInterval(loadSuggestStatus, 60000)
 </script>
 
@@ -1181,6 +1261,128 @@ setInterval(loadSuggestStatus, 60000)
 </div>
 
 
+
+<div class="card">
+  <h2>
+    Hermes — Voice/Speed
+    <label class="muted" style="font-weight:400; margin-left:12px">
+      {#if speed?.auto}
+        <span class="badge active">Auto an</span>
+      {:else if speed}
+        <span class="badge">Auto aus</span>
+      {/if}
+      {#if !speed}
+        <span class="badge">lädt …</span>
+      {:else if speed.running?.running}
+        <span class="badge active">läuft: {speed.running.mode || '…'}</span>
+      {:else}
+        <span class="badge">idle</span>
+      {/if}
+      {#if speed?.running?.error}
+        <span class="badge err">⚠ {speed.running.error}</span>
+      {/if}
+      · letzter Lauf: <span class="mono">{speedTs(speed?.lastRun)}</span>
+      {#if speed?.telemetry}
+        {#if speed.telemetry.available}
+          <span class="badge active">O19-Telemetrie</span>
+        {:else}
+          <span class="badge warn">O19-Telemetrie: keine Daten</span>
+        {/if}
+      {/if}
+      {#if speedBusy}<span class="muted">· Arbeit läuft …</span>{/if}
+    </label>
+  </h2>
+
+  {#if speedError}<p><span class="badge err">⚠ {speedError}</span></p>{/if}
+
+  {#if speed?.recommendation}
+    <div class="row">
+      <span>
+        Empfehlung: <span class="mono">{speed.recommendation.ref}</span>
+        · Total p50 {speedMs(speed.recommendation.totalMs)}
+        · TTFB p50 {speedMs(speed.recommendation.ttfbMs)}
+        · Score {speed.recommendation.score ?? '—'}
+      </span>
+      <button class="primary" onclick={() => applySpeed(speed.recommendation.ref)}
+        disabled={speedBusy || speed?.running?.running}>
+        Übernehmen
+      </button>
+      <span class="muted" style="color:var(--warn)">⚠ Übernehmen startet Hermes neu — laufende Sessions brechen ab.</span>
+    </div>
+  {:else}
+    <p class="muted">Noch keine Empfehlung.</p>
+  {/if}
+
+  <div class="row">
+    <button title="Monitoring-Kandidaten erneut messen" onclick={() => runSpeed('monitoring')}
+      disabled={speedBusy || speed?.running?.running}>
+      Monitoring messen
+    </button>
+    <button title="Gratis-Provider komplett suchen" onclick={() => runSpeed('discovery')}
+      disabled={speedBusy || speed?.running?.running}>
+      Discovery
+    </button>
+    <label>
+      Kandidat&nbsp;
+      <select bind:value={speedSel} disabled={speedBusy || speed?.running?.running}>
+        <option value="" disabled>wählen…</option>
+        {#each speedRefs() as r}<option value={r}>{r}</option>{/each}
+      </select>
+    </label>
+    <button title="Nur das gewählte Modell messen" onclick={() => runSpeed('probe')}
+      disabled={speedBusy || speed?.running?.running || !speedSel}>
+      Gewähltes messen
+    </button>
+  </div>
+
+  {#if (speed?.state?.candidates || []).length}
+    <table>
+      <thead><tr><th>Modell</th><th>Typ</th><th>Total p50</th><th>TTFB p50</th><th>Fehler</th><th>Status</th><th>Zuletzt</th></tr></thead>
+      <tbody>
+        {#each speed.state.candidates.slice(0, 8) as c}
+          <tr>
+            <td class="mono">{c.ref}</td>
+            <td>{#if c.free}<span class="badge active">gratis</span>{:else}<span class="badge">bezahlt</span>{/if}</td>
+            <td>{speedMs(c.totalMs)}</td>
+            <td>{speedMs(c.ttfbMs)}</td>
+            <td>{c.errors ?? 0}</td>
+            <td class="muted">{c.status || '—'}</td>
+            <td class="muted">{speedTs(c.lastProbe)}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  {:else}
+    <p class="muted">Noch keine Messungen — starte „Monitoring messen“ oder „Discovery“.</p>
+  {/if}
+
+  <div class="row">
+    <span class="muted">O19-Telemetrie ({speed?.telemetry?.windowHours ?? 24} h):</span>
+    {#if speed?.telemetry?.available}
+      <span class="mono">
+        {speedNum(speed.telemetry.totals?.requests)} Requests ·
+        {speedNum(speed.telemetry.totals?.inputTokens)} Input-Tok ·
+        {speedNum(speed.telemetry.totals?.outputTokens)} Output-Tok ·
+        {Number(speed.telemetry.totals?.costUsd ?? 0).toFixed(2)} $
+      </span>
+    {:else if speed}
+      <span class="muted">{speed.telemetry?.reason || speed.telemetry?.error || 'nicht verfügbar'}</span>
+    {:else}
+      <span class="muted">lädt …</span>
+    {/if}
+  </div>
+  {#if speed?.telemetry?.available && (speed.telemetry.models || []).length}
+    <div class="row">
+      <span class="muted">Top-Modelle:</span>
+      {#each speed.telemetry.models.slice(0, 5) as m}
+        <span class="badge">
+          {m.provider ? m.provider + '/' : ''}{m.model} ·
+          {speedNum(m.requests)} · {Number(m.costUsd ?? 0).toFixed(2)} $
+        </span>
+      {/each}
+    </div>
+  {/if}
+</div>
 
 <div class="card">
   <h2>DCP — Kontext-Kompaktierung (Schwellenwerte)</h2>

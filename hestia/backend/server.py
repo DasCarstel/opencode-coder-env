@@ -19,6 +19,9 @@ Endpoints (alle unter Basic Auth):
   POST /api/accounts/switch   Konto-Wechsel anstoßen (id optional = Empfehlung)
   GET  /api/hermes            Hermes-Zustand (SOT + Health + Workflow)
   POST /api/hermes/apply      Hermes Primary/Fallback/Pool setzen (SOT-Commit + CI)
+  GET  /api/hermes/speed      Hermes-Speed: Scan-Zustand + O19-Telemetrie + Empfehlung
+  POST /api/hermes/speed/run  Speed-Lauf starten (discovery|monitoring|probe, im Hintergrund)
+  POST /api/hermes/speed/apply Speed-Empfehlung als Hermes-Primary anwenden (SOT via hermes.apply)
   GET  /api/failover/status   Ausfallschutz-Zustand (autoFailover/interval/threshold/timeout/…)
   POST /api/failover/settings Ausfallschutz-Einstellungen (SOT-Commit + STATE-Update)
   GET  /api/suggest/status    Live-Zustand + auto (Einstellungen/Fingerprint/Zeiten) + proposal
@@ -47,6 +50,7 @@ import suggest as suggest_mod  # noqa: E402
 import failover as failover_mod  # noqa: E402
 import accounts as accounts_mod  # noqa: E402
 import hermes as hermes_mod  # noqa: E402
+import hermes_speed as hermes_speed_mod  # noqa: E402
 import benchmarks as benchmarks_mod  # noqa: E402
 import dcp as dcp_mod  # noqa: E402
 
@@ -422,6 +426,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 _log(f"hermes status error: {e}")
                 return self._json({"error": str(e)}, 502)
+        if path in ("/api/hermes/speed", "/api/hermes/speed/status"):
+            # Hermes-Speed + O19-Telemetrie: gleiche Nie-ausfallen-Absicherung wie
+            # /api/hermes (Telemetrie liest den state.db-Snapshot read-only).
+            try:
+                return self._json(hermes_speed_mod.state())
+            except Exception as e:  # noqa: BLE001
+                _log(f"hermes speed status error: {e}")
+                return self._json({"error": str(e)}, 502)
         if path == "/api/dcp":
             try:
                 return self._json(dcp_mod.state())
@@ -430,7 +442,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": str(e)}, 500)
         if path in ("/api/apply", "/api/suggest", "/api/rollout",
                     "/api/accounts/check", "/api/accounts/switch",
-                    "/api/hermes/apply", "/api/failover/settings",
+                    "/api/hermes/apply", "/api/hermes/speed/run", "/api/hermes/speed/apply",
+                    "/api/failover/settings",
                     "/api/failover/check", "/api/suggest/settings",
                     "/api/benchmarks/refresh", "/api/dcp/settings"):
             return self._json(
@@ -683,6 +696,40 @@ class Handler(BaseHTTPRequestHandler):
                 _log(f"hermes apply error: {e}")
                 return self._json({"error": str(e)}, 500)
 
+        if path == "/api/hermes/speed/run":
+            # Speed-Lauf im Hintergrund starten (kehrt sofort zurück); der Status
+            # kommt aus GET /api/hermes/speed. Kein Auto-Apply — Anwenden nur über
+            # /api/hermes/speed/apply.
+            try:
+                payload = self._body()
+                mode = str(payload.get("mode") or "monitoring").strip()
+                if mode not in ("discovery", "monitoring", "probe"):
+                    return self._json(
+                        {"error": "mode muss 'discovery', 'monitoring' oder 'probe' sein"}, 400)
+                refs = [str(r).strip() for r in (payload.get("refs") or []) if str(r).strip()]
+                if mode == "probe" and not refs:
+                    return self._json({"error": "mode=probe braucht refs (Liste von provider/model)"}, 400)
+                return self._json(hermes_speed_mod.run_async(mode, refs, payload.get("samples")))
+            except Exception as e:
+                _log(f"hermes speed run error: {e}")
+                return self._json({"error": str(e)}, 500)
+
+        if path == "/api/hermes/speed/apply":
+            # Speed-Empfehlung als Hermes-Primary anwenden — ausschließlich über
+            # hermes.apply (SOT-Commit + Workflow), nie direkte Config-Schreiberei.
+            try:
+                payload = self._body()
+                ref = str(payload.get("ref") or "").strip()
+                res = hermes_speed_mod.apply_recommendation(ref or None)
+                return self._json(res)
+            except hermes_mod.ApplyError as e:
+                return self._json({"error": str(e)}, 400)
+            except ConfigError as e:
+                return self._json({"error": str(e)}, 502)
+            except Exception as e:
+                _log(f"hermes speed apply error: {e}")
+                return self._json({"error": str(e)}, 500)
+
         if path == "/api/benchmarks/refresh":
             # Benchmarks sofort neu holen (OpenRouter ist read-only und gecacht).
             try:
@@ -731,6 +778,10 @@ def main():
         suggest_mod.start()
     except Exception as e:  # noqa: BLE001
         _log(f"Suggest-Automatik-Start fehlgeschlagen: {e}")
+    try:
+        hermes_speed_mod.start()
+    except Exception as e:  # noqa: BLE001
+        _log(f"Hermes-Speed-Start fehlgeschlagen: {e}")
     try:
         benchmarks_mod.start()
     except Exception as e:  # noqa: BLE001

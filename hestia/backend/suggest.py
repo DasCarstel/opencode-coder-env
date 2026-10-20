@@ -506,12 +506,17 @@ class StallError(RuntimeError):
     """Keine Lebenszeichen vom Modell (Event-Stille) — echter Hänger."""
 
 
-def _event_watch(sid: str, deadline: float, stall_timeout: float, on_progress=None) -> str:
+def _event_watch(sid: str, deadline: float, stall_timeout: float, on_progress=None,
+                 on_first_delta=None) -> str:
     """Wartet auf den Abschluss der Session über den SSE-Stream /api/event.
 
     Liveness = JEDES Event zu unserer Session (reasoning.delta/text.delta/…).
     Erst Event-Stille über stall_timeout gilt als Hänger. Rückgabe:
     "succeeded" | "failed:<typ>" | "stalled" | "timeout" | "unwatchable"
+
+    on_first_delta (optional) wird genau beim ersten .delta-Event aufgerufen —
+    für TTFB-Messungen (hermes_speed.probe); ein Fehler im Callback bricht das
+    Watching nie ab.
     """
     import http.client
     from urllib.parse import urlparse
@@ -556,6 +561,11 @@ def _event_watch(sid: str, deadline: float, stall_timeout: float, on_progress=No
             etype = ev.get("type", "")
             if etype.endswith(".delta"):
                 deltas += 1
+                if deltas == 1 and on_first_delta:
+                    try:
+                        on_first_delta()
+                    except Exception:
+                        pass
                 if on_progress and deltas % 10 == 0:
                     on_progress(deltas=deltas, elapsed=round(time.time() - started, 1))
             if etype.startswith("session.execution."):

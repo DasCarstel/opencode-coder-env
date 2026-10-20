@@ -16,6 +16,10 @@ services:
       # Lokaler Laufzeit-Zustand der KI-Vorschlag-Automatik (Fingerprints, letzter
       # Vorschlag) — statischer Host-Ordner, NICHT im Repo (wird vom Deploy angelegt).
       - /etc/hestia:/app/data
+      # O19-Telemetrie: Snapshot der Hermes-state.db — nur der Snapshot des
+      # Seitenwagens (telemetry-snapshot), NIE die Live-DB /etc/docker/hermes/data
+      # und nie die Hermes-.env (die bleiben komplett beim Hermes-Container).
+      - /etc/hestia/hermes-telemetry:/hermes-data:ro
     environment:
       OPENBAO_ADDR: https://openbao.mueller-nas.de
       OPENBAO_ROLE_ID: ${HESTIA_OPENBAO_ROLE_ID:-}
@@ -53,11 +57,45 @@ services:
       # + Workflow, der die SOT .opencode/hestia-hermes.jsonc anwendet.
       HERMES_HEALTH_URL: ${HERMES_HEALTH_URL:-http://hermes:9119/api/health}
       HESTIA_HERMES_WORKFLOW: ${HESTIA_HERMES_WORKFLOW:-apply-hermes.yml}
+      # Hermes Voice Phase 2 — Speed-Scan: Pfade, Intervalle und Filter.
+      # state.db kommt NUR aus dem Read-only-Snapshot des Seitenwagens.
+      HERMES_STATE_DB: ${HERMES_STATE_DB:-/hermes-data/state.db}
+      HESTIA_SPEED_PATH: ${HESTIA_SPEED_PATH:-/app/data/hermes-speed.json}
+      HESTIA_SPEED_KNOWN_PATH: ${HESTIA_SPEED_KNOWN_PATH:-/app/data/hermes-speed-known.json}
+      HESTIA_SPEED_AUTO: ${HESTIA_SPEED_AUTO:-1}
+      HESTIA_SPEED_INTERVAL_HOURS: ${HESTIA_SPEED_INTERVAL_HOURS:-24}
+      HESTIA_SPEED_SAMPLES: ${HESTIA_SPEED_SAMPLES:-3}
+      HESTIA_SPEED_PROBE_TIMEOUT: ${HESTIA_SPEED_PROBE_TIMEOUT:-35}
+      HESTIA_SPEED_MAX_NEW_PER_DAY: ${HESTIA_SPEED_MAX_NEW_PER_DAY:-5}
+      HESTIA_SPEED_ARCHIVE_DAYS: ${HESTIA_SPEED_ARCHIVE_DAYS:-90}
+      HESTIA_SPEED_FREE_ONLY: ${HESTIA_SPEED_FREE_ONLY:-1}
       # Optional: überschreibt alles (sonst aus OpenBao)
       # HESTIA_PASSWORD: ""
       # OC_SERVER_PASSWORD: ""
       # GITHUB_TOKEN: ""
     command: ["python3", "bootstrap.py"]
+
+  telemetry-snapshot:
+    # O19-Seitenwagen: kopiert die state.db des Hermes-Containers per
+    # sqlite3-Backup-API in den freigegebenen Ordner (nur der Snapshot, niemals
+    # die Live-DB oder die .env). Kein Netz, read-only rootfs, kein Privileg-
+    # Gewinn — der Wagen darf nur lesen und die Snapshot-Datei schreiben.
+    image: python:3.12-slim
+    container_name: hestia-telemetry-snapshot
+    restart: unless-stopped
+    network_mode: none
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    volumes:
+      # Live-Datenbank des Hermes-Containers — strikt read-only
+      - /etc/docker/hermes/data:/source:ro
+      # Ziel: genau der Ordner, den das Hestia-Panel read-only unter /hermes-data mountet
+      - /etc/hestia/hermes-telemetry:/snapshot
+      - ./telemetry_snapshot.py:/app/telemetry_snapshot.py:ro
+    command: ["python", "/app/telemetry_snapshot.py"]
 
 networks:
   coder-infra:
