@@ -204,7 +204,11 @@ def _ensure_schedule(entry: dict, archived: bool = False,
     try:
         interval = max(1, int(raw.get("intervalHours")))
     except (TypeError, ValueError):
-        interval = INTERVAL_HOURS
+        interval = ARCHIVE_DAYS * 24 if archived else INTERVAL_HOURS
+    if archived:
+        # Archivierte Modelle werden nicht im Monitoring getaktet; der
+        # nächste Termin ist die recheckAfter-Frist (Archiv-Intervall).
+        interval = ARCHIVE_DAYS * 24
     try:
         streak = int(raw.get("stableStreak") or 0)
     except (TypeError, ValueError):
@@ -788,7 +792,7 @@ def _probe_and_update(cand: dict, known: dict, samples: int | None = None,
         sch["nextProbeAt"] = _now_iso(time.time() + sch["intervalHours"] * 3600)
     else:
         sch["stableStreak"] = 0
-        sch["intervalHours"] = INTERVAL_HOURS
+        sch["intervalHours"] = ARCHIVE_DAYS * 24
         sch["nextProbeAt"] = _now_iso(time.time() + ARCHIVE_DAYS * 86400)
     # known erst NACH der Probe schreiben (nie Blindvermerke für Ausfälle ohne
     # Versuch — so bleibt die Wiederentdeckung über den Hash intakt).

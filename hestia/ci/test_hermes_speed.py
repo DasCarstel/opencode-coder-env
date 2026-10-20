@@ -782,9 +782,9 @@ def main():
           and cand["schedule"]["stableStreak"] == 0, str(cand["schedule"]))
     box["q"] = [_result(None, errors=2)]
     mod._probe_and_update(cand, known, samples=5, mode="monitoring")
-    check("Fehler → archiviert, Intervall-Reset, streak 0, Termin auf Archiv-Frist",
+    check("Fehler → archiviert, Archiv-Intervall, streak 0, Termin auf Archiv-Frist",
           cand["status"] == "archived"
-          and cand["schedule"]["intervalHours"] == 24
+          and cand["schedule"]["intervalHours"] == mod.ARCHIVE_DAYS * 24
           and cand["schedule"]["stableStreak"] == 0
           and mod._to_epoch(cand["schedule"]["nextProbeAt"]) > time.time() + 80 * 86400,
           str(cand["schedule"]))
