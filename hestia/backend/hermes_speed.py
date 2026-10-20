@@ -778,11 +778,38 @@ _LOOP_THREAD = None
 _STOP = threading.Event()
 
 
+def _seconds_until_auto_run(now: float | None = None) -> float:
+    """Sekunden bis zum nächsten Automatik-Lauf (0.0 = sofort fällig).
+
+    Reine Lese-Logik (startet keine Proben): Liegt der letzte Lauf (checkedAt)
+    jünger als das Intervall zurück — typisch nach häufigem Neustart/Redeploy —
+    kommt die Restzeit, damit der Loop keine Sofort-Probe fährt. Fehlender oder
+    ungültiger checkedAt (erste Installation) → 0.0, d.h. sofort wie bisher.
+    """
+    last = _to_epoch(_load_state().get("checkedAt"))
+    if last is None:
+        return 0.0
+    now_ts = time.time() if now is None else now
+    interval = max(60, INTERVAL_HOURS * 3600)   # gleiche Untergrenze wie im Loop
+    return max(0.0, last + interval - now_ts)
+
+
 def loop(stop_event: threading.Event):
-    """Automatik: Monitoring + Discovery im Rollen-Intervall (kein Auto-Apply)."""
+    """Automatik: Monitoring + Discovery im Rollen-Intervall (kein Auto-Apply).
+
+    Neustart-Schutz: junger checkedAt (< Intervall) → Restzeit abwarten
+    (unterbrechbar über stop_event), dann laufen. Erste Installation läuft
+    sofort; nach jedem Lauf gilt wieder das volle Intervall.
+    """
     _log(f"Speed-Automatik aktiv (Intervall {INTERVAL_HOURS} h, Samples {SAMPLES}, "
          f"free-only={FREE_ONLY}, Tageslimit {MAX_NEW_PER_DAY})")
     while not stop_event.is_set():
+        wait = _seconds_until_auto_run()
+        if wait > 0:
+            _log(f"letzter Speed-Lauf jünger als das Intervall — "
+                 f"{wait / 3600.0:.1f} h bis zum nächsten Automatik-Lauf")
+            stop_event.wait(wait)
+            continue
         try:
             run_monitoring()
         except Exception as e:  # noqa: BLE001

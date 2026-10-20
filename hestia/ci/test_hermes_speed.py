@@ -22,7 +22,10 @@ Daneben liest hermes_speed.telemetry() den O19-Snapshot der Hermes-state.db
   5. telemetry(): Aggregation aus einer minimalen state.db (Anfragen/Tokens/
      Kosten, Fensterfilter, Antwortzeit-Näherung aus Zeitstempeln — ohne
      Inhalte); fehlender Snapshot → available=False, nie eine Exception.
-  6. Statische Checks: suggest._event_watch nimmt on_first_delta an,
+  6. Automatik-Loop: kein Sofort-Probe nach Neustart, wenn checkedAt jünger
+     als das Intervall ist (Restzeit wird gewartet); fehlender/ungültiger
+     checkedAt (erste Installation) läuft sofort, danach volles Intervall.
+  7. Statische Checks: suggest._event_watch nimmt on_first_delta an,
      telemetry_snapshot.py kompiliert ohne Netz-Imports, Compose/Workflows
      verdrahten den Seitenwagen (nur der Snapshot geht ans Panel).
 
@@ -521,7 +524,75 @@ def main():
     check("Telemetrie eingebettet", st["telemetry"]["available"] is False,
           str(st["telemetry"].get("reason", ""))[:80])
 
-    print("\n[13] Statische Checks: Verdrahtung + Grenzen")
+    print("\n[13] Automatik: kein Sofort-Probe nach Neustart (Intervall-Schutz)")
+
+    class _StopAfterWait:
+        """Fake-Event (thread-frei): eine Loop-Iteration, Ende im ersten wait()."""
+
+        def __init__(self):
+            self.calls = []
+            self.count = 0
+
+        def is_set(self):
+            return self.count > 0
+
+        def wait(self, timeout=None):
+            self.calls.append(timeout)
+            self.count += 1
+            return True
+
+    mod = reset()
+    ev = _StopAfterWait()
+    mod.loop(ev)                       # kein State → erste Installation: sofort
+    st = _read_state(mod)
+    check("erste Installation: Loop läuft sofort und setzt checkedAt",
+          st["checkedAt"] is not None and len(CALLS["req"]) > 0, str(st.get("checkedAt")))
+    check("nach dem Lauf wartet der Loop das volle Intervall",
+          ev.calls == [max(60, mod.INTERVAL_HOURS * 3600)], str(ev.calls))
+
+    mod = reset()
+    check("fehlender checkedAt → sofort fällig",
+          mod._seconds_until_auto_run(now=time.time()) == 0.0)
+    st = json.loads(json.dumps(DEFAULT_SPEED_STATE))
+    st["checkedAt"] = "kein-zeitstempel"
+    _write_state(mod, st)
+    check("ungültiger checkedAt → sofort fällig",
+          mod._seconds_until_auto_run(now=time.time()) == 0.0, str(st["checkedAt"]))
+    last = time.time() - 3600          # 1 h alt, Intervall 24 h → ~23 h Rest
+    st["checkedAt"] = mod._now_iso(last)
+    _write_state(mod, st)
+    remaining = mod._seconds_until_auto_run(now=last + 120)   # deterministisch
+    check("Restzeit = Intervall - verstrichene Zeit (deterministisch)",
+          abs(remaining - (24 * 3600 - 120)) < 1.0, f"{remaining:.1f}s")
+    remaining_live = mod._seconds_until_auto_run()
+    check("checkedAt 1 h alt (Live-Zeit) → ~23 h Restzeit",
+          abs(remaining_live - 23 * 3600) < 60, f"{remaining_live:.0f}s")
+    check("checkedAt exakt am Intervall → sofort fällig",
+          mod._seconds_until_auto_run(now=last + 24 * 3600) == 0.0)
+    st["checkedAt"] = mod._now_iso(time.time() - 25 * 3600)
+    _write_state(mod, st)
+    check("checkedAt älter als Intervall → sofort fällig",
+          mod._seconds_until_auto_run() == 0.0, str(st["checkedAt"]))
+    calls_before = len(CALLS["req"])
+    st_before = _read_state(mod)
+    mod._seconds_until_auto_run()
+    check("Helper startet keine Proben (reine Lese-Logik)",
+          len(CALLS["req"]) == calls_before and _read_state(mod) == st_before)
+
+    mod = reset()
+    st = json.loads(json.dumps(DEFAULT_SPEED_STATE))
+    st["checkedAt"] = mod._now_iso(time.time() - 3600)   # 1 h alt, Intervall 24 h
+    _write_state(mod, st)
+    ev = _StopAfterWait()
+    calls_before = len(CALLS["req"])
+    mod.loop(ev)
+    check("Neustart mit jungem checkedAt: keine Sofort-Probe",
+          len(CALLS["req"]) == calls_before,
+          f"{len(CALLS['req']) - calls_before} neue Probe-Calls")
+    check("Neustart: Loop wartet die Restzeit (~23 h)",
+          len(ev.calls) == 1 and abs(ev.calls[0] - 23 * 3600) < 60, str(ev.calls))
+
+    print("\n[14] Statische Checks: Verdrahtung + Grenzen")
     import ast
     suggest_src = open(os.path.join(BACKEND, "suggest.py"), encoding="utf-8").read()
     tree = ast.parse(suggest_src)
