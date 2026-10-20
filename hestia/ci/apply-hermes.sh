@@ -12,6 +12,8 @@
 #    das Hermes ignoriert) — bestehenden Block entfernen, neuen anhängen
 # 4) API_SERVER_ENABLED/PORT/HOST aus der SOT nach /opt/data/.env schreiben
 #    (immer, unabhaengig vom Pool; API_SERVER_KEY bleibt unangetastet)
+# 4b) erweiterte Sektionen (agent/providers/platform_toolsets/platforms) per
+#     Deep-Merge in die config.yaml — alles andere bleibt unangetastet
 # 5) optional den Abo-Pool (OPENCODE_GO_API_KEY*) aus OpenBao neu setzen
 # 6) dasselbe für jedes weitere SOT-Profil ("profiles") — der Multiplexer
 #    bedient mehrere Profile mit je eigenen Dateien unter /opt/data/profiles/
@@ -47,6 +49,10 @@ HESTIA_ACCOUNTS_PATH="${HESTIA_ACCOUNTS_PATH:-${SOT_PATH%/*}/hestia-accounts.jso
 CONFIG_IN_CONTAINER="/opt/data/config.yaml"
 ENV_IN_CONTAINER="/opt/data/.env"
 HERMES_BIN="/opt/hermes/bin/hermes"
+# Der Login-Shell-PATH (sh -lc) zeigt auf /usr/local/bin/python3 ohne
+# ruamel.yaml; die Hermes-venv hat ruamel. Für den Config-Merge explizit
+# diesen Interpreter verwenden.
+HERMES_PYTHON="${HERMES_PYTHON:-/opt/hermes/.venv/bin/python3}"
 # /api/health antwortet auch ohne Auth mit ok/version — reicht als Restart-Indicator.
 HEALTH_PATH="/api/health"
 
@@ -64,7 +70,7 @@ fi
 # Ein Helper für die ganze SOT:jq ist auf dem Runner nicht garantiert.
 # IFS=Tabulator, weil die JSON-Werte Leerzeichen enthalten.
 IFS=$'\t' read -r PRIMARY_PROVIDER PRIMARY_MODEL FALLBACKS_JSON POOL_FOLLOW RESTART ENABLED PROFILES_JSON \
-  API_ENABLED API_PORT API_HOST < <(
+  API_ENABLED API_PORT API_HOST AGENT_JSON PROVIDERS_JSON TOOLSETS_JSON PLATFORMS_JSON < <(
   python3 - "$SOT_PATH" <<'PY'
 import json, sys
 try:
@@ -138,6 +144,15 @@ print("\t".join([
     "true" if api.get("enabled", True) else "false",
     str(api_port),
     api_host,
+    json.dumps(cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {},
+               separators=(",", ":")),
+    json.dumps(cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
+               separators=(",", ":")),
+    json.dumps(cfg.get("platform_toolsets")
+               if isinstance(cfg.get("platform_toolsets"), dict) else {},
+               separators=(",", ":")),
+    json.dumps(cfg.get("platforms") if isinstance(cfg.get("platforms"), dict) else {},
+               separators=(",", ":")),
 ]))
 PY
 )
@@ -348,6 +363,96 @@ PY
 # Immer anwenden — unabhaengig von POOL_FOLLOW. Faellt die Validierung durch,
 # bricht das Skript ab (set -e) und die .env bleibt unveraendert.
 write_api_server "$ENV_IN_CONTAINER" "default"
+
+# --- 4c) Erweiterte Sektionen (Hermes Voice) in die config.yaml mergen --------
+# agent / providers / platform_toolsets / platforms kommen aus der SOT und
+# werden per Deep-Merge in /opt/data/config.yaml geschrieben. Bewusst NUR diese
+# vier Sektionen: mcp_servers, toolsets.enabled (deprecated), tools und
+# model.base_url bleiben unangetastet, ebenso alle nicht genannten Keys
+# (z. B. platforms.ntfy). Dicts werden rekursiv verschmolzen, Listen und
+# Skalare ersetzt; Kommentare/Reihenfolge bleiben wo moeglich erhalten
+# (ruamel.yaml Round-Trip im Container).
+ADV_PATCH="$(python3 - "$AGENT_JSON" "$PROVIDERS_JSON" "$TOOLSETS_JSON" "$PLATFORMS_JSON" <<'PY'
+import json, sys
+names = ("agent", "providers", "platform_toolsets", "platforms")
+patch = {}
+for name, raw in zip(names, sys.argv[1:]):
+    try:
+        value = json.loads(raw) if raw else None
+    except Exception:
+        value = None
+    if isinstance(value, dict) and value:
+        patch[name] = value
+print(json.dumps(patch, separators=(",", ":")))
+PY
+)"
+
+ADV_BACKUP=""
+if [[ "$ADV_PATCH" != "{}" ]]; then
+  # Gewidmetes Backup VOR diesem Merge — stellt der fehlgeschlagene
+  # "hermes config check" unten automatisch wieder her (das allgemeine Backup
+  # aus Schritt 2 ist aelter als model/fallback-Schritte).
+  ADV_BACKUP="${CONFIG_IN_CONTAINER}.bak-adv-$(date +%s)"
+  "${SSH[@]}" "docker exec '$HERMES_CONTAINER' sh -lc 'cp -a $CONFIG_IN_CONTAINER $ADV_BACKUP'"
+  echo "→ Backup für erweiterte Sektionen: $ADV_BACKUP"
+
+  cat >"$WORK/adv-merge.py" <<'PY'
+"""Deep-Mergt die erweiterten Hestia-Sektionen in die Hermes-config.yaml.
+
+Aufruf: adv-merge.py <patch.json> < config.yaml   (Ausgabe auf stdout)
+
+argv[1] ist eine JSON-Datei {agent?, providers?, platform_toolsets?, platforms?}.
+Dicts werden rekursiv verschmolzen, Listen und Skalare ersetzt. Alle anderen
+Keys (mcp_servers, tools, model, …), Kommentare und die Reihenfolge bleiben
+wo moeglich erhalten (ruamel.yaml Round-Trip).
+"""
+import json, sys
+
+from ruamel.yaml import YAML
+
+PATCH_PATH = sys.argv[1]
+
+
+def merge(target, patch):
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            merge(target[key], value)
+        else:
+            target[key] = value
+
+
+yaml = YAML(typ="rt")
+yaml.preserve_quotes = True
+yaml.width = 4096
+yaml.allow_unicode = True
+yaml.default_flow_style = False
+
+with open(PATCH_PATH, encoding="utf-8") as fh:
+    patch = json.load(fh)
+
+cfg = yaml.load(sys.stdin.read()) or {}
+merge(cfg, patch)
+yaml.dump(cfg, sys.stdout)
+PY
+  printf '%s' "$ADV_PATCH" >"$WORK/adv-patch.json"
+  "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > /tmp/hestia-adv-merge.py'" <"$WORK/adv-merge.py"
+  "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > /tmp/hestia-adv-patch.json'" <"$WORK/adv-patch.json"
+  # Merge IM Container ausführen. Bewusst nicht "python3" aus dem Login-PATH:
+  # sh -lc setzt PATH auf /usr/local/bin (ohne ruamel); die Hermes-venv hat es.
+  if ! "${SSH[@]}" "docker exec '$HERMES_CONTAINER' sh -lc '$HERMES_PYTHON /tmp/hestia-adv-merge.py /tmp/hestia-adv-patch.json < $CONFIG_IN_CONTAINER'" >"$WORK/config.adv.new" \
+     || [[ ! -s "$WORK/config.adv.new" ]]; then
+    "${SSH[@]}" "docker exec '$HERMES_CONTAINER' rm -f /tmp/hestia-adv-merge.py /tmp/hestia-adv-patch.json" >/dev/null 2>&1 || true
+    echo "✗ Merge der erweiterten Sektionen fehlgeschlagen — config.yaml unverändert (Backup: $ADV_BACKUP)" >&2
+    exit 1
+  fi
+  # In-place zurückschreiben (ein mv auf /opt/data scheitert im Volume).
+  "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > $CONFIG_IN_CONTAINER'" <"$WORK/config.adv.new"
+  "${SSH[@]}" "docker exec -u 0 '$HERMES_CONTAINER' sh -lc 'chown hermes:hermes $CONFIG_IN_CONTAINER && chmod 600 $CONFIG_IN_CONTAINER'"
+  "${SSH[@]}" "docker exec '$HERMES_CONTAINER' rm -f /tmp/hestia-adv-merge.py /tmp/hestia-adv-patch.json"
+  echo "✓ Erweiterte Sektionen gemerged: $(printf '%s' "$ADV_PATCH" | python3 -c 'import json,sys; print(", ".join(sorted(json.load(sys.stdin))))')"
+else
+  echo "→ Keine erweiterten Sektionen (agent/providers/platform_toolsets/platforms) in der SOT — config.yaml hier unverändert"
+fi
 
 # --- 5) Abo-Pool aus OpenBao -------------------------------------------------
 # Die KEYS (default1..3) kommen aus OpenBao; welches Abo zuerst steht, wird NICHT
@@ -625,10 +730,16 @@ fi
 
 # --- 6) Validierung ----------------------------------------------------------
 echo "→ hermes config check"
-"${SSH[@]}" "docker exec -u 0 '$HERMES_CONTAINER' sh -lc 'HOME=/opt/data $HERMES_BIN config check'" | sed 's/^/   /' || {
+if ! "${SSH[@]}" "docker exec -u 0 '$HERMES_CONTAINER' sh -lc 'HOME=/opt/data $HERMES_BIN config check'" | sed 's/^/   /'; then
+  # Fehlgeschlagener Config-Check: den Merge aus Schritt 4c zurückrollen.
+  if [[ -n "$ADV_BACKUP" ]]; then
+    echo "→ stelle Backup wieder her: $ADV_BACKUP" >&2
+    "${SSH[@]}" "docker exec -u 0 '$HERMES_CONTAINER' sh -lc 'cat $ADV_BACKUP > $CONFIG_IN_CONTAINER && chown hermes:hermes $CONFIG_IN_CONTAINER && chmod 600 $CONFIG_IN_CONTAINER'"
+    echo "✓ config.yaml aus $ADV_BACKUP wiederhergestellt (Merge zurückgerollt)" >&2
+  fi
   echo "✗ hermes config check fehlgeschlagen — Backup: siehe oben" >&2
   exit 1
-}
+fi
 
 # --- 7) Neustart + Health-Wait ----------------------------------------------
 # Nur bei echter Änderung neu starten (STATE_BEFORE oben): ein Neustart bricht
@@ -674,4 +785,7 @@ echo "✓ Hermes angewendet: primary=$PRIMARY_PROVIDER/$PRIMARY_MODEL · fallbac
 echo "✓ API-Server laut SOT: enabled=$API_ENABLED · $API_HOST:$API_PORT (API_SERVER_KEY unveraendert)"
 if [[ "$PROFILES_JSON" != "[]" ]]; then
   echo "✓ Profile angewendet: $PROFILES_APPLIED · $PROFILES_JSON"
+fi
+if [[ -n "$ADV_BACKUP" ]]; then
+  echo "✓ Erweiterte Sektionen (agent/providers/platform_toolsets/platforms) gemerged — Backup: $ADV_BACKUP"
 fi

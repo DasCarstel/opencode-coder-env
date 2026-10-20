@@ -8,8 +8,10 @@ der Workflow spielt sie per SSH in den Container "hermes" ein
 (hestia/ci/apply-hermes.sh). Das Panel selbst fasst weder Container noch Keys
 an; der Key-Pool bleibt Aufgabe des Runner-Skripts (OpenBao).
 """
+import copy
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -25,6 +27,18 @@ HTTP_TIMEOUT = 5
 # Erlaubte Provider (Komma-getrennt) — identisch zum Tier-System.
 ALLOWED_PROVIDERS = [p.strip() for p in
                      os.environ.get("HESTIA_PROVIDERS", "opencode-go,opencode").split(",") if p.strip()]
+
+# Erlaubte Werte für agent.reasoning_effort (Hermes-Varianten).
+REASONING_EFFORTS = ("", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+# Eingebaute Toolset-Namen für platform_toolsets (MCP-Server gehören nicht dazu).
+BUILTIN_TOOLSETS = frozenset({
+    "web", "browser", "browser-use", "terminal", "file", "code_execution",
+    "vision", "video", "image_gen", "video_gen", "x_search", "tts", "stt",
+    "skills", "todo", "kanban", "memory", "context_engine", "session_search",
+    "clarify", "connections", "delegation", "cronjob",
+})
+# Alias-Regel für platforms.<plattform>.extra.model_routes.
+MODEL_ROUTE_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 _CACHE = {"at": 0.0, "cfg": None, "error": None}
 
@@ -46,6 +60,12 @@ def _default_config() -> dict:
         # Weitere Hermes-Profile des Multiplexers (je eigene config.yaml/.env
         # unter /opt/data/profiles/<name>/). Leeres Dict = nur das Default-Profil.
         "profiles": {},
+        # Erweiterte Sektionen (Hermes Voice) — optional. Fehlen sie in der SOT,
+        # bleibt der jeweilige Block in der config.yaml unangetastet.
+        "agent": {},
+        "providers": {},
+        "platform_toolsets": {},
+        "platforms": {},
     }
 
 
@@ -82,6 +102,12 @@ def _public(cfg: dict) -> dict:
         "api_server": _api_server_public(cfg.get("api_server")),
         "restart": bool(cfg.get("restart", True)),
         "profiles": _profiles_public(cfg.get("profiles") or {}, cfg),
+        # Erweiterte Sektionen (Hermes Voice): normalisierte Tiefkopien, damit
+        # Änderungserkennung und Panel sie sehen (und ein Apply sie nicht löscht).
+        "agent": _agent_public(cfg.get("agent")),
+        "providers": _providers_public(cfg.get("providers")),
+        "platform_toolsets": _platform_toolsets_public(cfg.get("platform_toolsets")),
+        "platforms": _platforms_public(cfg.get("platforms")),
     }
 
 
@@ -133,6 +159,193 @@ def _validate_api_server(section) -> dict:
         if not isinstance(host, str) or not host.strip():
             raise ApplyError("api_server.host: muss ein nicht-leerer String sein")
         out["host"] = host.strip()
+    return out
+
+
+def _deep_merge(base: dict, incoming: dict) -> dict:
+    """Rekursives Merge: Dicts verschmelzen, Listen/Skalare ersetzen.
+
+    `incoming` gewinnt; nicht genannte Keys aus `base` bleiben erhalten — so
+    überlebt z. B. platforms.ntfy einen Apply, der nur api_server schickt.
+    """
+    out = copy.deepcopy(base)
+    for key, value in incoming.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
+
+
+def _is_number(value) -> bool:
+    """int/float, aber nie bool (isinstance(True, int) wäre sonst True)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _agent_public(section) -> dict:
+    """agent für Panel/Vergleich: Tiefkopie; unplausible Werte fliegen raus."""
+    if not isinstance(section, dict):
+        return {}
+    out = copy.deepcopy(section)
+    if "reasoning_effort" in out:
+        effort = str(out["reasoning_effort"] or "").strip().lower()
+        out["reasoning_effort"] = effort if effort in REASONING_EFFORTS else ""
+    for key, minimum in (("api_max_retries", 1), ("auto_recovery_cycles", 0)):
+        if key in out:
+            v = out[key]
+            if isinstance(v, bool) or not isinstance(v, int) or v < minimum:
+                del out[key]
+    return out
+
+
+def _providers_public(section) -> dict:
+    """providers für Panel/Vergleich: Tiefkopie; unplausible Timeouts raus."""
+    if not isinstance(section, dict):
+        return {}
+    out = copy.deepcopy(section)
+    go = out.get("opencode-go")
+    if isinstance(go, dict):
+        for key in ("request_timeout_seconds", "stale_timeout_seconds"):
+            if key in go and not (_is_number(go[key]) and go[key] > 0):
+                del go[key]
+    return out
+
+
+def _platform_toolsets_public(section) -> dict:
+    """platform_toolsets für Panel/Vergleich: nur Plattformen mit String-Listen."""
+    if not isinstance(section, dict):
+        return {}
+    out = {}
+    for name, toolsets in section.items():
+        if isinstance(toolsets, list):
+            out[str(name)] = [t for t in toolsets if isinstance(t, str)]
+    return out
+
+
+def _platforms_public(section) -> dict:
+    """platforms für Panel/Vergleich: reine Tiefkopie (inkl. ntfy)."""
+    if not isinstance(section, dict):
+        return {}
+    return copy.deepcopy(section)
+
+
+def _validate_agent(section) -> dict:
+    """agent-Sektion validieren; unbekannte Keys bleiben erhalten."""
+    if section is None:
+        return {}
+    if not isinstance(section, dict):
+        raise ApplyError("agent: muss ein Objekt sein")
+    out = copy.deepcopy(section)
+    if "reasoning_effort" in out:
+        effort = str(out["reasoning_effort"] or "").strip().lower()
+        if effort not in REASONING_EFFORTS:
+            raise ApplyError(
+                f"agent.reasoning_effort: '{out['reasoning_effort']}' unbekannt "
+                f"(erlaubt: {'|'.join(REASONING_EFFORTS)})")
+        out["reasoning_effort"] = effort
+    if "api_max_retries" in out:
+        v = out["api_max_retries"]
+        if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+            raise ApplyError("agent.api_max_retries: muss eine ganze Zahl >= 1 sein")
+    if "auto_recovery_cycles" in out:
+        v = out["auto_recovery_cycles"]
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            raise ApplyError("agent.auto_recovery_cycles: muss eine ganze Zahl >= 0 sein")
+    return out
+
+
+def _validate_providers(section) -> dict:
+    """providers-Sektion validieren; fremde Provider/Keys bleiben erhalten."""
+    if section is None:
+        return {}
+    if not isinstance(section, dict):
+        raise ApplyError("providers: muss ein Objekt sein")
+    out = copy.deepcopy(section)
+    go = out.get("opencode-go")
+    if isinstance(go, dict):
+        for key in ("request_timeout_seconds", "stale_timeout_seconds"):
+            if key in go and not (_is_number(go[key]) and go[key] > 0):
+                raise ApplyError(f"providers.opencode-go.{key}: muss eine Zahl > 0 sein")
+    return out
+
+
+def _validate_platform_toolsets(section) -> dict:
+    """platform_toolsets validieren: Plattform → Liste gebauter Toolset-Namen."""
+    if section is None:
+        return {}
+    if not isinstance(section, dict):
+        raise ApplyError("platform_toolsets: muss ein Objekt sein")
+    out = copy.deepcopy(section)
+    for name, toolsets in out.items():
+        label = f"platform_toolsets.{name}"
+        if (not isinstance(toolsets, list)
+                or not all(isinstance(t, str) and t.strip() for t in toolsets)):
+            raise ApplyError(f"{label}: muss eine Liste nicht-leerer Strings sein")
+        unknown = sorted({t.strip() for t in toolsets if t.strip() not in BUILTIN_TOOLSETS})
+        if unknown:
+            raise ApplyError(
+                f"{label}: unbekannte Toolsets {', '.join(unknown)} "
+                f"(erlaubt: {', '.join(sorted(BUILTIN_TOOLSETS))})")
+        if str(name) == "api_server" and not toolsets:
+            raise ApplyError(f"{label}: darf für api_server nicht leer sein")
+        out[name] = [t.strip() for t in toolsets]
+    return out
+
+
+def _validate_model_routes(routes, label: str) -> dict:
+    """model_routes normalisieren: {"alias": {"model": "provider/model", …}}.
+
+    String-Form ("provider/model") wird zur Dict-Form normalisiert; jedes Modell
+    läuft über _validate() (Provider-Allowlist + Katalog).
+    """
+    if not isinstance(routes, dict):
+        raise ApplyError(f"{label}: muss ein Objekt sein")
+    out = {}
+    for alias, route in routes.items():
+        rlabel = f"{label}.{alias}"
+        if not MODEL_ROUTE_ALIAS.match(str(alias)):
+            raise ApplyError(
+                f"{rlabel}: Alias '{alias}' passt nicht auf "
+                f"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+        reason = None
+        if isinstance(route, dict):
+            model = route.get("model")
+            if route.get("reason") is not None:
+                if not isinstance(route["reason"], str):
+                    raise ApplyError(f"{rlabel}.reason: muss ein String sein")
+                reason = route["reason"]
+        else:
+            model = route
+        if not isinstance(model, str) or model.count("/") < 1:
+            raise ApplyError(f"{rlabel}: Modell muss 'provider/model' sein")
+        provider, _, model_id = model.partition("/")
+        normalized = _validate({"provider": provider, "model": model_id}, rlabel)
+        entry = {"model": f"{normalized['provider']}/{normalized['model']}"}
+        if reason is not None and reason.strip():
+            entry["reason"] = reason
+        out[str(alias)] = entry
+    return out
+
+
+def _validate_platforms(section) -> dict:
+    """platforms validieren; alle nicht genannten Keys (z. B. ntfy) bleiben."""
+    if section is None:
+        return {}
+    if not isinstance(section, dict):
+        raise ApplyError("platforms: muss ein Objekt sein")
+    out = copy.deepcopy(section)
+    for name, plat in out.items():
+        label = f"platforms.{name}"
+        if not isinstance(plat, dict):
+            raise ApplyError(f"{label}: muss ein Objekt sein")
+        extra = plat.get("extra")
+        if extra is None:
+            continue
+        if not isinstance(extra, dict):
+            raise ApplyError(f"{label}.extra: muss ein Objekt sein")
+        if "model_routes" in extra:
+            extra["model_routes"] = _validate_model_routes(
+                extra["model_routes"], f"{label}.extra.model_routes")
     return out
 
 
@@ -281,6 +494,23 @@ def apply(payload: dict) -> dict:
 
     pool_in = payload.get("pool") or {}
     current_pool = (current.get("pool") or {})
+
+    # Erweiterte Sektionen (Hermes Voice): Das Panel schickt sie (noch) nicht
+    # mit. Fehlen sie im Payload, werden sie aus der aktuellen SOT übernommen —
+    # sonst würde ein apply() sie löschen. Ist eine Sektion im Payload, wird sie
+    # validiert und per Deep-Merge über die aktuelle SOT gelegt (das Payload
+    # gewinnt; nicht genannte Keys — z. B. platforms.ntfy — bleiben erhalten).
+    advanced = {}
+    for key, validator in (("agent", _validate_agent),
+                           ("providers", _validate_providers),
+                           ("platform_toolsets", _validate_platform_toolsets),
+                           ("platforms", _validate_platforms)):
+        current_section = current.get(key)
+        advanced[key] = _deep_merge(
+            copy.deepcopy(current_section) if isinstance(current_section, dict) else {},
+            validator(payload.get(key)),
+        )
+
     # api_server bevorzugt aus dem Payload, sonst aus der aktuellen SOT
     # (das Panel schickt es evtl. noch nicht mit) — sonst wuerde ein apply()
     # den API-Server-Block loeschen bzw. auf den Default zuruecksetzen.
@@ -299,6 +529,10 @@ def apply(payload: dict) -> dict:
         "api_server": api_server,
         "restart": bool(payload.get("restart", True)),
         "profiles": profiles_out,
+        "agent": advanced["agent"],
+        "providers": advanced["providers"],
+        "platform_toolsets": advanced["platform_toolsets"],
+        "platforms": advanced["platforms"],
     }
     new_text = json.dumps(new_cfg, indent=2, ensure_ascii=False) + "\n"
 

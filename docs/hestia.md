@@ -80,7 +80,7 @@ Neun Dateien unter `.opencode/` im Repo-Root, alle von Hestia verwaltet:
 | `opencode-model-router.overrides.jsonc` | **Tiers**: `fast`/`medium`/`heavy` je Modell, `variant`, `costRatio`, `steps`, `whenToUse`; dazu `activePreset` und weitere Presets | Plugin `opencode-model-router` |
 | `hestia-accounts.jsonc` | **Konten und Policy**: `active`, `accounts[]` mit `keyRef`, `policy` (Modus, Balance, expiring), `display`, `providers` | Hestia (`accounts.py`), CI-Workflows, `startup.sh` |
 | `hestia-fallbacks.json` | Ausfallmodell je Tier (Model + Variant) | Hestia (`failover.py`), CI |
-| `hestia-hermes.jsonc` | Hermes-Modell, Fallback-Kette, Pool-Regeln, Profil-Overrides | Hestia (`hermes.py`), Workflow `apply-hermes` |
+| `hestia-hermes.jsonc` | Hermes-Modell, Fallback-Kette, Pool-Regeln, Profil-Overrides, erweiterte Sektionen (`agent`, `providers`, `platform_toolsets`, `platforms`) | Hestia (`hermes.py`), Workflow `apply-hermes` |
 | `hestia-primary-agents.json` | Agent→Modell-Zuordnung für `build` und `plan` | Hestia (`/api/config`) |
 | `hestia-failover.jsonc` | **Ausfallschutz-Einstellungen**: `enabled`, `threshold`, `intervalSeconds`, `timeoutSeconds`, `quarantineHours` | Hestia (`failover.py`) |
 | `hestia-model-health.json` | **Modell-Gedächtnis**: Zustand je Tier sowie Fehlschlagsserie, Fehlerart (Kontingent/Ausfall) und Quarantäne je Modell | Hestia (`failover.py`), Panel-Anzeige |
@@ -451,6 +451,14 @@ SOT ist `.opencode/hestia-hermes.jsonc`:
 - `restart` — Container nach dem Anwenden neu starten
 - `profiles` — **pro Profil** abweichende Regeln, aktuell `kleve` (mit eigenem Primary
   und kürzerer Fallback-Kette, abweichend vom Standard)
+- `agent` / `providers` / `platform_toolsets` / `platforms` — **erweiterte
+  Sektionen** (Hermes Voice): Effort und Retries, Provider-Timeouts, Toolsets
+  je Plattform und `model_routes` für den API-Server. Das Panel schickt sie
+  nicht mit — Hestia **erhält** sie beim Apply (Deep-Merge gegen die aktuelle
+  SOT, `platforms.ntfy` und unbekannte Keys überleben), und `apply-hermes.sh`
+  merged sie in die `config.yaml` im Container (`mcp_servers`, `tools`,
+  `model.base_url` & Co. bleiben unangetastet; schlägt `hermes config check`
+  fehl, stellt das Skript das Merge-Backup wieder her)
 
 Verteilung:
 
@@ -462,6 +470,8 @@ Panel-Karte „Hermes — Modell/Provider"
   → hestia/ci/apply-hermes.sh
       config set
       fallback_providers
+      erweiterte Sektionen (agent/providers/platform_toolsets/platforms)
+        per Deep-Merge in die config.yaml
       Pool aus OpenBao
       Restart
 ```

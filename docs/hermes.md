@@ -185,6 +185,31 @@ und sind vom Host aus nicht einsehbar; für das Dashboard ist
 Nicht zu verwechseln: `hermes proxy` (Port 8645) ist ein **reiner OAuth-Modell-Proxy**
 für Nous/xAI ohne Agent-Funktionalität — nicht der API-Server.
 
+## Erweiterte Sektionen (Hermes Voice)
+
+Neben `primary`/`fallback`/`pool`/`api_server`/`profiles` kennt die SOT vier
+erweiterte Sektionen, die das Hermes-Verhalten feinjustieren:
+
+| Sektion | Inhalt |
+|---------|--------|
+| `agent` | `reasoning_effort` (z. B. `low`), `api_max_retries`, `auto_recovery_cycles`; unbekannte Keys bleiben erhalten |
+| `providers` | Timeouts je Provider, z. B. `opencode-go.request_timeout_seconds` / `stale_timeout_seconds` |
+| `platform_toolsets` | je Plattform die erlaubten **eingebauten** Toolsets, z. B. `api_server: [web, todo, memory, clarify]` |
+| `platforms` | z. B. `platforms.api_server.extra.model_routes` (benannte Modellrouten für den API-Server); andere Keys wie `platforms.ntfy` bleiben unangetastet |
+
+Hestia **erhält** diese Sektionen: Das Panel schickt sie nicht mit — `apply()`
+in `hestia/backend/hermes.py` trägt sie aus der aktuellen SOT weiter und mergt
+ein Teil-Payload per Deep-Merge darunter (nicht genannte Keys überleben).
+Validiert werden Toolset-Namen, Timeout-Bereiche, Alias-Form und Modellrouten
+(Provider-Allowlist + Katalog) — Unfug bricht den Apply ab, ohne zu committen.
+
+`hestia/ci/apply-hermes.sh` mergt die vier Sektionen per Deep-Merge in die
+`config.yaml` im Container (ruamel Round-Trip — Kommentare, Reihenfolge und
+alle anderen Keys wie `mcp_servers`, `toolsets.enabled`, `tools` und
+`model.base_url` bleiben unangetastet). Vor dem Merge gibt es ein dediziertes
+Backup; schlägt das anschließende `hermes config check` fehl, wird es
+automatisch wiederhergestellt und der Lauf endet mit Fehler.
+
 ## Pflege des Laufzeit-Zustands
 
 ```
@@ -193,6 +218,8 @@ für Nous/xAI ohne Agent-Funktionalität — nicht der API-Server.
   → .github/workflows/apply-hermes.yml
   → hestia/ci/apply-hermes.sh
       hermes config set / fallback_providers / Pool aus OpenBao
+      erweiterte Sektionen (agent/providers/platform_toolsets/platforms)
+        per Deep-Merge in die config.yaml (Backup + Restore bei config-check-Fehler)
       /opt/data/profiles/<name>/… je Profil
       Restart (restart: true)
 ```

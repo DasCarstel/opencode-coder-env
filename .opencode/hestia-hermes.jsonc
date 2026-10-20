@@ -1,17 +1,17 @@
 {
   "enabled": true,
   "primary": {
-    "provider": "opencode",
+    "provider": "opencode-go",
     "model": "beam-free"
   },
   "fallback": [
     {
-      "provider": "opencode",
-      "model": "longcat-2.5-preview-free"
+      "provider": "opencode-go",
+      "model": "glm-5.3-flash"
     },
     {
       "provider": "opencode-go",
-      "model": "mimo-v2.6-flash"
+      "model": "longcat-2.5-preview-free"
     }
   ],
   "pool": {
@@ -27,6 +27,34 @@
   "profiles": {
     "kleve": {
       "enabled": true
+    }
+  },
+  // Erweiterte Sektionen (Hermes Voice): Das Panel schickt sie nicht mit —
+  // hermes.py traegt sie beim Apply von der aktuellen SOT weiter (Deep-Merge,
+  // z. B. bleibt platforms.ntfy erhalten) und apply-hermes.sh merged sie per
+  // Deep-Merge in die config.yaml im Container (alles andere bleibt unangetastet).
+  "agent": {
+    "reasoning_effort": "low",
+    "api_max_retries": 1,
+    "auto_recovery_cycles": 0
+  },
+  "providers": {
+    "opencode-go": {
+      "request_timeout_seconds": 25,
+      "stale_timeout_seconds": 20
+    }
+  },
+  "platform_toolsets": {
+    "api_server": ["web", "todo", "memory", "clarify"]
+  },
+  "platforms": {
+    "api_server": {
+      "extra": {
+        "model_routes": {
+          "hermes-free": { "model": "opencode-go/beam-free", "reason": "Free voice model" },
+          "hermes-paid": { "model": "opencode-go/glm-5.3-flash", "reason": "Paid fallback model" }
+        }
+      }
     }
   }
 }
