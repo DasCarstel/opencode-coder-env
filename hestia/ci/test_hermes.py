@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Regressionstests für hestia/backend/hermes.py — komplett ohne Netz.
 
-Hintergrund (20.10.2026, Hermes Voice Phase 1): Die SOT kennt vier erweiterte
-Sektionen (`agent`, `providers`, `platform_toolsets`, `platforms`), die das
-Panel nicht schickt. Ein apply() hat sie stillschweigend gelöscht, weil
+Hintergrund (20.10.2026, Hermes Voice Phase 1): Die SOT kennt fünf erweiterte
+Sektionen (`agent`, `providers`, `platform_toolsets`, `platforms`, `skills`),
+die das Panel nicht schickt. Ein apply() hat sie stillschweigend gelöscht, weil
 `_default_config()`, `_public()` und der new_cfg-Literal nur die sieben
 klassischen Keys kannten. Diese Tests halten fest:
 
@@ -15,8 +15,11 @@ klassischen Keys kannten. Diese Tests halten fest:
   4. Ungültige Provider-Timeouts werden abgelehnt.
   5. Unbekannte Toolset-Namen und leere api_server-Listen werden abgelehnt.
   6. model_routes: String-Form → Dict-Form (Round-Trip), Unsinn wird abgelehnt.
-  7. `_public()` enthält alle vier Sektionen (Panel + Änderungserkennung).
+  7. `_public()` enthält alle fünf Sektionen (Panel + Änderungserkennung).
   8. Ein teilweiser agent-Payload ergänzt statt zu ersetzen (Deep-Merge).
+  9. `skills.disabled` überlebt Apply und Serialisierung; ungültige
+     skills-Sektionen werden abgelehnt; Listen werden im Merge ersetzt statt
+     konkateniert (hermes.py UND der eingebettete Merge aus apply-hermes.sh).
 
 Läuft mit pytest UND direkt:
     pytest -q hestia/ci/test_hermes.py
@@ -25,6 +28,7 @@ Läuft mit pytest UND direkt:
 import importlib
 import json
 import os
+import re
 import sys
 import types
 
@@ -88,8 +92,9 @@ for _name, _mod in (("github_api", _fake_github()), ("catalog", _fake_catalog())
                     ("hjsonc", _fake_hjsonc())):
     sys.modules[_name] = _mod
 
-# SOT-Fixture — entspricht .opencode/hestia-hermes.jsonc plus zwei
-# Erhaltungsbeweisen: platforms.ntfy und einem unbekannten agent-Key.
+# SOT-Fixture — entspricht .opencode/hestia-hermes.jsonc plus Erhaltungsbeweisen:
+# platforms.ntfy, den (in der echten SOT entfernten) Model-Routen und einem
+# unbekannten agent-Key.
 SOT = {
     "enabled": True,
     "primary": {"provider": "opencode-go", "model": "beam-free"},
@@ -105,7 +110,9 @@ SOT = {
               "auto_recovery_cycles": 0, "extra_key": "bleibt"},
     "providers": {"opencode-go": {"request_timeout_seconds": 25,
                                   "stale_timeout_seconds": 20}},
-    "platform_toolsets": {"api_server": ["web", "todo", "memory", "clarify"]},
+    "platform_toolsets": {"api_server": ["web", "todo", "memory", "clarify",
+                                         "skills", "terminal"]},
+    "skills": {"disabled": ["pdf", "github", "notion", "obsidian", "xlsx"]},
     "platforms": {
         "api_server": {"extra": {"model_routes": {
             "hermes-free": {"model": "opencode-go/beam-free", "reason": "Free voice model"},
@@ -167,7 +174,7 @@ def main():
           str(written.get("providers")))
     check("platform_toolsets überleben",
           written.get("platform_toolsets", {}).get("api_server")
-          == ["web", "todo", "memory", "clarify"],
+          == ["web", "todo", "memory", "clarify", "skills", "terminal"],
           str(written.get("platform_toolsets")))
     check("platforms.api_server überlebt",
           written.get("platforms", {}).get("api_server", {}).get("extra", {})
@@ -177,6 +184,8 @@ def main():
           str(written.get("platforms")))
     check("profiles überleben", written.get("profiles", {}).get("kleve") == {"enabled": True},
           str(written.get("profiles")))
+    check("skills überleben", written.get("skills") == SOT["skills"],
+          str(written.get("skills")))
     check("Dispatch erfolgt", CALLS["dispatch"] == ["apply-hermes.yml"], str(CALLS["dispatch"]))
 
     print("\n[2] Zweiter identischer Apply → kein Commit (keine Diff-Schleife)")
@@ -258,7 +267,7 @@ def main():
         payload["platforms"] = bad_platforms
         expect_apply_error(h, payload, name)
 
-    print("\n[7] _public() enthält alle vier Sektionen")
+    print("\n[7] _public() enthält alle fünf Sektionen")
     h = reset()
     pub = h._public(h.config(force=True))
     check("agent in _public", pub.get("agent", {}).get("reasoning_effort") == "low",
@@ -268,13 +277,15 @@ def main():
           str(pub.get("providers")))
     check("platform_toolsets in _public",
           pub.get("platform_toolsets", {}).get("api_server")
-          == ["web", "todo", "memory", "clarify"],
+          == ["web", "todo", "memory", "clarify", "skills", "terminal"],
           str(pub.get("platform_toolsets")))
     check("platforms in _public",
           pub.get("platforms", {}).get("api_server", {}).get("extra", {})
           .get("model_routes", {}).get("hermes-paid", {}).get("model")
           == "opencode-go/glm-5.3-flash",
           str(pub.get("platforms")))
+    check("skills in _public", pub.get("skills") == SOT["skills"],
+          str(pub.get("skills")))
 
     print("\n[8] Teilweiser agent-Payload ergänzt statt zu ersetzen (Deep-Merge)")
     h = reset()
@@ -287,6 +298,67 @@ def main():
     check("api_max_retries bleibt", ag.get("api_max_retries") == 1, str(ag))
     check("auto_recovery_cycles bleibt", ag.get("auto_recovery_cycles") == 0, str(ag))
     check("unbekannter Key bleibt", ag.get("extra_key") == "bleibt", str(ag))
+
+    print("\n[9] skills.disabled überlebt Panel-Apply und Serialisierung")
+    h = reset()
+    payload = json.loads(json.dumps(PANEL_PAYLOAD))
+    payload["primary"] = {"provider": "opencode-go", "model": "glm-5.3-flash"}
+    h.apply(payload)
+    written = json.loads(FILES[HERMES_PATH])
+    check("skills.disabled überlebt",
+          written.get("skills", {}).get("disabled") == SOT["skills"]["disabled"],
+          str(written.get("skills")))
+    pub = h._public(h.config(force=True))
+    check("skills in _public", pub.get("skills") == SOT["skills"],
+          str(pub.get("skills")))
+
+    print("\n[10] skills: ungültige Sektionen werden abgelehnt")
+    for bad_skills, name in (
+            ("kein-objekt", "skills als String abgelehnt"),
+            ({"unknown": []}, "unbekannter skills-Key abgelehnt"),
+            ({"disabled": "pdf"}, "disabled als String abgelehnt"),
+            ({"disabled": ["pdf", ""]}, "leerer disabled-Eintrag abgelehnt"),
+            ({"disabled": ["pdf", 42]}, "disabled mit Zahl abgelehnt"),
+            ({"disabled": ["pdf", "pdf"]}, "disabled-Duplikat abgelehnt"),
+    ):
+        h = reset()
+        payload = json.loads(json.dumps(PANEL_PAYLOAD))
+        payload["skills"] = bad_skills
+        expect_apply_error(h, payload, name)
+
+    print("\n[11] _deep_merge: Listen werden ersetzt, nicht konkateniert")
+    h = reset()
+    merged = h._deep_merge(
+        {"skills": {"disabled": ["alt-1", "alt-2"]},
+         "platforms": {"ntfy": {"themen": ["a", "b"]}}},
+        {"skills": {"disabled": ["neu"]},
+         "platforms": {"ntfy": {"themen": ["c"]}}},
+    )
+    check("skills.disabled ersetzt", merged["skills"]["disabled"] == ["neu"], str(merged))
+    check("verschachtelte Liste ersetzt",
+          merged["platforms"]["ntfy"]["themen"] == ["c"], str(merged))
+    check("Dicts verschmelzen weiterhin",
+          h._deep_merge({"skills": {"a": 1}}, {"skills": {"b": 2}})["skills"]
+          == {"a": 1, "b": 2})
+
+    print("\n[12] apply-hermes.sh: eingebetteter Merge ersetzt Listen ebenfalls")
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apply-hermes.sh")
+    script_src = open(script_path, encoding="utf-8").read()
+    merge_src = re.search(r"def merge\(target, patch\):.*?target\[key\] = value\n",
+                          script_src, re.S)
+    if merge_src is None:
+        check("merge() aus apply-hermes.sh extrahiert", False, "nicht gefunden")
+    else:
+        ns = {}
+        exec(merge_src.group(0), ns)  # nur die reine Merge-Funktion, kein YAML/Netz
+        target = {"skills": {"disabled": ["alt-1", "alt-2"]}}
+        ns["merge"](target, {"skills": {"disabled": ["neu-1", "neu-2", "neu-3"]}})
+        check("skills.disabled wird ersetzt (SOT-Liste gewinnt)",
+              target["skills"]["disabled"] == ["neu-1", "neu-2", "neu-3"], str(target))
+        fresh = {}
+        ns["merge"](fresh, {"skills": {"disabled": ["nur-sot"]}})
+        check("fehlender skills-Key wird angelegt",
+              fresh["skills"]["disabled"] == ["nur-sot"], str(fresh))
 
     return 1 if fails else 0
 

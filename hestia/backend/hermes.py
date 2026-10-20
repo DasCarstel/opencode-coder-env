@@ -66,6 +66,7 @@ def _default_config() -> dict:
         "providers": {},
         "platform_toolsets": {},
         "platforms": {},
+        "skills": {},
     }
 
 
@@ -108,6 +109,7 @@ def _public(cfg: dict) -> dict:
         "providers": _providers_public(cfg.get("providers")),
         "platform_toolsets": _platform_toolsets_public(cfg.get("platform_toolsets")),
         "platforms": _platforms_public(cfg.get("platforms")),
+        "skills": _skills_public(cfg.get("skills")),
     }
 
 
@@ -229,6 +231,18 @@ def _platforms_public(section) -> dict:
     return copy.deepcopy(section)
 
 
+def _skills_public(section) -> dict:
+    """skills für Panel/Vergleich: Tiefkopie; unplausible disabled-Listen raus."""
+    if not isinstance(section, dict):
+        return {}
+    out = copy.deepcopy(section)
+    if "disabled" in out and not (
+            isinstance(out["disabled"], list)
+            and all(isinstance(s, str) and s.strip() for s in out["disabled"])):
+        del out["disabled"]
+    return out
+
+
 def _validate_agent(section) -> dict:
     """agent-Sektion validieren; unbekannte Keys bleiben erhalten."""
     if section is None:
@@ -346,6 +360,36 @@ def _validate_platforms(section) -> dict:
         if "model_routes" in extra:
             extra["model_routes"] = _validate_model_routes(
                 extra["model_routes"], f"{label}.extra.model_routes")
+    return out
+
+
+def _validate_skills(section) -> dict:
+    """skills-Sektion validieren: nur `disabled` — Liste nicht-leerer Strings.
+
+    Unbekannte Keys und Duplikate werden abgelehnt (validate.py prueft
+    dasselbe); apply-hermes.sh kann die Liste so 1:1 in die config.yaml
+    übernehmen (Replace, nie Concat).
+    """
+    if section is None:
+        return {}
+    if not isinstance(section, dict):
+        raise ApplyError("skills: muss ein Objekt sein (disabled)")
+    unknown = sorted(str(k) for k in section if k != "disabled")
+    if unknown:
+        raise ApplyError(
+            f"skills: unbekannte Keys {', '.join(unknown)} (erlaubt: disabled)")
+    out = copy.deepcopy(section)
+    if "disabled" in out:
+        disabled = out["disabled"]
+        if (not isinstance(disabled, list)
+                or not all(isinstance(s, str) and s.strip() for s in disabled)):
+            raise ApplyError(
+                "skills.disabled: muss eine Liste nicht-leerer Strings sein")
+        names = [s.strip() for s in disabled]
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        if dupes:
+            raise ApplyError(f"skills.disabled: Duplikate {', '.join(dupes)}")
+        out["disabled"] = names
     return out
 
 
@@ -504,7 +548,8 @@ def apply(payload: dict) -> dict:
     for key, validator in (("agent", _validate_agent),
                            ("providers", _validate_providers),
                            ("platform_toolsets", _validate_platform_toolsets),
-                           ("platforms", _validate_platforms)):
+                           ("platforms", _validate_platforms),
+                           ("skills", _validate_skills)):
         current_section = current.get(key)
         advanced[key] = _deep_merge(
             copy.deepcopy(current_section) if isinstance(current_section, dict) else {},
@@ -533,6 +578,7 @@ def apply(payload: dict) -> dict:
         "providers": advanced["providers"],
         "platform_toolsets": advanced["platform_toolsets"],
         "platforms": advanced["platforms"],
+        "skills": advanced["skills"],
     }
     new_text = json.dumps(new_cfg, indent=2, ensure_ascii=False) + "\n"
 

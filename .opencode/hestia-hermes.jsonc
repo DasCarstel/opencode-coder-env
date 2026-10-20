@@ -45,16 +45,28 @@
     }
   },
   "platform_toolsets": {
-    "api_server": ["web", "todo", "memory", "clarify"]
+    "api_server": ["web", "todo", "memory", "clarify", "skills", "terminal"]
   },
-  "platforms": {
-    "api_server": {
-      "extra": {
-        "model_routes": {
-          "hermes-free": { "model": "opencode-go/beam-free", "reason": "Free voice model" },
-          "hermes-paid": { "model": "opencode-go/glm-5.3-flash", "reason": "Paid fallback model" }
-        }
-      }
-    }
+  "platforms": {},
+  // Deaktivierte Skills (Hermes Voice): Alles, was nicht gebraucht wird, ist
+  // hier aus — aktiv bleiben space-matrix, notion-database, model-curator,
+  // hermes-agent, hermes-agent-skill-authoring, maps, grounded-citations,
+  // blocked-page-recovery und obsidian-ocis (hestia/skills/obsidian-ocis).
+  // apply-hermes.sh ersetzt die Liste 1:1 in der config.yaml (Listen werden
+  // im Deep-Merge ersetzt, nie konkateniert).
+  "skills": {
+    "disabled": [
+      "airtable", "architecture-diagram", "arxiv", "ascii-video", "baoyu-infographic",
+      "box", "claude-code", "claude-design", "codebase-inspection", "codex",
+      "competitor-news-monitor", "computer-use", "design-md", "document-to-action-items",
+      "docx", "dogfood", "email-inbox-triage", "gif-search", "github",
+      "google-workspace", "himalaya", "humanizer", "inspecting-hermes-desktop-dom",
+      "llm-wiki", "manim-video", "meeting-action-items", "node-inspect-debugger",
+      "notion", "obsidian", "opencode", "p5js", "pdf", "popular-web-designs",
+      "powerpoint", "product-price-monitor", "python-debugpy", "requesting-code-review",
+      "simplify-code", "songsee", "songwriting-and-ai-music", "spike",
+      "systematic-debugging", "teams-meeting-pipeline", "test-driven-development",
+      "weekly-review-planning", "xlsx", "xurl", "youtube-content"
+    ]
   }
 }

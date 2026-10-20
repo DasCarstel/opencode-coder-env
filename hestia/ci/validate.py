@@ -6,7 +6,7 @@ Prüft (in dieser Reihenfolge):
   2. aktiver Preset existiert; fast/medium/heavy gesetzt; Models = providerID/modelID
   3. Varianten-Empfehlung plausibel (leer oder bekannt)
   4. Live-Katalog-Check gegen models.dev (opt-in; bei Netzfehler warnen, nicht failen)
-  5. Hermes-SOT strukturell (primary/fallback + agent/providers/platform_toolsets/platforms)
+  5. Hermes-SOT strukturell (primary/fallback + agent/providers/platform_toolsets/platforms/skills)
 
 Exit-Code 1 = invalid. Run: python hestia/ci/validate.py
 """
@@ -163,7 +163,30 @@ def validate_hermes(path):
             if model.split("/", 1)[0].strip() not in HERMES_PROVIDERS:
                 fail(f"Hermes model_routes.{alias}.model: Provider "
                      f"'{model.split('/', 1)[0].strip()}' nicht erlaubt")
-    print("✓ Hermes-SOT strukturell valide (agent/providers/platform_toolsets/platforms)")
+    # skills: nur `disabled` — Liste nicht-leerer, eindeutiger Strings
+    skills = cfg.get("skills")
+    if skills is None:
+        skills = {}
+    if not isinstance(skills, dict):
+        fail("Hermes skills muss ein Objekt sein")
+    unknown = sorted(str(k) for k in skills if k != "disabled")
+    if unknown:
+        fail(f"Hermes skills: unbekannte Keys {', '.join(unknown)} "
+             f"(erlaubt: disabled)")
+    disabled = skills.get("disabled")
+    if disabled is not None:
+        if not isinstance(disabled, list) or not all(
+                isinstance(s, str) and s.strip() for s in disabled):
+            fail("Hermes skills.disabled muss eine Liste nicht-leerer Strings sein")
+        seen = set()
+        for s in disabled:
+            name = s.strip()
+            if name in seen:
+                fail(f"Hermes skills.disabled: Duplikat '{name}'")
+            seen.add(name)
+
+    print("✓ Hermes-SOT strukturell valide "
+          "(agent/providers/platform_toolsets/platforms/skills)")
 
 
 def main():

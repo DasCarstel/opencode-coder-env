@@ -12,8 +12,8 @@
 #    das Hermes ignoriert) — bestehenden Block entfernen, neuen anhängen
 # 4) API_SERVER_ENABLED/PORT/HOST aus der SOT nach /opt/data/.env schreiben
 #    (immer, unabhaengig vom Pool; API_SERVER_KEY bleibt unangetastet)
-# 4b) erweiterte Sektionen (agent/providers/platform_toolsets/platforms) per
-#     Deep-Merge in die config.yaml — alles andere bleibt unangetastet
+# 4b) erweiterte Sektionen (agent/providers/platform_toolsets/platforms/skills)
+#     per Deep-Merge in die config.yaml — alles andere bleibt unangetastet
 # 5) optional den Abo-Pool (OPENCODE_GO_API_KEY*) aus OpenBao neu setzen
 # 6) dasselbe für jedes weitere SOT-Profil ("profiles") — der Multiplexer
 #    bedient mehrere Profile mit je eigenen Dateien unter /opt/data/profiles/
@@ -70,7 +70,8 @@ fi
 # Ein Helper für die ganze SOT:jq ist auf dem Runner nicht garantiert.
 # IFS=Tabulator, weil die JSON-Werte Leerzeichen enthalten.
 IFS=$'\t' read -r PRIMARY_PROVIDER PRIMARY_MODEL FALLBACKS_JSON POOL_FOLLOW RESTART ENABLED PROFILES_JSON \
-  API_ENABLED API_PORT API_HOST AGENT_JSON PROVIDERS_JSON TOOLSETS_JSON PLATFORMS_JSON < <(
+  API_ENABLED API_PORT API_HOST AGENT_JSON PROVIDERS_JSON TOOLSETS_JSON PLATFORMS_JSON \
+  SKILLS_JSON < <(
   python3 - "$SOT_PATH" <<'PY'
 import json, sys
 try:
@@ -152,6 +153,8 @@ print("\t".join([
                if isinstance(cfg.get("platform_toolsets"), dict) else {},
                separators=(",", ":")),
     json.dumps(cfg.get("platforms") if isinstance(cfg.get("platforms"), dict) else {},
+               separators=(",", ":")),
+    json.dumps(cfg.get("skills") if isinstance(cfg.get("skills"), dict) else {},
                separators=(",", ":")),
 ]))
 PY
@@ -365,16 +368,17 @@ PY
 write_api_server "$ENV_IN_CONTAINER" "default"
 
 # --- 4c) Erweiterte Sektionen (Hermes Voice) in die config.yaml mergen --------
-# agent / providers / platform_toolsets / platforms kommen aus der SOT und
-# werden per Deep-Merge in /opt/data/config.yaml geschrieben. Bewusst NUR diese
-# vier Sektionen: mcp_servers, toolsets.enabled (deprecated), tools und
+# agent / providers / platform_toolsets / platforms / skills kommen aus der SOT
+# und werden per Deep-Merge in /opt/data/config.yaml geschrieben. Bewusst NUR
+# diese fünf Sektionen: mcp_servers, toolsets.enabled (deprecated), tools und
 # model.base_url bleiben unangetastet, ebenso alle nicht genannten Keys
 # (z. B. platforms.ntfy). Dicts werden rekursiv verschmolzen, Listen und
-# Skalare ersetzt; Kommentare/Reihenfolge bleiben wo moeglich erhalten
+# Skalare ERSETZT (nie konkateniert — skills.disabled ist also immer exakt die
+# SOT-Liste); Kommentare/Reihenfolge bleiben wo moeglich erhalten
 # (ruamel.yaml Round-Trip im Container).
-ADV_PATCH="$(python3 - "$AGENT_JSON" "$PROVIDERS_JSON" "$TOOLSETS_JSON" "$PLATFORMS_JSON" <<'PY'
+ADV_PATCH="$(python3 - "$AGENT_JSON" "$PROVIDERS_JSON" "$TOOLSETS_JSON" "$PLATFORMS_JSON" "$SKILLS_JSON" <<'PY'
 import json, sys
-names = ("agent", "providers", "platform_toolsets", "platforms")
+names = ("agent", "providers", "platform_toolsets", "platforms", "skills")
 patch = {}
 for name, raw in zip(names, sys.argv[1:]):
     try:
@@ -401,8 +405,10 @@ if [[ "$ADV_PATCH" != "{}" ]]; then
 
 Aufruf: adv-merge.py <patch.json> < config.yaml   (Ausgabe auf stdout)
 
-argv[1] ist eine JSON-Datei {agent?, providers?, platform_toolsets?, platforms?}.
-Dicts werden rekursiv verschmolzen, Listen und Skalare ersetzt. Alle anderen
+argv[1] ist eine JSON-Datei
+{agent?, providers?, platform_toolsets?, platforms?, skills?}.
+Dicts werden rekursiv verschmolzen, Listen und Skalare ersetzt (nie
+konkateniert — skills.disabled ist also exakt die SOT-Liste). Alle anderen
 Keys (mcp_servers, tools, model, …), Kommentare und die Reihenfolge bleiben
 wo moeglich erhalten (ruamel.yaml Round-Trip).
 """
@@ -451,7 +457,7 @@ PY
   "${SSH[@]}" "docker exec '$HERMES_CONTAINER' rm -f /tmp/hestia-adv-merge.py /tmp/hestia-adv-patch.json"
   echo "✓ Erweiterte Sektionen gemerged: $(printf '%s' "$ADV_PATCH" | python3 -c 'import json,sys; print(", ".join(sorted(json.load(sys.stdin))))')"
 else
-  echo "→ Keine erweiterten Sektionen (agent/providers/platform_toolsets/platforms) in der SOT — config.yaml hier unverändert"
+  echo "→ Keine erweiterten Sektionen (agent/providers/platform_toolsets/platforms/skills) in der SOT — config.yaml hier unverändert"
 fi
 
 # --- 5) Abo-Pool aus OpenBao -------------------------------------------------
@@ -787,5 +793,5 @@ if [[ "$PROFILES_JSON" != "[]" ]]; then
   echo "✓ Profile angewendet: $PROFILES_APPLIED · $PROFILES_JSON"
 fi
 if [[ -n "$ADV_BACKUP" ]]; then
-  echo "✓ Erweiterte Sektionen (agent/providers/platform_toolsets/platforms) gemerged — Backup: $ADV_BACKUP"
+  echo "✓ Erweiterte Sektionen (agent/providers/platform_toolsets/platforms/skills) gemerged — Backup: $ADV_BACKUP"
 fi
