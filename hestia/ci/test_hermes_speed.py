@@ -34,12 +34,16 @@ Daneben liest hermes_speed.telemetry() den O19-Snapshot der Hermes-state.db
      5 Samples), run_discovery probt neue sofort, SQLite-Historie
      (best-effort, alle Katalogmodelle) und state()/Compose-Verdrahtung
      der neuen Env-Variablen.
+  9. Stumm-Automatik: Real-Modul suggest.py — run_auto_check ruft suggest mit
+     silent=True; der Automatiklauf legt Eltern+Kind an (Kind mit parentID,
+     beide verzögert gelöscht, Fehler räumen die Eltern-Session auf),
+     der manuelle Lauf bleibt Root-Session mit sofortigem Löschen.
 
 Läuft mit pytest UND direkt:
     pytest -q hestia/ci/test_hermes_speed.py
     python3 hestia/ci/test_hermes_speed.py
 """
-import importlib
+import importlib.util
 import json
 import os
 import re
@@ -156,6 +160,9 @@ def _fake_suggest():
     s = types.ModuleType("suggest")
     s.OC_SERVER_URL = "http://opencode-fake"
     s.OC_SUGGEST_DIR = "/tmp/fake-workspace"
+    # Stumm-Marker wie im Real-Modul (hermes_speed._single_run nutzt
+    # suggest.SILENCE_TITLE statt eines eigenen Literals).
+    s.SILENCE_TITLE = "Hestia Speed-Probe (Ausfall-Probe)"
 
     def _req(method, url, body=None, timeout=30):
         CALLS["req"].append({"method": method, "url": url, "body": body})
@@ -633,8 +640,11 @@ def main():
           watch_args is not None and "on_first_delta" in watch_args, str(watch_args))
 
     speed_src = open(os.path.join(BACKEND, "hermes_speed.py"), encoding="utf-8").read()
-    check("Speed-Probe-Titel trägt den ntfy-Stumm-Marker",
-          "Hestia Speed-Probe (Ausfall-Probe)" in speed_src)
+    check("Speed-Probe-Titel: zentrale SILENCE_TITLE-Konstante aus suggest.py",
+          "SILENCE_TITLE" in suggest_src
+          and "Hestia Speed-Probe (Ausfall-Probe)" in suggest_src
+          and "suggest.SILENCE_TITLE" in speed_src
+          and "Hestia Speed-Probe (Ausfall-Probe)" not in speed_src)
 
     snap_path = os.path.join(ROOT, "hestia", "telemetry_snapshot.py")
     snap_src = open(snap_path, encoding="utf-8").read()
@@ -964,6 +974,175 @@ def main():
         check(f"Compose: {var} mit Default {default}",
               re.search(rf"^\s*{var}:\s*\$\{{{var}:-{re.escape(default)}\}}\s*$",
                         compose_src, re.M) is not None)
+
+    print("\n[16] Stumm-Automatik: Real-Modul suggest (Eltern+Kind, verzögertes Löschen)")
+    # Das echte suggest.py als NEUES Modul laden (fasst sys.modules["suggest"] —
+    # das Fake für hermes_speed — nicht an) und _req/_event_watch/_delete_session
+    # mit Aufzeichnungs-Fakes ersetzen. Kein Netz.
+    os.environ["HESTIA_SUGGEST_STATE_PATH"] = os.path.join(TMP, "suggest-state.json")
+    os.environ["HESTIA_SUGGEST_AUTO"] = "0"
+    spec = importlib.util.spec_from_file_location(
+        "hestia-suggest-real", os.path.join(BACKEND, "suggest.py"))
+    real = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(real)          # liest Env; catalog kommt aus dem Fake
+    check("SILENCE_TITLE trägt den ntfy-Stumm-Marker",
+          "Ausfall-Probe" in real.SILENCE_TITLE, str(real.SILENCE_TITLE))
+
+    R_CALLS = {"req": [], "deleted": [], "watch": []}
+    R_BEHAV = {"fail_create_from": 0, "watch": "succeeded"}
+    creates = {"n": 0}
+
+    def _r_req(method, url, body=None, timeout=30):
+        R_CALLS["req"].append({"method": method, "url": url, "body": body})
+        if method == "POST" and url.endswith("/api/session"):
+            creates["n"] += 1
+            if R_BEHAV["fail_create_from"] and creates["n"] >= R_BEHAV["fail_create_from"]:
+                return 500, {}
+            return 201, {"data": {"id": f"rsid-{creates['n']}"}}
+        if method == "GET" and "/message" in url:
+            return 200, {"data": [{"type": "assistant", "content": [
+                {"type": "text", "text": '{"ok": true}'}]}]}
+        return 200, {}
+
+    def _r_watch(sid, deadline, stall_timeout, on_progress=None, on_first_delta=None):
+        R_CALLS["watch"].append(sid)
+        return R_BEHAV["watch"]
+
+    def _r_delete(sid):
+        R_CALLS["deleted"].append(sid)
+        return True
+
+    real._req = _r_req
+    real._event_watch = _r_watch
+    real._delete_session = _r_delete
+    creates["n"] = 0
+
+    # a) Manueller Lauf (_attempt ohne silent): Root-Session, sofortiges Löschen
+    res = real._attempt("PROMPT", None, {})
+    creates_list = [r for r in R_CALLS["req"] if r["url"].endswith("/api/session")]
+    check("manueller Lauf: genau eine Root-Session, kein parentID, alter Titel",
+          len(creates_list) == 1 and "parentID" not in (creates_list[0]["body"] or {})
+          and (creates_list[0]["body"] or {}).get("title") == "Hestia Modell-Vorschlag",
+          str(creates_list))
+    check("manueller Lauf: sofortiges Löschen nur der Arbeits-Session",
+          res["sessionDeleted"] is True and R_CALLS["deleted"] == [res["session"]],
+          str(R_CALLS["deleted"]))
+
+    # b) Stummer Lauf (silent=True): Eltern zuerst, Kind mit parentID, beide weg
+    R_CALLS["req"].clear()
+    R_CALLS["deleted"].clear()
+    R_CALLS["watch"].clear()
+    creates["n"] = 0
+    res = real._attempt("PROMPT", None, {}, silent=True)
+    creates_list = [r for r in R_CALLS["req"] if r["url"].endswith("/api/session")]
+    parent_body = (creates_list[0] or {}).get("body") or {}
+    child_body = (creates_list[1] or {}).get("body") or {}
+    check("stummer Lauf: Eltern-Session zuerst (ohne parentID, Stumm-Titel)",
+          len(creates_list) == 2 and "parentID" not in parent_body
+          and parent_body.get("title") == real.SILENCE_TITLE, str(creates_list))
+    check("stummer Lauf: Kind-Session mit parentID → Eltern-Session",
+          child_body.get("parentID") == "rsid-1" and res["session"] == "rsid-2"
+          and child_body.get("title") == real.SILENCE_TITLE, str(creates_list))
+    check("stummer Lauf: Prompt/Watch liefen gegen die KIND-Session",
+          R_CALLS["watch"] == ["rsid-2"], str(R_CALLS["watch"]))
+    check("stummer Lauf: BEIDE Sessions gelöscht (Eltern + Kind)",
+          R_CALLS["deleted"] == ["rsid-2", "rsid-1"] and res["sessionDeleted"] is False,
+          str(R_CALLS["deleted"]))
+
+    # c) suggest() End-to-End: silent vs. manuell
+    real._build_prompt = lambda: "PROMPT"
+    real.analysis_candidates = lambda *a, **k: [
+        (None, {"source": "session-default", "label": "Session-Default"})]
+    real.OC_SERVER_PASSWORD = "x"      # Gate umgehen (Env ist im Test leer)
+    R_CALLS["req"].clear()
+    R_CALLS["deleted"].clear()
+    creates["n"] = 0
+    res = real.suggest(silent=True)
+    creates_list = [r for r in R_CALLS["req"] if r["url"].endswith("/api/session")]
+    check("suggest(silent=True): Entscheidung kommt, Eltern+Kind angelegt",
+          res.get("decision") == {"ok": True} and len(creates_list) == 2
+          and (creates_list[1]["body"] or {}).get("parentID") == "rsid-1",
+          str(res.get("decision")))
+    R_CALLS["req"].clear()
+    R_CALLS["deleted"].clear()
+    creates["n"] = 0
+    res = real.suggest()
+    creates_list = [r for r in R_CALLS["req"] if r["url"].endswith("/api/session")]
+    check("suggest() manuell: Root-Session ohne Eltern, sofort gelöscht",
+          len(creates_list) == 1 and "parentID" not in (creates_list[0]["body"] or {})
+          and R_CALLS["deleted"] == [res["session"]], str(creates_list))
+
+    # d) Fehlerpfade: Kind-Anlegen fehlgeschlagen → Eltern sofort aufgeräumt;
+    #    Lauf-Fehler im Stumm-Modus → beide Sessions trotzdem gelöscht
+    R_BEHAV["fail_create_from"] = 2
+    R_CALLS["req"].clear()
+    R_CALLS["deleted"].clear()
+    creates["n"] = 0
+    try:
+        real._attempt("PROMPT", None, {}, silent=True)
+        child_failed = False
+    except RuntimeError:
+        child_failed = True
+    R_BEHAV["fail_create_from"] = 0
+    check("Kind-Anlegen fehlgeschlagen: Eltern-Session sofort gelöscht",
+          child_failed and R_CALLS["deleted"] == ["rsid-1"], str(R_CALLS["deleted"]))
+    R_BEHAV["watch"] = "failed:upstream"
+    R_CALLS["req"].clear()
+    R_CALLS["deleted"].clear()
+    creates["n"] = 0
+    try:
+        real._attempt("PROMPT", None, {}, silent=True)
+        watch_failed = False
+    except RuntimeError:
+        watch_failed = True
+    R_BEHAV["watch"] = "succeeded"
+    check("Lauf-Fehler (stumm): beide Sessions trotzdem gelöscht",
+          watch_failed and sorted(R_CALLS["deleted"]) == ["rsid-1", "rsid-2"],
+          str(R_CALLS["deleted"]))
+
+    # e) Timer-Modus (Verzögerung > 0): nichts sofort, beide nach der Frist
+    real.SESSION_DELETE_DELAY = 0.3
+    R_CALLS["req"].clear()
+    R_CALLS["deleted"].clear()
+    creates["n"] = 0
+    real._attempt("PROMPT", None, {}, silent=True)
+    check("Timer-Modus: direkt nach dem Lauf noch nichts gelöscht",
+          R_CALLS["deleted"] == [], str(R_CALLS["deleted"]))
+    time.sleep(0.6)
+    check("Timer-Modus: nach der Frist sind beide Sessions gelöscht",
+          sorted(R_CALLS["deleted"]) == ["rsid-1", "rsid-2"], str(R_CALLS["deleted"]))
+    real.SESSION_DELETE_DELAY = 0.0
+
+    # f) run_auto_check: der Automatiklauf ist der EINZIGE silent-Caller
+    R_CALLS["req"].clear()
+    R_CALLS["deleted"].clear()
+    real.STATE["fingerprint"] = "alter-hash"
+    real.STATE["lastAutoRun"] = 0.0
+    real.read_settings = lambda: {"enabled": True, "checkIntervalSeconds": 21600,
+                                  "cooldownSeconds": 86400, "analysisModel": ""}
+    real.check_model_surface = lambda: {"ok": True}
+    real.catalog_fingerprint = lambda: "neuer-hash"
+    fake_benchmarks = types.ModuleType("benchmarks")
+    fake_benchmarks.refresh = lambda: {}
+    saved_benchmarks = sys.modules.get("benchmarks")
+    sys.modules["benchmarks"] = fake_benchmarks
+    captured = {}
+
+    def _capture_suggest(**kw):
+        captured.update(kw)
+        return {"decision": {"ok": True}, "analyzedWith": {"label": "Test"},
+                "session": "rsid-x"}
+
+    real.suggest = _capture_suggest
+    res = real.run_auto_check()
+    if saved_benchmarks is not None:
+        sys.modules["benchmarks"] = saved_benchmarks
+    else:
+        sys.modules.pop("benchmarks", None)
+    check("run_auto_check ruft suggest mit silent=True (einziger stummer Caller)",
+          res.get("action") == "ran" and captured.get("silent") is True
+          and captured.get("override_ref") == "" and captured.get("override_variant") == "",
+          f"{captured} / {res}")
 
     return 1 if fails else 0
 

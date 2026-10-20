@@ -38,6 +38,19 @@ STALL_TIMEOUT = float(os.environ.get("OC_SUGGEST_STALL_TIMEOUT", "45"))
 TRIES = int(os.environ.get("OC_SUGGEST_TRIES", "1"))
 # Analyse-Sessions nach dem Lauf automatisch löschen (1 = zum Debuggen behalten)
 KEEP_SESSIONS = os.environ.get("OC_SUGGEST_KEEP_SESSIONS", "0") == "1"
+# Stumm-Marker für Hintergrund-Sessions (ntfy): Bereits laufende OpenCode-ntfy-
+# Instanzen kennen diesen Titel aus ihrer Startkonfiguration und melden solche
+# Sessions nicht. Der Zusatz "Ausfall-Probe" ist der historisch gewachsene
+# Marker — er gilt daher auch für den KI-Vorschlag im Automatik-Modus; das
+# Speed-Probe (hermes_speed.py) nutzt dieselbe (einzige) Konstante.
+SILENCE_TITLE = "Hestia Speed-Probe (Ausfall-Probe)"
+# Stumm-Sessions nicht sofort löschen: Das ntfy-Plugin lädt parentID/title per
+# session.get nach; nach einem sofortigen DELETE wäre die Session weg und der
+# Lauf würde wie eine normale Session gemeldet. Derselbe Env-Hebel wie im
+# Speed-Probe — hier lokal gelesen, um den Import-Zirkel (hermes_speed importiert
+# suggest bereits) zu vermeiden. Der Timer ist daemonisiert.
+SESSION_DELETE_DELAY = max(0.0, float(os.environ.get(
+    "HESTIA_SPEED_SESSION_DELETE_DELAY", "30")))
 
 
 def _headers():
@@ -628,14 +641,54 @@ def _delete_session(sid: str):
         return False
 
 
-def _attempt(prompt: str, model_body, used_info: dict, on_progress=None) -> dict:
-    sstatus, sres = _req("POST", f"{OC_SERVER_URL}/api/session",
-                         {"location": {"directory": OC_SUGGEST_DIR},
-                          "title": "Hestia Modell-Vorschlag"})
+def _delayed_delete(*sids: str) -> None:
+    """Sessions verzögert löschen (Stumm-Modus, Muster hermes_speed._single_run).
+
+    Das ntfy-Plugin lädt parentID/title per session.get nach — nach einem
+    sofortigen DELETE wäre die Session weg und der Lauf würde wie eine normale
+    Session gemeldet. Derselbe Env-Hebel (HESTIA_SPEED_SESSION_DELETE_DELAY);
+    der Timer ist daemonisiert.
+    """
+    def _delete_all():
+        for sid in sids:
+            if sid:
+                _delete_session(sid)
+
+    if SESSION_DELETE_DELAY > 0:
+        timer = threading.Timer(SESSION_DELETE_DELAY, _delete_all)
+        timer.daemon = True
+        timer.start()
+    else:
+        _delete_all()
+
+
+def _attempt(prompt: str, model_body, used_info: dict, on_progress=None,
+             silent: bool = False) -> dict:
+    # Stumm-Modus (Automatik): leere Eltern-Session + Subagent-Muster wie beim
+    # Speed-Probe (hermes_speed._single_run) — das ntfy-Plugin ignoriert
+    # Subagent-Sessions grundsätzlich, unabhängig vom Titel. Ohne silent
+    # (manueller Lauf) bleibt alles beim bisherigen Verhalten (Root-Session).
+    parent_id = None
+    create_body = {"location": {"directory": OC_SUGGEST_DIR},
+                   "title": SILENCE_TITLE if silent else "Hestia Modell-Vorschlag"}
+    if silent:
+        pstatus, pres = _req("POST", f"{OC_SERVER_URL}/api/session", create_body)
+        if pstatus not in (200, 201):
+            raise RuntimeError(
+                f"Eltern-Session-Anlegen fehlgeschlagen ({pstatus}): {pres}")
+        parent_id = (pres.get("data") or pres).get("id") if isinstance(pres, dict) else None
+        if not parent_id:
+            raise RuntimeError(f"Keine Eltern-Session-ID: {pres}")
+        create_body = {**create_body, "parentID": parent_id}
+    sstatus, sres = _req("POST", f"{OC_SERVER_URL}/api/session", create_body)
     if sstatus not in (200, 201):
+        if parent_id is not None:
+            _delete_session(parent_id)
         raise RuntimeError(f"Session-Anlegen fehlgeschlagen ({sstatus}): {sres}")
     sid = (sres.get("data") or sres).get("id") if isinstance(sres, dict) else None
     if not sid:
+        if parent_id is not None:
+            _delete_session(parent_id)
         raise RuntimeError(f"Keine Session-ID: {sres}")
 
     try:
@@ -712,17 +765,34 @@ def _attempt(prompt: str, model_body, used_info: dict, on_progress=None) -> dict
         if not m:
             raise RuntimeError(f"Kein JSON in der Antwort erkannt: {full[:300]}")
         decision = json.loads(m.group(0))
+        if silent:
+            # Stumm-Modus: beide Sessions verzögert löschen (wie beim Speed-
+            # Probe), damit das ntfy-Plugin parentID/title noch per session.get
+            # nachladen kann — ein sofortiges DELETE würde gemeldet.
+            _delayed_delete(sid, parent_id)
+            return {"session": sid, "decision": decision, "raw": full,
+                    "sessionDeleted": False}
         deleted = _delete_session(sid)
         return {"session": sid, "decision": decision, "raw": full,
                 "sessionDeleted": bool(deleted)}
     except Exception:
-        _delete_session(sid)
+        if silent:
+            _delayed_delete(sid, parent_id)
+        else:
+            _delete_session(sid)
         raise
 
 
-def suggest(override_ref: str = "", override_variant: str = "", progress=None) -> dict:
+def suggest(override_ref: str = "", override_variant: str = "", progress=None,
+            silent: bool = False) -> dict:
     """KI-Vorschlag. progress(dict) wird über den Live-Zustand informiert
-    (Modell, Versuch, Hinweis) — für die Anzeige im Panel während des Laufs."""
+    (Modell, Versuch, Hinweis) — für die Anzeige im Panel während des Laufs.
+
+    silent=True (Automatik, run_auto_check): Eltern-Kind-Muster wie beim
+    Speed-Probe — leere Eltern-Session + Subagent-Session, beide werden
+    verzögert gelöscht, damit das ntfy-Plugin den Hintergrundlauf nicht
+    meldet. Manuelle Läufe (silent=False) verhalten sich wie bisher.
+    """
     if not OC_SERVER_PASSWORD:
         raise RuntimeError("OC_SERVER_PASSWORD nicht gesetzt")
     prompt = _build_prompt()
@@ -745,7 +815,8 @@ def suggest(override_ref: str = "", override_variant: str = "", progress=None) -
                    total=len(candidates), phase="running", **kw)
 
         try:
-            res = _attempt(prompt, model_body, info, on_progress=_tier_progress)
+            res = _attempt(prompt, model_body, info, on_progress=_tier_progress,
+                           silent=silent)
             res["analyzedWith"] = info
             res["attempt"] = idx + 1
             if idx > 0:
@@ -1127,7 +1198,9 @@ def run_auto_check() -> dict:
 
     ref, _, variant = (settings["analysisModel"] or "").partition("#")
     try:
-        res = suggest(override_ref=ref, override_variant=variant)
+        # silent=True: Hintergrundlauf soll das Panel nicht benachrichtigen
+        # (Eltern-Kind-Muster wie beim Speed-Probe, siehe suggest._attempt).
+        res = suggest(override_ref=ref, override_variant=variant, silent=True)
     except Exception as e:  # noqa: BLE001
         _log(f"Auto-Lauf fehlgeschlagen: {e}")
         _save_all()

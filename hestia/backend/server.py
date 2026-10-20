@@ -687,6 +687,18 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 payload = self._body()
                 res = hermes_mod.apply(payload)
+                # lastApplied vermerken (best-effort) — auch der direkte Apply
+                # soll im Speed-State nachvollziehbar bleiben (Muster
+                # apply_recommendation). Ein fehlgeschlagener Vermerk darf den
+                # bereits committeten Apply nie zum Fehler machen.
+                try:
+                    prim = payload.get("primary") or {}
+                    provider = str(prim.get("provider") or "").strip()
+                    model = str(prim.get("model") or "").strip()
+                    if provider and model:
+                        hermes_speed_mod._mark_applied(f"{provider}/{model}")
+                except Exception as e:
+                    _log(f"hermes apply lastApplied error: {e}")
                 return self._json(res)
             except hermes_mod.ApplyError as e:
                 return self._json({"error": str(e)}, 400)

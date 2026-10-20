@@ -619,7 +619,7 @@ def _single_run(ref: str, variant: str = "", timeout: int = PROBE_TIMEOUT) -> di
     parent_status, parent_res = suggest._req(
         "POST", f"{suggest.OC_SERVER_URL}/api/session",
         {"location": {"directory": suggest.OC_SUGGEST_DIR},
-         "title": "Hestia Speed-Probe (Ausfall-Probe)"})
+         "title": suggest.SILENCE_TITLE})
     if parent_status not in (200, 201):
         return {"ok": False, "detail": f"Session-Anlegen fehlgeschlagen ({parent_status})",
                 "ttfbMs": None, "totalMs": None}
@@ -631,7 +631,7 @@ def _single_run(ref: str, variant: str = "", timeout: int = PROBE_TIMEOUT) -> di
         "POST", f"{suggest.OC_SERVER_URL}/api/session",
         {"location": {"directory": suggest.OC_SUGGEST_DIR},
          "parentID": parent_id,
-         "title": "Hestia Speed-Probe (Ausfall-Probe)"})
+         "title": suggest.SILENCE_TITLE})
     if sstatus not in (200, 201):
         suggest._delete_session(parent_id)
         return {"ok": False, "detail": f"Probe-Session-Anlegen fehlgeschlagen ({sstatus})",
@@ -1029,6 +1029,23 @@ def recommend():
             "ttfbMs": best.get("ttfbMs"), "totalMs": best.get("totalMs")}
 
 
+def _mark_applied(ref: str) -> None:
+    """lastApplied im Speed-State vermerken — best-effort.
+
+    Der Apply selbst ist zu diesem Zeitpunkt über hermes.apply bereits
+    committet (SOT + Workflow); ein fehlgeschlagener State-Schreibvorgang darf
+    ihn deshalb nie zum Fehler machen. Gilt auch für den direkten Apply über
+    POST /api/hermes/apply (server.py ruft diesen Helper dort auf).
+    """
+    try:
+        with FILE_LOCK:
+            st = _load_state()
+            st["lastApplied"] = {"ref": ref, "at": _now_iso()}
+            _save_state(st)
+    except Exception as e:  # noqa: BLE001 — Vermerk darf den Apply nie kippen
+        _log(f"lastApplied-Vermerk fehlgeschlagen ({ref}): {type(e).__name__}: {e}")
+
+
 def apply_recommendation(ref: str | None = None) -> dict:
     """Empfehlung als Hermes-Primary anwenden — ausschließlich über hermes.apply.
 
@@ -1049,10 +1066,7 @@ def apply_recommendation(ref: str | None = None) -> dict:
     cfg = hermes._public(hermes.config(force=True))
     payload = {**cfg, "primary": {"provider": provider, "model": model}}
     res = hermes.apply(payload)
-    with FILE_LOCK:
-        st = _load_state()
-        st["lastApplied"] = {"ref": target, "at": _now_iso()}
-        _save_state(st)
+    _mark_applied(target)
     _log(f"Empfehlung angewendet: primary={target}")
     return {"applied": True, "ref": target, "result": res}
 
