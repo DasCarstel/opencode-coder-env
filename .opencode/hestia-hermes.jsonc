@@ -45,9 +45,9 @@
     }
   },
   "platform_toolsets": {
-    // API/Voice: Notion läuft über /opt/data/bin/notion_fast.py (terminal),
-    // nicht über den 65-Tool-MCP-Server. HA und oCIS bleiben als MCP verfügbar;
-    // Super Productivity und MuellerConnect bleiben auf CLI/PC.
+    // API/Voice: Notion und Obsidian laufen über /opt/data/bin/*_fast.py (terminal),
+    // nicht über die großen MCP-Toolkataloge. HA und oCIS bleiben als MCP-Fallback
+    // verfügbar; Super Productivity und MuellerConnect bleiben CLI/PC-only.
     "api_server": ["web", "todo", "memory", "clarify", "skills", "terminal", "mcp-homeassistant", "mcp-ocis-private"]
   },
   "platforms": {},
