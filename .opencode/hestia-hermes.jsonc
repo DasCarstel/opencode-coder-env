@@ -45,7 +45,10 @@
     }
   },
   "platform_toolsets": {
-    "api_server": ["web", "todo", "memory", "clarify", "skills", "terminal"]
+    // API/Voice: Notion läuft über /opt/data/bin/notion_fast.py (terminal),
+    // nicht über den 65-Tool-MCP-Server. HA und oCIS bleiben als MCP verfügbar;
+    // Super Productivity und MuellerConnect bleiben auf CLI/PC.
+    "api_server": ["web", "todo", "memory", "clarify", "skills", "terminal", "mcp-homeassistant", "mcp-ocis-private"]
   },
   "platforms": {},
   // Deaktivierte Skills (Hermes Voice): Alles, was nicht gebraucht wird, ist
