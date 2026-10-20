@@ -278,7 +278,7 @@ def cmd_schema(args: argparse.Namespace) -> None:
                 "read": "read PATH [--max-chars N]",
                 "create": "create PATH (--content TEXT | --file LOCAL) "
                 "[--content-type MIME] [--overwrite]",
-                "append": "append PATH --content TEXT",
+                "append": "append PATH (--content TEXT | --content-file LOCAL)",
                 "mkdir": "mkdir PATH",
                 "delete": "delete PATH --yes",
                 "move": "move SOURCE DEST [--overwrite]",
@@ -445,7 +445,13 @@ def cmd_append(args: argparse.Namespace, mcp: OcisMCP) -> None:
     if existing.get("truncated"):
         raise OcisError("Datei ist für sicheres Anhängen zu groß (Download truncated).")
     old = str(existing.get("content") or "")
-    addition = str(args.content)
+    if (args.content is None) == (args.content_file is None):
+        raise OcisError("Genau eine Quelle angeben: --content oder --content-file")
+    if args.content_file:
+        with open(args.content_file, "r", encoding="utf-8") as handle:
+            addition = handle.read()
+    else:
+        addition = str(args.content)
     if old and not old.endswith("\n"):
         old += "\n"
     if addition and not addition.endswith("\n"):
@@ -552,7 +558,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("append")
     p.add_argument("path")
-    p.add_argument("--content", required=True)
+    p.add_argument("--content", default=None)
+    p.add_argument("--content-file", default=None)
     p.set_defaults(func=cmd_append, needs_mcp=True)
 
     p = sub.add_parser("mkdir")

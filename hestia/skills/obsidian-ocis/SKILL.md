@@ -35,6 +35,8 @@ The vault is **not** on the local filesystem. Never use `read_file`,
 
 /opt/data/bin/obsidian_fast.py append "/00-System/Neue Notiz.md" \
   --content "Nachtrag"
+/opt/data/bin/obsidian_fast.py append "/00-System/Neue Notiz.md" \
+  --content-file /tmp/nachtrag.md
 
 /opt/data/bin/obsidian_fast.py mkdir "/00-System/Neuer Ordner"
 /opt/data/bin/obsidian_fast.py move "/alt.md" "/00-System/neu.md"
@@ -54,6 +56,8 @@ Every command prints compact JSON with vault-relative paths such as
   replacement.
 - `create --file LOCAL` is for larger or binary files; otherwise pass
   `--content`. Markdown files automatically use `text/markdown`.
+- For long or multiline appends, write the text to a temp file and use
+  `append --content-file LOCAL`; shell-quoted `--content` is for short lines.
 - `find` searches the oCIS full-text index globally and filters results to the
   Obsidian space. The MCP `space_id` search filter is broken (returns 0), so
   the script omits it deliberately.
