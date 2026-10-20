@@ -69,6 +69,17 @@ services:
       HESTIA_SPEED_MAX_NEW_PER_DAY: ${HESTIA_SPEED_MAX_NEW_PER_DAY:-5}
       HESTIA_SPEED_ARCHIVE_DAYS: ${HESTIA_SPEED_ARCHIVE_DAYS:-90}
       HESTIA_SPEED_FREE_ONLY: ${HESTIA_SPEED_FREE_ONLY:-1}
+      # Adaptiv: Samples je Monitoring-Probe, Stabilitäts-Serie bis das Intervall
+      # sich verdoppelt (24→48→96→168 h), rel. Toleranz, Intervall-Cap,
+      # Discovery-Rhythmus + SQLite-Historie im /app/data-Mount
+      # (nur refs/Metriken/Zeiten/Kosten — keine Inhalte, keine Secrets).
+      HESTIA_SPEED_STABILITY_SAMPLES: ${HESTIA_SPEED_STABILITY_SAMPLES:-5}
+      HESTIA_SPEED_STABLE_RUNS: ${HESTIA_SPEED_STABLE_RUNS:-3}
+      HESTIA_SPEED_STABLE_TOLERANCE: ${HESTIA_SPEED_STABLE_TOLERANCE:-0.20}
+      HESTIA_SPEED_MAX_INTERVAL_HOURS: ${HESTIA_SPEED_MAX_INTERVAL_HOURS:-168}
+      HESTIA_SPEED_DISCOVERY_HOURS: ${HESTIA_SPEED_DISCOVERY_HOURS:-24}
+      HESTIA_SPEED_HISTORY_DB: ${HESTIA_SPEED_HISTORY_DB:-/app/data/hermes-speed-history.db}
+      HESTIA_SPEED_MAX_PAID_PER_DAY: ${HESTIA_SPEED_MAX_PAID_PER_DAY:-5}
       # Optional: überschreibt alles (sonst aus OpenBao)
       # HESTIA_PASSWORD: ""
       # OC_SERVER_PASSWORD: ""

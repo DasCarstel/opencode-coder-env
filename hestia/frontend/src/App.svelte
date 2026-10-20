@@ -1030,6 +1030,18 @@ function speedTs(v) {
   if (!v) return '—'
   return typeof v === 'number' ? fmtTime(v) : String(v)
 }
+function speedInterval(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n) || n <= 0) return '—'
+  return n >= 48 && n % 24 === 0 ? `${Math.round(n / 24)} d` : `${Math.round(n)} h`
+}
+function speedNextDue() {
+  const times = (speed?.state?.candidates || [])
+    .filter((c) => c?.status === 'monitoring')
+    .map((c) => Date.parse(c?.schedule?.nextProbeAt || ''))
+    .filter((n) => Number.isFinite(n))
+  return times.length ? new Date(Math.min(...times)).toISOString() : null
+}
 
 load()
 loadRolloutStatus()
@@ -1282,6 +1294,9 @@ setInterval(loadSuggestStatus, 60000)
         <span class="badge err">⚠ {speed.running.error}</span>
       {/if}
       · letzter Lauf: <span class="mono">{speedTs(speed?.lastRun)}</span>
+      {#if speedNextDue()}
+        · nächste Probe: <span class="mono">{speedTs(speedNextDue())}</span>
+      {/if}
       {#if speed?.telemetry}
         {#if speed.telemetry.available}
           <span class="badge active">O19-Telemetrie</span>
@@ -1314,7 +1329,7 @@ setInterval(loadSuggestStatus, 60000)
   {/if}
 
   <div class="row">
-    <button title="Monitoring-Kandidaten erneut messen" onclick={() => runSpeed('monitoring')}
+    <button title="Nur fällige Monitoring-Kandidaten messen" onclick={() => runSpeed('monitoring')}
       disabled={speedBusy || speed?.running?.running}>
       Monitoring messen
     </button>
@@ -1335,9 +1350,16 @@ setInterval(loadSuggestStatus, 60000)
     </button>
   </div>
 
+  <p class="muted" style="margin-top:6px">
+    Adaptiv: neue Modelle sofort, danach 24 h Basis. Nach
+    {speed?.config?.stableRuns ?? 3} stabilen Messungen in Folge verdoppelt sich der
+    Abstand (24 → 48 → 96 → 168 h); bei Drift oder Fehlern zurück auf 24 h.
+    Automatisch werden nur fällige Kandidaten gemessen.
+  </p>
+
   {#if (speed?.state?.candidates || []).length}
     <table>
-      <thead><tr><th>Modell</th><th>Typ</th><th>Total p50</th><th>TTFB p50</th><th>Fehler</th><th>Status</th><th>Zuletzt</th></tr></thead>
+      <thead><tr><th>Modell</th><th>Typ</th><th>Total p50</th><th>TTFB p50</th><th>Fehler</th><th>Status</th><th>Takt</th><th>Nächste</th><th>Zuletzt</th></tr></thead>
       <tbody>
         {#each speed.state.candidates.slice(0, 8) as c}
           <tr>
@@ -1347,6 +1369,13 @@ setInterval(loadSuggestStatus, 60000)
             <td>{speedMs(c.ttfbMs)}</td>
             <td>{c.errors ?? 0}</td>
             <td class="muted">{c.status || '—'}</td>
+            <td class="muted">
+              {speedInterval(c.schedule?.intervalHours)}
+              {#if (c.schedule?.stableStreak ?? 0) > 0}
+                · {c.schedule.stableStreak}/{speed?.config?.stableRuns ?? 3}
+              {/if}
+            </td>
+            <td class="muted">{speedTs(c.schedule?.nextProbeAt)}</td>
             <td class="muted">{speedTs(c.lastProbe)}</td>
           </tr>
         {/each}

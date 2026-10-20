@@ -32,6 +32,17 @@ der Statistik) + N Samples je Kandidat, Tageslimit für neue Kandidaten
 (HESTIA_SPEED_MAX_NEW_PER_DAY) und Archiv für Ausfälle/Langsame (recheckAfter =
 archivedAt + HESTIA_SPEED_ARCHIVE_DAYS). Beide JSON-Dateien werden atomar
 geschrieben (tmp + os.replace).
+
+Adaptiv (je Kandidat ein „schedule“): Nach jeder erfolgreichen Probe wird die
+Gesamtzeit (p50 UND p95) mit der vorherigen Messung verglichen — relative
+Änderungen ≤ HESTIA_SPEED_STABLE_TOLERANCE gelten als stabil (die erste
+Messung zählt als stabile Basislinie). Nach HESTIA_SPEED_STABLE_RUNS
+stabilen Proben in Folge verdoppelt sich das Intervall (24 → 48 → 96 h …
+bis HESTIA_SPEED_MAX_INTERVAL_HOURS), Drift/Fehler setzen auf das
+Basisintervall zurück. run_monitoring probt nur FÄLLIGE Kandidaten
+(schedule.nextProbeAt); daneben schreibt ein Best-Effort-SQLite
+(HESTIA_SPEED_HISTORY_DB) Katalog-, Probe- und Schedule-Daten in eine
+Historie — nur refs/Metriken/Zeiten/Kosten, nie Nachrichteninhalte/Secrets.
 """
 import hashlib
 import json
@@ -54,6 +65,20 @@ PROBE_TIMEOUT = int(os.environ.get("HESTIA_SPEED_PROBE_TIMEOUT", "35"))
 MAX_NEW_PER_DAY = int(os.environ.get("HESTIA_SPEED_MAX_NEW_PER_DAY", "5"))
 ARCHIVE_DAYS = int(os.environ.get("HESTIA_SPEED_ARCHIVE_DAYS", "90"))
 FREE_ONLY = os.environ.get("HESTIA_SPEED_FREE_ONLY", "1") == "1"
+# Adaptiver Schedule: Stabil = keine Fehler und beide rel. Änderungen
+# (total p50 UND p95) ≤ Toleranz; nach STABLE_RUNS stabilen Proben in Folge
+# verdoppelt sich das Intervall (24 → 48 → 96 h … bis MAX_INTERVAL_HOURS),
+# Drift/Fehler setzen auf das Basisintervall (INTERVAL_HOURS) zurück.
+STABILITY_SAMPLES = int(os.environ.get("HESTIA_SPEED_STABILITY_SAMPLES", "5"))
+STABLE_RUNS = int(os.environ.get("HESTIA_SPEED_STABLE_RUNS", "3"))
+STABLE_TOLERANCE = float(os.environ.get("HESTIA_SPEED_STABLE_TOLERANCE", "0.20"))
+MAX_INTERVAL_HOURS = int(os.environ.get("HESTIA_SPEED_MAX_INTERVAL_HOURS", "168"))
+DISCOVERY_HOURS = int(os.environ.get("HESTIA_SPEED_DISCOVERY_HOURS", "24"))
+# SQLite-Historie (best-effort): nur refs/Metriken/Zeiten/Kosten — nie Secrets.
+HISTORY_DB = os.environ.get("HESTIA_SPEED_HISTORY_DB", "/app/data/hermes-speed-history.db")
+# Kostenbremse: bezahlte Modelle werden im Automatik-/Discovery-Lauf höchstens
+# so oft pro UTC-Tag geprobt. Manuelle Probes bleiben bewusst möglich.
+MAX_PAID_PER_DAY = int(os.environ.get("HESTIA_SPEED_MAX_PAID_PER_DAY", "5"))
 
 SAMPLES_RANGE = (1, 10)
 
@@ -75,6 +100,14 @@ def _log(msg):
 def _now_iso(ts: float | None = None) -> str:
     """UTC-Zeitstempel (ISO-8601, sekundengenau) — wie failover._now_iso."""
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() if ts is None else ts))
+
+
+def _fnum(v):
+    """float-Koercion für die Historie (None bleibt None, Müll wird None)."""
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 # ── Zustand: atomares JSON (State + known) ──────────────────────────────────
@@ -108,11 +141,18 @@ def _load_state() -> dict:
     st.setdefault("candidates", [])
     st.setdefault("archive", [])
     st.setdefault("newToday", {"date": _now_iso()[:10], "count": 0})
+    st.setdefault("paidToday", {"date": _now_iso()[:10], "count": 0})
     st.setdefault("lastApplied", None)
     if not isinstance(st["candidates"], list):
         st["candidates"] = []
     if not isinstance(st["archive"], list):
         st["archive"] = []
+    # Migration: alte States ohne schedule bekommen einen — erst in-memory,
+    # der nächste Save schreibt die Migration automatisch in die JSON-Datei.
+    for entry in st["candidates"]:
+        _ensure_schedule(entry, archived=False, checked_at=st.get("checkedAt"))
+    for entry in st["archive"]:
+        _ensure_schedule(entry, archived=True, checked_at=st.get("checkedAt"))
     return st
 
 
@@ -132,6 +172,229 @@ def _save_known(known: dict):
 def _save_all(st: dict, known: dict):
     _save_state(st)
     _save_known(known)
+
+
+# ── Adaptiver Schedule + SQLite-Historie (best-effort) ──────────────────────
+
+def _new_schedule(interval_hours: int | None = None) -> dict:
+    """Frischer Schedule: Basisintervall, noch keine Stabilitäts-Serie."""
+    return {
+        "intervalHours": int(interval_hours) if interval_hours is not None
+        else INTERVAL_HOURS,
+        "stableStreak": 0,
+        "nextProbeAt": None,
+        "lastProbeAt": None,
+        "lastP50Ms": None,
+        "lastP95Ms": None,
+        "lastErrors": None,
+    }
+
+
+def _ensure_schedule(entry: dict, archived: bool = False,
+                     checked_at: str | None = None) -> dict:
+    """Schedule je Eintrag ergänzen — Migration alter States ohne schedule.
+
+    Kandidaten: nextProbeAt = lastProbe + Basisintervall (ohne lastProbe:
+    checkedAt + Basisintervall). Archiv: recheckAfter, sonst lastProbe +
+    Archiv-Frist. So re-probt ein Deploy mit altem State NICHT sofort; fehlt
+    jede Basis, bleibt der Termin offen (None = sofort fällig, wie die erste
+    Installation). Reine Ergänzung — bestehende Werte bleiben stehen.
+    """
+    raw = entry.get("schedule") if isinstance(entry.get("schedule"), dict) else {}
+    try:
+        interval = max(1, int(raw.get("intervalHours")))
+    except (TypeError, ValueError):
+        interval = INTERVAL_HOURS
+    try:
+        streak = int(raw.get("stableStreak") or 0)
+    except (TypeError, ValueError):
+        streak = 0
+    sch = {
+        "intervalHours": interval,
+        "stableStreak": streak,
+        "nextProbeAt": raw.get("nextProbeAt"),
+        "lastProbeAt": raw.get("lastProbeAt"),
+        "lastP50Ms": raw.get("lastP50Ms"),
+        "lastP95Ms": raw.get("lastP95Ms"),
+        "lastErrors": raw.get("lastErrors"),
+    }
+    if sch["nextProbeAt"] is None:
+        if archived:
+            base_iso = entry.get("recheckAfter")
+            if not base_iso:
+                base_ts = _to_epoch(entry.get("lastProbe") or checked_at)
+                base_iso = _now_iso((base_ts or time.time()) + ARCHIVE_DAYS * 86400)
+            sch["nextProbeAt"] = base_iso
+        else:
+            base_ts = _to_epoch(entry.get("lastProbe") or checked_at)
+            sch["nextProbeAt"] = (_now_iso(base_ts + INTERVAL_HOURS * 3600)
+                                  if base_ts is not None else None)
+    entry["schedule"] = sch
+    return sch
+
+
+def _schedule_due(cand: dict, now_iso: str) -> bool:
+    """Fällig? Offener Termin (None) oder nextProbeAt ≤ jetzt → fällig."""
+    nxt = (cand.get("schedule") or {}).get("nextProbeAt")
+    return not nxt or str(nxt) <= now_iso
+
+
+def _today_utc() -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def _paid_today(st: dict) -> int:
+    """Anzahl bereits gestarteter bezahlter Auto-Probes am heutigen UTC-Tag."""
+    pt = st.get("paidToday") if isinstance(st.get("paidToday"), dict) else {}
+    if pt.get("date") != _today_utc():
+        return 0
+    try:
+        return max(0, int(pt.get("count") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _bump_paid(st: dict):
+    """Bezahlten Auto-Probe zählen (nur im laufenden State; Save macht der Lauf)."""
+    today = _today_utc()
+    pt = st.get("paidToday") if isinstance(st.get("paidToday"), dict) else {}
+    if pt.get("date") != today:
+        pt = {"date": today, "count": 0}
+    try:
+        pt["count"] = max(0, int(pt.get("count") or 0)) + 1
+    except (TypeError, ValueError):
+        pt["count"] = 1
+    st["paidToday"] = pt
+
+
+_HIST_SCHEMA = """
+CREATE TABLE IF NOT EXISTS models (
+    ref TEXT PRIMARY KEY,
+    provider TEXT,
+    name TEXT,
+    free INTEGER,
+    context INTEGER,
+    input_cost REAL,
+    output_cost REAL,
+    cache_cost REAL,
+    first_seen TEXT,
+    last_seen TEXT,
+    catalog_hash TEXT
+);
+CREATE TABLE IF NOT EXISTS probe_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT,
+    ref TEXT,
+    mode TEXT,
+    samples INTEGER,
+    ttfb_p50 REAL,
+    ttfb_p95 REAL,
+    total_p50 REAL,
+    total_p95 REAL,
+    errors INTEGER,
+    ok INTEGER,
+    score REAL
+);
+CREATE TABLE IF NOT EXISTS schedule (
+    ref TEXT PRIMARY KEY,
+    interval_hours REAL,
+    stable_streak INTEGER,
+    next_probe_at TEXT,
+    last_probe_at TEXT,
+    last_p50_ms REAL,
+    last_p95_ms REAL,
+    last_errors INTEGER
+);
+"""
+
+
+def _hist_connect():
+    """Kurzlebige Verbindung (je Aufruf, im aufrufenden Thread); WAL + busy_timeout."""
+    os.makedirs(os.path.dirname(HISTORY_DB) or ".", exist_ok=True)
+    con = sqlite3.connect(HISTORY_DB, timeout=5)
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA busy_timeout=5000")
+        con.executescript(_HIST_SCHEMA)
+    except Exception:
+        con.close()
+        raise
+    return con
+
+
+def _history(label: str, fn):
+    """Best-Effort-Schreibzugriff: Fehler werden geloggt und geschluckt —
+    die Historie darf nie eine Probe oder einen Lauf brechen."""
+    if not HISTORY_DB:
+        return
+    try:
+        con = _hist_connect()
+        try:
+            fn(con)
+            con.commit()
+        finally:
+            con.close()
+    except Exception as e:  # noqa: BLE001
+        _log(f"history-db {label} ignoriert: {type(e).__name__}: {e}")
+
+
+def _hist_upsert_models(models: list):
+    """ALLE Katalogmodelle in die Historie (auch nicht eingereihte)."""
+    def _run(con):
+        now = _now_iso()
+        for m in models:
+            ref = m.get("ref") or ""
+            if not ref:
+                continue
+            cost = m.get("cost") or {}
+            try:
+                free = 1 if catalog.is_free(ref) else 0
+            except Exception:  # noqa: BLE001
+                free = None
+            con.execute(
+                "INSERT INTO models (ref, provider, name, free, context, input_cost, "
+                "output_cost, cache_cost, first_seen, last_seen, catalog_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(ref) DO UPDATE SET provider=excluded.provider, "
+                "name=excluded.name, free=excluded.free, context=excluded.context, "
+                "input_cost=excluded.input_cost, output_cost=excluded.output_cost, "
+                "cache_cost=excluded.cache_cost, last_seen=excluded.last_seen, "
+                "catalog_hash=excluded.catalog_hash",
+                (ref, m.get("providerID"), m.get("name") or m.get("modelID"), free,
+                 _fnum((m.get("limit") or {}).get("context")),
+                 _fnum(cost.get("input")), _fnum(cost.get("output")),
+                 _fnum(cost.get("cacheRead")), now, now, _metadata_hash(m)))
+    _history("models", _run)
+
+
+def _hist_record_probe(cand: dict, res: dict, mode: str):
+    """Probe-Ergebnis + Schedule-Stand in die Historie (best-effort)."""
+    def _run(con):
+        ttfb, total = res.get("ttfbMs") or {}, res.get("totalMs") or {}
+        sch = cand.get("schedule") or {}
+        con.execute(
+            "INSERT INTO probe_runs (ts, ref, mode, samples, ttfb_p50, ttfb_p95, "
+            "total_p50, total_p95, errors, ok, score) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (_now_iso(), cand.get("ref"), mode or "manual",
+             int(res.get("samples") or 0),
+             _fnum(ttfb.get("p50")), _fnum(ttfb.get("p95")),
+             _fnum(total.get("p50")), _fnum(total.get("p95")),
+             int(res.get("errors") or 0), 1 if res.get("ok") else 0,
+             _fnum(cand.get("score"))))
+        con.execute(
+            "INSERT INTO schedule (ref, interval_hours, stable_streak, next_probe_at, "
+            "last_probe_at, last_p50_ms, last_p95_ms, last_errors) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(ref) DO UPDATE SET interval_hours=excluded.interval_hours, "
+            "stable_streak=excluded.stable_streak, next_probe_at=excluded.next_probe_at, "
+            "last_probe_at=excluded.last_probe_at, last_p50_ms=excluded.last_p50_ms, "
+            "last_p95_ms=excluded.last_p95_ms, last_errors=excluded.last_errors",
+            (cand.get("ref"), _fnum(sch.get("intervalHours")),
+             int(sch.get("stableStreak") or 0), sch.get("nextProbeAt"),
+             sch.get("lastProbeAt"), _fnum(sch.get("lastP50Ms")),
+             _fnum(sch.get("lastP95Ms")), sch.get("lastErrors")))
+    _history("probe", _run)
 
 
 def _metadata_hash(m: dict) -> str:
@@ -158,6 +421,7 @@ def _new_candidate(m: dict) -> dict:
         "score": None,
         "status": "queued",
         "lastProbe": None,
+        "schedule": _new_schedule(),
     }
 
 
@@ -194,6 +458,7 @@ def discover(force: bool = True) -> list:
     known NICHT angefasst — das passiert erst in run_discovery nach der Probe.
     """
     models = catalog.fetch_models(force=force)
+    _hist_upsert_models(models)        # Historie: ALLE Katalogmodelle (best-effort)
     with FILE_LOCK:
         st = _load_state()
         known = _load_known()
@@ -402,9 +667,34 @@ def _prune_archive(st: dict):
                      if (a.get("archivedAt") or "") >= cutoff]
 
 
-def _probe_and_update(cand: dict, known: dict, samples: int | None = None) -> dict:
-    """Einen Kandidaten proben und State + known aktualisieren (kein Apply)."""
+def _stable_enough(prev_total: dict | None, new_total: dict, errors: int) -> bool:
+    """Stabil = keine Fehler und rel. Änderung von total-p50 UND p95 ≤ Toleranz.
+
+    Die erste Messung (keine vorherige) zählt als stabile Basislinie.
+    """
+    if errors:
+        return False
+    prev = prev_total or {}
+    if prev.get("p50") is None and prev.get("p95") is None:
+        return True                     # erste Messung = Basislinie
+    for new, old in (((new_total or {}).get("p50"), prev.get("p50")),
+                     ((new_total or {}).get("p95"), prev.get("p95"))):
+        if new is None or old is None:
+            return False
+        old = float(old)
+        if old <= 0:
+            if float(new) > 0:
+                return False
+        elif abs(float(new) - old) / old > STABLE_TOLERANCE:
+            return False
+    return True
+
+
+def _probe_and_update(cand: dict, known: dict, samples: int | None = None,
+                      mode: str = "") -> dict:
+    """Einen Kandidaten proben und State + known + Schedule aktualisieren (kein Apply)."""
     ref = cand["ref"]
+    prev_total = json.loads(json.dumps(cand.get("totalMs") or {}))  # Basis VOR dem Überschreiben
     res = probe(ref, samples=samples)
     cand["runs"] = int(cand.get("runs") or 0) + int(res.get("runs") or 0)
     cand["errors"] = int(cand.get("errors") or 0) + int(res.get("errors") or 0)
@@ -419,6 +709,33 @@ def _probe_and_update(cand: dict, known: dict, samples: int | None = None) -> di
         cand["status"] = "archived"     # Fehler → direkt ins Archiv
     if res["ok"] and (res["totalMs"].get("p95") or 0) >= SLOW_P95_MS:
         cand["status"] = "archived"     # zu langsam (p95-Gesamtzeit)
+    # Adaptiver Schedule: Stabilität gegen die vorherige Messung — nach genug
+    # stabilen Proben in Folge das Intervall verdoppeln (bis Cap), Drift/Fehler
+    # setzen zurück. Archiviert: Termin ans Archiv-Fenster (kein eigener
+    # Re-Probe-Loop — die Wiederaufnahme läuft über discover/recheckAfter).
+    sch = cand.get("schedule") if isinstance(cand.get("schedule"), dict) else _new_schedule()
+    cand["schedule"] = sch
+    sch["lastProbeAt"] = cand["lastProbe"]
+    sch["lastP50Ms"] = (cand.get("totalMs") or {}).get("p50")
+    sch["lastP95Ms"] = (cand.get("totalMs") or {}).get("p95")
+    sch["lastErrors"] = int(res.get("errors") or 0)
+    if cand["status"] == "monitoring":
+        if _stable_enough(prev_total, res.get("totalMs") or {},
+                          int(res.get("errors") or 0)):
+            sch["stableStreak"] = int(sch.get("stableStreak") or 0) + 1
+            if (sch["stableStreak"] >= STABLE_RUNS
+                    and sch["intervalHours"] < MAX_INTERVAL_HOURS):
+                sch["intervalHours"] = min(MAX_INTERVAL_HOURS,
+                                           max(1, int(sch["intervalHours"])) * 2)
+                sch["stableStreak"] = 0
+        else:
+            sch["stableStreak"] = 0
+            sch["intervalHours"] = INTERVAL_HOURS
+        sch["nextProbeAt"] = _now_iso(time.time() + sch["intervalHours"] * 3600)
+    else:
+        sch["stableStreak"] = 0
+        sch["intervalHours"] = INTERVAL_HOURS
+        sch["nextProbeAt"] = _now_iso(time.time() + ARCHIVE_DAYS * 86400)
     # known erst NACH der Probe schreiben (nie Blindvermerke für Ausfälle ohne
     # Versuch — so bleibt die Wiederentdeckung über den Hash intakt).
     m = catalog.find_model(ref)
@@ -428,6 +745,7 @@ def _probe_and_update(cand: dict, known: dict, samples: int | None = None) -> di
     k["lastSeen"] = _now_iso()
     if cand["status"] == "archived":
         k["lastFail"] = cand["lastProbe"]
+    _hist_record_probe(cand, res, mode)
     return res
 
 
@@ -461,7 +779,13 @@ def run_discovery(samples: int | None = None) -> dict:
             cand = by_ref.get(c["ref"])
             if not cand or cand.get("status") != "queued":
                 continue
-            res = _probe_and_update(cand, known, samples=samples)
+            if not cand.get("free") and _paid_today(st) >= MAX_PAID_PER_DAY:
+                _log(f"Kostenbremse: bezahlte Discovery-Probe für {cand['ref']} "
+                     f"übersprungen ({MAX_PAID_PER_DAY}/Tag)")
+                continue
+            res = _probe_and_update(cand, known, samples=samples, mode="discovery")
+            if not cand.get("free"):
+                _bump_paid(st)
             results[cand["ref"]] = {"status": cand["status"], "score": cand.get("score"),
                                     "errors": cand.get("errors"), "detail": res.get("detail")}
         st["checkedAt"] = _now_iso()
@@ -481,7 +805,12 @@ def run_discovery(samples: int | None = None) -> dict:
 
 
 def run_monitoring(samples: int | None = None) -> dict:
-    """Alle Monitoring-Kandidaten neu proben; Ausfälle/Langsame archivieren."""
+    """Nur FÄLLIGE Monitoring-Kandidaten neu proben (adaptives nextProbeAt).
+
+    Ausfälle/Langsame archivieren. Ohne explizite Sample-Zahl gilt
+    HESTIA_SPEED_STABILITY_SAMPLES (Standard 5) — die automatische
+    Stabilitätsmessung darf etwas genauer sein als der Discovery-Default.
+    """
     if not _run_guarded("monitoring"):
         return {"started": False, "running": True, "mode": RUN.get("mode")}
     err, results = None, {}
@@ -489,9 +818,18 @@ def run_monitoring(samples: int | None = None) -> dict:
         with FILE_LOCK:
             st = _load_state()
         known = _load_known()
-        watch = [c for c in st["candidates"] if c.get("status") == "monitoring"]
+        now_iso = _now_iso()
+        watch = [c for c in st["candidates"]
+                 if c.get("status") == "monitoring" and _schedule_due(c, now_iso)]
+        n = samples or STABILITY_SAMPLES
         for cand in watch:
-            res = _probe_and_update(cand, known, samples=samples)
+            if not cand.get("free") and _paid_today(st) >= MAX_PAID_PER_DAY:
+                _log(f"Kostenbremse: bezahlte Monitoring-Probe für {cand['ref']} "
+                     f"übersprungen ({MAX_PAID_PER_DAY}/Tag)")
+                continue
+            res = _probe_and_update(cand, known, samples=n, mode="monitoring")
+            if not cand.get("free"):
+                _bump_paid(st)
             results[cand["ref"]] = {"status": cand["status"], "score": cand.get("score"),
                                     "errors": cand.get("errors"), "detail": res.get("detail")}
         st["checkedAt"] = _now_iso()
@@ -536,7 +874,9 @@ def run_probe_refs(refs: list, samples: int | None = None) -> dict:
                         continue
                     cand = _new_candidate(m)
                 st["candidates"].append(cand)
-            res = _probe_and_update(cand, known, samples=samples)
+            res = _probe_and_update(cand, known, samples=samples, mode="probe")
+            if not cand.get("free"):
+                _bump_paid(st)
             results[ref] = {"status": cand["status"], "score": cand.get("score"),
                             "errors": cand.get("errors"), "detail": res.get("detail")}
         st["checkedAt"] = _now_iso()
@@ -768,7 +1108,13 @@ def state() -> dict:
         "running": run,
         "lastRun": st.get("checkedAt"),
         "config": {"path": SPEED_PATH, "knownPath": KNOWN_PATH, "stateDb": STATE_DB,
+                   "historyDb": HISTORY_DB,
                    "intervalHours": INTERVAL_HOURS, "samples": SAMPLES,
+                   "stabilitySamples": STABILITY_SAMPLES, "stableRuns": STABLE_RUNS,
+                   "stableTolerance": STABLE_TOLERANCE,
+                   "maxIntervalHours": MAX_INTERVAL_HOURS,
+                   "discoveryHours": DISCOVERY_HOURS,
+                   "maxPaidPerDay": MAX_PAID_PER_DAY,
                    "probeTimeout": PROBE_TIMEOUT, "maxNewPerDay": MAX_NEW_PER_DAY,
                    "archiveDays": ARCHIVE_DAYS, "freeOnly": FREE_ONLY,
                    "slowP95Ms": SLOW_P95_MS, "providers": ALLOWED_PROVIDERS},
@@ -785,33 +1131,44 @@ _STOP = threading.Event()
 def _seconds_until_auto_run(now: float | None = None) -> float:
     """Sekunden bis zum nächsten Automatik-Lauf (0.0 = sofort fällig).
 
-    Reine Lese-Logik (startet keine Proben): Liegt der letzte Lauf (checkedAt)
-    jünger als das Intervall zurück — typisch nach häufigem Neustart/Redeploy —
-    kommt die Restzeit, damit der Loop keine Sofort-Probe fährt. Fehlender oder
-    ungültiger checkedAt (erste Installation) → 0.0, d.h. sofort wie bisher.
+    Reine Lese-Logik (keine Writes, keine Proben): nächster Termin ist das
+    Minimum aus dem frühesten nextProbeAt eines Monitoring-Kandidaten und
+    checkedAt + Discovery-Intervall (HESTIA_SPEED_DISCOVERY_HOURS). Fehlt
+    beides (erste Installation) → 0.0. Junger checkedAt und zukünftige
+    Termine — typisch nach Deploy/Neustart — liefern die Restzeit, d.h. KEIN
+    Sofort-Probe; ein fälliger Kandidat bleibt trotzdem sofort dran.
     """
-    last = _to_epoch(_load_state().get("checkedAt"))
-    if last is None:
-        return 0.0
+    st = _load_state()
     now_ts = time.time() if now is None else now
-    interval = max(60, INTERVAL_HOURS * 3600)   # gleiche Untergrenze wie im Loop
-    return max(0.0, last + interval - now_ts)
+    due: list[float] = []
+    for cand in st["candidates"]:
+        if cand.get("status") != "monitoring":
+            continue
+        nxt = _to_epoch((cand.get("schedule") or {}).get("nextProbeAt"))
+        due.append(nxt if nxt is not None else now_ts)  # ohne Termin → sofort
+    last = _to_epoch(st.get("checkedAt"))
+    if last is not None:
+        due.append(last + max(60, DISCOVERY_HOURS * 3600))
+    if not due:
+        return 0.0
+    return max(0.0, min(due) - now_ts)
 
 
 def loop(stop_event: threading.Event):
-    """Automatik: Monitoring + Discovery im Rollen-Intervall (kein Auto-Apply).
+    """Automatik: fällige Monitoring-Kandidaten + Discovery (kein Auto-Apply).
 
-    Neustart-Schutz: junger checkedAt (< Intervall) → Restzeit abwarten
-    (unterbrechbar über stop_event), dann laufen. Erste Installation läuft
-    sofort; nach jedem Lauf gilt wieder das volle Intervall.
+    Neustart-Schutz: `_seconds_until_auto_run` liefert die Restzeit bis zur
+    nächsten Fälligkeit — ein frischer Deploy mit jungem checkedAt und
+    zukünftigen Terminen probt daher NICHT sofort. Erste Installation (kein
+    checkedAt, kein Termin) läuft sofort; danach gilt der adaptive Rhythmus.
     """
-    _log(f"Speed-Automatik aktiv (Intervall {INTERVAL_HOURS} h, Samples {SAMPLES}, "
+    _log(f"Speed-Automatik aktiv (Basisintervall {INTERVAL_HOURS} h, Discovery "
+         f"{DISCOVERY_HOURS} h, Monitoring-Samples {STABILITY_SAMPLES}, "
          f"free-only={FREE_ONLY}, Tageslimit {MAX_NEW_PER_DAY})")
     while not stop_event.is_set():
         wait = _seconds_until_auto_run()
         if wait > 0:
-            _log(f"letzter Speed-Lauf jünger als das Intervall — "
-                 f"{wait / 3600.0:.1f} h bis zum nächsten Automatik-Lauf")
+            _log(f"nächster Speed-Lauf in {wait / 3600.0:.1f} h (adaptive Fälligkeit)")
             stop_event.wait(wait)
             continue
         try:
@@ -822,7 +1179,9 @@ def loop(stop_event: threading.Event):
             run_discovery()
         except Exception as e:  # noqa: BLE001
             _log(f"Discovery fehlgeschlagen: {e}")
-        stop_event.wait(max(60, INTERVAL_HOURS * 3600))
+        # Neu rechnen statt festem Intervall — nach dem Lauf ist checkedAt
+        # frisch, der Boden (60 s) verhindert nur eine Busy-Schleife.
+        stop_event.wait(max(60.0, _seconds_until_auto_run()))
     _log("Speed-Automatik beendet")
 
 

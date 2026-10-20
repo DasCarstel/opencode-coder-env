@@ -28,6 +28,12 @@ Daneben liest hermes_speed.telemetry() den O19-Snapshot der Hermes-state.db
   7. Statische Checks: suggest._event_watch nimmt on_first_delta an,
      telemetry_snapshot.py kompiliert ohne Netz-Imports, Compose/Workflows
      verdrahten den Seitenwagen (nur der Snapshot geht ans Panel).
+  8. Adaptiv: Migration alter States (kein Sofort-Probe nach Deploy), Backoff
+     24→48→96→168 h bei Stabilität (erste Messung = Basislinie), Reset bei
+     Drift/Fehlern, Fälligkeits-Filter (nur fällige Monitoring-Kandidaten,
+     5 Samples), run_discovery probt neue sofort, SQLite-Historie
+     (best-effort, alle Katalogmodelle) und state()/Compose-Verdrahtung
+     der neuen Env-Variablen.
 
 Läuft mit pytest UND direkt:
     pytest -q hestia/ci/test_hermes_speed.py
@@ -61,6 +67,13 @@ ENV_DEFAULTS = {
     "HESTIA_SPEED_MAX_NEW_PER_DAY": "5",
     "HESTIA_SPEED_ARCHIVE_DAYS": "90",
     "HESTIA_SPEED_FREE_ONLY": "1",
+    "HESTIA_SPEED_STABILITY_SAMPLES": "5",
+    "HESTIA_SPEED_STABLE_RUNS": "3",
+    "HESTIA_SPEED_STABLE_TOLERANCE": "0.20",
+    "HESTIA_SPEED_MAX_INTERVAL_HOURS": "168",
+    "HESTIA_SPEED_DISCOVERY_HOURS": "24",
+    "HESTIA_SPEED_HISTORY_DB": os.path.join(TMP, "speed-history.db"),
+    "HESTIA_SPEED_MAX_PAID_PER_DAY": "5",
     "HESTIA_PROVIDERS": "opencode-go,opencode",
 }
 
@@ -227,11 +240,12 @@ def reset(env=None):
         os.environ[k] = v
     for k, v in (env or {}).items():
         os.environ[k] = str(v)
-    for key in ("HESTIA_SPEED_PATH", "HESTIA_SPEED_KNOWN_PATH"):
-        if os.path.exists(os.environ[key]):
-            os.remove(os.environ[key])
-    if os.path.exists(os.environ["HERMES_STATE_DB"]):
-        os.remove(os.environ["HERMES_STATE_DB"])
+    for key in ("HESTIA_SPEED_PATH", "HESTIA_SPEED_KNOWN_PATH", "HERMES_STATE_DB",
+                "HESTIA_SPEED_HISTORY_DB"):
+        for suffix in ("", "-wal", "-shm"):
+            pth = os.environ[key] + suffix
+            if os.path.exists(pth):
+                os.remove(pth)
     CALLS["req"].clear()
     CALLS["watch"].clear()
     CALLS["deleted"].clear()
@@ -261,6 +275,10 @@ def _seed_monitoring(mod, refs_with_scores):
             "ttfbMs": {"p50": 10.0, "p95": 20.0}, "totalMs": {"p50": 30.0, "p95": 40.0},
             "toolOk": None, "errors": 0, "score": score, "status": "monitoring",
             "lastProbe": "2026-10-20T00:00:00Z",
+            "schedule": {"intervalHours": 24, "stableStreak": 0,
+                         "nextProbeAt": "2000-01-01T00:00:00Z",
+                         "lastProbeAt": "2026-10-20T00:00:00Z",
+                         "lastP50Ms": 30.0, "lastP95Ms": 40.0, "lastErrors": 0},
         })
     _write_state(mod, st)
 
@@ -547,8 +565,9 @@ def main():
     st = _read_state(mod)
     check("erste Installation: Loop läuft sofort und setzt checkedAt",
           st["checkedAt"] is not None and len(CALLS["req"]) > 0, str(st.get("checkedAt")))
-    check("nach dem Lauf wartet der Loop das volle Intervall",
-          ev.calls == [max(60, mod.INTERVAL_HOURS * 3600)], str(ev.calls))
+    check("nach dem Lauf wartet der Loop bis zur nächsten Fälligkeit (~24 h)",
+          len(ev.calls) == 1 and abs(ev.calls[0] - mod.INTERVAL_HOURS * 3600) < 120,
+          str(ev.calls))
 
     mod = reset()
     check("fehlender checkedAt → sofort fällig",
@@ -651,6 +670,266 @@ def main():
     speed_src = open(os.path.join(BACKEND, "hermes_speed.py"), encoding="utf-8").read()
     check("hermes_speed schreibt nie direkt die Hermes-SOT (nur via hermes.apply)",
           "github_api" not in speed_src and "put_files" not in speed_src)
+
+    print("\n[15] Adaptiv: Migration, Backoff, Fälligkeit, SQLite-Historie")
+
+    def _result(p50, p95=None, errors=0, samples=5):
+        return {"ok": errors == 0, "ref": "opencode-go/beam-free", "samples": samples,
+                "runs": samples, "ttfbMs": {"p50": 10.0, "p95": 20.0},
+                "totalMs": {"p50": p50, "p95": p95 if p95 is not None else p50},
+                "toolOk": None, "errors": errors, "detail": "succeeded"}
+
+    def _mon(ref, score, nxt, last_probe, free=True):
+        return {"ref": ref, "free": free, "provider": ref.split("/")[0],
+                "model": ref.split("/", 1)[1], "runs": 3,
+                "ttfbMs": {"p50": 10.0, "p95": 20.0}, "totalMs": {"p50": 30.0, "p95": 40.0},
+                "toolOk": None, "errors": 0, "score": score, "status": "monitoring",
+                "lastProbe": last_probe,
+                "schedule": {"intervalHours": 24, "stableStreak": 0, "nextProbeAt": nxt,
+                             "lastProbeAt": last_probe, "lastP50Ms": 30.0,
+                             "lastP95Ms": 40.0, "lastErrors": 0}}
+
+    now = time.time()
+
+    # a) Migration alter States (ohne schedule) — kein Sofort-Probe nach Deploy
+    mod = reset()
+    st = json.loads(json.dumps(DEFAULT_SPEED_STATE))
+    st["checkedAt"] = mod._now_iso(now - 2 * 3600)
+    st["candidates"].append({
+        "ref": "opencode-go/beam-free", "free": True, "provider": "opencode-go",
+        "model": "beam-free", "runs": 3, "ttfbMs": {"p50": 10.0, "p95": 20.0},
+        "totalMs": {"p50": 30.0, "p95": 40.0}, "toolOk": None, "errors": 0,
+        "score": 12.0, "status": "monitoring",
+        "lastProbe": mod._now_iso(now - 2 * 3600)})          # kein schedule-Feld
+    st["archive"].append({
+        "ref": "opencode-go/old-arch", "free": True, "provider": "opencode-go",
+        "model": "old-arch", "runs": 3, "ttfbMs": {"p50": 1.0, "p95": 2.0},
+        "totalMs": {"p50": 3.0, "p95": 4.0}, "toolOk": None, "errors": 1,
+        "score": 2.0, "status": "archived",
+        "lastProbe": mod._now_iso(now - 40 * 86400),
+        "archivedAt": mod._now_iso(now - 40 * 86400),
+        "recheckAfter": mod._now_iso(now + 50 * 86400)})     # kein schedule-Feld
+    _write_state(mod, st)
+    loaded = mod._load_state()
+    mig = loaded["candidates"][0]["schedule"]
+    check("Migration: Kandidat nextProbeAt = lastProbe + 24 h",
+          abs(mod._to_epoch(mig["nextProbeAt"]) - (now - 7200 + 24 * 3600)) < 5,
+          str(mig["nextProbeAt"]))
+    check("Migration: Startintervall 24 h, streak 0",
+          mig["intervalHours"] == 24 and mig["stableStreak"] == 0, str(mig))
+    arch_s = loaded["archive"][0]["schedule"]
+    check("Migration: Archiv nextProbeAt = recheckAfter",
+          arch_s["nextProbeAt"] == st["archive"][0]["recheckAfter"], str(arch_s))
+    check("Migration: kein Sofort-Lauf fällig (Restzeit > 0)",
+          mod._seconds_until_auto_run(now=now) > 0)
+    ev = _StopAfterWait()
+    calls_before = len(CALLS["req"])
+    mod.loop(ev)
+    check("Migration: Loop probt nach Deploy nicht sofort",
+          len(CALLS["req"]) == calls_before,
+          f"{len(CALLS['req']) - calls_before} neue Probe-Calls")
+
+    # b) Backoff 24→48→96→168 (Cap), Reset bei Drift/Fehler, Basislinie stabil
+    mod = reset()
+    cand = mod._new_candidate(mod.catalog.find_model("opencode-go/beam-free"))
+    cand["status"] = "monitoring"
+    known = {}
+    box = {"q": [_result(120.0) for _ in range(13)]}
+    mod.probe = lambda ref, samples=None, variant="": box["q"].pop(0)
+    mod._probe_and_update(cand, known, samples=5, mode="monitoring")
+    sch = cand["schedule"]
+    check("erste Messung zählt als stabile Basislinie (streak 1, Intervall 24)",
+          sch["stableStreak"] == 1 and sch["intervalHours"] == 24, str(sch))
+    intervals = []
+    for _ in range(12):
+        mod._probe_and_update(cand, known, samples=5, mode="monitoring")
+        intervals.append(cand["schedule"]["intervalHours"])
+    check("Backoff 24→48→96→168 nach je 3 stabilen Proben (STABLE_RUNS)",
+          intervals == [24, 48, 48, 48, 96, 96, 96, 168, 168, 168, 168, 168],
+          str(intervals))
+    check("Cap 168 h wird gehalten, kein weiteres Verdoppeln",
+          all(i == 168 for i in intervals[7:]) and intervals[-1] == 168, str(intervals[-4:]))
+    check("nextProbeAt = letzter Probe + aktuelles Intervall",
+          abs(mod._to_epoch(cand["schedule"]["nextProbeAt"])
+              - (mod._to_epoch(cand["lastProbe"]) + 168 * 3600)) < 5,
+          str(cand["schedule"]["nextProbeAt"]))
+    box["q"] = [_result(200.0)]            # +67 % Drift → instabil
+    mod._probe_and_update(cand, known, samples=5, mode="monitoring")
+    check("Drift über Toleranz → Intervall-Reset 24 h, streak 0",
+          cand["status"] == "monitoring"
+          and cand["schedule"]["intervalHours"] == 24
+          and cand["schedule"]["stableStreak"] == 0, str(cand["schedule"]))
+    box["q"] = [_result(None, errors=2)]
+    mod._probe_and_update(cand, known, samples=5, mode="monitoring")
+    check("Fehler → archiviert, Intervall-Reset, streak 0, Termin auf Archiv-Frist",
+          cand["status"] == "archived"
+          and cand["schedule"]["intervalHours"] == 24
+          and cand["schedule"]["stableStreak"] == 0
+          and mod._to_epoch(cand["schedule"]["nextProbeAt"]) > time.time() + 80 * 86400,
+          str(cand["schedule"]))
+
+    # c) run_monitoring: nur fällige monitoring-Kandidaten, 5 Samples, Archiv ruht
+    mod = reset()
+    past = mod._now_iso(now - 60)
+    future = mod._now_iso(now + 10 * 3600)
+    st = json.loads(json.dumps(DEFAULT_SPEED_STATE))
+    st["candidates"].append(_mon("opencode-go/beam-free", 12.0, past, past))
+    st["candidates"].append(_mon("opencode-go/longcat-free", 20.0, future, past))
+    st["archive"].append({
+        "ref": "opencode-go/dash-free", "free": True, "provider": "opencode-go",
+        "model": "dash-free", "runs": 3, "ttfbMs": {"p50": 1.0, "p95": 2.0},
+        "totalMs": {"p50": 3.0, "p95": 4.0}, "toolOk": None, "errors": 1, "score": 2.0,
+        "status": "archived", "lastProbe": past, "archivedAt": past,
+        "recheckAfter": mod._now_iso(now + 50 * 86400),
+        "schedule": {"intervalHours": 24, "stableStreak": 0, "nextProbeAt": past,
+                     "lastProbeAt": past, "lastP50Ms": 3.0, "lastP95Ms": 4.0,
+                     "lastErrors": 1}})
+    _write_state(mod, st)
+    probed = []
+
+    def _recording_probe(ref, samples=None, variant=""):
+        probed.append((ref, samples))
+        return _result(120.0)
+
+    mod.probe = _recording_probe
+    mod.run_monitoring()
+    check("nur der fällige monitoring-Kandidat wird geprobt",
+          probed == [("opencode-go/beam-free", 5)], str(probed))
+    st2 = _read_state(mod)
+    fut = next(c for c in st2["candidates"] if c["ref"] == "opencode-go/longcat-free")
+    check("zukünftiger Termin bleibt unangetastet (weiterhin monitoring)",
+          fut["status"] == "monitoring" and fut["schedule"]["nextProbeAt"] == future,
+          str(fut["schedule"]))
+    check("Archiv bleibt unprobert (recheckAfter-Modus)",
+          len(st2["archive"]) == 1 and st2["archive"][0]["lastProbe"] == past,
+          str(st2["archive"]))
+
+    # c2) Kostenbremse: freie Modelle zählen nicht, bezahlte max. N/Tag
+    mod = reset({"HESTIA_SPEED_MAX_PAID_PER_DAY": "1"})
+    st = json.loads(json.dumps(DEFAULT_SPEED_STATE))
+    st["candidates"].append(_mon("opencode-go/free-a", 10.0, past, past, free=True))
+    st["candidates"].append(_mon("opencode-go/paid-a", 20.0, past, past, free=False))
+    st["candidates"].append(_mon("opencode-go/paid-b", 30.0, past, past, free=False))
+    _write_state(mod, st)
+    paid_probed = []
+    mod.probe = lambda ref, samples=None, variant="": (
+        paid_probed.append(ref) or _result(120.0))
+    mod.run_monitoring()
+    check("Kostenbremse: freies Modell + genau eine bezahlte Probe",
+          paid_probed == ["opencode-go/free-a", "opencode-go/paid-a"], str(paid_probed))
+    st2 = _read_state(mod)
+    check("Kostenbremse: Tageszähler steht auf 1, zweites bezahltes Modell bleibt fällig",
+          st2.get("paidToday", {}).get("count") == 1
+          and next(c for c in st2["candidates"] if c["ref"] == "opencode-go/paid-b")["schedule"]["nextProbeAt"] == past,
+          str(st2.get("paidToday")))
+
+    # d) run_discovery: neue Kandidaten werden SOFORT geprobt (mit Schedule)
+    mod = reset()
+    mod.run_discovery()
+    st2 = _read_state(mod)
+    check("Discovery reiht ein und probt sofort",
+          st2["candidates"] and all(c["status"] == "monitoring" for c in st2["candidates"]),
+          str([(c["ref"], c["status"]) for c in st2["candidates"]]))
+    check("jeder Kandidat trägt Schedule mit nächstem Termin",
+          all(c.get("schedule", {}).get("nextProbeAt") for c in st2["candidates"]),
+          str([c.get("schedule") for c in st2["candidates"]]))
+    check("Queue-Probe nutzt Discovery-Default-Samples (3)",
+          all(c["runs"] == 3 for c in st2["candidates"]),
+          str([(c["ref"], c["runs"]) for c in st2["candidates"]]))
+
+    # e) _seconds_until_auto_run: min(nextProbeAt, checkedAt + Discovery-Intervall)
+    mod = reset()
+    check("kein Schedule, kein checkedAt → sofort fällig (0)",
+          mod._seconds_until_auto_run(now=now) == 0.0)
+    st = json.loads(json.dumps(DEFAULT_SPEED_STATE))
+    st["checkedAt"] = mod._now_iso(now - 3600)
+    _write_state(mod, st)
+    wait = mod._seconds_until_auto_run(now=now)
+    check("ohne Kandidaten: checkedAt + Discovery-Intervall (23 h Rest)",
+          abs(wait - 23 * 3600) < 5, f"{wait:.0f}s")
+    st["candidates"].append(_mon("opencode-go/beam-free", 12.0,
+                                 mod._now_iso(now + 5 * 3600), past))
+    _write_state(mod, st)
+    wait = mod._seconds_until_auto_run(now=now)
+    check("min(termin, checkedAt+discovery) → 5 h Restzeit",
+          abs(wait - 5 * 3600) < 5, f"{wait:.0f}s")
+    st["candidates"][0]["schedule"]["nextProbeAt"] = mod._now_iso(now - 60)
+    _write_state(mod, st)
+    check("fälliger Termin schlägt Discovery-Intervall → sofort (0)",
+          mod._seconds_until_auto_run(now=now) == 0.0)
+
+    # f) SQLite-Historie: Tabellen, Upserts, Probe-/Schedule-Zeilen, Fehler geschluckt
+    mod = reset()
+    res = mod.run_discovery()
+    con = sqlite3.connect(os.environ["HESTIA_SPEED_HISTORY_DB"])
+    try:
+        tables = {r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        model_rows = con.execute("SELECT ref FROM models").fetchall()
+        run_rows = con.execute(
+            "SELECT ref, mode, samples, ok, total_p50 FROM probe_runs").fetchall()
+        sched_rows = con.execute(
+            "SELECT ref, interval_hours, next_probe_at FROM schedule").fetchall()
+    finally:
+        con.close()
+    check("Historie: alle drei Tabellen angelegt",
+          {"models", "probe_runs", "schedule"} <= tables, str(tables))
+    check("Historie: ALLE Katalogmodelle upsertet (auch ungeprobte)",
+          {r[0] for r in model_rows} == {m["ref"] for m in MODELS}, str(sorted(model_rows)))
+    check("Historie: Probe-Zeilen mit Modus + tatsächlicher Sample-Zahl",
+          {r[0] for r in run_rows} == {"opencode-go/dash-free", "opencode-go/longcat-free",
+                                       "opencode-go/beam-free"}
+          and all(r[1] == "discovery" and r[2] == 3 and r[3] == 1 and r[4] is not None
+                  for r in run_rows), str(run_rows))
+    check("Historie: Schedule-Zeilen je geprobenem Kandidaten",
+          {r[0] for r in sched_rows} == {"opencode-go/dash-free", "opencode-go/longcat-free",
+                                         "opencode-go/beam-free"}
+          and all(r[1] == 24 and r[2] for r in sched_rows), str(sched_rows))
+    check("Discovery-Lauf selbst fehlerfrei", res.get("error") is None, str(res.get("error")))
+    blocker = os.path.join(TMP, "blocker-file")
+    with open(blocker, "w", encoding="utf-8") as f:
+        f.write("kein ordner")
+    mod = reset({"HESTIA_SPEED_HISTORY_DB": os.path.join(blocker, "history.db")})
+    res = mod.run_discovery()
+    st2 = _read_state(mod)
+    check("Historie-Fehler geschluckt: Lauf läuft trotzdem durch",
+          res.get("error") is None and st2["checkedAt"] is not None
+          and all(c["status"] == "monitoring" for c in st2["candidates"]),
+          str(res.get("error")))
+
+    # g) state(): Schedule sichtbar + neue Config-Keys + Compose-Verdrahtung
+    mod = reset()
+    _seed_monitoring(mod, {"opencode-go/beam-free": 100.0})
+    stt = mod.state()
+    check("state: Kandidaten tragen schedule (rückwärtskompatibel)",
+          len(stt["state"]["candidates"]) == 1
+          and set(("intervalHours", "stableStreak", "nextProbeAt", "lastProbeAt",
+                   "lastP50Ms", "lastP95Ms", "lastErrors"))
+          <= set(stt["state"]["candidates"][0]["schedule"]),
+          str(stt["state"]["candidates"][0].get("schedule")))
+    cfg = stt["config"]
+    check("state-config: historyDb + Adaptive-Keys",
+          all(k in cfg for k in ("historyDb", "stabilitySamples", "stableRuns",
+                                 "stableTolerance", "maxIntervalHours", "discoveryHours",
+                                 "maxPaidPerDay")),
+          str(sorted(cfg)))
+    check("state-config-Werte (5/3/0.20/168/24/5)",
+          cfg["stabilitySamples"] == 5 and cfg["stableRuns"] == 3
+          and abs(cfg["stableTolerance"] - 0.20) < 1e-9
+          and cfg["maxIntervalHours"] == 168 and cfg["discoveryHours"] == 24
+          and cfg["maxPaidPerDay"] == 5, str(cfg))
+    compose_src = open(os.path.join(ROOT, "hestia", "docker-compose.yml"),
+                       encoding="utf-8").read()
+    for var, default in (("HESTIA_SPEED_STABILITY_SAMPLES", "5"),
+                         ("HESTIA_SPEED_STABLE_RUNS", "3"),
+                         ("HESTIA_SPEED_STABLE_TOLERANCE", "0.20"),
+                         ("HESTIA_SPEED_MAX_INTERVAL_HOURS", "168"),
+                         ("HESTIA_SPEED_DISCOVERY_HOURS", "24"),
+                         ("HESTIA_SPEED_HISTORY_DB", "/app/data/hermes-speed-history.db"),
+                         ("HESTIA_SPEED_MAX_PAID_PER_DAY", "5")):
+        check(f"Compose: {var} mit Default {default}",
+              re.search(rf"^\s*{var}:\s*\$\{{{var}:-{re.escape(default)}\}}\s*$",
+                        compose_src, re.M) is not None)
 
     return 1 if fails else 0
 
