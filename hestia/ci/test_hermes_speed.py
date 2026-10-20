@@ -74,6 +74,7 @@ ENV_DEFAULTS = {
     "HESTIA_SPEED_DISCOVERY_HOURS": "24",
     "HESTIA_SPEED_HISTORY_DB": os.path.join(TMP, "speed-history.db"),
     "HESTIA_SPEED_MAX_PAID_PER_DAY": "5",
+    "HESTIA_SPEED_SESSION_DELETE_DELAY": "0",
     "HESTIA_PROVIDERS": "opencode-go,opencode",
 }
 
@@ -369,9 +370,18 @@ def main():
     check("Percentiles vorhanden", res["ttfbMs"]["p50"] is not None
           and res["totalMs"]["p95"] is not None, str(res))
     check("toolOk None (keine Tool-Probe)", res["toolOk"] is None)
-    check("4 Sessions angelegt (1 Warm-up + 3 Samples)",
-          len([r for r in CALLS["req"] if r["url"].endswith("/api/session")]) == 4)
-    check("alle Sessions gelöscht", len(CALLS["deleted"]) == 4, str(CALLS["deleted"]))
+    session_creates = [r for r in CALLS["req"] if r["url"].endswith("/api/session")]
+    check("8 Session-Objekte (je Lauf Eltern + Subagent-Probe)",
+          len(session_creates) == 8, str(len(session_creates)))
+    check("4 Probe-Sessions als Subagent (parentID) angelegt",
+          sum(1 for r in session_creates if "parentID" in (r["body"] or {})) == 4,
+          str(session_creates))
+    check("Eltern-Sessions tragen den Stumm-Titel ohne parentID",
+          sum(1 for r in session_creates
+              if "parentID" not in (r["body"] or {})
+              and "Ausfall-Probe" in ((r["body"] or {}).get("title") or "")) == 4,
+          str(session_creates))
+    check("alle Sessions gelöscht", len(CALLS["deleted"]) == 8, str(CALLS["deleted"]))
     check("Prompt-Text wie failover.probe",
           any(r["body"] == {"text": "Antworte nur mit OK"} for r in CALLS["req"]
               if r["url"].endswith("/prompt")))
@@ -934,7 +944,7 @@ def main():
     check("state-config: historyDb + Adaptive-Keys",
           all(k in cfg for k in ("historyDb", "stabilitySamples", "stableRuns",
                                  "stableTolerance", "maxIntervalHours", "discoveryHours",
-                                 "maxPaidPerDay")),
+                                 "maxPaidPerDay", "sessionDeleteDelay")),
           str(sorted(cfg)))
     check("state-config-Werte (5/3/0.20/168/24/5)",
           cfg["stabilitySamples"] == 5 and cfg["stableRuns"] == 3
@@ -949,7 +959,8 @@ def main():
                          ("HESTIA_SPEED_MAX_INTERVAL_HOURS", "168"),
                          ("HESTIA_SPEED_DISCOVERY_HOURS", "24"),
                          ("HESTIA_SPEED_HISTORY_DB", "/app/data/hermes-speed-history.db"),
-                         ("HESTIA_SPEED_MAX_PAID_PER_DAY", "5")):
+                         ("HESTIA_SPEED_MAX_PAID_PER_DAY", "5"),
+                         ("HESTIA_SPEED_SESSION_DELETE_DELAY", "30")):
         check(f"Compose: {var} mit Default {default}",
               re.search(rf"^\s*{var}:\s*\$\{{{var}:-{re.escape(default)}\}}\s*$",
                         compose_src, re.M) is not None)

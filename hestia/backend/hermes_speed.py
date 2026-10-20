@@ -79,6 +79,12 @@ HISTORY_DB = os.environ.get("HESTIA_SPEED_HISTORY_DB", "/app/data/hermes-speed-h
 # Kostenbremse: bezahlte Modelle werden im Automatik-/Discovery-Lauf höchstens
 # so oft pro UTC-Tag geprobt. Manuelle Probes bleiben bewusst möglich.
 MAX_PAID_PER_DAY = int(os.environ.get("HESTIA_SPEED_MAX_PAID_PER_DAY", "5"))
+# Probe-Sessions nicht sofort löschen: Das ntfy-Plugin lädt parentID/title per
+# session.get nach; nach einem sofortigen DELETE wäre die Session weg und die
+# Probe würde wie eine normale Session gemeldet. 30 s überbrücken Debounce und
+# Meta-Abruf; der Timer ist daemonisiert.
+SESSION_DELETE_DELAY = max(0.0, float(os.environ.get(
+    "HESTIA_SPEED_SESSION_DELETE_DELAY", "30")))
 
 SAMPLES_RANGE = (1, 10)
 
@@ -606,15 +612,35 @@ def _single_run(ref: str, variant: str = "", timeout: int = PROBE_TIMEOUT) -> di
     """
     # Der Zusatz "Ausfall-Probe" ist der Stumm-Marker, den die bereits
     # laufenden OpenCode-ntfy-Instanzen aus ihrer Startkonfiguration kennen.
-    # So bleiben Speed-Proben auch dann stumm, wenn eine alte Plugin-Instanz
-    # die neuere NTFY_IGNORE_TITLES-Liste noch nicht geladen hat.
-    sstatus, sres = suggest._req("POST", f"{suggest.OC_SERVER_URL}/api/session",
-                                 {"location": {"directory": suggest.OC_SUGGEST_DIR},
-                                  "title": "Hestia Speed-Probe (Ausfall-Probe)"})
-    if sstatus not in (200, 201):
-        return {"ok": False, "detail": f"Session-Anlegen fehlgeschlagen ({sstatus})",
+    # Zusätzlich läuft die eigentliche Probe in einer Subagent-Session
+    # (parentID): Das ntfy-Plugin ignoriert Subagent-Sessions grundsätzlich —
+    # unabhängig davon, ob es den Session-Titel rechtzeitig sieht. Die leere
+    # Eltern-Session wird nie gepromptet und löst daher keine Meldung aus.
+    parent_status, parent_res = suggest._req(
+        "POST", f"{suggest.OC_SERVER_URL}/api/session",
+        {"location": {"directory": suggest.OC_SUGGEST_DIR},
+         "title": "Hestia Speed-Probe (Ausfall-Probe)"})
+    if parent_status not in (200, 201):
+        return {"ok": False, "detail": f"Session-Anlegen fehlgeschlagen ({parent_status})",
                 "ttfbMs": None, "totalMs": None}
-    sid = (sres.get("data") or sres).get("id")
+    parent_id = (parent_res.get("data") or parent_res).get("id") if isinstance(parent_res, dict) else None
+    if not parent_id:
+        return {"ok": False, "detail": "Keine Eltern-Session-ID",
+                "ttfbMs": None, "totalMs": None}
+    sstatus, sres = suggest._req(
+        "POST", f"{suggest.OC_SERVER_URL}/api/session",
+        {"location": {"directory": suggest.OC_SUGGEST_DIR},
+         "parentID": parent_id,
+         "title": "Hestia Speed-Probe (Ausfall-Probe)"})
+    if sstatus not in (200, 201):
+        suggest._delete_session(parent_id)
+        return {"ok": False, "detail": f"Probe-Session-Anlegen fehlgeschlagen ({sstatus})",
+                "ttfbMs": None, "totalMs": None}
+    sid = (sres.get("data") or sres).get("id") if isinstance(sres, dict) else None
+    if not sid:
+        suggest._delete_session(parent_id)
+        return {"ok": False, "detail": "Keine Probe-Session-ID",
+                "ttfbMs": None, "totalMs": None}
     try:
         provider, _, mid = ref.partition("/")
         body = {"providerID": provider, "id": mid}
@@ -641,7 +667,16 @@ def _single_run(ref: str, variant: str = "", timeout: int = PROBE_TIMEOUT) -> di
                 "ttfbMs": round(ttfb_ms, 1) if ttfb_ms is not None else None,
                 "totalMs": round(total_ms, 1)}
     finally:
-        suggest._delete_session(sid)
+        def _cleanup_probe_sessions():
+            suggest._delete_session(sid)
+            suggest._delete_session(parent_id)
+
+        if SESSION_DELETE_DELAY > 0:
+            timer = threading.Timer(SESSION_DELETE_DELAY, _cleanup_probe_sessions)
+            timer.daemon = True
+            timer.start()
+        else:
+            _cleanup_probe_sessions()
 
 
 def probe(ref: str, samples: int | None = None, variant: str = "") -> dict:
@@ -1179,6 +1214,7 @@ def state() -> dict:
                    "maxIntervalHours": MAX_INTERVAL_HOURS,
                    "discoveryHours": DISCOVERY_HOURS,
                    "maxPaidPerDay": MAX_PAID_PER_DAY,
+                   "sessionDeleteDelay": SESSION_DELETE_DELAY,
                    "probeTimeout": PROBE_TIMEOUT, "maxNewPerDay": MAX_NEW_PER_DAY,
                    "archiveDays": ARCHIVE_DAYS, "freeOnly": FREE_ONLY,
                    "slowP95Ms": SLOW_P95_MS, "providers": ALLOWED_PROVIDERS},
