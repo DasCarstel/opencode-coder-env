@@ -60,15 +60,14 @@
   },
   "platform_toolsets": {
     "api_server": [
-      "web",
-      "todo",
-      "memory",
-      "clarify",
-      "skills",
-      "terminal",
       "mcp-homeassistant"
     ]
   },
+  // Voice-Route "hermes-voice" (opencode-go/beam-free) wird bewusst NICHT hier
+  // gepflegt: Hestia normalisiert model_routes auf {"model": "provider/model"},
+  // Hermes api_server erwartet dagegen {provider, model} getrennt. Die Route
+  // liegt daher nur live in /etc/docker/hermes/data/config.yaml; ein Merge mit
+  // platforms:{} laesst sie unangetastet.
   "platforms": {},
   "skills": {
     "disabled": [
