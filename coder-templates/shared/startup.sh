@@ -1015,14 +1015,14 @@ set_env_default() {
 }
 
 # Statische ntfy-Optionen (alle Profile): Icons für die Meldungen, Stummschaltung
-# der Hestia-Ausfall-Probe, Deep-Link-Stil (öffnet direkt die Session) und das
-# Diagnose-Log. Bisher waren diese vier Schlüssel nur im Container
+# der Hestia-Ausfall- und Speed-Proben, Deep-Link-Stil (öffnet direkt die Session)
+# und das Diagnose-Log. Bisher waren diese vier Schlüssel nur im Container
 # coder-carstenmueller2002-infrastructure manuell gesetzt – alle übrigen Profile
 # liefen ohne sie. ntfy ist ausschließlich Meldeweg (siehe docs/notifications.md)
 # – Antwort-Schalter gibt es deshalb hier keine mehr.
 NTFY_ICON_BASE_DEFAULT="https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons"
 set_env_default NTFY_ICON_BASE     "$NTFY_ICON_BASE_DEFAULT"
-set_env_default NTFY_IGNORE_TITLES "Ausfall-Probe"
+set_env_default NTFY_IGNORE_TITLES "Ausfall-Probe,Speed-Probe"
 set_env_default NTFY_LINK_STYLE    "session"
 set_env_default NTFY_REPLY_LOG     "/tmp/opencode/ntfy-diag.log"
 # Debounce für „Fertig"-Meldungen: eine Meldung wird erst nach N ms ohne neue

@@ -262,7 +262,7 @@ Eigenschaften:
   (`session.created` liefert dort `sessionID`, `title`, `subpath`,
   `location.directory`, `parentID`) — nicht mehr unter `properties.info`. Fehlt
   sie, hießen Meldungen `Session <id>` mit dem Rückfall-Projekt `opencode`, und
-  `NTFY_IGNORE_TITLES` konnte nicht greifen (Hestias stündliche Ausfall-Proben
+  `NTFY_IGNORE_TITLES` konnte nicht greifen (Hestias Ausfall- und Speed-Proben
   meldeten sich dann als „✅ Fertig — opencode"). Bei künftigen
   OpenCode-Aktualisierungen zuerst diese Feldnamen prüfen. Titel und Pfad werden
   beim Eintreffen des Ereignisses übernommen, nicht erst beim Senden: die
@@ -303,7 +303,7 @@ und Fehler werden still ignoriert. Abschaltbar mit `NTFY_CLEAR_ON_RESUME=0`
 | `NTFY_ICON_BASE` | Basis-URL der PNG-Symbole; jede Meldung bekommt `icon = <basis>/<workspace>.png?v=4`. |
 | `NTFY_LINK_STYLE` | `session` (Default) = Klickziel ist der Session-Deep-Link („Session öffnen"); `base` = nur die Startseite der Oberfläche. |
 | `NTFY_SESSION_URL` | Feste Basis des Deep-Links (z. B. `https://49375--main--infrastructure--carstenmueller2002-coder.mueller-nas.de`) — überschreibt die automatische Ableitung. Rein **manueller** Override: nichts setzt sie automatisch; ohne Wert leitet das Plugin die Port-App-URL aus `NTFY_SESSION_PORT`/`NTFY_LINK_HOST` ab. |
-| `NTFY_IGNORE_TITLES` | Kommagetrennte Titel-Teile, die stumm bleiben (z. B. `Ausfall-Probe`). |
+| `NTFY_IGNORE_TITLES` | Kommagetrennte Titel-Teile, die stumm bleiben (Standard: `Ausfall-Probe,Speed-Probe`). |
 | `NTFY_CLEAR_ON_RESUME` | Ausblenden der letzten Meldung beim nächsten Nutzer-Turn (Default **an**): `PUT <hub>/<topic>/oc-<sessionID>/clear` — die Meldung verschwindet aus der Benachrichtigungsleiste, bleibt aber im Topic. `0`/`false` = aus. |
 | `NTFY_DEBOUNCE_MS` | Verzögerung für „Fertig"-Meldungen in Millisekunden (im Workspace `0` = sofort, siehe `startup.sh`): eine Meldung wird erst nach N ms ohne neue Aktivität verschickt; neue Aktivität bricht den Timer ab. Ohne Wert meldet das Plugin sofort. Zu groß gewählt kostet nur Reaktionszeit (die Meldung kommt, wenn der Chat längst gelesen ist), zu klein erzeugt in aktiv geführten Gesprächen eine Meldung je Antwort. |
 | `NTFY_ERROR_THROTTLE_MS` | Fenster der Fehler-Drossel in Millisekunden (Default `86400000` = 24 h): denselben Fehlertext meldet das Plugin höchstens einmal je Fenster, ein anderer Fehlertext kommt weiterhin sofort. `0` = Drossel aus (jeder Fehlschlag wird gemeldet). |
