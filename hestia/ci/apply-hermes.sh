@@ -250,12 +250,41 @@ def main():
         if m:
             removed = True
             i += 1
-            # Folgezeilen einrücken (Listenelemente, Kommentare) überspringen
-            while i < len(lines) and (lines[i].strip() == "" or lines[i][:1] in (" ", "\t")):
+            # Folgezeilen einrücken (Listenelemente, Kommentare) überspringen.
+            # Ältere Writer schrieben die Liste auch ohne Einrückung; auch
+            # solche Top-Level-"- provider"-Zeilen gehören zum Block.
+            while i < len(lines) and (
+                lines[i].strip() == ""
+                or lines[i][:1] in (" ", "\t")
+                or lines[i].startswith("- ")
+            ):
                 i += 1
             continue
         out.append(line)
         i += 1
+
+    # Aufräumen: Eine YAML-Root-Map darf keine verwaiste Top-Level-Liste
+    # enthalten. Solche Reste konnten entstehen, wenn ein alter Writer den
+    # fallback_providers-Kopf entfernte, die unindizierten Listeneinträge aber
+    # stehen ließ. Nur Listen unter einem echten Top-Level-Key bleiben erhalten.
+    cleaned, i = [], 0
+    while i < len(out):
+        line = out[i]
+        if line.startswith("- provider:"):
+            j = len(cleaned) - 1
+            while j >= 0 and (cleaned[j].strip() == "" or cleaned[j].lstrip().startswith("#")):
+                j -= 1
+            parent = cleaned[j] if j >= 0 else ""
+            if not re.match(r"^[A-Za-z0-9_.-]+\s*:\s*$", parent):
+                i += 1
+                while i < len(out) and (
+                    out[i].strip() == "" or out[i][:1] in (" ", "\t")
+                ):
+                    i += 1
+                continue
+        cleaned.append(line)
+        i += 1
+    out = cleaned
 
     while out and out[-1].strip() == "":
         out.pop()
@@ -286,7 +315,18 @@ write_fallbacks() {
   echo "  → [$label] fallback_providers ersetzt (alter Block entfernt, neue Liste angehängt)"
 }
 
+# Prüft eine geschriebene YAML-Datei mit dem Hermes-venv-Parser. Ein defektes
+# Profil darf nicht als erfolgreicher Apply durchgehen.
+validate_yaml() {
+  local cfg="$1" label="$2"
+  if ! "${SSH[@]}" "docker exec '$HERMES_CONTAINER' '$HERMES_PYTHON' -c 'from ruamel.yaml import YAML; import sys; d=YAML(typ=\"safe\").load(open(sys.argv[1])); sys.exit(0 if isinstance(d, dict) else 1)' '$cfg'" >/dev/null 2>&1; then
+    echo "✗ [$label] YAML ungültig oder Root keine Map: $cfg" >&2
+    return 1
+  fi
+}
+
 write_fallbacks "$CONFIG_IN_CONTAINER" "$FALLBACKS_JSON" "default"
+validate_yaml "$CONFIG_IN_CONTAINER" "default"
 echo "→ Fallback-Kette laut Hermes:"
 "${SSH[@]}" "docker exec -u 0 '$HERMES_CONTAINER' sh -lc 'HOME=/opt/data $HERMES_BIN fallback list'" | sed 's/^/   /'
 
@@ -944,6 +984,7 @@ if [[ "$PROFILES_JSON" != "[]" ]]; then
     "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > $P_CONFIG'" < "$WORK/p.$P_NAME.model.yaml"
     echo "  → [$P_NAME] model.provider=$P_PRIMARY_PROVIDER · model.default=$P_PRIMARY_MODEL"
     write_fallbacks "$P_CONFIG" "$P_FB_JSON" "$P_NAME"
+    validate_yaml "$P_CONFIG" "$P_NAME"
 
     # Pool: nur wenn für dieses Profil followActive gilt.
     P_SINGLE="$SINGLE"
