@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-10-20T03:01:37Z",
+  "updatedAt": "2026-10-20T06:01:51Z",
   "tiers": {
     "fast": {
       "model": "opencode-go/deepseek-v4.1-flash#low",
@@ -14,8 +14,7 @@
     "heavy": {
       "model": "opencode-go/glm-5.3#max",
       "ok": true,
-      "failStreak": 0,
-      "lastOkAt": "2026-10-20T03:01:37Z"
+      "failStreak": 0
     }
   },
   "models": {
@@ -32,8 +31,7 @@
     "opencode-go/glm-5.3#max": {
       "model": "opencode-go/glm-5.3#max",
       "failStreak": 0,
-      "quarantineUntil": "",
-      "lastOkAt": "2026-10-20T03:01:37Z"
+      "quarantineUntil": ""
     }
   }
 }
