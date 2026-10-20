@@ -722,6 +722,27 @@ def main():
           arch_s["nextProbeAt"] == st["archive"][0]["recheckAfter"], str(arch_s))
     check("Migration: kein Sofort-Lauf fällig (Restzeit > 0)",
           mod._seconds_until_auto_run(now=now) > 0)
+    mod._hist_backfill_state(loaded)
+    con = sqlite3.connect(os.environ["HESTIA_SPEED_HISTORY_DB"])
+    try:
+        base_rows = con.execute(
+            "SELECT ref, mode, samples FROM probe_runs").fetchall()
+        sched_rows = con.execute("SELECT ref FROM schedule").fetchall()
+    finally:
+        con.close()
+    check("Historie-Backfill: Bestand als Baseline + Schedule übernommen",
+          ("opencode-go/beam-free", "state-migration", None) in base_rows
+          and ("opencode-go/beam-free",) in sched_rows,
+          f"{base_rows} / {sched_rows}")
+    mod._hist_backfill_state(loaded)
+    con = sqlite3.connect(os.environ["HESTIA_SPEED_HISTORY_DB"])
+    try:
+        dup = con.execute(
+            "SELECT COUNT(*) FROM probe_runs WHERE ref='opencode-go/beam-free' "
+            "AND mode='state-migration'").fetchone()[0]
+    finally:
+        con.close()
+    check("Historie-Backfill: idempotent (keine doppelte Baseline)", dup == 1, str(dup))
     ev = _StopAfterWait()
     calls_before = len(CALLS["req"])
     mod.loop(ev)

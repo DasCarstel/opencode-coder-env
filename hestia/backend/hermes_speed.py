@@ -367,6 +367,59 @@ def _hist_upsert_models(models: list):
     _history("models", _run)
 
 
+def _hist_backfill_state(st: dict):
+    """Bestehenden JSON-Zustand einmalig in die Historie übernehmen.
+
+    Die JSON-Datei enthält nur die letzte Messung je Kandidat, keine
+    Einzelproben. Für den Start der Historie wird daher pro Kandidat eine
+    Baseline-Zeile (mode=state-migration) geschrieben; echte Proben kommen
+    danach aus _hist_record_probe. Idempotent: die Baseline wird nicht doppelt
+    angelegt. Schedule-Zeilen werden bei jedem Aufruf aktualisiert.
+    """
+    def _run(con):
+        for entry in (list(st.get("candidates") or []) +
+                      list(st.get("archive") or [])):
+            ref = entry.get("ref") or ""
+            if not ref:
+                continue
+            sch = entry.get("schedule") or {}
+            if sch:
+                con.execute(
+                    "INSERT INTO schedule (ref, interval_hours, stable_streak, "
+                    "next_probe_at, last_probe_at, last_p50_ms, last_p95_ms, last_errors) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(ref) DO UPDATE SET interval_hours=excluded.interval_hours, "
+                    "stable_streak=excluded.stable_streak, "
+                    "next_probe_at=excluded.next_probe_at, "
+                    "last_probe_at=excluded.last_probe_at, "
+                    "last_p50_ms=excluded.last_p50_ms, "
+                    "last_p95_ms=excluded.last_p95_ms, "
+                    "last_errors=excluded.last_errors",
+                    (ref, _fnum(sch.get("intervalHours")),
+                     int(sch.get("stableStreak") or 0), sch.get("nextProbeAt"),
+                     sch.get("lastProbeAt"), _fnum(sch.get("lastP50Ms")),
+                     _fnum(sch.get("lastP95Ms")), sch.get("lastErrors")))
+            if not entry.get("lastProbe"):
+                continue
+            exists = con.execute(
+                "SELECT 1 FROM probe_runs WHERE ref=? AND mode='state-migration' LIMIT 1",
+                (ref,)).fetchone()
+            if exists:
+                continue
+            ttfb, total = entry.get("ttfbMs") or {}, entry.get("totalMs") or {}
+            con.execute(
+                "INSERT INTO probe_runs (ts, ref, mode, samples, ttfb_p50, ttfb_p95, "
+                "total_p50, total_p95, errors, ok, score) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (entry.get("lastProbe"), ref, "state-migration", None,
+                 _fnum(ttfb.get("p50")), _fnum(ttfb.get("p95")),
+                 _fnum(total.get("p50")), _fnum(total.get("p95")),
+                 int(entry.get("errors") or 0),
+                 1 if entry.get("status") == "monitoring" else 0,
+                 _fnum(entry.get("score"))))
+    _history("backfill", _run)
+
+
 def _hist_record_probe(cand: dict, res: dict, mode: str):
     """Probe-Ergebnis + Schedule-Stand in die Historie (best-effort)."""
     def _run(con):
@@ -462,6 +515,7 @@ def discover(force: bool = True) -> list:
     with FILE_LOCK:
         st = _load_state()
         known = _load_known()
+    _hist_backfill_state(st)           # Bestand einmalig, ohne Netz/Probe
     current = _current_refs()
     queued = {c["ref"] for c in st["candidates"]}
     archived = {a["ref"]: a for a in st["archive"]}
