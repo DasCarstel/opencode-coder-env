@@ -34,6 +34,8 @@ HERMES_TOOLSETS = {
     "vision", "video", "image_gen", "video_gen", "x_search", "tts", "stt",
     "skills", "todo", "kanban", "memory", "context_engine", "session_search",
     "clarify", "connections", "delegation", "cronjob",
+    # Explizit freigegebene MCP-Toolsets (API-Surface; Home Assistant für Phase 4).
+    "mcp-homeassistant",
 }
 HERMES_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 

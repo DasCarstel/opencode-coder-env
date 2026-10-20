@@ -652,7 +652,7 @@ def _approx_response_ms(cutoff: float):
 
     Reine Zeitstempel-Aggregation — kein Nachrichteninhalt wird gelesen.
     """
-    con = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True, timeout=5)
+    con = sqlite3.connect(f"file:{STATE_DB}?mode=ro&immutable=1", uri=True, timeout=5)
     con.row_factory = sqlite3.Row
     try:
         rows = con.execute(
@@ -696,7 +696,7 @@ def telemetry(window_hours: int = 24) -> dict:
         return out
     cutoff = time.time() - int(window_hours) * 3600
     try:
-        con = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True, timeout=5)
+        con = sqlite3.connect(f"file:{STATE_DB}?mode=ro&immutable=1", uri=True, timeout=5)
         con.row_factory = sqlite3.Row
         try:
             rows = con.execute(

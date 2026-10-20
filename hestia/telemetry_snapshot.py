@@ -56,6 +56,11 @@ def snapshot_once() -> bool:
             dst = sqlite3.connect(backup)
             try:
                 src.backup(dst)
+                # Das Panel mountet den Snapshot read-only; eine WAL-DB bräuchte
+                # dort ein schreibbares -shm. Deshalb bewusst als Rollback-Journal
+                # ablegen (unabhängig vom Journal-Modus der Live-DB).
+                dst.execute("PRAGMA journal_mode=DELETE")
+                dst.commit()
             finally:
                 dst.close()
         finally:
