@@ -228,6 +228,15 @@ def main():
     print("\n[5] platform_toolsets: unbekannte Namen / leere api_server-Liste")
     h = reset()
     payload = json.loads(json.dumps(PANEL_PAYLOAD))
+    payload["platform_toolsets"] = {"api_server": ["web", "mcp-homeassistant"]}
+    h.apply(payload)
+    written = json.loads(FILES[HERMES_PATH])
+    check("mcp-homeassistant als API-Toolset erlaubt",
+          written.get("platform_toolsets", {}).get("api_server")
+          == ["web", "mcp-homeassistant"],
+          str(written.get("platform_toolsets")))
+    h = reset()
+    payload = json.loads(json.dumps(PANEL_PAYLOAD))
     payload["platform_toolsets"] = {"api_server": ["web", "not-a-toolset"]}
     expect_apply_error(h, payload, "unbekanntes Toolset abgelehnt")
     h = reset()

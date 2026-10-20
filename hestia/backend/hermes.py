@@ -30,12 +30,16 @@ ALLOWED_PROVIDERS = [p.strip() for p in
 
 # Erlaubte Werte für agent.reasoning_effort (Hermes-Varianten).
 REASONING_EFFORTS = ("", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
-# Eingebaute Toolset-Namen für platform_toolsets (MCP-Server gehören nicht dazu).
+# Eingebaute Toolset-Namen für platform_toolsets. Explizit freigegebene
+# MCP-Toolsets stehen zusätzlich hier; generische MCP-Proxy-Namen bleiben
+# weiterhin unbekannt und werden abgelehnt.
 BUILTIN_TOOLSETS = frozenset({
     "web", "browser", "browser-use", "terminal", "file", "code_execution",
     "vision", "video", "image_gen", "video_gen", "x_search", "tts", "stt",
     "skills", "todo", "kanban", "memory", "context_engine", "session_search",
     "clarify", "connections", "delegation", "cronjob",
+    # Home-Assistant-MCP für die spätere Sprachintegration (siehe SOT-Kommentar).
+    "mcp-homeassistant",
 })
 # Alias-Regel für platforms.<plattform>.extra.model_routes.
 MODEL_ROUTE_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
