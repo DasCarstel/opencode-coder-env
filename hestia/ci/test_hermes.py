@@ -384,6 +384,12 @@ def main():
     check("install_fast_paths definiert", "install_fast_paths()" in sh_src)
     check("install_fast_paths wird aufgerufen",
           bool(re.search(r"^install_fast_paths\s*$", sh_src, re.M)))
+    check("patch_api_tool_surface definiert", "patch_api_tool_surface()" in sh_src)
+    check("patch_api_tool_surface wird aufgerufen",
+          bool(re.search(r"^patch_api_tool_surface\s*$", sh_src, re.M)))
+    check("API-Surface nutzt include_default_mcp_servers=False",
+          'include_default_mcp_servers=False' in sh_src)
+    check("API-Surface-Neustart berücksichtigt", "API_SURFACE_PATCHED" in sh_src)
     check("sync_hermes_service_password definiert",
           "sync_hermes_service_password()" in sh_src)
     check("sync_hermes_service_password wird aufgerufen",
@@ -418,6 +424,10 @@ def main():
     # Hermes-only: startup.sh und die OpenCode-Config bleiben außen vor.
     check("startup.sh wird nicht angetastet",
           "coder-templates/shared/startup.sh" not in sh_src)
+
+    sot_path = os.path.join(root, ".opencode", "hestia-hermes.jsonc")
+    sot_src = open(sot_path, encoding="utf-8").read()
+    check("API-Allowlist enthält kein oCIS-MCP", "mcp-ocis-private" not in sot_src)
 
     for skill, refs in (("notion-database", ("full-mcp-workflow.md", "schuldenliste-schema.md")),
                         ("obsidian-ocis", ("full-mcp-workflow.md",))):

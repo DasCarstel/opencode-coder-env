@@ -46,9 +46,11 @@
   },
   "platform_toolsets": {
     // API/Voice: Notion und Obsidian laufen über /opt/data/bin/*_fast.py (terminal),
-    // nicht über die großen MCP-Toolkataloge. HA und oCIS bleiben als MCP-Fallback
-    // verfügbar; Super Productivity und MuellerConnect bleiben CLI/PC-only.
-    "api_server": ["web", "todo", "memory", "clarify", "skills", "terminal", "mcp-homeassistant", "mcp-ocis-private"]
+    // nicht über die großen MCP-Toolkataloge. Die Default-MCP-Server werden für
+    // den API-Turn nicht mehr automatisch dazugemischt; oCIS bleibt deshalb
+    // CLI/PC-only. Home Assistant bleibt als MCP für die spätere Voice-Integration
+    // sichtbar. Super Productivity und MuellerConnect bleiben ebenfalls CLI/PC-only.
+    "api_server": ["web", "todo", "memory", "clarify", "skills", "terminal", "mcp-homeassistant"]
   },
   "platforms": {},
   // Deaktivierte Skills (Hermes Voice): Alles, was nicht gebraucht wird, ist

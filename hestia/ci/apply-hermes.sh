@@ -17,6 +17,8 @@
 # 4d) Fastpath-Skripte (hestia/scripts/*_fast.py → /opt/data/bin) und Skills
 #     (notion-database, obsidian-ocis → /opt/data/skills) materialisieren —
 #     tar-over-ssh-stdin, ohne fremde Dateien zu löschen, ohne Neustart
+# 4e) API-Tool-Oberfläche: Default-MCP-Server aus dem API-Turn entfernen
+#     (idempotenter Quell-Patch, Backup + Syntaxprüfung; Neustart bei Änderung)
 # 5) optional den Abo-Pool (OPENCODE_GO_API_KEY*) aus OpenBao neu setzen
 # 5a) OPENCODE_SERVER_PASSWORD aus OpenBao (secret/data/mcp/hermes-opencode-service)
 #     in /opt/data/.env mergen — bewusst NUR Hermes; startup.sh und die
@@ -421,6 +423,73 @@ install_fast_paths() {
   fi
   "${SSH[@]}" "docker exec -u 0 '$HERMES_CONTAINER' sh -lc 'chown hermes:hermes /opt/data/bin /opt/data/skills /opt/data/bin/notion_fast.py /opt/data/bin/obsidian_fast.py /opt/data/skills/notion-database /opt/data/skills/obsidian-ocis && chown -R hermes:hermes /opt/data/skills/notion-database /opt/data/skills/obsidian-ocis && chmod 0755 /opt/data/bin/notion_fast.py /opt/data/bin/obsidian_fast.py'"
   echo "✓ Fastpath installiert: bin/{notion,obsidian}_fast.py (0755) · skills/{notion-database,obsidian-ocis} inkl. references/ (keine fremden Skills gelöscht)"
+}
+
+# --- 4e) API-Tool-Oberfläche auf die explizite Allowlist begrenzen -----------
+# Hermes _get_platform_tools() hängt mit dem Default
+# include_default_mcp_servers=True ALLE Default-MCP-Server an die Plattform-
+# Liste. /v1/toolsets nutzt bereits False; der API-Turn muss denselben Filter
+# verwenden, sonst sind Notion/oCIS trotz Allowlist über tool_search erreichbar.
+# Einmaliger, idempotenter Quell-Patch mit Backup und Syntaxprüfung; kein Secret.
+# Erfordert einen Neustart, den die Restart-Logik unten über API_SURFACE_PATCHED
+# auch ohne config/.env-Änderung auslöst.
+API_SURFACE_PATCHED=0
+patch_api_tool_surface() {
+  cat >"$WORK/patch-api-surface.py" <<'PY'
+import os
+import shutil
+import sys
+import time
+
+path = sys.argv[1] if len(sys.argv) > 1 else "/opt/hermes/gateway/platforms/api_server.py"
+old = 'enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))'
+new = 'enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server", include_default_mcp_servers=False))'
+
+with open(path, encoding="utf-8") as handle:
+    text = handle.read()
+
+if new in text:
+    print("api-surface: already")
+    raise SystemExit(0)
+
+count = text.count(old)
+if count != 1:
+    print(f"api-surface: expected exactly 1 old call, found {count}", file=sys.stderr)
+    raise SystemExit(1)
+
+updated = text.replace(old, new, 1)
+# Vor dem Schreiben syntaktisch prüfen; die Datei wird nie halb geschrieben.
+compile(updated, path, "exec")
+
+backup = path + ".bak-hestia-" + time.strftime("%Y%m%d-%H%M%S")
+shutil.copy2(path, backup)
+try:
+    tmp = path + ".tmp-hestia"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(updated)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+except OSError:
+    # Falls /opt/hermes nicht atomar ersetzt werden kann: in-place schreiben.
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(updated)
+    try:
+        os.remove(path + ".tmp-hestia")
+    except FileNotFoundError:
+        pass
+    os.chmod(path, 0o644)
+
+print("api-surface: changed; backup=" + backup)
+PY
+  local result
+  result="$("${SSH[@]}" "docker exec -i -u 0 '$HERMES_CONTAINER' $HERMES_PYTHON -" <"$WORK/patch-api-surface.py" 2>&1)" || {
+    echo "✗ API-Tool-Oberfläche konnte nicht begrenzt werden: $result" >&2
+    return 1
+  }
+  echo "$result"
+  if [[ "$result" == *"api-surface: changed"* ]]; then
+    API_SURFACE_PATCHED=1
+  fi
 }
 
 # --- 5a) OPENCODE_SERVER_PASSWORD aus OpenBao (Hermes-only) -------------------
@@ -909,6 +978,7 @@ fi
 # löst also keinen Hermes-Neustart aus; nur eine tatsächlich geänderte
 # Passwort-Zeile in der .env zählt über den gewohnten Hash-Mechanismus.
 install_fast_paths
+patch_api_tool_surface
 sync_hermes_service_password "$ENV_IN_CONTAINER" "default"
 
 # --- 6) Validierung ----------------------------------------------------------
@@ -932,11 +1002,11 @@ RESTARTED=0
 STATE_AFTER="$(hermes_state_hash)"
 if [[ "$RESTART" != "true" ]]; then
   echo "→ Neustart nicht nötig (SOT restart=false)"
-elif [[ -n "$STATE_BEFORE" && "$STATE_BEFORE" == "$STATE_AFTER" ]]; then
-  echo "→ keine Änderung an config.yaml/.env — Hermes bleibt unangetastet (kein Neustart)"
+elif [[ -n "$STATE_BEFORE" && "$STATE_BEFORE" == "$STATE_AFTER" && "${API_SURFACE_PATCHED:-0}" != "1" ]]; then
+  echo "→ keine Änderung an config.yaml/.env oder API-Quelle — Hermes bleibt unangetastet (kein Neustart)"
 else
   RESTARTED=1
-  echo "→ Neustart $HERMES_CONTAINER (Konfiguration hat sich geändert)"
+  echo "→ Neustart $HERMES_CONTAINER (Konfiguration oder API-Quelle hat sich geändert)"
   "${SSH[@]}" "docker restart '$HERMES_CONTAINER' >/dev/null"
   echo "→ warte auf Health (max. 30s)"
   UP=0
