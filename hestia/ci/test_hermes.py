@@ -25,6 +25,7 @@ Läuft mit pytest UND direkt:
     pytest -q hestia/ci/test_hermes.py
     python3 hestia/ci/test_hermes.py
 """
+import ast
 import importlib
 import json
 import os
@@ -359,6 +360,78 @@ def main():
         ns["merge"](fresh, {"skills": {"disabled": ["nur-sot"]}})
         check("fehlender skills-Key wird angelegt",
               fresh["skills"]["disabled"] == ["nur-sot"], str(fresh))
+
+    print("\n[13] Fastpath hardening")
+    # Statische Offline-Prüfung: apply-hermes.sh muss die Fastpath-Skripte und
+    # Skills installieren, das Service-Passwort Hermes-only aus OpenBao syncen
+    # und dabei niemals Passwort-Werte loggen. Die Quell-Bäume müssen existieren
+    # und kompilieren.
+    root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+    sh_path = os.path.join(root, "hestia", "ci", "apply-hermes.sh")
+    sh_src = open(sh_path, encoding="utf-8").read()
+
+    for script in ("notion_fast.py", "obsidian_fast.py"):
+        p = os.path.join(root, "hestia", "scripts", script)
+        src = open(p, encoding="utf-8").read()
+        ok, detail = True, ""
+        try:
+            compile(src, p, "exec")      # py_compile-Äquivalent, ohne .pyc-Reste
+            ast.parse(src)
+        except SyntaxError as e:
+            ok, detail = False, str(e)
+        check(f"fastpath kompiliert: {script}", ok, detail)
+
+    check("install_fast_paths definiert", "install_fast_paths()" in sh_src)
+    check("install_fast_paths wird aufgerufen",
+          bool(re.search(r"^install_fast_paths\s*$", sh_src, re.M)))
+    check("sync_hermes_service_password definiert",
+          "sync_hermes_service_password()" in sh_src)
+    check("sync_hermes_service_password wird aufgerufen",
+          bool(re.search(r"^sync_hermes_service_password\s", sh_src, re.M)))
+    check("OpenBao-Pfad für Hermes-Service-Passwort",
+          "secret/data/mcp/hermes-opencode-service" in sh_src)
+    check("AppRole-Fallback vorhanden",
+          "OPENBAO_ROLE_ID" in sh_src and "OPENBAO_APPROLE_SECRET_ID" in sh_src)
+    check("Fastpath via tar-over-ssh installiert", "tar -x -C /opt/data" in sh_src)
+    check("Fastpath-Scripts: chmod 0755 + hermes:hermes",
+          "chmod 0755 /opt/data/bin/notion_fast.py /opt/data/bin/obsidian_fast.py" in sh_src
+          and re.search(r"chown hermes:hermes [^\n]*/opt/data/bin/notion_fast\.py", sh_src) is not None
+          and re.search(r"chown hermes:hermes /opt/data/bin /opt/data/skills", sh_src) is not None)
+    check(".env in-place mit chown/chmod 600 geschrieben",
+          "cat > $env_file && chown hermes:hermes $env_file && chmod 600 $env_file" in sh_src)
+    check("Skills-Installation löscht keine fremden Einträge",
+          "--delete" not in sh_src and "rm -rf /opt/data/skills" not in sh_src)
+    check("Service-Passwort-Sync abschaltbar",
+          "HERMES_SYNC_SERVICE_PASSWORD" in sh_src)
+
+    # Passwort-Werte dürfen nie per echo/print (oder in einer SSH-Kommandozeile)
+    # landen — statisch prüfen: Variablen mit PASSWORD/PW im Namen auf solchen
+    # Zeilen sind ein Leak-Indiz; nur Längen-Ausgaben sind erlaubt.
+    leaks = [ln.strip() for ln in sh_src.splitlines()
+             if re.search(r"\b(echo|print)\b", ln)
+             and re.search(r"\$\{?\w*(PASSWORD|PW)", ln, re.I)]
+    check("kein echo/print von Passwort-Werten", not leaks, " | ".join(leaks[:2]))
+    ssh_leaks = [ln.strip() for ln in sh_src.splitlines()
+                 if "SSH" in ln and re.search(r"\$\{?\w*(PASSWORD|PW)", ln, re.I)]
+    check("Passwort nie in SSH-Kommandozeile", not ssh_leaks, " | ".join(ssh_leaks[:2]))
+
+    # Hermes-only: startup.sh und die OpenCode-Config bleiben außen vor.
+    check("startup.sh wird nicht angetastet",
+          "coder-templates/shared/startup.sh" not in sh_src)
+
+    for skill, refs in (("notion-database", ("full-mcp-workflow.md", "schuldenliste-schema.md")),
+                        ("obsidian-ocis", ("full-mcp-workflow.md",))):
+        d = os.path.join(root, "hestia", "skills", skill)
+        check(f"Skill-Verzeichnis vorhanden: {skill}", os.path.isdir(d))
+        check(f"SKILL.md vorhanden: {skill}", os.path.isfile(os.path.join(d, "SKILL.md")))
+        refs_dir = os.path.join(d, "references")
+        has_refs = os.path.isdir(refs_dir) and any(
+            f.endswith(".md") and os.path.isfile(os.path.join(refs_dir, f))
+            for f in os.listdir(refs_dir)) if os.path.isdir(refs_dir) else False
+        check(f"references/ nicht leer: {skill}", has_refs, refs_dir)
+        for ref in refs:
+            p = os.path.join(refs_dir, ref)
+            check(f"Referenz vorhanden: {skill}/references/{ref}", os.path.isfile(p))
 
     return 1 if fails else 0
 

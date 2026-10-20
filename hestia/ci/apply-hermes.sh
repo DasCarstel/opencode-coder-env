@@ -14,7 +14,13 @@
 #    (immer, unabhaengig vom Pool; API_SERVER_KEY bleibt unangetastet)
 # 4b) erweiterte Sektionen (agent/providers/platform_toolsets/platforms/skills)
 #     per Deep-Merge in die config.yaml — alles andere bleibt unangetastet
+# 4d) Fastpath-Skripte (hestia/scripts/*_fast.py → /opt/data/bin) und Skills
+#     (notion-database, obsidian-ocis → /opt/data/skills) materialisieren —
+#     tar-over-ssh-stdin, ohne fremde Dateien zu löschen, ohne Neustart
 # 5) optional den Abo-Pool (OPENCODE_GO_API_KEY*) aus OpenBao neu setzen
+# 5a) OPENCODE_SERVER_PASSWORD aus OpenBao (secret/data/mcp/hermes-opencode-service)
+#     in /opt/data/.env mergen — bewusst NUR Hermes; startup.sh und die
+#     OpenCode-Config bleiben unangetastet
 # 6) dasselbe für jedes weitere SOT-Profil ("profiles") — der Multiplexer
 #    bedient mehrere Profile mit je eigenen Dateien unter /opt/data/profiles/
 # 7) hermes config check, optionaler Neustart + Health-Wait, Zusammenfassung
@@ -29,6 +35,9 @@
 #   HERMES_CONTAINER      Default hermes
 #   OPENBAO_ADDR          Default https://openbao.mueller-nas.de
 #   OPENBAO_TOKEN_FILE    Default /opt/docker-compose/github-runner/openbao-switch.token
+#   OPENBAO_ROLE_ID       optional — AppRole-Login für den Service-Passwort-Sync (5a)
+#   OPENBAO_APPROLE_SECRET_ID  optional — geht nur per stdin an curl, nie in argv
+#   HERMES_SYNC_SERVICE_PASSWORD  Default true; false = .env-Passwort unangetastet
 #   CODER_SSH_HOST        Default 10.0.10.17
 #   CODER_SSH_KEY         Default ~/.ssh/id_ed25519_coderdeploy
 #   SINGLE                true = nur das aktive Abo in den Pool (Default false)
@@ -44,6 +53,11 @@ CODER_SSH_KEY="${CODER_SSH_KEY:-$HOME/.ssh/id_ed25519_coderdeploy}"
 # Wird von accounts.py gesetzt, wenn das aktive Abo bald abläuft.
 SINGLE="${SINGLE:-false}"
 SECRET_PATH="secret/data/mcp/opencode-go"
+# Hermes-only: OPENCODE_SERVER_PASSWORD (API/Voice-Auth gegen den OpenCode-Service)
+# aus diesem Pfad in die Container-.env mergen. Deaktivierbar mit
+# HERMES_SYNC_SERVICE_PASSWORD=false — dann bleibt der bestehende Wert stehen.
+SERVICE_SECRET_PATH="secret/data/mcp/hermes-opencode-service"
+HERMES_SYNC_SERVICE_PASSWORD="${HERMES_SYNC_SERVICE_PASSWORD:-true}"
 # SOT der Konten — dort steht der Name des aktiven opencode-go-Abos (default1..3).
 HESTIA_ACCOUNTS_PATH="${HESTIA_ACCOUNTS_PATH:-${SOT_PATH%/*}/hestia-accounts.jsonc}"
 CONFIG_IN_CONTAINER="/opt/data/config.yaml"
@@ -361,6 +375,160 @@ PY
   # In-place überschreiben (ein mv auf /opt/data scheitert im Volume).
   "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > $env_file && chown hermes:hermes $env_file && chmod 600 $env_file'" <"$WORK/$base.apisrv.new"
   echo "✓ [$label] API-Server gesetzt: enabled=$API_ENABLED · $API_HOST:$API_PORT (API_SERVER_KEY unangetastet)"
+}
+
+# --- 4d) Fastpath-Skripte + Skills installieren -------------------------------
+# API-/Voice-Zugriff läuft laut SOT (.opencode/hestia-hermes.jsonc) über
+# /opt/data/bin/*_fast.py — daher werden die Skripte und die beiden Skills hier
+# mit installiert, damit der Container-Baum zum Checkout passt. Idempotent:
+# tar überschreibt vorhandene Dateien, löscht aber KEINE fremden Skills. Die
+# Dateien fließen nicht in den Neustart-Hash ein (nur config.yaml/.env) —
+# ein reiner Datei-Abgleich löst also keinen Hermes-Neustart aus.
+install_fast_paths() {
+  local repo_root stage
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  stage="$WORK/fastpath"
+  mkdir -p "$stage/bin" "$stage/skills"
+  local script
+  for script in notion_fast.py obsidian_fast.py; do
+    if [[ ! -r "$repo_root/hestia/scripts/$script" ]]; then
+      echo "✗ Fastpath fehlt im Checkout: hestia/scripts/$script" >&2
+      return 1
+    fi
+    cp -a "$repo_root/hestia/scripts/$script" "$stage/bin/$script"
+    chmod 0755 "$stage/bin/$script"
+  done
+  local skill
+  for skill in notion-database obsidian-ocis; do
+    if [[ ! -d "$repo_root/hestia/skills/$skill" ]]; then
+      echo "✗ Skill fehlt im Checkout: hestia/skills/$skill" >&2
+      return 1
+    fi
+    rm -rf "$stage/skills/$skill"
+    cp -a "$repo_root/hestia/skills/$skill" "$stage/skills/$skill"
+  done
+  if ! "${SSH[@]}" "docker exec '$HERMES_CONTAINER' sh -lc 'command -v tar'" >/dev/null 2>&1; then
+    echo "✗ tar fehlt im Container '$HERMES_CONTAINER' — Fastpath-Installation nicht möglich" >&2
+    return 1
+  fi
+  # tar-over-ssh-stdin: kleine Dateien, keine Secrets. Extraktion als root,
+  # damit Besitzer/Modi gesetzt werden können; bestehende Dateien werden nur
+  # überschrieben, nichts gelöscht.
+  if ! tar -C "$stage" -cf - bin skills \
+      | "${SSH[@]}" "docker exec -i -u 0 '$HERMES_CONTAINER' tar -x -C /opt/data"; then
+    echo "✗ Fastpath-Installation fehlgeschlagen (tar-over-ssh)" >&2
+    return 1
+  fi
+  "${SSH[@]}" "docker exec -u 0 '$HERMES_CONTAINER' sh -lc 'chown hermes:hermes /opt/data/bin /opt/data/skills /opt/data/bin/notion_fast.py /opt/data/bin/obsidian_fast.py /opt/data/skills/notion-database /opt/data/skills/obsidian-ocis && chown -R hermes:hermes /opt/data/skills/notion-database /opt/data/skills/obsidian-ocis && chmod 0755 /opt/data/bin/notion_fast.py /opt/data/bin/obsidian_fast.py'"
+  echo "✓ Fastpath installiert: bin/{notion,obsidian}_fast.py (0755) · skills/{notion-database,obsidian-ocis} inkl. references/ (keine fremden Skills gelöscht)"
+}
+
+# --- 5a) OPENCODE_SERVER_PASSWORD aus OpenBao (Hermes-only) -------------------
+# Liest secret/data/mcp/hermes-opencode-service (Feld "password") — bevorzugt
+# per AppRole (OPENBAO_ROLE_ID + OPENBAO_APPROLE_SECRET_ID), sonst über die
+# vorhandene OPENBAO_TOKEN_FILE. Das Passwort wandert ausschließlich über
+# stdin/Dateien, nie über argv und nie ins Log. Gemergt wird NUR diese eine
+# Zeile in /opt/data/.env — alle anderen Keys (API_SERVER_KEY, Pool-Keys, …)
+# bleiben unangetastet. Bewusst Hermes-only: startup.sh und die OpenCode-Config
+# werden NICHT angefasst. Ist OpenBao nicht erreichbar bzw. liefert kein
+# Passwort, bleibt der bestehende Wert erhalten (Warnung statt Überschreiben
+# mit leer). Zu kurze Werte brechen ab, BEVOR die .env überschrieben wird.
+sync_hermes_service_password() {
+  local env_file="$1" label="$2"
+  if [[ "$HERMES_SYNC_SERVICE_PASSWORD" != "true" ]]; then
+    echo "→ [$label] Service-Passwort-Sync deaktiviert (HERMES_SYNC_SERVICE_PASSWORD=false)"
+    return 0
+  fi
+  local token=""
+  if [[ -n "${OPENBAO_ROLE_ID:-}" && -n "${OPENBAO_APPROLE_SECRET_ID:-}" ]]; then
+    # AppRole-Login: die secret_id geht per stdin an curl (--data @-), taucht
+    # also weder in argv noch im Workflow-Log auf.
+    token="$(printf '{"role_id":"%s","secret_id":"%s"}' "$OPENBAO_ROLE_ID" "$OPENBAO_APPROLE_SECRET_ID" \
+      | curl -sS -H 'Content-Type: application/json' --data @- "$OPENBAO_ADDR/v1/auth/approle/login" 2>/dev/null \
+      | python3 -c 'import json, sys
+try:
+    print((json.load(sys.stdin).get("auth") or {}).get("client_token") or "")
+except Exception:
+    print("")')" || token=""
+  elif [[ -r "$OPENBAO_TOKEN_FILE" ]]; then
+    token="$(tr -d ' \r\n' <"$OPENBAO_TOKEN_FILE" 2>/dev/null)" || token=""
+  fi
+  if [[ -z "$token" ]]; then
+    echo "⚠ [$label] OpenBao nicht nutzbar (AppRole unvollständig/fehlgeschlagen oder $OPENBAO_TOKEN_FILE fehlt) — bestehender OPENCODE_SERVER_PASSWORD bleibt" >&2
+    return 0
+  fi
+  curl -sS -H "X-Vault-Token: $token" "$OPENBAO_ADDR/v1/$SERVICE_SECRET_PATH" 2>/dev/null >"$WORK/svc-pw.json" || true
+  python3 - "$WORK/svc-pw.json" "$WORK/svc-pw" <<'PY'
+import json, sys
+pw = ""
+try:
+    data = (json.load(open(sys.argv[1], encoding="utf-8")).get("data") or {}).get("data") or {}
+    pw = str(data.get("password") or "").strip()
+except Exception:
+    pw = ""
+open(sys.argv[2], "w", encoding="utf-8").write(pw)
+PY
+  if [[ ! -s "$WORK/svc-pw" ]]; then
+    echo "⚠ [$label] OpenBao liefert kein Passwort ($SERVICE_SECRET_PATH:password) — bestehender OPENCODE_SERVER_PASSWORD bleibt" >&2
+    return 0
+  fi
+  local svc_len
+  svc_len="$(wc -c <"$WORK/svc-pw")"
+  if (( svc_len < 12 )); then
+    echo "✗ [$label] OPENCODE_SERVER_PASSWORD aus OpenBao unplausibel kurz ($svc_len Zeichen, mind. 12) — .env bleibt unverändert" >&2
+    return 1
+  fi
+  local base
+  base="$(basename "$env_file")"
+  # Sicherheitsnetz wie bei write_api_server: leere/unlesbare .env nie überschreiben.
+  if ! "${SSH[@]}" "docker exec '$HERMES_CONTAINER' cat $env_file" >"$WORK/$base.svc.old" \
+     || [[ ! -s "$WORK/$base.svc.old" ]]; then
+    echo "✗ [$label] $env_file nicht lesbar oder leer — OPENCODE_SERVER_PASSWORD nicht geschrieben (bestehende .env unveraendert)" >&2
+    return 1
+  fi
+  python3 - "$WORK/$base.svc.old" "$WORK/svc-pw" "$label" >"$WORK/$base.svc.new" <<'PY'
+import re, sys
+
+label = sys.argv[3]
+old = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+pw = open(sys.argv[2], encoding="utf-8").read()   # exakt das Passwort (ohne Newline)
+
+out, replaced = [], False
+for line in old:
+    if re.match(r"^OPENCODE_SERVER_PASSWORD\s*=", line):
+        if not replaced:                       # nur die erste Zeile ersetzen
+            replaced = True
+            out.append(f"OPENCODE_SERVER_PASSWORD={pw}")
+        continue                               # Dubletten fallen weg
+    out.append(line)
+if not replaced:
+    out.append(f"OPENCODE_SERVER_PASSWORD={pw}")
+# nur die Länge loggen — der Wert selbst bleibt geheim
+sys.stderr.write(f"  → [{label}] OPENCODE_SERVER_PASSWORD gesetzt ({len(pw)} Zeichen) · alle übrigen Keys unverändert\n")
+sys.stdout.write("\n".join(out) + "\n")
+PY
+  # Sicherheitsnetz: genau eine Zeile, Wert lang genug — sonst Abbruch OHNE
+  # Überschreiben der .env (Backup/Review nötig).
+  if ! python3 - "$WORK/$base.svc.new" <<'PY'
+import re, sys
+hits = [l for l in open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+        if re.match(r"^OPENCODE_SERVER_PASSWORD\s*=", l)]
+ok = len(hits) == 1 and len(hits[0].split("=", 1)[1].strip()) >= 12
+sys.exit(0 if ok else 1)
+PY
+  then
+    echo "✗ [$label] Merge-Ergebnis für OPENCODE_SERVER_PASSWORD unplausibel — bestehende .env bleibt unverändert (Backup/Review nötig)" >&2
+    return 1
+  fi
+  if cmp -s "$WORK/$base.svc.old" "$WORK/$base.svc.new"; then
+    echo "→ [$label] OPENCODE_SERVER_PASSWORD bereits aktuell — .env unverändert"
+    return 0
+  fi
+  # Backup VOR dem In-place-Schreiben (ein mv auf /opt/data scheitert im Volume) …
+  "${SSH[@]}" "docker exec '$HERMES_CONTAINER' sh -lc 'cp -a $env_file $env_file.bak-hestia-\$(date +%s)'"
+  # … dann in-place überschreiben; nur diese Funktion fasst die Zeile an.
+  "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > $env_file && chown hermes:hermes $env_file && chmod 600 $env_file'" <"$WORK/$base.svc.new"
+  echo "✓ [$label] OPENCODE_SERVER_PASSWORD aus OpenBao synchronisiert (Hermes-only · Backup: $env_file.bak-hestia-*)"
 }
 
 # Immer anwenden — unabhaengig von POOL_FOLLOW. Faellt die Validierung durch,
@@ -733,6 +901,15 @@ PY
     echo "✓ $PROFILES_APPLIED Profil(e) angewendet (von $(python3 -c 'import json,sys;print(len(json.loads(sys.argv[1])))' "$PROFILES_JSON") in der SOT)"
   fi
 fi
+
+# --- 5c) Fastpath-Skripte + Skills und Service-Passwort (Datei-Only) ----------
+# Beides NACH den config/.env-Schritten und VOR "hermes config check", damit die
+# Prüfung einen materialisierten Baum sieht. Die Fastpath-/Skill-Dateien fließen
+# in den Neustart-Hash NICHT ein (nur config.yaml/.env) — die Installation selbst
+# löst also keinen Hermes-Neustart aus; nur eine tatsächlich geänderte
+# Passwort-Zeile in der .env zählt über den gewohnten Hash-Mechanismus.
+install_fast_paths
+sync_hermes_service_password "$ENV_IN_CONTAINER" "default"
 
 # --- 6) Validierung ----------------------------------------------------------
 echo "→ hermes config check"
