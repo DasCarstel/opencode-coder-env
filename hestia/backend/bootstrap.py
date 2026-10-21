@@ -8,6 +8,7 @@ Secrets (AppRole-Policy muss covered paths freigeben):
   secret/data/mcp/github                    → GITHUB_TOKEN (api_key)
   secret/data/mcp/hermes-opencode-service   → OC_SERVER_PASSWORD (password)
   secret/data/mcp/hestia                    → HESTIA_PASSWORD (password) [optional]
+  secret/data/mcp/notify                    → NTFY_TOKEN (hestia_token) [optional]
   secret/data/mcp/artificialanalysis        → AA_API_KEY (api_key) [optional]
                                            Fehlt der Pfad oder das Feld (403/404),
                                            ist das kein Fehler: Benchmarks laufen
@@ -30,6 +31,7 @@ SOURCES = [
     ("secret/data/mcp/github", "api_key", "GITHUB_TOKEN"),
     ("secret/data/mcp/hermes-opencode-service", "password", "OC_SERVER_PASSWORD"),
     ("secret/data/mcp/hestia", "password", "HESTIA_PASSWORD"),
+    ("secret/data/mcp/notify", "hestia_token", "NTFY_TOKEN"),
 ]
 
 # OpenCode-Go-Konten: alle Felder liegen in EINEM Secret → ein Request.

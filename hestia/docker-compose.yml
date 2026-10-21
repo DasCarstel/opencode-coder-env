@@ -89,7 +89,8 @@ services:
       HESTIA_MODEL_WATCH_INTERVAL: ${HESTIA_MODEL_WATCH_INTERVAL:-300}
       HESTIA_MODEL_WATCH_DRY_RUN_HOURS: ${HESTIA_MODEL_WATCH_DRY_RUN_HOURS:-48}
       # ntfy-Kanal wie Hermes; ohne URL bleibt es beim Log-Eintrag.
-      HESTIA_NTFY_URL: ${HESTIA_NTFY_URL:-https://ntfy.mueller-nas.de/hermes}
+      HESTIA_NTFY_URL: ${HESTIA_NTFY_URL:-https://ntfy.mueller-nas.de}
+      HESTIA_NTFY_TOPIC: ${HESTIA_NTFY_TOPIC:-infra}
       # Optional: überschreibt alles (sonst aus OpenBao)
       # HESTIA_PASSWORD: ""
       # OC_SERVER_PASSWORD: ""

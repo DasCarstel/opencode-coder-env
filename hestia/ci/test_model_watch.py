@@ -217,7 +217,7 @@ if apply_calls:
     p = apply_calls[0]
     check("Voice-Route auf Preferred-Kandidat",
           voice_route_of(p) == {"provider": "opencode-go",
-                                "model": "glm-5.3-flash"},
+                                "model": "beam-free"},
           str(voice_route_of(p)))
     check("Primary unverändert (nicht blockiert)",
           p["primary"] == {"provider": "opencode-go",

@@ -98,9 +98,11 @@ FIRST_READ_BYTES = _int_env("HESTIA_MODEL_WATCH_FIRST_READ", 5 * 1024 * 1024)
 MAX_READ_BYTES = 32 * 1024 * 1024
 DRY_RUN_HOURS = _int_env("HESTIA_MODEL_WATCH_DRY_RUN_HOURS", 48)
 PRUNE_DAYS = 14
-# ntfy: gleicher Kanal wie Hermes (platforms.ntfy in der Live-Config). Bewusst
-# nur eine URL (kein Secret) — ohne gesetzte URL bleibt es beim Log-Eintrag.
+# ntfy: Token kommt aus OpenBao (secret/data/mcp/notify → NTFY_TOKEN, geladen
+# von bootstrap.py). Ohne Token bleibt es beim Log-Eintrag.
 NTFY_URL = os.environ.get("HESTIA_NTFY_URL", "").strip()
+NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "").strip()
+NTFY_TOPIC = os.environ.get("HESTIA_NTFY_TOPIC", "infra").strip() or "infra"
 
 # SQLite (Metriken, nie Inhalte) + Sperrliste/Policy/State im /app/data-Mount.
 DB_PATH = os.environ.get("HESTIA_MODEL_WATCH_DB", "/app/data/model-watch.db")
@@ -127,7 +129,8 @@ DEFAULT_POLICY = {
     "preferred": [
         p.strip() for p in os.environ.get(
             "HESTIA_MODEL_WATCH_PREFERRED",
-            "opencode-go/glm-5.3-flash,opencode-go/glm-5.3").split(",")
+            "opencode-go/beam-free,opencode-go/glm-5.3,"
+            "opencode-go/glm-5.3-flash").split(",")
         if p.strip()
     ],
 }
@@ -882,20 +885,31 @@ def _build_payload(public: dict, plan: dict) -> dict:
 # ── ntfy (best-effort, ohne neuen Secret-Pfad) ──────────────────────────────
 
 def _notify(msg: str):
-    """Best-effort ntfy an den Hermes-Kanal; ohne HESTIA_NTFY_URL nur Log.
+    """Best-effort ntfy (Token aus OpenBao, JSON-API, Topic HESTIA_NTFY_TOPIC).
 
-    Kein Token/Secret im Container: der Kanal ist derselbe, den Hermes über
-    platforms.ntfy bereits nutzt. Fehler (401, Timeout) dürfen den Lauf nie
-    stoppen.
+    User-Agent ist Pflicht: Cloudflare blockt den Python-Default-UA mit
+    error 1010. Fehler (401, Timeout) dürfen den Lauf nie stoppen.
     """
     _log(f"[ntfy] {msg}")
     if not NTFY_URL:
         return
+    if not NTFY_TOKEN:
+        _log("ntfy: kein Token (OpenBao secret/data/mcp/notify fehlt)")
+        return
     try:
+        body = json.dumps({
+            "topic": NTFY_TOPIC,
+            "title": "Hestia Modell-Wächter",
+            "message": msg,
+            "priority": 4,
+            "tags": ["warning"],
+        }).encode("utf-8")
         req = urllib.request.Request(
-            NTFY_URL, data=msg.encode("utf-8"),
-            headers={"Title": "Hestia Modell-Wächter", "Tags": "warning"})
-        urllib.request.urlopen(req, timeout=5).read()
+            NTFY_URL, data=body,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {NTFY_TOKEN}",
+                     "User-Agent": "curl/8.5.0"})
+        urllib.request.urlopen(req, timeout=8).read()
     except Exception as e:  # noqa: BLE001 — Benachrichtigung ist best-effort
         _log(f"ntfy fehlgeschlagen: {type(e).__name__}: {e}")
 
