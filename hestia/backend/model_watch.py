@@ -441,13 +441,17 @@ def _aggregate(call_rows, event_rows, cutoff: str | None = None) -> dict:
     for ref in models:
         vals = lat.get(ref) or []
         calls = len(vals)
+        errs = errors_by.get(ref, 0)
         out[ref] = {
             "calls": calls,
             "p50Ms": _pctl(vals, 50),
             "p95Ms": _pctl(vals, 95),
             "stalls": stalls_by.get(ref, 0),
-            "errors": errors_by.get(ref, 0),
-            "errorRate": round(errors_by.get(ref, 0) / calls, 4) if calls else 0.0,
+            "errors": errs,
+            # Fehler pro Call, gedeckelt auf 100 % (mehrere Fehlerzeilen pro
+            # Call sind möglich, dürfen die Rate aber nicht über 1 treiben).
+            "errorRate": (min(1.0, errs / calls) if calls
+                          else (1.0 if errs else 0.0)),
             "lastSeen": last_seen.get(ref),
         }
     return out
