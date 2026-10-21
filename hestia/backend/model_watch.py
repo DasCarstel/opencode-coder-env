@@ -837,14 +837,24 @@ def plan_changes(public: dict, blocked_refs, policy: dict | None = None):
                     "reason": "Profil-Primary blockiert und kein Ersatz — "
                               "Profil erbt vom Top-Level"})
         elif pfb_bad:
-            plan["profiles"][name] = {
-                "primary": (_ref_dict(prof_primary) if prof_primary else None),
-                "fallback": pfb_good,
-            }
-            pending.append({"kind": f"profile:{name}:fallback",
-                            "from": ",".join(pfb_refs),
-                            "to": ",".join(pfb_good) or "—",
-                            "reason": "Blockierte Profil-Fallbacks entfernt"})
+            # Alle Profil-Fallbacks blockiert: mit Preferred auffüllen statt
+            # leer zu lassen (sonst hätte das Profil gar keinen Fallback).
+            if not pfb_good:
+                pfb_good = [c for c in (pol.get("preferred") or [])
+                            if c not in blocked and c != prof_primary][:1]
+            if pfb_good:
+                plan["profiles"][name] = {
+                    "primary": (_ref_dict(prof_primary) if prof_primary else None),
+                    "fallback": pfb_good,
+                }
+                pending.append({"kind": f"profile:{name}:fallback",
+                                "from": ",".join(pfb_refs),
+                                "to": ",".join(pfb_good) or "—",
+                                "reason": "Blockierte Profil-Fallbacks entfernt"})
+            else:
+                alarms.append(
+                    f"Profil {name}: alle Fallbacks blockiert und kein "
+                    f"Preferred-Kandidat — keine Aktion")
 
     return pending, alarms, plan
 

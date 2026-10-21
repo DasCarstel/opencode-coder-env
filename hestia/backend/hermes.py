@@ -272,6 +272,11 @@ def _validate_agent(section) -> dict:
         v = out["auto_recovery_cycles"]
         if isinstance(v, bool) or not isinstance(v, int) or v < 0:
             raise ApplyError("agent.auto_recovery_cycles: muss eine ganze Zahl >= 0 sein")
+    if "max_turns" in out:
+        v = out["max_turns"]
+        if v is not None and (isinstance(v, bool) or not isinstance(v, int) or v < 1):
+            raise ApplyError(
+                "agent.max_turns: muss eine ganze Zahl >= 1 oder null sein")
     return out
 
 

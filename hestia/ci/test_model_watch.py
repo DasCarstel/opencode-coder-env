@@ -230,8 +230,9 @@ if apply_calls:
           and p["skills"] == PUBLIC["skills"]
           and p["agent"] == PUBLIC["agent"]
           and p["providers"] == PUBLIC["providers"])
-    check("Fallback-Filter je Profil (blockierte entfernt)",
-          p["profiles"]["kleve"]["fallback"] == [],
+    check("Fallback-Filter je Profil (blockierte entfernt, Preferred als Ersatz)",
+          p["profiles"]["kleve"]["fallback"] == [
+              {"provider": "opencode-go", "model": "beam-free"}],
           str(p["profiles"]["kleve"]["fallback"]))
 check("lastApplyAt im State",
       bool(mw._load_state().get("lastApplyAt")),

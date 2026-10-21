@@ -1,7 +1,7 @@
 {
   "enabled": true,
   "primary": {
-    "provider": "opencode",
+    "provider": "opencode-go",
     "model": "deepseek-v4.1-flash-free"
   },
   "fallback": [
@@ -54,7 +54,8 @@
   "agent": {
     "reasoning_effort": "low",
     "api_max_retries": 1,
-    "auto_recovery_cycles": 0
+    "auto_recovery_cycles": 0,
+    "max_turns": 12
   },
   "providers": {
     "opencode-go": {
