@@ -14,7 +14,8 @@ klassischen Keys kannten. Diese Tests halten fest:
      werden abgelehnt.
   4. Ungültige Provider-Timeouts werden abgelehnt.
   5. Unbekannte Toolset-Namen und leere api_server-Listen werden abgelehnt.
-  6. model_routes: String-Form → Dict-Form (Round-Trip), Unsinn wird abgelehnt.
+  6. model_routes: String-, alte Dict- und native Form → native Form
+     {"provider", "model"} ohne reason; Unsinn wird abgelehnt.
   7. `_public()` enthält alle fünf Sektionen (Panel + Änderungserkennung).
   8. Ein teilweiser agent-Payload ergänzt statt zu ersetzen (Deep-Merge).
   9. `skills.disabled` überlebt Apply und Serialisierung; ungültige
@@ -116,8 +117,8 @@ SOT = {
     "skills": {"disabled": ["pdf", "github", "notion", "obsidian", "xlsx"]},
     "platforms": {
         "api_server": {"extra": {"model_routes": {
-            "hermes-free": {"model": "opencode-go/beam-free", "reason": "Free voice model"},
-            "hermes-paid": {"model": "opencode-go/glm-5.3-flash", "reason": "Paid fallback model"},
+            "hermes-free": {"provider": "opencode-go", "model": "beam-free"},
+            "hermes-paid": {"provider": "opencode-go", "model": "glm-5.3-flash"},
         }}},
         "ntfy": {"enabled": True},
     },
@@ -179,7 +180,8 @@ def main():
           str(written.get("platform_toolsets")))
     check("platforms.api_server überlebt",
           written.get("platforms", {}).get("api_server", {}).get("extra", {})
-          .get("model_routes", {}).get("hermes-free", {}).get("model") == "opencode-go/beam-free",
+          .get("model_routes", {}).get("hermes-free", {})
+          == {"provider": "opencode-go", "model": "beam-free"},
           str(written.get("platforms")))
     check("platforms.ntfy überlebt", written.get("platforms", {}).get("ntfy") == {"enabled": True},
           str(written.get("platforms")))
@@ -244,7 +246,7 @@ def main():
     payload["platform_toolsets"] = {"api_server": []}
     expect_apply_error(h, payload, "leere api_server-Liste abgelehnt")
 
-    print("\n[6] model_routes: Round-Trip und Ablehnung von Unsinn")
+    print("\n[6] model_routes: alle drei Eingabeformen → native Form, Unsinn abgelehnt")
     h = reset()
     payload = json.loads(json.dumps(PANEL_PAYLOAD))
     payload["platforms"] = {"api_server": {"extra": {"model_routes": {
@@ -253,14 +255,37 @@ def main():
     h.apply(payload)
     written = json.loads(FILES[HERMES_PATH])
     routes = written["platforms"]["api_server"]["extra"]["model_routes"]
-    check("String-Route → Dict-Form",
-          routes.get("hermes-voice") == {"model": "opencode-go/glm-5.3-flash"}, str(routes))
-    check("bestehende Dict-Route bleibt",
-          routes.get("hermes-free", {}).get("reason") == "Free voice model", str(routes))
-    check("hermes-paid bleibt",
-          routes.get("hermes-paid", {}).get("model") == "opencode-go/glm-5.3-flash", str(routes))
+    check("String-Route → native Form",
+          routes.get("hermes-voice") == {"provider": "opencode-go", "model": "glm-5.3-flash"},
+          str(routes))
+    check("bestehende Dict-Route → native Form, reason verworfen",
+          routes.get("hermes-free") == {"provider": "opencode-go", "model": "beam-free"},
+          str(routes))
+    check("hermes-paid bleibt (nativ)",
+          routes.get("hermes-paid") == {"provider": "opencode-go", "model": "glm-5.3-flash"},
+          str(routes))
     check("ntfy bleibt bei Plattform-Payload erhalten",
           written["platforms"].get("ntfy") == {"enabled": True}, str(written["platforms"]))
+
+    # Native Dict-Form ({"provider", "model", "reason"}) und alte Dict-Form direkt.
+    h = reset()
+    payload = json.loads(json.dumps(PANEL_PAYLOAD))
+    payload["platforms"] = {"api_server": {"extra": {"model_routes": {
+        "hermes-voice": {"provider": "opencode-go", "model": "glm-5.3-flash",
+                         "reason": "Voice-Policy"},
+        "hermes-free": {"model": "opencode-go/beam-free"},   # bisherige Form
+    }}}}
+    h.apply(payload)
+    written = json.loads(FILES[HERMES_PATH])
+    routes = written["platforms"]["api_server"]["extra"]["model_routes"]
+    check("native Dict-Route bleibt nativ",
+          routes.get("hermes-voice") == {"provider": "opencode-go", "model": "glm-5.3-flash"},
+          str(routes))
+    check("reason erscheint nicht in der Ausgabe",
+          "reason" not in routes.get("hermes-voice", {}), str(routes))
+    check("alte Dict-Route → native Form",
+          routes.get("hermes-free") == {"provider": "opencode-go", "model": "beam-free"},
+          str(routes))
     for bad_platforms, name in (
             ({"api_server": {"extra": {"model_routes": {"x": "ohne-slash"}}}},
              "Route ohne provider/model abgelehnt"),
@@ -271,6 +296,12 @@ def main():
             ({"api_server": {"extra": {"model_routes": {
                 "x": {"model": "opencode-go/glm-5.3-flash", "reason": 42}}}}},
              "reason als Zahl abgelehnt"),
+            ({"api_server": {"extra": {"model_routes": {
+                "x": {"model": "glm-5.3-flash"}}}}},
+             "native Form ohne provider abgelehnt"),
+            ({"api_server": {"extra": {"model_routes": {
+                "x": {"provider": "opencode-go", "model": 42}}}}},
+             "natives Modell als Zahl abgelehnt"),
     ):
         h = reset()
         payload = json.loads(json.dumps(PANEL_PAYLOAD))
@@ -291,8 +322,8 @@ def main():
           str(pub.get("platform_toolsets")))
     check("platforms in _public",
           pub.get("platforms", {}).get("api_server", {}).get("extra", {})
-          .get("model_routes", {}).get("hermes-paid", {}).get("model")
-          == "opencode-go/glm-5.3-flash",
+          .get("model_routes", {}).get("hermes-paid", {})
+          == {"provider": "opencode-go", "model": "glm-5.3-flash"},
           str(pub.get("platforms")))
     check("skills in _public", pub.get("skills") == SOT["skills"],
           str(pub.get("skills")))
@@ -436,7 +467,10 @@ def main():
 
     sot_path = os.path.join(root, ".opencode", "hestia-hermes.jsonc")
     sot_src = open(sot_path, encoding="utf-8").read()
-    check("API-Allowlist enthält kein oCIS-MCP", "mcp-ocis-private" not in sot_src)
+    check("SOT erlaubt alle fünf MCP-Toolsets",
+          all(ts in sot_src for ts in ("mcp-homeassistant", "mcp-notion",
+                                       "mcp-ocis-private", "mcp-ocis-muellerconnect",
+                                       "mcp-super-productivity")))
 
     for skill, refs in (("notion-database", ("full-mcp-workflow.md", "schuldenliste-schema.md")),
                         ("obsidian-ocis", ("full-mcp-workflow.md",))):

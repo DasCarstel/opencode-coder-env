@@ -20,6 +20,7 @@ Endpoints (alle unter Basic Auth):
   GET  /api/hermes            Hermes-Zustand (SOT + Health + Workflow)
   POST /api/hermes/apply      Hermes Primary/Fallback/Pool setzen (SOT-Commit + CI)
   GET  /api/hermes/speed      Hermes-Speed: Scan-Zustand + O19-Telemetrie + Empfehlung
+  GET  /api/model-health      Modell-Wächter: echter Hermes-Log-Verkehr (p50/p95, Stalls, Sperrliste, Dry-Run)
   POST /api/hermes/speed/run  Speed-Lauf starten (discovery|monitoring|probe, im Hintergrund)
   POST /api/hermes/speed/apply Speed-Empfehlung als Hermes-Primary anwenden (SOT via hermes.apply)
   GET  /api/failover/status   Ausfallschutz-Zustand (autoFailover/interval/threshold/timeout/…)
@@ -51,6 +52,7 @@ import failover as failover_mod  # noqa: E402
 import accounts as accounts_mod  # noqa: E402
 import hermes as hermes_mod  # noqa: E402
 import hermes_speed as hermes_speed_mod  # noqa: E402
+import model_watch as model_watch_mod  # noqa: E402
 import benchmarks as benchmarks_mod  # noqa: E402
 import dcp as dcp_mod  # noqa: E402
 
@@ -434,6 +436,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 _log(f"hermes speed status error: {e}")
                 return self._json({"error": str(e)}, 502)
+        if path in ("/api/model-health", "/api/hermes/model-health"):
+            # Modell-Wächter (echter Hermes-Log-Verkehr): gleiche Nie-ausfallen-
+            # Absicherung wie /api/hermes/speed — state() wirft aber ohnehin nie.
+            try:
+                return self._json(model_watch_mod.state())
+            except Exception as e:  # noqa: BLE001 — Status darf nie ausfallen
+                _log(f"model-health error: {e}")
+                return self._json({"error": str(e)}, 502)
         if path == "/api/dcp":
             try:
                 return self._json(dcp_mod.state())
@@ -794,6 +804,10 @@ def main():
         hermes_speed_mod.start()
     except Exception as e:  # noqa: BLE001
         _log(f"Hermes-Speed-Start fehlgeschlagen: {e}")
+    try:
+        model_watch_mod.start()
+    except Exception as e:  # noqa: BLE001
+        _log(f"Model-Watch-Start fehlgeschlagen: {e}")
     try:
         benchmarks_mod.start()
     except Exception as e:  # noqa: BLE001

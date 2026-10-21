@@ -20,6 +20,8 @@ services:
       # Seitenwagens (telemetry-snapshot), NIE die Live-DB /etc/docker/hermes/data
       # und nie die Hermes-.env (die bleiben komplett beim Hermes-Container).
       - /etc/hestia/hermes-telemetry:/hermes-data:ro
+      # Modell-Wächter: echte Hermes-Logs (agent.log) — strikt read-only.
+      - /etc/docker/hermes/data/logs:/hermes-logs:ro
     environment:
       OPENBAO_ADDR: https://openbao.mueller-nas.de
       OPENBAO_ROLE_ID: ${HESTIA_OPENBAO_ROLE_ID:-}
@@ -81,6 +83,13 @@ services:
       HESTIA_SPEED_HISTORY_DB: ${HESTIA_SPEED_HISTORY_DB:-/app/data/hermes-speed-history.db}
       HESTIA_SPEED_MAX_PAID_PER_DAY: ${HESTIA_SPEED_MAX_PAID_PER_DAY:-5}
       HESTIA_SPEED_SESSION_DELETE_DELAY: ${HESTIA_SPEED_SESSION_DELETE_DELAY:-30}
+      # Modell-Wächter: Hintergrundmodul bewertet echten Hermes-Verkehr (LOG),
+      # sperrt schlechte Modelle und stellt nach dem Dry-Run-Fenster um.
+      HESTIA_MODEL_WATCH: ${HESTIA_MODEL_WATCH:-1}
+      HESTIA_MODEL_WATCH_INTERVAL: ${HESTIA_MODEL_WATCH_INTERVAL:-300}
+      HESTIA_MODEL_WATCH_DRY_RUN_HOURS: ${HESTIA_MODEL_WATCH_DRY_RUN_HOURS:-48}
+      # ntfy-Kanal wie Hermes; ohne URL bleibt es beim Log-Eintrag.
+      HESTIA_NTFY_URL: ${HESTIA_NTFY_URL:-https://ntfy.mueller-nas.de/hermes}
       # Optional: überschreibt alles (sonst aus OpenBao)
       # HESTIA_PASSWORD: ""
       # OC_SERVER_PASSWORD: ""

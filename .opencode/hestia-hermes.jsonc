@@ -11,6 +11,10 @@
     },
     {
       "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash-free"
+    },
+    {
+      "provider": "opencode-go",
       "model": "longcat-2.5-preview-free"
     }
   ],
@@ -54,21 +58,47 @@
   },
   "providers": {
     "opencode-go": {
-      "request_timeout_seconds": 25,
-      "stale_timeout_seconds": 20
+      // 2026-10-21: 25/20 -> 15/8. Bei einem Stream-Stall kostete der 20-s-
+      // Threshold plus 4 s Backoff bis zu 33 s pro Turn (Log 14:27).
+      "request_timeout_seconds": 15,
+      "stale_timeout_seconds": 8
     }
   },
+  // WICHTIG: Alle fuenf MCP-Server fuer den api_server (HA-Assist UND Open
+  // WebUI). Eine fruehere Fassung stand hier auf nur "mcp-homeassistant" --
+  // ein Apply haette Notion/oCIS/Super-Productivity aus dem Assist entfernt.
   "platform_toolsets": {
     "api_server": [
-      "mcp-homeassistant"
+      "mcp-super-productivity",
+      "mcp-homeassistant",
+      "mcp-ocis-private",
+      "mcp-ocis-muellerconnect",
+      "mcp-notion"
     ]
   },
-  // Voice-Route "hermes-voice" (opencode-go/beam-free) wird bewusst NICHT hier
-  // gepflegt: Hestia normalisiert model_routes auf {"model": "provider/model"},
-  // Hermes api_server erwartet dagegen {provider, model} getrennt. Die Route
-  // liegt daher nur live in /etc/docker/hermes/data/config.yaml; ein Merge mit
-  // platforms:{} laesst sie unangetastet.
-  "platforms": {},
+  // Voice-Route "hermes-voice" (opencode-go/glm-5.3-flash) wird hier in der
+  // NATIVEN Form {"provider", "model"} gepflegt — genau so erwartet sie der
+  // Hermes api_server. aehnelt bewusst nicht {"model": "provider/model"}.
+  //
+  // MODELLREGEL (2026-10-21, Messung bei 4,7k Kontext, identischer Prompt):
+  //   glm-5.3-flash            2,4 s/Call   <- fuer Voice und Agent bevorzugen
+  //   deepseek-v4.1-flash-free 8,6 s/Call
+  //   beam-free                8,6 s/Call
+  //   longcat-2.5-preview-free   (nicht gemessen, gleiche Free-Klasse)
+  // Gratismodelle nicht fuer Voice/Assist einsetzen: 3,5x langsamer pro Call,
+  // hohe Varianz bis 23 s. Nur als letzter Fallback.
+  "platforms": {
+    "api_server": {
+      "extra": {
+        "model_routes": {
+          "hermes-voice": {
+            "provider": "opencode-go",
+            "model": "glm-5.3-flash"
+          }
+        }
+      }
+    }
+  },
   "skills": {
     "disabled": [
       "airtable",

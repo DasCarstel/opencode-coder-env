@@ -38,8 +38,11 @@ BUILTIN_TOOLSETS = frozenset({
     "vision", "video", "image_gen", "video_gen", "x_search", "tts", "stt",
     "skills", "todo", "kanban", "memory", "context_engine", "session_search",
     "clarify", "connections", "delegation", "cronjob",
-    # Home-Assistant-MCP für die spätere Sprachintegration (siehe SOT-Kommentar).
-    "mcp-homeassistant",
+    # Home-Assistant-MCP für die spätere Sprachintegration (siehe SOT-Kommentar)
+    # sowie die vier freigegebenen Work-MCPs (alle fünf MCP-Server für den
+    # api_server: HA-Assist UND Open WebUI).
+    "mcp-homeassistant", "mcp-notion", "mcp-ocis-private",
+    "mcp-ocis-muellerconnect", "mcp-super-productivity",
 })
 # Alias-Regel für platforms.<plattform>.extra.model_routes.
 MODEL_ROUTE_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -311,10 +314,17 @@ def _validate_platform_toolsets(section) -> dict:
 
 
 def _validate_model_routes(routes, label: str) -> dict:
-    """model_routes normalisieren: {"alias": {"model": "provider/model", …}}.
+    """model_routes normalisieren: {"alias": {"provider": <p>, "model": <m>}}.
 
-    String-Form ("provider/model") wird zur Dict-Form normalisiert; jedes Modell
-    läuft über _validate() (Provider-Allowlist + Katalog).
+    Drei Eingabeformen werden akzeptiert:
+    - String "provider/model"
+    - Dict {"model": "provider/model", "reason": …} (bisherige Form)
+    - Dict {"provider": …, "model": …, "reason": …} (native Form)
+
+    Ausgabe immer in nativer Form {"provider": <p>, "model": <m>} — OHNE
+    `reason` (die Begründung lebt in der Watchdog-Policy, nicht in der
+    Hermes-Config). Beide Teile laufen über _validate()
+    (Provider-Allowlist + Katalog).
     """
     if not isinstance(routes, dict):
         raise ApplyError(f"{label}: muss ein Objekt sein")
@@ -325,23 +335,32 @@ def _validate_model_routes(routes, label: str) -> dict:
             raise ApplyError(
                 f"{rlabel}: Alias '{alias}' passt nicht auf "
                 f"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-        reason = None
-        if isinstance(route, dict):
-            model = route.get("model")
-            if route.get("reason") is not None:
-                if not isinstance(route["reason"], str):
-                    raise ApplyError(f"{rlabel}.reason: muss ein String sein")
-                reason = route["reason"]
+        if isinstance(route, str):
+            # String-Form "provider/model".
+            provider, _, model_id = route.partition("/")
+            if not provider.strip() or not model_id.strip():
+                raise ApplyError(f"{rlabel}: Modell muss 'provider/model' sein")
+        elif isinstance(route, dict):
+            # reason darf optional mitgegeben werden und wird verworfen.
+            if route.get("reason") is not None and not isinstance(route["reason"], str):
+                raise ApplyError(f"{rlabel}.reason: muss ein String sein")
+            provider, model_id = route.get("provider"), route.get("model")
+            if provider is None:
+                # Bisherige Dict-Form {"model": "provider/model", …}.
+                if not isinstance(model_id, str) or model_id.count("/") < 1:
+                    raise ApplyError(f"{rlabel}: Modell muss 'provider/model' sein")
+                provider, _, model_id = model_id.partition("/")
+            elif (not isinstance(provider, str) or not isinstance(model_id, str)  # noqa: E501
+                    or not provider.strip() or not model_id.strip()):
+                # Native Form {"provider": …, "model": …}.
+                raise ApplyError(
+                    f"{rlabel}: native Form braucht nicht-leere Strings "
+                    f"'provider' und 'model'")
         else:
-            model = route
-        if not isinstance(model, str) or model.count("/") < 1:
             raise ApplyError(f"{rlabel}: Modell muss 'provider/model' sein")
-        provider, _, model_id = model.partition("/")
         normalized = _validate({"provider": provider, "model": model_id}, rlabel)
-        entry = {"model": f"{normalized['provider']}/{normalized['model']}"}
-        if reason is not None and reason.strip():
-            entry["reason"] = reason
-        out[str(alias)] = entry
+        out[str(alias)] = {"provider": normalized["provider"],
+                           "model": normalized["model"]}
     return out
 
 

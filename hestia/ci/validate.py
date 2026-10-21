@@ -34,8 +34,11 @@ HERMES_TOOLSETS = {
     "vision", "video", "image_gen", "video_gen", "x_search", "tts", "stt",
     "skills", "todo", "kanban", "memory", "context_engine", "session_search",
     "clarify", "connections", "delegation", "cronjob",
-    # Explizit freigegebene MCP-Toolsets (API-Surface; Home Assistant für Phase 4).
-    "mcp-homeassistant",
+    # Explizit freigegebene MCP-Toolsets (API-Surface): HA für die Sprach-
+    # integration, dazu die vier Work-MCPs — alle fünf MCP-Server für den
+    # api_server (HA-Assist UND Open WebUI).
+    "mcp-homeassistant", "mcp-notion", "mcp-ocis-private",
+    "mcp-ocis-muellerconnect", "mcp-super-productivity",
 }
 HERMES_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -153,18 +156,18 @@ def validate_hermes(path):
             if not HERMES_ALIAS.match(str(alias)):
                 fail(f"Hermes model_routes-Alias '{alias}' passt nicht auf "
                      f"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-            if isinstance(route, dict):
-                model, reason = route.get("model"), route.get("reason")
-                if reason is not None and not isinstance(reason, str):
-                    fail(f"Hermes model_routes.{alias}.reason muss ein String sein")
-            else:
-                model = route
-            if not isinstance(model, str) or model.count("/") < 1 \
-                    or not model.split("/", 1)[0].strip() or not model.split("/", 1)[1].strip():
-                fail(f"Hermes model_routes.{alias}.model muss 'provider/model' sein")
-            if model.split("/", 1)[0].strip() not in HERMES_PROVIDERS:
-                fail(f"Hermes model_routes.{alias}.model: Provider "
-                     f"'{model.split('/', 1)[0].strip()}' nicht erlaubt")
+            # Native Form: {"provider": "opencode-go", "model": "glm-5.3-flash"}.
+            if (not isinstance(route, dict)
+                    or not isinstance(route.get("provider"), str)
+                    or not route["provider"].strip()
+                    or not isinstance(route.get("model"), str)
+                    or not route["model"].strip()):
+                fail(f"Hermes model_routes.{alias} muss die native Form "
+                     f"{{'provider': <nicht-leerer String>, "
+                     f"'model': <nicht-leerer String>}} sein")
+            if route["provider"].strip() not in HERMES_PROVIDERS:
+                fail(f"Hermes model_routes.{alias}.provider "
+                     f"'{route['provider'].strip()}' nicht erlaubt")
     # skills: nur `disabled` — Liste nicht-leerer, eindeutiger Strings
     skills = cfg.get("skills")
     if skills is None:
