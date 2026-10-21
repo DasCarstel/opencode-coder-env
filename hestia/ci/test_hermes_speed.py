@@ -674,10 +674,18 @@ def main():
     check("Compose: Panel bekommt nur den Snapshot (ro)",
           "/etc/hestia/hermes-telemetry:/hermes-data:ro" in compose_src
           and "HERMES_STATE_DB" in compose_src)
+    # Erlaubt sind nur die beiden bewusst read-only Mounts: der Telemetrie-
+    # Snapshot (/source) und das Watchdog-Log (/hermes-logs). Alles andere
+    # (config.yaml, history.db, ganzes data-Verzeichnis) bleibt verboten.
+    data_mounts = [ln.strip() for ln in compose_src.splitlines()
+                   if "/etc/docker/hermes/data" in ln and ln.strip().startswith("-")]
+    allowed_mounts = {"- /etc/docker/hermes/data:/source:ro",
+                      "- /etc/docker/hermes/data/logs:/hermes-logs:ro"}
     check("Compose: Panel sieht die Hermes-Live-DB nie",
-          [ln.strip() for ln in compose_src.splitlines()
-           if "/etc/docker/hermes/data" in ln and ln.strip().startswith("-")]
-          == ["- /etc/docker/hermes/data:/source:ro"])
+          "- /etc/docker/hermes/data:/source:ro" in data_mounts
+          and set(data_mounts) <= allowed_mounts
+          and all(m.endswith(":ro") for m in data_mounts),
+          str(data_mounts))
 
     deploy_src = open(os.path.join(ROOT, ".github/workflows/deploy-hestia.yml"),
                       encoding="utf-8").read()
