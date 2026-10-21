@@ -1014,6 +1014,48 @@ async function applySpeed(ref) {
   }
 }
 
+// ── Modell-Wächter (GET /api/model-health, Alias /api/hermes/model-health) ──
+// Backend: hestia/backend/model_watch.py → state(). Der Wächter bewertet den
+// echten Hermes-Log-Verkehr, sperrt schlimme Modelle (Quarantäne) und plant im
+// Dry-Run-Fenster Änderungen nur als „pending". Die Karte ist rein lesend.
+let modelHealth = $state(null)
+let modelHealthError = $state('')
+
+async function loadModelHealth() {
+  try {
+    modelHealth = await api('/api/model-health')
+    modelHealthError = ''
+  } catch (e) {
+    modelHealthError = e?.message || String(e)
+  }
+}
+
+// Gespeicherte Zeitstempel sind UTC-Sekunden "YYYY-MM-DDTHH:MM:SS" (ohne Z) —
+// ohne Suffix würde new Date() sie als Lokalzeit lesen, also 'Z' anhängen.
+function mwTs(v) {
+  if (!v) return '—'
+  const s = String(v)
+  const d = new Date(/[Z+]/.test(s) ? s : s + 'Z')
+  return Number.isNaN(d.getTime())
+    ? s
+    : d.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
+function mwMs(v) {
+  const n = Number(v)
+  return Number.isFinite(n) ? `${Math.round(n)} ms` : '—'
+}
+
+// p95/p50 gegen die Schwellen werten (Badge-Farbe der Stats-Zelle)
+function mwLatClass(m, key) {
+  const v = Number(m?.[key])
+  const thr = Number(modelHealth?.thresholds?.[key === 'p95Ms' ? 'p95Ms' : 'p50Ms'])
+  if (!Number.isFinite(v) || !Number.isFinite(thr)) return ''
+  return v > thr ? 'warn' : ''
+}
+
+const MW_STATUS_LABEL = { ok: 'ok', degraded: 'degradiert', blocked: 'gesperrt' }
+
 // Formatier-Helfer für die Speed-Karte (p50-Werte können Zahl oder {p50,p95} sein)
 function speedP50(v) {
   if (v == null) return null
@@ -1051,10 +1093,11 @@ loadHermes()
 loadSpeed()
 loadSuggestStatus()
 loadDcp()
-loadDcp()
+loadModelHealth()
 setInterval(loadAccounts, 60000)
 setInterval(loadHermes, 60000)
 setInterval(loadSpeed, 60000)
+setInterval(loadModelHealth, 60000)
 setInterval(loadSuggestStatus, 60000)
 </script>
 
@@ -1411,6 +1454,99 @@ setInterval(loadSuggestStatus, 60000)
       {/each}
     </div>
   {/if}
+</div>
+
+<div class="card">
+  <h2>
+    Modell-Wächter — Hermes-Verkehr
+    <label class="muted" style="font-weight:400; margin-left:12px">
+      {#if !modelHealth}
+        <span class="badge">lädt …</span>
+      {:else if !modelHealth.enabled}
+        <span class="badge warn">inaktiv (HESTIA_MODEL_WATCH=0)</span>
+      {:else if modelHealth.mode === 'auto'}
+        <span class="badge active">Auto</span>
+      {:else}
+        <span class="badge warn">Dry-Run bis {mwTs(modelHealth.enforceFrom)}</span>
+      {/if}
+      {#if modelHealthError}<span class="badge err">⚠ {modelHealthError}</span>{/if}
+      · Fenster {modelHealth?.windowHours ?? '—'} h
+      · Übergänge>{'>'}12: <span class="mono">{modelHealth?.turns?.turnsOver12 ?? '—'}</span>
+      (max. <span class="mono">{modelHealth?.turns?.maxToolTurns ?? '—'}</span>)
+    </label>
+  </h2>
+
+  {#if modelHealth?.error}
+    <p><span class="badge err">⚠ Wächter: {modelHealth.error}</span></p>
+  {/if}
+
+  <div class="row">
+    <span class="muted">Sperrliste ({(modelHealth?.blocked || []).length}):</span>
+    {#if !modelHealth}
+      <span class="muted">lädt …</span>
+    {:else if !(modelHealth.blocked || []).length}
+      <span class="badge active">keine Sperren</span>
+    {:else}
+      {#each modelHealth.blocked as b}
+        <span class="badge err" title="bis {mwTs(b.until)}">
+          {b.provider ? b.provider + '/' : ''}{b.model} — {b.reason || 'Grund unbekannt'}
+          (bis {mwTs(b.until)})
+        </span>
+      {/each}
+    {/if}
+  </div>
+
+  <div class="row">
+    <span class="muted">Ausstehende Änderungen ({(modelHealth?.pending || []).length}):</span>
+    {#if !modelHealth}
+      <span class="muted">lädt …</span>
+    {:else if !(modelHealth.pending || []).length}
+      <span class="muted">keine</span>
+    {:else}
+      {#each modelHealth.pending as p}
+        <span class="badge" title="Grund: {p.reason || ''}">
+          <span class="mono">{p.kind}</span>: <span class="mono">{p.from || '—'}</span> →
+          <span class="mono">{p.to || '—'}</span>
+        </span>
+      {/each}
+    {/if}
+  </div>
+
+  {#if modelHealth && (modelHealth.models || []).length}
+    <table>
+      <thead><tr><th>Modell</th><th>Calls</th><th>p50</th><th>p95</th><th>Stalls</th><th>Fehler</th><th>Status</th></tr></thead>
+      <tbody>
+        {#each [...modelHealth.models]
+          .sort((a, b) => (Number(b.p95Ms) || 0) - (Number(a.p95Ms) || 0))
+          .slice(0, 10) as m}
+          <tr>
+            <td class="mono">{m.ref}</td>
+            <td>{m.calls ?? '—'}</td>
+            <td class={mwLatClass(m, 'p50Ms')}>{mwMs(m.p50Ms)}</td>
+            <td class={mwLatClass(m, 'p95Ms')}>{mwMs(m.p95Ms)}</td>
+            <td>{m.stalls ?? 0}</td>
+            <td>{m.errors ?? 0}</td>
+            <td>
+              {#if m.status === 'blocked'}<span class="badge err">{MW_STATUS_LABEL[m.status] || m.status}</span>
+              {:else if m.status === 'degraded'}<span class="badge warn">{MW_STATUS_LABEL[m.status] || m.status}</span>
+              {:else}<span class="badge active">{MW_STATUS_LABEL[m.status] || m.status}</span>{/if}
+              {#if m.blockedUntil}<span class="muted">bis {mwTs(m.blockedUntil)}</span>{/if}
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  {:else if modelHealth}
+    <p class="muted">Keine Modell-Metriken im Fenster — Hermes-Verkehr sammelt sich.</p>
+  {/if}
+
+  <p class="muted" style="margin-top:6px">
+    Quelle: Agent-Log des Hermes-Containers (keine Inhalte, nur Metriken).
+    Dry-Run: Änderungen werden nur als „pending" geplant; ab
+    <span class="mono">{mwTs(modelHealth?.enforceFrom) || '—'}</span> wendet der Wächter sie selbst an
+    (Cooldown {modelHealth?.thresholds?.cooldownHours ?? '—'} h, Quarantäne
+    {modelHealth?.thresholds?.quarantineHours ?? '—'} h).
+  </p>
 </div>
 
 <div class="card">
