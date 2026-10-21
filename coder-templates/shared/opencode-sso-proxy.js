@@ -77,7 +77,30 @@ function rebuildHeaderLines(rawHeaders) {
   return lines;
 }
 
+// Minimaler Service-Worker für GET /sw.js (auch mit Query-String):
+// Die OpenCode-Web-UI registriert über /sw.js einen Workbox-Service-Worker;
+// ein alter Cache liefert sonst die gespeicherte App-Hülle aus und überdeckt
+// die Anmelde-Weiterleitung. Der Proxy beantwortet die Anfrage daher selbst
+// mit einem Worker, der sich sofort wieder abmeldet (alter Cache wird
+// aufgeräumt), und stellt sicher, dass nichts gespeichert wird (no-store).
+const SW_BODY =
+  'self.addEventListener("install", () => self.skipWaiting());\n' +
+  'self.addEventListener("activate", (event) => event.waitUntil(self.registration.unregister()));\n';
+
+function isServiceWorkerRequest(method, url) {
+  if (method !== "GET") return false;
+  return url.split("?")[0] === "/sw.js";
+}
+
 const server = http.createServer((req, res) => {
+  if (isServiceWorkerRequest(req.method, req.url)) {
+    res.writeHead(200, {
+      "Content-Type": "application/javascript; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    res.end(SW_BODY);
+    return;
+  }
   const upstream = http.request(
     {
       host: BIND_ADDR,

@@ -8,6 +8,8 @@
 //   5. Ohne OPENCODE_SERVER_PASSWORD kein Start
 //   6. Listen-Port == Ziel-Port → Start verweigert
 //   7. Nicht-Loopback-Adresse ablehnen (wenn eine vorhanden ist)
+//   8. GET /sw.js (auch mit Query) → Proxy antwortet selbst, Upstream sieht nichts
+//   9. Normaler Pfad (/api/info) geht weiterhin an den Upstream
 // Bei Erfolg: "OK", Exit 0. Sonst Fehlerliste, Exit 1.
 
 import { spawn } from "node:child_process";
@@ -136,7 +138,7 @@ function httpGet(port, requestPath, headers = {}) {
       (res) => {
         let body = "";
         res.on("data", (d) => (body += d.toString()));
-        res.on("end", () => resolve({ status: res.statusCode, body }));
+        res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body }));
       }
     );
     req.on("error", reject);
@@ -263,6 +265,42 @@ try {
       `Adresse: ${nonLoopback[0]}`
     );
   }
+
+  // 8) GET /sw.js wird vom Proxy selbst beantwortet (ohne Upstream)
+  const swSeenBefore = stub.seen.length;
+  const rswA = await httpGet(proxyPort, "/sw.js");
+  const rswB = await httpGet(proxyPort, "/sw.js?v=2");
+  const swSeen = stub.seen.slice(swSeenBefore);
+  const swOk = (r) =>
+    r.status === 200 &&
+    (r.headers["content-type"] || "").includes("javascript") &&
+    (r.headers["cache-control"] || "") === "no-store" &&
+    r.body.includes("unregister");
+  check(
+    "GET /sw.js → 200, javascript, no-store, abmeldender Body",
+    swOk(rswA),
+    `status=${rswA.status} ct=${rswA.headers["content-type"]} cc=${rswA.headers["cache-control"]}`
+  );
+  check(
+    "GET /sw.js?v=2 verhält sich genauso",
+    swOk(rswB),
+    `status=${rswB.status} ct=${rswB.headers["content-type"]} cc=${rswB.headers["cache-control"]}`
+  );
+  check(
+    "Stub sieht keine Anfrage für /sw.js",
+    swSeen.length === 0,
+    `gesehen: ${JSON.stringify(swSeen)}`
+  );
+
+  // 9) Normaler Pfad geht weiterhin an den Upstream
+  const beforeNormal = stub.seen.length;
+  const rInfo = await httpGet(proxyPort, "/api/info");
+  const infoSeen = stub.seen.slice(beforeNormal);
+  check(
+    "GET /api/info wird weiterhin durchgereicht",
+    rInfo.status === 200 && rInfo.body === "stub-ok" && infoSeen.length === 1,
+    `status=${rInfo.status} body=${rInfo.body} gesehen=${JSON.stringify(infoSeen)}`
+  );
 
   // 5) Ohne Passwort kein Start
   const port5a = await freePort();
