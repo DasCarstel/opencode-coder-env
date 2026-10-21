@@ -38,6 +38,13 @@ geplant (Dry-Run) bzw. gewartet.
 Es wird nie an platform_toolsets/skills/agent/providers gearbeitet — das
 Payload entsteht 1:1 aus der _public()-Form, nur die Modellfelder wandern
 rein.
+
+Schleifen-Detektor: Für jede Session zählt der Parser Tool-Aufrufe
+("agent.tool_executor: tool <name> completed"); beim Turn-Ende wird das
+häufigste Tool bewertet. Ab LOOP_THRESHOLD (Default 8, Env
+HESTIA_MODEL_WATCH_LOOP_THRESHOLD) landet ein Loop-Event in der SQLite-
+Tabelle `loops` und wird per ntfy gemeldet — bewusst OHNE Block/Apply
+(keine automaticallys in die Modellzuweisung).
 """
 import copy
 import json
@@ -98,6 +105,9 @@ FIRST_READ_BYTES = _int_env("HESTIA_MODEL_WATCH_FIRST_READ", 5 * 1024 * 1024)
 MAX_READ_BYTES = 32 * 1024 * 1024
 DRY_RUN_HOURS = _int_env("HESTIA_MODEL_WATCH_DRY_RUN_HOURS", 48)
 PRUNE_DAYS = 14
+# Schleifen-Detektor: >= LOOP_THRESHOLD Aufrufe desselben Tools in einem
+# Turn = Loop-Event (Meldung + DB, KEIN Block — keine Auto-Entscheidung).
+LOOP_THRESHOLD = _int_env("HESTIA_MODEL_WATCH_LOOP_THRESHOLD", 8)
 # ntfy: Token kommt aus OpenBao (secret/data/mcp/notify → NTFY_TOKEN, geladen
 # von bootstrap.py). Ohne Token bleibt es beim Log-Eintrag.
 NTFY_URL = os.environ.get("HESTIA_NTFY_URL", "").strip()
@@ -227,13 +237,16 @@ RE_STALL = re.compile(r"Stream stale for (\d+(?:\.\d+)?)s")
 RE_API_CALLS = re.compile(r"\bapi_calls=(\d+)(?:/(\d+))?")
 RE_TOOL_TURNS = re.compile(r"\btool_turns=(\d+)")
 RE_SESSION = re.compile(r"\bsession=(\S+)")
+# Schleifen-Detektor: Logger "agent.tool_executor" mit
+# "tool <name> completed (…)" — der Logger-Präfix steckt in LINE_RE.logger.
+RE_TOOL_EXEC = re.compile(r"^tool (\S+) completed\b")
 # Provider-Auth-Fehler (z. B. opencode-zen) sind Konto-/Provider-Probleme,
 # KEINE Modellfehler — sie kippen die Error-Rate eines Modells nie.
 AUTH_PROVIDERS = {"opencode-zen"}
 
 
 def parse_line(line: str) -> list:
-    """Eine Hermes-Zeile in Events (call/stall/error/turn) überführen.
+    """Eine Hermes-Zeile in Events (call/stall/error/turn/loop) überführen.
 
     `model` ist immer `provider/model`, wenn die Zeile beides nennt; fehlt
     der Provider (Stall-/Turn-Zeilen nennen nur model=), bleibt der nackte
@@ -243,17 +256,28 @@ def parse_line(line: str) -> list:
     if not m:
         return []
     ts = line_ts(m.group("ts"))
+    if not ts:
+        return []
     level, msg = m.group("level"), m.group("msg")
+    sid = m.group("sid")
     pm, mm = RE_PROVIDER.search(msg), RE_MODEL.search(msg)
     provider = pm.group(1) if pm else None
     model = mm.group(1) if mm else None
-    if not model or not ts:
-        return []
-    ref = f"{provider}/{model}" if provider else model
+    ref = (f"{provider}/{model}" if provider and model
+           else (model or None))
     out = []
+
+    # Schleifen-Detektor: Session-Kontext pflegen (auch in Zeilen ohne
+    # model= — genau die Tool-Executor-Zeilen sind es).
+    if m.group("logger") == "agent.tool_executor":
+        tm = RE_TOOL_EXEC.search(msg)
+        if tm:
+            _record_tool_call(sid, tm.group(1))
 
     # 1) API-Call: "API call #2: model=… provider=… in=… out=… latency=1.0s …"
     if "API call #" in msg:
+        if ref:
+            _record_session_model(sid, ref)
         lm = RE_LATENCY.search(msg)
         lat_ms = int(round(float(lm.group(1)) * 1000)) if lm else None
         if lat_ms is not None:
@@ -266,6 +290,14 @@ def parse_line(line: str) -> list:
                 "ok": 1,
             })
             return out
+
+    if not model:
+        # Turn-Ende ohne model= trotzdem auf Loops bewerten, sonst Events.
+        if "Turn ended:" in msg:
+            loop_ev = _turn_loop_event(ts, sid, msg)
+            if loop_ev:
+                out.append(loop_ev)
+        return out
 
     # 2) Stream-Stall: "Stream stale for 8s … model=…"
     stm = RE_STALL.search(msg)
@@ -289,7 +321,68 @@ def parse_line(line: str) -> list:
             "tool_turns": int(tool.group(1)) if tool else None,
             "session": sess.group(1) if sess else None,
         })
+        loop_ev = _turn_loop_event(ts, sid, msg)
+        if loop_ev:
+            out.append(loop_ev)
     return out
+
+
+# ── Schleifen-Detektor: Session-Kontext (Tool-Zähler, Modell) ────────────────
+
+_SESSION_CTX: dict = {}          # sid -> {"model": ref|None, "tools": {name: n}}
+_SESSION_CTX_LIMIT = 1024        # Schutz gegen vergessene Turn-Enden
+
+
+def _reset_session_ctx():
+    """Session-Kontext leeren (Tests/Neustart)."""
+    _SESSION_CTX.clear()
+
+
+def _ctx_for(sid) -> dict:
+    ctx = _SESSION_CTX.get(sid)
+    if ctx is None:
+        if len(_SESSION_CTX) >= _SESSION_CTX_LIMIT:
+            _SESSION_CTX.clear()      # Best-Effort: Fronte neu zählen
+        ctx = _SESSION_CTX[sid] = {"model": None, "tools": {}}
+    return ctx
+
+
+def _record_tool_call(sid, tool: str):
+    """Tool-Aufruf in den laufenden Turn der Session zählen."""
+    if not sid:
+        return
+    ctx = _ctx_for(sid)
+    tools = ctx["tools"]
+    tools[tool] = tools.get(tool, 0) + 1
+
+
+def _record_session_model(sid, ref):
+    """Modell-Ref aus Call-Zeilen als Session-Kontext merken."""
+    if not sid or not ref:
+        return
+    _ctx_for(sid)["model"] = ref
+
+
+def _turn_loop_event(ts, sid, msg) -> dict | None:
+    """Bei 'Turn ended': häufigstes Tool des Turns bewerten.
+
+    >= LOOP_THRESHOLD desselben Tools → Loop-Event (Meldung folgt in
+    run_once, KEIN Block). Der Zähler wird danach zurückgesetzt, damit der
+    nächste Turn neu zählt.
+    """
+    sess = RE_SESSION.search(msg or "")
+    session = sess.group(1) if sess else sid
+    ctx = _SESSION_CTX.get(sid)
+    tools = dict(((ctx or {}).get("tools") or {}).items())
+    if ctx is not None:
+        ctx["tools"] = {}             # nächster Turn zählt neu
+    if not tools:
+        return None
+    tool, count = max(tools.items(), key=lambda kv: (kv[1], kv[0]))
+    if count < LOOP_THRESHOLD:
+        return None
+    return {"kind": "loop", "ts": ts, "session": session or sid,
+            "model": (ctx or {}).get("model"), "tool": tool, "count": count}
 
 
 def parse_lines(lines) -> list:
@@ -328,10 +421,19 @@ CREATE TABLE IF NOT EXISTS turns (
     tool_turns INTEGER,
     session TEXT
 );
+CREATE TABLE IF NOT EXISTS loops (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    session TEXT,
+    model TEXT,
+    tool TEXT NOT NULL,
+    count INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_calls_ts ON calls(ts);
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_events_model ON events(model, kind);
 CREATE INDEX IF NOT EXISTS idx_turns_ts ON turns(ts);
+CREATE INDEX IF NOT EXISTS idx_loops_ts ON loops(ts);
 """
 
 FILE_LOCK = threading.Lock()          # schützt State-/Block-/Policy-Dateien
@@ -374,9 +476,15 @@ def _db_write(rows: list) -> int:
                     "session) VALUES (?, ?, ?, ?, ?)",
                     (row["ts"], row["model"], row.get("api_calls"),
                      row.get("tool_turns"), row.get("session")))
+            elif kind == "loop":
+                con.execute(
+                    "INSERT INTO loops (ts, session, model, tool, count) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (row["ts"], row.get("session"), row.get("model"),
+                     row["tool"], int(row.get("count") or 0)))
         if PRUNE_DAYS:
             cutoff = _now_ts(time.time() - PRUNE_DAYS * 86400)
-            for table in ("calls", "events", "turns"):
+            for table in ("calls", "events", "turns", "loops"):
                 con.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
         con.commit()
         return len(rows)
@@ -682,6 +790,9 @@ def _read_lines(path: str, start: int, log: dict, inode: int) -> list:
     return lines
 
 
+_NEW_LOOP_BATCH: list = []        # Loop-Events des letzten Ingest-Laufs
+
+
 def _ingest_logs(st: dict) -> int:
     """agent.log inkrementell parsen und einmalig in die DB committen."""
     log = st["log"]
@@ -689,6 +800,7 @@ def _ingest_logs(st: dict) -> int:
         sinfo = os.stat(LOG_FILE)
     except OSError:
         log["missing"] = True
+        _NEW_LOOP_BATCH.clear()
         return 0
     log.pop("missing", None)
     start, inode = _parse_positions(log, sinfo)
@@ -696,7 +808,10 @@ def _ingest_logs(st: dict) -> int:
     rows = parse_lines(lines)
     if rows:
         log["lastLineAt"] = max(row["ts"] for row in rows)
+        _NEW_LOOP_BATCH[:] = [r for r in rows if r.get("kind") == "loop"]
         _db_write(rows)               # ein Commit pro Parse-Lauf
+    else:
+        _NEW_LOOP_BATCH.clear()
     return len(rows)
 
 
@@ -951,6 +1066,15 @@ def run_once(apply_fn=None) -> dict:
         st = _load_state()
         enforce_epoch = _ensure_enforce_from(st, now_epoch)
         out["ingested"] = _ingest_logs(st)
+        # Schleifen-Detektor: neue Loop-Events melden (einmal pro Turn),
+        # bewusst OHNE Block/Apply — keine automatische Modell-Entscheidung.
+        for loop_ev in _NEW_LOOP_BATCH:
+            _notify(
+                f"Schleife erkannt: {loop_ev.get('model') or 'unbekannt'} "
+                f"rief {loop_ev.get('tool')} {loop_ev.get('count')}x "
+                f"in einem Turn auf (Session {loop_ev.get('session')})")
+        if _NEW_LOOP_BATCH:
+            out["loops"] = [dict(loop_ev) for loop_ev in _NEW_LOOP_BATCH]
         stats = model_stats(int(pol["window_hours"]))
 
         # Sperrliste pflegen (abgelaufene raus) und neue Degraded-Modelle sperren
@@ -1106,7 +1230,10 @@ def state() -> dict:
         log = st.get("log") or {}
         out["log"] = {"offset": int(log.get("offset") or 0),
                       "lastLineAt": log.get("lastLineAt")}
-        # Turns: maximale Tool-Turns im Fenster + wie viele über 12 liegen
+        # Turns: maximale Tool-Turns im Fenster + wie viele über 12 liegen;
+        # Loops: Anzahl der Loop-Events im Fenster + Top-Tools + Schwelle
+        out["loops"] = {"count": 0, "threshold": LOOP_THRESHOLD,
+                        "topTools": []}
         if os.path.isfile(DB_PATH):
             try:
                 con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True,
@@ -1121,6 +1248,22 @@ def state() -> dict:
                     out["turns"] = {
                         "maxToolTurns": max_row[0],
                         "turnsOver12": int(over_row[0] or 0),
+                    }
+                    loop_count = con.execute(
+                        "SELECT COUNT(*) FROM loops WHERE ts >= ?",
+                        (cutoff,)).fetchone()
+                    loop_tools = con.execute(
+                        "SELECT tool, COUNT(*) AS events, SUM(count) AS "
+                        "total FROM loops WHERE ts >= ? GROUP BY tool "
+                        "ORDER BY total DESC, tool LIMIT 5",
+                        (cutoff,)).fetchall()
+                    out["loops"] = {
+                        "count": int(loop_count[0] or 0),
+                        "threshold": LOOP_THRESHOLD,
+                        "topTools": [
+                            {"tool": row[0], "count": int(row[2] or 0),
+                             "events": int(row[1] or 0)}
+                            for row in loop_tools],
                     }
                 finally:
                     con.close()

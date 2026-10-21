@@ -16,6 +16,7 @@ Läuft mit pytest UND direkt:
 """
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import time
@@ -333,6 +334,118 @@ check("latency ms aus Log", got.get("p50Ms") == 1000, str(got.get("p50Ms")))
 st1 = mw._load_state()
 check("kein erneutes Ingest (Offset-Advanced)",
       mw._ingest_logs(st1) == 0, str(mw._ingest_logs(st1)))
+
+print("\n[12] Loop-Detektor: Schwelle, Normalfall, Persistenz, Meldung")
+
+
+def _loop_lines(n_tool_search, n_web=0, sid="api-l1", model="beam-free"):
+    """Ein Turn mit n_tool_search tool_search- und n_web web-Aufrufen."""
+    lines = [
+        f"2026-10-21 10:00:00,000 INFO [{sid}] agent.conversation_loop: "
+        f"API call #1: model={model} provider=opencode-go in=100 out=1 "
+        "total=101 latency=0.5s id=x"]
+    for i in range(n_tool_search):
+        lines.append(
+            f"2026-10-21 10:00:10,{i:03d} INFO [{sid}] agent.tool_executor: "
+            "tool tool_search completed (0.01s, 598 chars)")
+    for i in range(n_web):
+        lines.append(
+            f"2026-10-21 10:00:20,{i:03d} INFO [{sid}] agent.tool_executor: "
+            "tool web completed (1.20s, 4096 chars)")
+    lines.append(
+        f"2026-10-21 10:01:00,000 INFO [{sid}] agent.conversation_loop: "
+        f"Turn ended: reason=text_response(final) model={model} "
+        f"api_calls=10/9223372036854775807 tool_turns={n_tool_search + n_web} "
+        f"session={sid}")
+    return lines
+
+
+mw._reset_session_ctx()
+rows9 = mw.parse_lines(_loop_lines(9))
+loops9 = [r for r in rows9 if r.get("kind") == "loop"]
+check("(a) 9x tool_search → Loop erkannt", len(loops9) == 1, str(rows9))
+if loops9:
+    ev = loops9[0]
+    check("(a) Tool/Count", (ev["tool"], ev["count"]) ==
+          ("tool_search", 9), f"{ev['tool']}/{ev['count']}")
+    check("(a) Modell aus Session-Kontext",
+          ev["model"] == "opencode-go/beam-free", str(ev["model"]))
+    check("(a) Session", ev["session"] == "api-l1", str(ev["session"]))
+
+mw._reset_session_ctx()
+rows7 = mw.parse_lines(_loop_lines(7))
+check("(b) 7x → kein Loop",
+      not [r for r in rows7 if r.get("kind") == "loop"], str(rows7))
+
+mw._reset_session_ctx()
+rows_mix = mw.parse_lines(_loop_lines(5, n_web=3))
+check("(c) 2 verschiedene Tools (5+3) → kein Loop",
+      not [r for r in rows_mix if r.get("kind") == "loop"], str(rows_mix))
+
+# Env-Threshold-Override funktioniert (wird beim Import gelesen, Test regelt
+# das über das Modulattribut nach).
+old_thr = mw.LOOP_THRESHOLD
+mw.LOOP_THRESHOLD = 10
+try:
+    mw._reset_session_ctx()
+    rows8 = mw.parse_lines(_loop_lines(8))
+    check("(d) Override: 8x < Schwelle 10 → kein Loop",
+          not [r for r in rows8 if r.get("kind") == "loop"], str(rows8))
+finally:
+    mw.LOOP_THRESHOLD = old_thr
+
+# Persistenz + state() + Meldung über den echten Ingest-Pfad
+reset_dir()
+os.makedirs(os.path.dirname(mw.LOG_FILE), exist_ok=True)
+with open(mw.LOG_FILE, "w", encoding="utf-8") as f:
+    f.write("\n".join(_loop_lines(9)) + "\n")
+con = sqlite3.connect(mw.DB_PATH)
+con.execute("DELETE FROM loops")
+con.commit()
+con.close()
+prep_run()
+notify_log = []
+real_notify = mw._notify
+mw._notify = lambda msg: notify_log.append(msg)
+try:
+    res_loop = mw.run_once()
+finally:
+    mw._notify = real_notify
+con = sqlite3.connect(mw.DB_PATH)
+try:
+    loop_rows = con.execute(
+        "SELECT ts, session, model, tool, count FROM loops").fetchall()
+finally:
+    con.close()
+check("(e) Loop in SQLite persistiert",
+      len(loop_rows) == 1
+      and loop_rows[0][1] == "api-l1"
+      and loop_rows[0][2] == "opencode-go/beam-free"
+      and loop_rows[0][3] == "tool_search"
+      and loop_rows[0][4] == 9, str(loop_rows))
+check("(f) Meldung einmal pro Turn (ntfy-Text)",
+      notify_log == ["Schleife erkannt: opencode-go/beam-free rief "
+                     "tool_search 9x in einem Turn auf (Session api-l1)"],
+      str(notify_log))
+check("(g) run_once-Resultat nennt das Loop-Event",
+      bool((res_loop.get("loops") or [{}])[0].get("tool") == "tool_search"),
+      str(res_loop.get("loops")))
+s_loop = mw.state()
+check("(h) state() loops.threshold",
+      (s_loop.get("loops") or {}).get("threshold") == mw.LOOP_THRESHOLD,
+      str(s_loop.get("loops")))
+check("(i) state() loops.count",
+      (s_loop.get("loops") or {}).get("count") == 1,
+      str(s_loop.get("loops")))
+top = (s_loop.get("loops") or {}).get("topTools") or []
+check("(j) state() Top-Tools (tool/count/events)",
+      len(top) == 1 and top[0] == {"tool": "tool_search", "count": 9,
+                                   "events": 1}, str(top))
+# bestehende Felder unverändert
+check("(k) state()-Felder unverändert",
+      all(k in s_loop for k in ("turns", "models", "blocked", "pending",
+                                "actions", "thresholds", "log")),
+      str(sorted(s_loop.keys())))
 
 print()
 if not fails:
