@@ -13,9 +13,8 @@ Error-Rate, Quarantäne-/Cooldown-Dauern und eine Preferred-Liste für
 Ersatzmodelle. Defaults in DEFAULT_POLICY, überschreibbar über
 /app/data/model-watch-policy.json und Env (HESTIA_MODEL_WATCH_*).
 
-Degraded ist ein Modell (mit min_calls je Kanal und p50-Guard gegen
-Ausreißer-Trigger), wenn:
-  - p95 UND p50 über den Latenz-Schwellen, oder
+Degraded ist ein Modell (mit min_calls je Kanal), wenn:
+  - p95 über der Latenz-Schwelle, oder
   - >= stall_limit Stalls im Fenster, oder
   - Error-Rate > error_rate (Provider-Auth-Fehler zählen NICHT als
     Modellfehler — sie sind ein Konto-/Provider-Problem).
@@ -116,7 +115,7 @@ STATE_PATH = os.environ.get("HESTIA_MODEL_WATCH_STATE_PATH",
 DEFAULT_POLICY = {
     "window_hours": _int_env("HESTIA_MODEL_WATCH_WINDOW_HOURS", 24),
     "min_calls_latency": _int_env("HESTIA_MODEL_WATCH_MIN_CALLS_LATENCY", 20),
-    "min_calls_stall": _int_env("HESTIA_MODEL_WATCH_MIN_CALLS_STALL", 5),
+    "min_calls_stall": _int_env("HESTIA_MODEL_WATCH_MIN_CALLS_STALL", 3),
     "min_calls_error": _int_env("HESTIA_MODEL_WATCH_MIN_CALLS_ERROR", 10),
     "p95_ms": _int_env("HESTIA_MODEL_WATCH_P95_MS", 6000),
     "p50_ms": _int_env("HESTIA_MODEL_WATCH_P50_MS", 4000),
@@ -481,12 +480,13 @@ def _degraded_reasons(m: dict, pol: dict) -> list:
     reasons = []
     calls = int(m.get("calls") or 0)
     p50, p95 = m.get("p50Ms"), m.get("p95Ms")
-    if (calls >= pol["min_calls_latency"] and p95 is not None and p50 is not None
-            and p95 > pol["p95_ms"] and p50 > pol["p50_ms"]):
-        # p50-Guard: ein einzelner Ausreißer triggert nicht
+    if (calls >= pol["min_calls_latency"] and p95 is not None
+            and p95 > pol["p95_ms"]):
+        # Ab min_calls_latency ist p95 robust gegen einen einzelnen
+        # Ausreißer (p95 ist dann nicht mehr der Maximalwert). p50 bleibt
+        # nur informativ im State — die gewählte Regel ist p95-basiert.
         reasons.append(
-            f"p95 {p95}ms > {pol['p95_ms']}ms UND p50 {p50}ms > "
-            f"{pol['p50_ms']}ms")
+            f"p95 {p95}ms > {pol['p95_ms']}ms (p50 {p50}ms, {calls} Calls)")
     if (calls >= pol["min_calls_stall"]
             and (m.get("stalls") or 0) >= pol["stall_limit"]):
         reasons.append(
@@ -779,10 +779,21 @@ def plan_changes(public: dict, blocked_refs, policy: dict | None = None):
                 "Primary blockiert, aber kein sauberer Fallback übrig — "
                 "keine Aktion")
     elif fb_bad:
-        plan["fallback"] = fb_good
-        pending.append({"kind": "fallback", "from": ",".join(fb_refs),
-                        "to": ",".join(fb_good) or "—",
-                        "reason": "Blockierte Fallbacks entfernt"})
+        if not fb_good:
+            # Alle Fallbacks blockiert: mit einem Preferred-Kandidaten
+            # auffüllen, damit kein blockiertes Modell stehen bleibt und
+            # Hermes nicht mit leerer Fallback-Liste dasteht.
+            fb_good = [c for c in (pol.get("preferred") or [])
+                       if c not in blocked and c != pref_ref][:1]
+        if fb_good:
+            plan["fallback"] = fb_good
+            pending.append({"kind": "fallback", "from": ",".join(fb_refs),
+                            "to": ",".join(fb_good) or "—",
+                            "reason": "Blockierte Fallbacks entfernt"})
+        else:
+            alarms.append(
+                "Alle Fallbacks blockiert und kein Preferred-Kandidat — "
+                "keine Aktion")
 
     # 3) Profile: gleiches Muster je eigenem primary/fallback
     profiles = (public.get("profiles")
