@@ -1,10 +1,13 @@
 {
-  "updatedAt": "2026-10-20T06:01:51Z",
+  "updatedAt": "2026-10-22T07:00:43Z",
   "tiers": {
     "fast": {
       "model": "opencode-go/deepseek-v4.1-flash#low",
-      "ok": true,
-      "failStreak": 0
+      "ok": false,
+      "failStreak": 1,
+      "lastFailAt": "2026-10-22T07:00:28Z",
+      "lastFailureKind": "outage",
+      "quarantineUntil": ""
     },
     "medium": {
       "model": "opencode-go/glm-5.3-flash",
@@ -20,8 +23,10 @@
   "models": {
     "opencode-go/deepseek-v4.1-flash#low": {
       "model": "opencode-go/deepseek-v4.1-flash#low",
-      "failStreak": 0,
-      "quarantineUntil": ""
+      "failStreak": 1,
+      "quarantineUntil": "",
+      "lastFailAt": "2026-10-22T07:00:28Z",
+      "lastFailureKind": "outage"
     },
     "opencode-go/glm-5.3-flash": {
       "model": "opencode-go/glm-5.3-flash",
