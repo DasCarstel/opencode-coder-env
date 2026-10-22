@@ -511,6 +511,12 @@ Die drei npm-Pakete bleiben bewusst in **einem** Job (`npm_chain`) hintereinande
 sind idempotent: was das Image schon mitbringt (Stempel-Dateien in
 `/root/.local/bin`), melden sie nur als „bereits vorhanden“.
 
+Die Zeitmarken des Setups (`[  0s] …`, `Setup abgeschlossen in Ns`) schreibt der
+Entrypoint nach `/tmp/entrypoint-setup.log` — **außer** bei `datascience`: dort
+landet derselbe Ablauf in `/tmp/uni-startup.log` (FernUni-Einstieg). Die
+Startantworten der Herdr-Agenten stehen je Workspace in
+`/tmp/bg-ws-start-<label>.log`.
+
 1. **Versions-Pins laden** — `source ../versions.env`; fehlt die Datei, werden alle
    Pins leer gesetzt (Blöcke warnen, laufende Version bleibt).
 2. **OpenBao AppRole-Login** — `POST /v1/auth/approle/login` mit
@@ -605,6 +611,9 @@ sind idempotent: was das Image schon mitbringt (Stempel-Dateien in
     ⚠️ Ein kleineres `--timeout` ist **keine** Alternative: unter 3000 ms bricht
     der Start mit `timeout` ab und der Agent wird **gar nicht** registriert
     (2026-10-18 in einem Probe-Workspace gemessen).
+    ⚠️ Beim Prüfen mit `herdr agent list` auf die JSON-Reihenfolge achten:
+    `interactive_ready` steht **vor** `name` — ein `grep` auf
+    `"name":….*interactive_ready` liefert deshalb fälschlich „kein Agent".
 
 17. **`ha-forward.py`** — startet bei Bedarf das HA-Kleve-TCP-Relay
     (`127.0.0.1:18123` → HA Kleve), damit Container ohne Tailscale den
@@ -669,6 +678,14 @@ prüft — ohne sie würde trotz Bake erneut installiert. `muellerconnect` und
 gesetzt) steht in **jedem** `Dockerfile` **hinter** allen Install-Layern. Stünde
 der Cache-Buster oben, würde er bei jedem Apply/Neustart genau diese Layers
 wieder aufreißen — das war die Ursache der früheren 4–6-min-Neustarts.
+
+> **Betriebshinweis (2026-10-22):** Weil `CACHE_DATE` auf `timestamp()` steht,
+> plant **jeder** Apply ein `docker_image … (forces replacement)` — auch ein
+> reiner Workspace-Neustart ohne Template-Änderung baut das Image also neu.
+> Mit warmem BuildKit-Cache sind das ~2 s (gemessen); bei leerem Cache
+> entsprechend länger. Das ist bewusst so: das Image ist damit nie veraltet.
+> Wer den Rebuild nur bei echten Template-Änderungen will, müsste `CACHE_DATE`
+> an die Template-Version koppeln (nicht umgesetzt).
 
 Was **nicht** ins Image wandert: Herdr (kommt aus dem Host-Bind
 `/opt/opencode-bin/herdr`) und der OpenCode-Plugin-Cache (`~/.cache/opencode`,
@@ -739,3 +756,20 @@ coder templates push <name> --directory coder-templates/<name> --yes --org=coder
 `<name>` = `infrastructure` | `general` | `muellerconnect` | `datascience`.
 Das Image wird lokal aus dem jeweiligen `Dockerfile` gebaut; der `CACHE_DATE`
 Build-Arg erzwingt den Rebuild beim Push.
+
+## Workspace neu starten (Betrieb, Stand 2026-10-22)
+
+Getestet mit der CLI im `coder`-Container (`/opt/coder`):
+
+| Weg | Ergebnis |
+|-----|----------|
+| `coder stop <owner>/<ws>` bzw. `coder restart <owner>/<ws>` | **scheitert**: `rc=1`, `error: EOF` (CLI/Server-Mismatch der laufenden Coder-Version) |
+| `coder update <owner>/<ws>` | **No-op**, wenn das Template unverändert ist („Workspace is up-to-date.") |
+| `coder templates push …` + `coder update …` | löst immer einen neuen Build aus (Image-Rebuild über `CACHE_DATE`) |
+| `docker restart coder-carstenmueller2002-<profil>` | schnellster reiner Neustart **ohne** Terraform: Entrypoint läuft, Repo-Klon wird auf `master` resettet, `startup.sh` startet neu. Coder sieht keinen Build-Eintrag; der Agent verbindet sich selbst wieder |
+
+Konsequenz: Änderungen an `startup.sh` oder an Workspace-seitigen Dateien
+brauchen **keinen** Template-Rollout — das Skript kommt beim Container-Start aus
+dem Repo-Klon. Ein `docker restart` genügt zum Testen. Achtung: `/tmp` liegt im
+Container-Layer und überlebt den Neustart, `entrypoint-setup.log` wird daher
+**angehängt** — direkt danach steht dort noch der alte Lauf.

@@ -53,6 +53,7 @@ aktiv, ab `compress.maxContextLimit` verstärkt; zusätzlich räumen die Strateg
 |--------|-----|----------|------------|--------------|
 | `homeassistant` | remote | `https://intern-homeassistant.mueller-nas.de/api/mcp` | `Authorization: Bearer {env:HA_LLA_TOKEN}` | homeassistant |
 | `homeassistant-kleve` | remote | `http://192.168.178.52:8123/api/mcp` | `Authorization: Bearer {env:HA_KLEVE_LLA_TOKEN}` | cleve |
+| `homarr` | remote | `https://homarr.mueller-nas.de/api/mcp` (Homarr, nativer MCP v2) | `ApiKey: {env:HOMARR_API_KEY}` (OpenBao `secret/data/mcp/homarr`) | server-management |
 | `ocis` | local | `owncloud/ocis-mcp-server` v1.1.0 (Binary `/root/.local/bin/ocis-mcp-server`) | `OCIS_MCP_OCIS_URL`, `OCIS_MCP_APP_TOKEN_USER`, `OCIS_MCP_APP_TOKEN_VALUE` | server-management, homeassistant, svelte, general, minijob |
 | `authentik` | local (via `uvx`) | Community-MCP `nikitatsym/authentik-mcp` | `AUTHENTIK_URL`, `AUTHENTIK_TOKEN` | server-management, svelte |
 | `svelte` | remote | `https://mcp.svelte.dev/mcp` | – | svelte |
@@ -242,6 +243,22 @@ vollständig — die Trennung ist auch hier eine Eigenschaft der Datei.
   `PowerShell/Win32-OpenSSH` (unabhängig von Windows Update).
 - **Erreichbarkeit:** Der Container erreicht den PC per NAT über den Docker-Host. Für
   `10.0.0.20` sollte in der UniFi eine DHCP-Reservierung bestehen.
+
+### Grenzen von `run-command` (2026-10-22)
+
+- **Keine Zeilenumbrüche:** Mehrzeilige Kommandos werden abgelehnt
+  („Command cannot contain a line break"). Mehrzeilige Skripte deshalb per
+  `sftp-upload` ablegen und per Pfad starten (`bash /tmp/x.sh`), für
+  Abgekoppeltes `setsid nohup bash /tmp/x.sh … &`.
+- **Timeout 60 s:** Längere Läufe (Template-Rollout, Builds) laufen in den
+  Timeout. Abgekoppelte Prozesse laufen weiter — Fortschritt über Logdatei und
+  Marker (`touch`) verfolgen, nicht über die Antwort.
+- **`read-command` ist strikt allowlist-basiert** (z. B. kein
+  `docker exec … grep`); wird ein Lesebefehl abgelehnt, `run-command` verwenden.
+- **Skript in einen Container bringen:** `docker exec -i <container> sh -s <
+  /tmp/x.sh` (Host-Datei als stdin) — spart Quoting-Ebenen.
+- `sftp-upload` nimmt kurzen Text direkt, `sftp-upload-file` Dateien innerhalb
+  des konfigurierten `transferRoot`.
 
 ## oCIS-Guardrail
 
