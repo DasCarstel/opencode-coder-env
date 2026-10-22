@@ -1124,6 +1124,11 @@ if [ "$PROFILE" = "infrastructure" ]; then
       && echo "  ✓ AUTHENTIK_API_KEY im OpenCode-Service gesetzt" \
       || echo "  ⚠ AUTHENTIK_API_KEY konnte nicht gesetzt werden"
   fi
+  if [ -n "${HOMARR_API_KEY:-}" ]; then
+    opencode service set env HOMARR_API_KEY "$HOMARR_API_KEY" >/dev/null 2>&1 \
+      && echo "  ✓ HOMARR_API_KEY im OpenCode-Service gesetzt" \
+      || echo "  ⚠ HOMARR_API_KEY konnte nicht gesetzt werden"
+  fi
 fi
 
 # ntfy-Token (alle Profile): das Plugin liest NTFY_TOKEN/NTFY_URL aus der

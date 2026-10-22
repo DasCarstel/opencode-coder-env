@@ -555,7 +555,10 @@ Startantworten der Herdr-Agenten stehen je Workspace in
    `general`/`muellerconnect` → `workspaces/{general,minijob}/workspace-global.json`.
    Zusätzlich werden die Model-Router-Overrides global abgelegt.
 9. **Env-Injektion** *(nur `infrastructure`)* — `HA_LLA_TOKEN`,
-   `HA_KLEVE_LLA_TOKEN`, `AUTHENTIK_API_KEY` per `opencode service set env`.
+   `HA_KLEVE_LLA_TOKEN`, `AUTHENTIK_API_KEY`, `HOMARR_API_KEY` per
+   `opencode service set env`. Wichtig: `read_secret` allein genügt nicht — ohne
+   diesen Schritt fehlt der Wert im Service-Env und `{env:…}` in der
+   `opencode.json` bleibt leer (MCP antwortet dann 401 / `needs_auth`).
 10. **`oc-go`-Helper** — wird nach `/usr/local/bin/oc-go` geschrieben. Der aktive
     Key kommt aus der SOT `.opencode/hestia-accounts.jsonc` (Feld `active`);
     `OPENCODE_API_KEY` wird dedupliziert in `.bashrc` und ins (ephemere)

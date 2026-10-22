@@ -35,6 +35,7 @@ ausschließlich in `/etc/opencode.env` (Mode 0600) ab.
 | `secret/data/mcp/homeassistant` | `HA_LLA_TOKEN` (`api_key`) |
 | `secret/data/mcp/homeassistant-kleve` | `HA_KLEVE_LLA_TOKEN` (`api_key`) |
 | `secret/data/mcp/authentik` | `AUTHENTIK_API_KEY` (`api_key`) |
+| `secret/data/mcp/homarr` | `HOMARR_API_KEY` (`api_key`) — Header `ApiKey` für den nativen Homarr-MCP (`/api/mcp`) |
 | `secret/data/mcp/grafana` | `GRAFANA_API_KEY` (`api_key`) |
 | `secret/data/mcp/opencloud` | `OPENCLOUD_API_KEY`, `OPENCLOUD_USERNAME` |
 | `secret/data/mcp/opencloud-ocis` | `OCIS_PRIVATE_USER/TOKEN`, `OCIS_MUELLERCONNECT_USER/TOKEN` |
