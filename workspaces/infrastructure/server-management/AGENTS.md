@@ -14,6 +14,7 @@ Authentik über den Community-MCP (`authentik-mcp`).
   - SFTP: `transferRoot=/root/.ssh-mcp-transfers`
 - **authentik** (lokal, `uvx`) – `nikitatsym/authentik-mcp`
   - Token: OpenBao `secret/data/mcp/authentik` → `AUTHENTIK_API_KEY`
+- **homarr** (remote) – `https://homarr.mueller-nas.de/api/mcp`, Auth per Header `ApiKey` aus `{env:HOMARR_API_KEY}` (OpenBao `secret/data/mcp/homarr`)
 
 ## Host-Profile (`~/.config/ssh-mcp/config.toml`)
 

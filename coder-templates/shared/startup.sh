@@ -346,6 +346,7 @@ case "$PROFILE" in
     read_secret "secret/data/mcp/homeassistant"  "api_key"   "HA_LLA_TOKEN"
     read_secret "secret/data/mcp/homeassistant-kleve" "api_key" "HA_KLEVE_LLA_TOKEN"
     read_secret "secret/data/mcp/authentik"      "api_key"   "AUTHENTIK_API_KEY"
+    read_secret "secret/data/mcp/homarr"         "api_key"   "HOMARR_API_KEY"
     read_secret "secret/data/mcp/grafana"        "api_key"   "GRAFANA_API_KEY"
     read_secret "secret/data/mcp/opencloud"      "api_key"   "OPENCLOUD_API_KEY"
     read_secret "secret/data/mcp/opencloud"      "username"  "OPENCLOUD_USERNAME"
