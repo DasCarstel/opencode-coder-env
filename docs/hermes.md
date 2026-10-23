@@ -56,7 +56,7 @@ ergänzt und in `toolsets.enabled` als `mcp-<name>` freigeschaltet (danach
 Aktuell: `homeassistant` (http), `notion` (http/oauth), `ocis-private` und
 `ocis-muellerconnect` (stdio), `super-productivity` (http,
 `https://mcp-superproductivity.mueller-nas.de/mcp`, Bearer-Token) sowie
-`spotify` (stdio, `node /opt/spotify-mcp/build/index.js`, ~20 Tools).
+`spotify` (stdio, `node /opt/spotify-mcp/build/index.js`, 31 Tools).
 
 > **Je Toolset eine eigene Listenzeile.** `- mcp-homeassistant - mcp-ocis-private`
 > in einer Zeile ist **ein** Eintrag namens `mcp-homeassistant - mcp-ocis-private`
@@ -69,7 +69,7 @@ Aktuell: `homeassistant` (http), `notion` (http/oauth), `ocis-private` und
 Der Spotify-MCP-Server
 ([`marcelmarais/spotify-mcp-server`](https://github.com/marcelmarais/spotify-mcp-server))
 steuert Wiedergabe, Suche und Playlisten über Spotify. Er läuft als **stdio**-
-Server (`node /opt/spotify-mcp/build/index.js`, ~20 Tools) und ist im
+Server (`node /opt/spotify-mcp/build/index.js`, 31 Tools) und ist im
 [Dockerfile](../hermes/Dockerfile) eingebaut.
 
 **Build im Image.** Der Server verlangt Node >= 26.8.1; das Basis-Image bringt
@@ -80,20 +80,58 @@ aber nur 26.7.0 mit. Deshalb liegt eine eigene Node-Version unter `/opt/node`
 wird aus einem gepinnten Commit (`ARG SPOTIFY_MCP_COMMIT`); es gibt kein
 npm-Release. Runtime-Dependencies bleiben im Image (`npm prune --omit=dev`).
 
-**Konfigurationsdatei.** Der Server liest seine Zugangsdaten **nicht** aus
-Umgebungsvariablen, sondern aus `../spotify-config.json` relativ zu seinem
-`build/`-Verzeichnis — im Container also
-`/opt/spotify-mcp/spotify-config.json`, ein Symlink auf
-`/opt/data/spotify/spotify-config.json`. Die Datei liegt im Docker-Volume
-`/opt/data` (Rechte **0600**), außerhalb des Repos und bewusst nicht
-versioniert — Client-Secret und Refresh-Token überleben so Deploys und
-Image-Rebuilds. Inhalt: `clientId`, `clientSecret`, `redirectUri`,
-`accessToken`, `refreshToken`, `expiresAt`.
+**Zugangsdaten: OpenBao ist die Quelle.** Der Server liest seine Zugangsdaten
+**nicht** aus Umgebungsvariablen, sondern ausschließlich aus
+`../spotify-config.json` relativ zu seinem `build/`-Verzeichnis — im Container
+also `/opt/spotify-mcp/spotify-config.json`, ein Symlink auf
+`/opt/data/spotify/spotify-config.json` (Docker-Volume `/opt/data`, Rechte
+**0600**, außerhalb des Repos).
 
-**OAuth einmalig.** Erstausfüllen der Datei über den Authorization-Code-Flow
-der Spotify-Developer-App: Redirect-URI `http://127.0.0.1:8888/callback`,
-Scopes wie vom Server vorgegeben. Danach erneuert der Server das Access-Token
-selbst über den Refresh-Token.
+Damit Client-ID und Client-Secret nicht in der Anwendung selbst gepflegt
+werden, liegen sie in OpenBao unter `secret/data/mcp/spotify`
+(`client_id`, `client_secret`, `redirect_uri`). Die JSON-Datei ist nur
+abgeleiteter Laufzeit-Zustand und wird von
+[`hestia/scripts/spotify_config.py`](../hestia/scripts/spotify_config.py)
+daraus gerendert:
+
+```sh
+# auf dem Coder-Host; OPENBAO_TOKEN ist ein lesendes Token
+OPENBAO_TOKEN=... python3 hestia/scripts/spotify_config.py [--dry-run]
+```
+
+Das Skript behält vorhandene Tokens (`accessToken`, `refreshToken`,
+`expiresAt`) bei — sonst würde jedes Rendern die OAuth-Sitzung zerstören. Die
+Tokens schreibt ausschließlich der Server selbst zurück, wenn er das
+Access-Token erneuert. Ausgegeben werden nur Längen und Feldnamen, nie Werte.
+
+**OAuth einmalig (headless).** Der Server kann sich im Container nicht selbst
+autorisieren: er lauscht für den Callback auf `127.0.0.1` und öffnet einen
+Browser. Deshalb derselbe Authorization-Code-Flow in zwei Schritten über
+[`hestia/scripts/spotify_auth.py`](../hestia/scripts/spotify_auth.py):
+
+```sh
+python3 hestia/scripts/spotify_auth.py --print-url        # URL im Browser öffnen
+python3 hestia/scripts/spotify_auth.py --callback '<komplette Redirect-URL aus der Adresszeile>'
+```
+
+Der Browser zeigt nach dem Zustimmen einen Fehler (auf `127.0.0.1:8888`
+lauscht nichts) — der `code` steht in der Adresszeile. Der `state` wird
+zwischen den beiden Aufrufen in `<config>.state` gemerkt und geprüft. Redirect-URI
+der Developer-App: `http://127.0.0.1:8888/callback` (Loopback-IP, **nicht**
+`localhost`), Scopes wie vom Server vorgegeben. Ein erneutes Autorisieren ist
+nur nötig, wenn der Zugriff in der Spotify-App entzogen wurde oder das Passwort
+geändert wurde — ansonsten erneuert der Server das Access-Token selbst über den
+Refresh-Token.
+
+**Aktivierung.** Der Eintrag wird über die Hermes-CLI geschrieben (Prompt
+„Enable all tools?" mit `y` bestätigen), anschließend `mcp-spotify` in
+`toolsets.enabled` und in `platform_toolsets.api_server` der SOT ergänzen:
+
+```sh
+docker exec -u 0 hermes sh -lc 'HOME=/opt/data /opt/hermes/bin/hermes mcp add spotify \
+  --command /opt/node/bin/node --args /opt/spotify-mcp/build/index.js'
+docker exec -u 0 hermes sh -lc 'HOME=/opt/data /opt/hermes/bin/hermes mcp test spotify'
+```
 
 **Voraussetzungen.** Eine Spotify-Developer-App **und** Spotify Premium. Im
 Developer-Mode (seit 11.02.2026) sind maximal 5 Nutzer erlaubt und Premium ist
