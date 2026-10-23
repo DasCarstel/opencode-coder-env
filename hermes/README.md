@@ -11,7 +11,7 @@ Details und Betrieb: [`../docs/hermes.md`](../docs/hermes.md).
 
 | Datei | Inhalt |
 |-------|--------|
-| [`Dockerfile`](Dockerfile) | Basis-Image `nousresearch/hermes-agent:latest` + `opencode-mcp@3.0.0` + `ocis-mcp-server` v1.1.0, danach wieder `USER hermes` |
+| [`Dockerfile`](Dockerfile) | Basis-Image `nousresearch/hermes-agent:latest` + `opencode-mcp@3.0.0` + `ocis-mcp-server` v1.1.0 + node 26.12.1 unter `/opt/node` + spotify-mcp-server, danach wieder `USER hermes` |
 | [`docker-compose.yml`](docker-compose.yml) | Service `hermes`, Netz `coder-infra` (extern), Ports **9119** (Dashboard) und **8642** (API-Server, u. a. Open WebUI), Neustart `unless-stopped` |
 
 Der Container nutzt das **Entrypoint des Basis-Images**
@@ -32,6 +32,10 @@ Beides liegt **außerhalb** dieses Repos:
   `profiles/<name>/{config.yaml,.env}`.
 - `.env` ist eine einzelne, von Hestia geschriebene Datei direkt im
   Deploy-Verzeichnis auf dem Coder-Host.
+
+Die Spotify-Zugangsdaten des MCP-Servers liegen dazu im selben Volume unter
+`/opt/data/spotify/spotify-config.json` (0600, außerhalb des Repos); der
+Container greift per Symlink `/opt/spotify-mcp/spotify-config.json` darauf zu.
 
 > **Nicht löschen:** Im Volume `/etc/docker/hermes/data` liegt eine **0-Byte**-Datei
 > `.env`. Das ist **Dockers Mount-Ziel-Platzhalter** für den Datei-Bind-Mount

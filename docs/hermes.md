@@ -54,14 +54,50 @@ ergänzt und in `toolsets.enabled` als `mcp-<name>` freigeschaltet (danach
 `docker restart hermes`).
 
 Aktuell: `homeassistant` (http), `notion` (http/oauth), `ocis-private` und
-`ocis-muellerconnect` (stdio) sowie `super-productivity` (http,
-`https://mcp-superproductivity.mueller-nas.de/mcp`, Bearer-Token).
+`ocis-muellerconnect` (stdio), `super-productivity` (http,
+`https://mcp-superproductivity.mueller-nas.de/mcp`, Bearer-Token) sowie
+`spotify` (stdio, `node /opt/spotify-mcp/build/index.js`, ~20 Tools).
 
 > **Je Toolset eine eigene Listenzeile.** `- mcp-homeassistant - mcp-ocis-private`
 > in einer Zeile ist **ein** Eintrag namens `mcp-homeassistant - mcp-ocis-private`
 > — dann wird keiner der beiden Server geladen. Genau das war bis 2026-10-19 der
 > Fall; seit dem Fix sind `ocis-private` (79 Tools) und `super-productivity`
 > (28 Tools) verbunden.
+
+### Spotify
+
+Der Spotify-MCP-Server
+([`marcelmarais/spotify-mcp-server`](https://github.com/marcelmarais/spotify-mcp-server))
+steuert Wiedergabe, Suche und Playlisten über Spotify. Er läuft als **stdio**-
+Server (`node /opt/spotify-mcp/build/index.js`, ~20 Tools) und ist im
+[Dockerfile](../hermes/Dockerfile) eingebaut.
+
+**Build im Image.** Der Server verlangt Node >= 26.8.1; das Basis-Image bringt
+aber nur 26.7.0 mit. Deshalb liegt eine eigene Node-Version unter `/opt/node`
+(`ARG NODE_VERSION=26.12.1`). Bewusst **nicht** `/usr/local/bin/node`
+überschrieben: Dieser Symlink zeigt in den von Hermes selbst verwalteten Baum
+`/opt/hermes/tools` und würde beim nächsten Hermes-Update zurückfallen. Gebaut
+wird aus einem gepinnten Commit (`ARG SPOTIFY_MCP_COMMIT`); es gibt kein
+npm-Release. Runtime-Dependencies bleiben im Image (`npm prune --omit=dev`).
+
+**Konfigurationsdatei.** Der Server liest seine Zugangsdaten **nicht** aus
+Umgebungsvariablen, sondern aus `../spotify-config.json` relativ zu seinem
+`build/`-Verzeichnis — im Container also
+`/opt/spotify-mcp/spotify-config.json`, ein Symlink auf
+`/opt/data/spotify/spotify-config.json`. Die Datei liegt im Docker-Volume
+`/opt/data` (Rechte **0600**), außerhalb des Repos und bewusst nicht
+versioniert — Client-Secret und Refresh-Token überleben so Deploys und
+Image-Rebuilds. Inhalt: `clientId`, `clientSecret`, `redirectUri`,
+`accessToken`, `refreshToken`, `expiresAt`.
+
+**OAuth einmalig.** Erstausfüllen der Datei über den Authorization-Code-Flow
+der Spotify-Developer-App: Redirect-URI `http://127.0.0.1:8888/callback`,
+Scopes wie vom Server vorgegeben. Danach erneuert der Server das Access-Token
+selbst über den Refresh-Token.
+
+**Voraussetzungen.** Eine Spotify-Developer-App **und** Spotify Premium. Im
+Developer-Mode (seit 11.02.2026) sind maximal 5 Nutzer erlaubt und Premium ist
+Pflicht.
 
 ## Deploy
 

@@ -65,16 +65,19 @@
       "stale_timeout_seconds": 8
     }
   },
-  // WICHTIG: Alle fuenf MCP-Server fuer den api_server (HA-Assist UND Open
-  // WebUI). Eine fruehere Fassung stand hier auf nur "mcp-homeassistant" --
-  // ein Apply haette Notion/oCIS/Super-Productivity aus dem Assist entfernt.
+  // WICHTIG: Die Liste muss ALLE sechs MCP-Server fuer den api_server enthalten
+  // (HA-Assist UND Open WebUI) — fehlt einer, entfernt ein Apply ihn aus dem
+  // Assist. Eine fruehere Fassung stand hier auf nur "mcp-homeassistant" --
+  // ein Apply haette Notion/oCIS/Super-Productivity/Spotify aus dem Assist
+  // entfernt.
   "platform_toolsets": {
     "api_server": [
       "mcp-super-productivity",
       "mcp-homeassistant",
       "mcp-ocis-private",
       "mcp-ocis-muellerconnect",
-      "mcp-notion"
+      "mcp-notion",
+      "mcp-spotify"
     ]
   },
   // Voice-Route "hermes-voice" (opencode-go/glm-5.3-flash) wird hier in der

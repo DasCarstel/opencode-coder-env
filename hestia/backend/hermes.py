@@ -39,10 +39,10 @@ BUILTIN_TOOLSETS = frozenset({
     "skills", "todo", "kanban", "memory", "context_engine", "session_search",
     "clarify", "connections", "delegation", "cronjob",
     # Home-Assistant-MCP für die spätere Sprachintegration (siehe SOT-Kommentar)
-    # sowie die vier freigegebenen Work-MCPs (alle fünf MCP-Server für den
-    # api_server: HA-Assist UND Open WebUI).
+    # sowie die freigegebenen Work-MCPs (alle sechs MCP-Server für den
+    # api_server: HA-Assist UND Open WebUI, inkl. Spotify).
     "mcp-homeassistant", "mcp-notion", "mcp-ocis-private",
-    "mcp-ocis-muellerconnect", "mcp-super-productivity",
+    "mcp-ocis-muellerconnect", "mcp-super-productivity", "mcp-spotify",
 })
 # Alias-Regel für platforms.<plattform>.extra.model_routes.
 MODEL_ROUTE_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
