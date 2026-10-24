@@ -68,7 +68,7 @@
       "stale_timeout_seconds": 12
     }
   },
-  // WICHTIG: Die Liste muss ALLE sechs MCP-Server fuer den api_server enthalten
+  // WICHTIG: Die Liste muss ALLE MCP-Server fuer den api_server enthalten
   // (HA-Assist UND Open WebUI) — fehlt einer, entfernt ein Apply ihn aus dem
   // Assist. Eine fruehere Fassung stand hier auf nur "mcp-homeassistant" --
   // ein Apply haette Notion/oCIS/Super-Productivity/Spotify aus dem Assist
@@ -80,7 +80,8 @@
       "mcp-ocis-private",
       "mcp-ocis-muellerconnect",
       "mcp-notion",
-      "mcp-spotify"
+      "mcp-spotify",
+      "mcp-google-calendar"
     ]
   },
   // Voice-Route "hermes-voice" (opencode-go/glm-5.3-flash) wird hier in der

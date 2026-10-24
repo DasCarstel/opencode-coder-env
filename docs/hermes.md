@@ -55,8 +55,9 @@ ergänzt und in `toolsets.enabled` als `mcp-<name>` freigeschaltet (danach
 
 Aktuell: `homeassistant` (http), `notion` (http/oauth), `ocis-private` und
 `ocis-muellerconnect` (stdio), `super-productivity` (http,
-`https://mcp-superproductivity.mueller-nas.de/mcp`, Bearer-Token) sowie
-`spotify` (stdio, `node /opt/spotify-mcp/build/index.js`, 31 Tools).
+`https://mcp-superproductivity.mueller-nas.de/mcp`, Bearer-Token),
+`spotify` (stdio, `node /opt/spotify-mcp/build/index.js`, 31 Tools) sowie
+`google-calendar` (stdio, `@cocal/google-calendar-mcp`, self-hosted).
 
 > **Je Toolset eine eigene Listenzeile.** `- mcp-homeassistant - mcp-ocis-private`
 > in einer Zeile ist **ein** Eintrag namens `mcp-homeassistant - mcp-ocis-private`
@@ -136,6 +137,78 @@ docker exec -u 0 hermes sh -lc 'HOME=/opt/data /opt/hermes/bin/hermes mcp test s
 **Voraussetzungen.** Eine Spotify-Developer-App **und** Spotify Premium. Im
 Developer-Mode (seit 11.02.2026) sind maximal 5 Nutzer erlaubt und Premium ist
 Pflicht.
+
+## Google Calendar
+
+Der Google-Calendar-MCP-Server ([`@cocal/google-calendar-mcp`](https://www.npmjs.com/package/@cocal/google-calendar-mcp),
+Version 2.7.0) verwaltet Termine in Google Calendar: Listen, Suchen, Anlegen,
+Ändern, Löschen, Zu- und Absagen sowie Free/Busy-Abfragen. Er läuft als
+**stdio**-Server (npm, global im Image installiert via `ARG GCAL_MCP_VERSION`
+im [Dockerfile](../hermes/Dockerfile)) und steht in der `config.yaml` auf dem
+Coder-Host unter `mcp_servers.google-calendar`.
+
+**Warum nicht der offizielle Google-Server?** Der offizielle Endpunkt
+(`https://calendarmcp.googleapis.com/mcp/v1`) antwortet auf jeden Tool-Aufruf
+mit `Access to this tool requires that your Google Cloud project (…) is
+enrolled in the Google Workspace Developer Preview Program`. Das Enrollment im
+Developer Preview Program (DPP) setzt ein Google-Workspace-Konto voraus; das
+genutzte Konto ist privat (`@gmail.com`). OAuth selbst funktioniert dort
+(Token, Scopes, Refresh) — nur die Tool-Aufrufe sind gesperrt.
+
+**Aktivierte Tools.** Die Offenlegung läuft über die Umgebungsvariable
+`ENABLED_TOOLS`:
+
+```text
+list-calendars,list-events,get-event,search-events,create-event,
+update-event,delete-event,respond-to-event,get-freebusy,get-current-time
+```
+
+Hermes registriert daraus **11 Tools**: die zehn oben genannten plus
+`manage_accounts`, das immer aktiv ist. Kalender-Ebene (umbenennen, Farben,
+Freigaben, Kalender anlegen) deckt der Server nicht ab — nur Termine.
+
+**Zugangsdaten.** Beide Dateien liegen außerhalb des Repos, Owner
+`10000:10000`, Modus `600`; das Verzeichnis selbst ebenfalls `10000:10000`,
+Modus `750` — sonst kann der Server beim Refresh keine temporäre Datei anlegen
+(`EACCES` auf `tokens.json.tmp-…`) und der neue Access-Token geht beim Neustart
+verloren:
+
+| Host-Pfad | Inhalt |
+|-----------|--------|
+| `/etc/docker/hermes/data/gcal/credentials.json` | OAuth-Client im Google-Format `{"web": {client_id, client_secret, redirect_uris: ["http://127.0.0.1:8888/callback"]}}` |
+| `/etc/docker/hermes/data/gcal/tokens.json` | Account-Map des Servers, `{"normal": {access_token, refresh_token, scope, token_type, expiry_date}}` |
+
+Im Container liegen sie entsprechend unter `/opt/data/gcal/…` (Envs
+`GOOGLE_OAUTH_CREDENTIALS` und `GOOGLE_CALENDAR_MCP_TOKEN_PATH`). `expiry_date`
+ist in **Millisekunden** angegeben; der Server schreibt die Token-Datei nach
+jedem Refresh selbst zurück.
+
+**OAuth einmalig / Re-Auth (headless).** Wie bei Spotify in zwei Schritten —
+im Container gibt es weder Browser noch einen erreichbaren Loopback-Callback —
+über [`hermes/scripts/gcal_auth.py`](../hermes/scripts/gcal_auth.py):
+
+```sh
+python3 hermes/scripts/gcal_auth.py --print-url --state hermes-gcal   # URL im Browser öffnen
+python3 hermes/scripts/gcal_auth.py --callback 'http://127.0.0.1:8888/callback?code=…&state=…'
+docker restart hermes
+```
+
+Der Browser zeigt nach der Zustimmung wieder einen Fehler (auf `127.0.0.1:8888`
+lauscht nichts) — die komplette Adresszeile kopieren und beim zweiten Aufruf
+übergeben.
+
+**Freischaltung.** `mcp-google-calendar` in `toolsets.enabled` (config.yaml)
+**und** in `platform_toolsets.api_server` der
+[`.opencode/hestia-hermes.jsonc`](../.opencode/hestia-hermes.jsonc) ergänzen,
+danach `docker restart hermes`.
+
+> **Falle: Testing-Status der Google-App.** Solange die Google-Auth-App
+> (Projekt `hermes-calendar-512619`) im Status **„Testing"** ist, laufen die
+> Refresh-Tokens nach **7 Tagen** ab — der Kalender wäre dann wöchentlich tot.
+> Lösung: Die App in der Google Auth Platform auf **„In Produktion"**
+> veröffentlichen. Der Scope ist sensitiv, nicht restriktiv; die Warnung
+> „App nicht verifiziert" bleibt auch danach normal. In Produktion laufen die
+> Tokens nicht mehr ab.
 
 ## Deploy
 

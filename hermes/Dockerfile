@@ -5,6 +5,18 @@ USER root
 # OpenCode-MCP installieren
 RUN npm install -g opencode-mcp@3.0.0
 
+# --- Google-Calendar-MCP (self-hosted, @cocal/google-calendar-mcp) -----------
+# Ersatz fuer den offiziellen Google-Calendar-MCP-Server
+# (https://calendarmcp.googleapis.com/mcp/v1): der verlangt eine Enrollment im
+# Google Workspace Developer Preview Program und ist damit fuer private
+# @gmail.com-Konten nicht nutzbar (Tool-Aufruf -> "requires that your Google
+# Cloud project is enrolled in the Google Workspace Developer Preview Program").
+# Node >= 20 ist erfuellt (Basis-Image bringt 26.7.0). Laeuft per stdio wie
+# spotify und die oCIS-Server; Tokens/Credentials liegen ausserhalb des Repos
+# unter /opt/data/gcal/ (siehe hermes/scripts/gcal_auth.py).
+ARG GCAL_MCP_VERSION=2.7.0
+RUN npm install -g "@cocal/google-calendar-mcp@${GCAL_MCP_VERSION}"
+
 # OCIS-MCP-Server installieren
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates \
