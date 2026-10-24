@@ -35,10 +35,11 @@ HERMES_TOOLSETS = {
     "skills", "todo", "kanban", "memory", "context_engine", "session_search",
     "clarify", "connections", "delegation", "cronjob",
     # Explizit freigegebene MCP-Toolsets (API-Surface): HA für die Sprach-
-    # integration, dazu die vier Work-MCPs — alle fünf MCP-Server für den
+    # integration, dazu die übrigen Work-MCPs — alle MCP-Server für den
     # api_server (HA-Assist UND Open WebUI).
     "mcp-homeassistant", "mcp-notion", "mcp-ocis-private",
-    "mcp-ocis-muellerconnect", "mcp-super-productivity",
+    "mcp-ocis-muellerconnect", "mcp-super-productivity", "mcp-spotify",
+    "mcp-google-calendar",
 }
 HERMES_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
