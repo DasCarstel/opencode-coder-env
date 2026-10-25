@@ -73,6 +73,17 @@
   // Assist. Eine fruehere Fassung stand hier auf nur "mcp-homeassistant" --
   // ein Apply haette Notion/oCIS/Super-Productivity/Spotify aus dem Assist
   // entfernt.
+  //
+  // 2026-10-25: "memory" ergaenzt. Vorher war auf dem api_server
+  // ausschliesslich MCP aktiv — kein memory-Tool, also wurden MEMORY.md und
+  // USER.md nie fortgeschrieben und der Agent konnte sich nichts dauerhaft
+  // merken.
+  //
+  // "skills" wurde bewusst NICHT aktiviert: gemessen +1901 Prompt-Tokens pro
+  // Turn (Skill-Index + skill_view, 10541 -> 8640 ohne). Die MCP-Tools kosten
+  // dagegen 0 Tokens im Prompt — sie werden per tool_search nachgeladen.
+  // Der Obsidian-Ablauf steht deshalb kompakt in MEMORY.md; die Skill
+  // obsidian-ocis bleibt fuer CLI/PC.
   "platform_toolsets": {
     "api_server": [
       "mcp-super-productivity",
@@ -81,7 +92,8 @@
       "mcp-ocis-muellerconnect",
       "mcp-notion",
       "mcp-spotify",
-      "mcp-google-calendar"
+      "mcp-google-calendar",
+      "memory"
     ]
   },
   // Voice-Route "hermes-voice" (opencode-go/glm-5.3-flash) wird hier in der

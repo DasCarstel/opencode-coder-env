@@ -1,84 +1,87 @@
 ---
 name: obsidian-ocis
-description: Create, find, read, list or edit notes in the private Obsidian vault via the fast oCIS CLI.
-version: 2.0.0
+description: Read, search, create and edit notes in the private Obsidian vault on OpenCloud (oCIS) via the ocis-private MCP tools. Use for every Obsidian/Ideen/notes task; never use the local filesystem.
+version: 3.0.0
 author: hermes
 license: MIT
 metadata:
   hermes:
-    tags: [obsidian, notes, markdown, ocis, opencloud, fast-path]
+    tags: [obsidian, notes, markdown, ocis, opencloud, mcp]
     related_skills: []
 ---
 
 # Obsidian — private vault on OpenCloud (oCIS)
 
-Use `/opt/data/bin/obsidian_fast.py` through the terminal tool. It starts the
-existing `ocis-private` MCP server with only the eight file tools and injects
-the Obsidian `space_id`; the 75 oCIS tool schemas are never loaded. Do **not**
-call `tool_search` or any `mcp__ocis-private__*` tool on the API/voice surface.
+The vault is **not** on the local filesystem. Use the oCIS MCP tools of the
+server `ocis-private` (`mcp__ocis-private__ocis_*`). Do **not** use `read_file`,
+`write_file`, `patch`, `search_files`, `terminal` or `cat` for vault content —
+those hit the container filesystem, not oCIS.
 
-The vault is **not** on the local filesystem. Never use `read_file`,
-`write_file`, `patch`, `search_files` or plain `cat` for vault content.
+## Vault
 
-## Commands
+- Server: `https://opencloud.mueller-nas.de`
+- Space: **Obsidian** (mountpoint), MCP server `ocis-private`
+- `space_id` (always pass this, every file tool needs it):
+  `a0ca6a90-a365-4782-871e-d44447bbc668$a0ca6a90-a365-4782-871e-d44447bbc668!8da8246b-f611-47ef-a8c7-492c9da42ec6:f9768933-2aea-4be1-8c7d-a8503720ff8f:96000317-21eb-4d83-a194-eb4be145af45`
+- Paths are absolute from the vault root, e.g. `/01-Gesundheit/Blutwerte.md`,
+  `/Ideen.md`.
 
-```bash
-/opt/data/bin/obsidian_fast.py list /
-/opt/data/bin/obsidian_fast.py list /01-Gesundheit --limit 30
-/opt/data/bin/obsidian_fast.py list / --all          # include dotfolders
-/opt/data/bin/obsidian_fast.py find "Blutwerte"
-/opt/data/bin/obsidian_fast.py read "/01-Gesundheit/Blutwerte.md" --max-chars 6000
-/opt/data/bin/obsidian_fast.py info "/01-Gesundheit/Blutwerte.md"
+## Tools
 
-/opt/data/bin/obsidian_fast.py create "/00-System/Neue Notiz.md" \
-  --content "Erster Absatz"
+If the tools are not in context, find them with `tool_search` (query
+`ocis_upload_file`, `ocis_download_file`, ...).
 
-/opt/data/bin/obsidian_fast.py append "/00-System/Neue Notiz.md" \
-  --content "Nachtrag"
-/opt/data/bin/obsidian_fast.py append "/00-System/Neue Notiz.md" \
-  --content-file /tmp/nachtrag.md
+| Tool | Purpose |
+|------|---------|
+| `ocis_list_files` | list a directory |
+| `ocis_download_file` | read a file (returns `content`, `truncated`) |
+| `ocis_upload_file` | create **or overwrite** a file |
+| `ocis_create_folder` | create a directory |
+| `ocis_move_file` / `ocis_copy_file` | move, rename, copy |
+| `ocis_delete_file` | delete (requires `confirm: true`) |
+| `ocis_get_file_info` | metadata |
+| `ocis_search` | search inside the space |
 
-/opt/data/bin/obsidian_fast.py mkdir "/00-System/Neuer Ordner"
-/opt/data/bin/obsidian_fast.py move "/alt.md" "/00-System/neu.md"
-/opt/data/bin/obsidian_fast.py delete "/00-System/neu.md" --yes
-/opt/data/bin/obsidian_fast.py schema
-```
+## Reading
 
-Every command prints compact JSON with vault-relative paths such as
-`/01-Gesundheit/Blutwerte.md`.
+`ocis_download_file {space_id, path}` returns the text in `content`. Check
+`truncated`: if `true`, the note is larger than the returned window — do not
+rewrite it from that partial text.
+
+## Creating a note
+
+`ocis_upload_file {space_id, path, content, content_type: "text/markdown"}`
+
+## Editing an existing note (read → modify → write)
+
+There is **no separate update or append tool**. `ocis_upload_file` overwrites an
+existing path (verified 2026-10-25), so editing is:
+
+1. `ocis_download_file` → full content (`truncated` must be `false`)
+2. change the text in context (append or replace)
+3. `ocis_upload_file` with the **complete** new content
+
+Never upload only the delta — that truncates the note. When in doubt, read the
+file again after writing and verify the result.
+
+## Ideen.md (root note)
+
+`/Ideen.md` is the user's idea list. If the user says "füg … in die Ideen
+hinzu" / "add … to the ideas": read the **whole** file, append the new section
+at the end, upload the complete result. Never replace the existing content with
+only the new part.
 
 ## Rules
 
-- Paths are absolute from the vault root. The script injects the `space_id`;
-  never pass a space ID yourself.
-- `create` refuses to overwrite an existing file. Read it first, then use
-  `append`, or `create --overwrite` only when the user explicitly wants a
-  replacement.
-- `create --file LOCAL` is for larger or binary files; otherwise pass
-  `--content`. Markdown files automatically use `text/markdown`.
-- For long or multiline appends, write the text to a temp file and use
-  `append --content-file LOCAL`; shell-quoted `--content` is for short lines.
-- `find` searches the oCIS full-text index globally and filters results to the
-  Obsidian space. The MCP `space_id` search filter is broken (returns 0), so
-  the script omits it deliberately.
-- `list` hides dotfolders such as `.obsidian` by default; use `--all` only when
-  the user asks for them.
-- `delete` only works with `--yes`. Ask the user explicitly first, show the
-  path, then run it. Deletion moves to the oCIS trash, not permanent.
-- `move` renames or moves; it refuses an existing destination unless
-  `--overwrite` is set.
-- `read` returns text up to `--max-chars` (default 8000). Check the
-  `truncated` flag before appending to a very large note.
-- Ignore users, groups, roles, shares, spaces, app tokens and admin tools; they
-  are not needed for the vault.
-
-## Scope
-
-This API/voice surface intentionally does not load the full oCIS MCP toolset.
-For shares, spaces, permissions, versions or other admin work, use the Hermes
-CLI/PC; the full workflow is kept in
-`references/full-mcp-workflow.md` for that surface.
+- Read a file before overwriting it; check `truncated` first.
+- Markdown uploads use `content_type: "text/markdown"`.
+- `delete` only with `confirm: true` and after explicit user confirmation
+  (moves to the oCIS trashbin, not permanent).
+- Ignore `ocis_*` tools for users, groups, roles, shares and spaces; they are
+  not needed for notes.
+- If a call fails with "space not found", run `ocis_list_spaces` and use the
+  Obsidian mountpoint.
 
 ## Reference
 
-- `references/full-mcp-workflow.md` — full 75-tool oCIS workflow for CLI/PC only
+- `references/full-mcp-workflow.md` — same workflow as a compact cheat sheet

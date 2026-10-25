@@ -332,6 +332,66 @@ und sind vom Host aus nicht einsehbar; für das Dashboard ist
 Nicht zu verwechseln: `hermes proxy` (Port 8645) ist ein **reiner OAuth-Modell-Proxy**
 für Nous/xAI ohne Agent-Funktionalität — nicht der API-Server.
 
+## Persistentes Gedächtnis (Memory-Slots)
+
+Hermes hat ein eingebautes Gedächtnis, das **nicht** in einer Notiz liegt,
+sondern im Volume des Containers:
+
+| Datei | Zweck | Limit |
+|-------|-------|-------|
+| `/opt/data/memories/MEMORY.md` | eigene Fakten/Umgebung/Regeln des Agenten | 2200 Zeichen |
+| `/opt/data/memories/USER.md` | Nutzerprofil | 1375 Zeichen |
+
+Beide Dateien werden bei **jedem** Turn als Snapshot in den Prompt geladen und
+vom `memory`-Tool (`add`/`replace`/`remove`) fortgeschrieben. Sie überleben
+Container-Restart und Deploy (Bind-Mount `/etc/docker/hermes/data`), werden aber
+von `apply-hermes.sh` nicht angefasst — es gibt (noch) keinen Seed im Repo.
+
+**Voraussetzung ist das Toolset:** `memory` steht in der SOT unter
+`platform_toolsets.api_server`. Fehlt es, hat der Agent auf der Assist-/Voice-
+Oberfläche *kein* Memory-Tool — er kann dann nichts dauerhaft merken (genau das
+war bis 2026-10-25 der Fall; dort waren nur `mcp-*`-Toolsets aktiv).
+
+Bewusst **nicht** auf dem api_server aktiviert (Messung 2026-10-25, identischer
+Prompt, je ein frischer Turn):
+
+| Konfiguration | Prompt-Tokens | Ergebnis |
+|---------------|---------------|----------|
+| `mcp-*` + `memory` + `skills` | 10 541 | `skills` kostet 1 901 Tokens |
+| `mcp-*` + `memory` | **8 640** | aktueller Stand |
+| `mcp-*` + `memory`, `mcp-ocis-private` entfernt | 8 640 | Gegenprobe: MCP kostet 0 |
+
+Die MCP-Tools kosten **0** Prompt-Tokens — sie werden über `tool_search`
+nachgeladen (Gegenprobe: `mcp-ocis-private` entfernt ⇒ unverändert 8 640).
+`terminal`, `file` und `code_execution` bleiben aus: Vault-Zugriff läuft
+ausschließlich über `ocis-private`. Die Skill `obsidian-ocis` (v3, MCP-direkt)
+ist damit eine CLI/PC-Ressource; auf der Voice-Oberfläche trägt `MEMORY.md` den
+Ablauf (Read-Modify-Write + `space_id`), damit kein Skill-Index nötig ist.
+
+### Notizen im Obsidian-Vault bearbeiten
+
+Die oCIS-MCP-Tools haben **kein** Update-/Append-Tool. Bearbeiten ist
+Read-Modify-Write und funktioniert, weil `ocis_upload_file` eine bestehende
+Datei überschreibt:
+
+1. `ocis_download_file {space_id, path}` → kompletter Text (`truncated=false`)
+2. Text im Kontext ändern
+3. `ocis_upload_file {space_id, path, content, content_type: "text/markdown"}`
+   mit dem **vollständigen** neuen Text
+
+Nur das Delta hochzuladen würde die Notiz abschneiden. Die Skill
+`hestia/skills/obsidian-ocis/SKILL.md` (v3, MCP-direkt) beschreibt den Ablauf
+inklusive `space_id`; die frühere Fast-Path-Variante über
+`/opt/data/bin/obsidian_fast.py` und das `terminal`-Tool ist auf der
+Assist-Oberfläche **nicht** nutzbar und wird dort nicht mehr verwendet.
+
+### Dauerregel `Ideen.md`
+
+`/Ideen.md` (Vault-Root) wird bei „füg etwas zu den Ideen hinzu“ **nur
+erweitert**: ganze Datei lesen, neuen Abschnitt anhängen, kompletten Text
+zurückschreiben. Die Regel steht in `MEMORY.md` und in der Skill, damit sie in
+jedem neuen Chat gilt.
+
 ## Erweiterte Sektionen (Hermes Voice)
 
 Neben `primary`/`fallback`/`pool`/`api_server`/`profiles` kennt die SOT fünf
