@@ -293,29 +293,36 @@ if [ -z "${OPENBAO_APPROLE_SECRET_ID:-}" ]; then
   exit 1
 fi
 
-# ── OpenBao: AppRole-Login ──────────────────────────────────────────────────
+# ── OpenBao: AppRole-Login (mit Retry) ──────────────────────────────────────
+# Transiente Fehler (Netzwerk-Token-Blinker, Rollout-Fenster des Logins)
+# dürfen den Start nicht mehr abbrechen: 6 Versuche à max. 10 s Curl-Timeout,
+# danach Setup ohne Secrets weiterlaufen lassen (SKIP_SECRETS=1).
 echo "=== OpenBao: Authentifizierung ($PROFILE) ==="
-RESPONSE=$(curl -sS --max-time 10 -X POST "${OPENBAO_ADDR}/v1/auth/approle/login" \
-  -H "Content-Type: application/json" \
-  -d "{\"role_id\":\"${OPENBAO_ROLE_ID}\",\"secret_id\":\"${OPENBAO_APPROLE_SECRET_ID}\"}" 2>&1) || {
-  echo "ERROR: OpenBao nicht erreichbar unter ${OPENBAO_ADDR}"
-  exit 1
-}
-
-BAO_TOKEN=$(echo "$RESPONSE" | python3 -c "
+BAO_TOKEN=""
+for _bao_attempt in 1 2 3 4 5 6; do
+  RESPONSE=$(curl -sS --max-time 10 -X POST "${OPENBAO_ADDR}/v1/auth/approle/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"role_id\":\"${OPENBAO_ROLE_ID}\",\"secret_id\":\"${OPENBAO_APPROLE_SECRET_ID}\"}" 2>&1) || RESPONSE=""
+  BAO_TOKEN=$(echo "$RESPONSE" | python3 -c "
 import sys, json
 try:
     print(json.load(sys.stdin)['auth']['client_token'])
 except Exception:
     print('')
 ")
-if [ -z "$BAO_TOKEN" ]; then
-  echo "ERROR: OpenBao-Authentifizierung fehlgeschlagen."
-  exit 1
+  if [ -n "$BAO_TOKEN" ]; then break; fi
+  echo "  ⚠ OpenBao-Login fehlgeschlagen (Versuch ${_bao_attempt}/6) – nächster Versuch in 5 s"
+  [ "$_bao_attempt" -ge 6 ] || sleep 5
+done
+unset RESPONSE
+if [ -n "$BAO_TOKEN" ]; then
+  export BAO_TOKEN
+  printf 'BAO_TOKEN="%s"\n' "$BAO_TOKEN" >> /etc/opencode.env
+  echo "  ✓ OpenBao-Token erhalten"
+else
+  echo "⚠ OpenBao-Login nach 6 Versuchen fehlgeschlagen – Setup läuft ohne Secrets weiter"
+  SKIP_SECRETS=1
 fi
-export BAO_TOKEN
-printf 'BAO_TOKEN="%s"\n' "$BAO_TOKEN" >> /etc/opencode.env
-echo "  ✓ OpenBao-Token erhalten"
 
 # ── OpenBao: Secrets laden ──────────────────────────────────────────────────
 echo ""
@@ -324,6 +331,10 @@ echo "=== OpenBao: Secrets laden ==="
 read_secret() {
   local path="$1" key="$2" varname="$3"
   local value
+  if [ "${SKIP_SECRETS:-0}" = "1" ]; then
+    echo "  ⚠ ${varname}: übersprungen (kein OpenBao-Login)"
+    return 0
+  fi
   value=$(curl -sS --max-time 10 -H "X-Vault-Token: ${BAO_TOKEN}" "${OPENBAO_ADDR}/v1/${path}" \
     | python3 -c "
 import sys, json
@@ -1309,12 +1320,24 @@ if [ "${OPENCODE_SSO_PROXY:-1}" != "0" ] && [ "${OPENCODE_SSO_PROXY:-1}" != "fal
   if [ -f "$SSO_PROXY_SRC" ]; then
     pkill -f "opencode-sso-proxy.js" 2>/dev/null || true
     setsid nohup node "$SSO_PROXY_SRC" > /tmp/opencode-sso-proxy.log 2>&1 < /dev/null &
+    # Health-Check: 3 Versuche, zwischen den Versuchen 2 s. Fehlt der Listener,
+    # obwohl OPENCODE_SERVER_PASSWORD gesetzt ist, einmalig neu starten.
     _sso_ready=0
-    for _ in $(seq 1 10); do
-      _sso_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 http://127.0.0.1:49375/api/info 2>/dev/null)
+    for _sso_attempt in 1 2 3; do
+      _sso_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:49375/api/info 2>/dev/null)
       if [ -n "$_sso_code" ] && [ "$_sso_code" != "000" ]; then _sso_ready=1; break; fi
-      sleep 0.5
+      [ "$_sso_attempt" -ge 3 ] || sleep 2
     done
+    if [ "$_sso_ready" != "1" ] && [ -n "${OPENCODE_SERVER_PASSWORD:-}" ]; then
+      echo "  ⚠ SSO-Proxy-Listener fehlt – Neustart (Health-Check 3× fehlgeschlagen)"
+      pkill -f "opencode-sso-proxy.js" 2>/dev/null || true
+      setsid nohup node "$SSO_PROXY_SRC" > /tmp/opencode-sso-proxy.log 2>&1 < /dev/null &
+      for _sso_attempt in 1 2 3; do
+        _sso_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:49375/api/info 2>/dev/null)
+        if [ -n "$_sso_code" ] && [ "$_sso_code" != "000" ]; then _sso_ready=1; break; fi
+        [ "$_sso_attempt" -ge 3 ] || sleep 2
+      done
+    fi
     if [ "$_sso_ready" = "1" ]; then
       # Deep-Links (ntfy „Session öffnen") nutzen künftig die Proxy-Port-App.
       # Bewusst direkt in service.json statt `opencode service set env`: Letzteres
@@ -1331,7 +1354,11 @@ PY
       set_env_default NTFY_SESSION_PORT 49375
       echo "  ✓ SSO-Proxy: 127.0.0.1:49375 (Deep-Links nutzen Port 49375)"
     else
-      echo "  ⚠ SSO-Proxy auf 49375 nicht bereit — Log: /tmp/opencode-sso-proxy.log (NTFY_SESSION_PORT bleibt unverändert)"
+      if [ -z "${OPENCODE_SERVER_PASSWORD:-}" ]; then
+        echo "  ⚠ SSO-Proxy ohne OPENCODE_SERVER_PASSWORD (kein OpenBao-Login) – Basic-Injektion nicht aktiv, bewusst kein Fehler (Log: /tmp/opencode-sso-proxy.log)"
+      else
+        echo "  ⚠ SSO-Proxy auf 49375 nicht bereit — Log: /tmp/opencode-sso-proxy.log (NTFY_SESSION_PORT bleibt unverändert)"
+      fi
     fi
   fi
 fi
@@ -1354,6 +1381,7 @@ if [ "$_sso_code" = "200" ]; then
   echo "  ✓ SSO-Proxy ohne Zugangsdaten erreichbar (Authentik-Schutz)"
 else
   echo "  ⚠ SSO-Proxy-Check: HTTP ${_sso_code:---} auf 49375 (Log: /tmp/opencode-sso-proxy.log)"
+  [ -n "${OPENCODE_SERVER_PASSWORD:-}" ] || echo "    ↳ erwartbar: ohne OPENCODE_SERVER_PASSWORD deshalb SKIP_SECRETS=1, kein Fehler"
 fi
 
 # Profil-spezifische Token-Env + Hard-Guardrail (jeder Workspace sieht nur
