@@ -89,7 +89,7 @@ curl -s -o /dev/null -w '%{http_code}' --resolve <hostname>:443:127.0.0.1 \
 | Bestandteil | Wert |
 |-------------|------|
 | Muster | `https://<port>--<agent>--<workspace>--<owner>-<coder-host>` |
-| Hier | Port `49374`, Agent `main` |
+| Hier | Port-App `49375` (SSO-Proxy) für Agent `main`, darunter liegt der OpenCode-Server auf Port `49374` |
 | `<coder-host>` | Domain-Teil aus `CODER_AGENT_URL`, Default `coder.mueller-nas.de` |
 | Zugang | Über Coder/Authentik — den Kopplungslink erst **nach dem Login** öffnen |
 
