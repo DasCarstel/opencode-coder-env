@@ -1362,6 +1362,39 @@ PY
     fi
   fi
 fi
+# ntfy-Anzeigeoptionen auch in das Service-Env schreiben: set_env_default pflegt
+# ausschließlich /etc/opencode.env – diese Datei liest der OpenCode-Server NICHT.
+# Dadurch liefen Stummschaltung (NTFY_IGNORE_TITLES) und die übrigen Defaults in
+# der Praxis leer, und Hestias Ausfall-Proben kamen als „✅ Fertig …" durch.
+# Direkt in service.json (wie NTFY_SESSION_PORT oben) – der Neustart unten greift
+# es auf. Ein in /etc/opencode.env eingetragener Wert gewinnt weiterhin.
+python3 - <<'PY' >/dev/null 2>&1 || true
+import json, os, re
+p = os.path.expanduser("~/.config/opencode/service.json")
+file_env = {}
+try:
+    with open("/etc/opencode.env") as fh:
+        for line in fh:
+            m = re.match(r'^([A-Z0-9_]+)="?(.*?)"?\s*$', line)
+            if m:
+                file_env[m.group(1)] = m.group(2)
+except Exception:
+    pass
+defaults = {
+    "NTFY_IGNORE_TITLES": "Ausfall-Probe,Speed-Probe",
+    "NTFY_ICON_BASE": "https://raw.githubusercontent.com/DasCarstel/opencode-coder-env/master/assets/ntfy-icons",
+    "NTFY_LINK_STYLE": "session",
+    "NTFY_REPLY_LOG": "/tmp/opencode/ntfy-diag.log",
+    "NTFY_DEBOUNCE_MS": "0",
+    "NTFY_ERROR_THROTTLE_MS": "86400000",
+    "NTFY_STATE_FILE": os.path.expanduser("~/.local/share/opencode/ntfy-notify-state.json"),
+}
+d = json.load(open(p))
+e = d.setdefault("env", {})
+for k, v in defaults.items():
+    e[k] = file_env.get(k) or v
+json.dump(d, open(p, "w"), indent=2)
+PY
 opencode service restart >/dev/null 2>&1 || true
 # `ss` ist in den Images nicht installiert – der frühere Check griff nie und
 # meldete immer "Binding unklar". Stattdessen die Erreichbarkeit direkt
