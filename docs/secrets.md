@@ -36,7 +36,7 @@ ausschließlich in `/etc/opencode.env` (Mode 0600) ab.
 | `secret/data/mcp/homeassistant-kleve` | `HA_KLEVE_LLA_TOKEN` (`api_key`) |
 | `secret/data/mcp/authentik` | `AUTHENTIK_API_KEY` (`api_key`) |
 | `secret/data/mcp/homarr` | `HOMARR_API_KEY` (`api_key`) — Header `ApiKey` für den nativen Homarr-MCP (`/api/mcp`) |
-| `secret/data/mcp/grafana` | `GRAFANA_API_KEY` (`api_key`) |
+| `secret/data/mcp/grafana` | `GRAFANA_API_KEY` (`api_key`) — muss ein Grafana-**Service-Account-Token** sein (Präfix `glsa_`, Role **Admin** für die Schreib-Tools des mcp-grafana); der Wert wird beim Start per `opencode service set env` als `GRAFANA_API_KEY` an den Service gedrückt |
 | `secret/data/mcp/opencloud` | `OPENCLOUD_API_KEY`, `OPENCLOUD_USERNAME` |
 | `secret/data/mcp/opencloud-ocis` | `OCIS_PRIVATE_USER/TOKEN`, `OCIS_MUELLERCONNECT_USER/TOKEN` |
 | `secret/data/mcp/opencode-go` | `OC_GO_DEFAULT1..4` — `default1`–`default3` sind die Go-Accounts der Hestia-Rotation, `default4` ist ein Reserve-Key (kein Go-Abo) |

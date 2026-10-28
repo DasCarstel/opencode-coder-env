@@ -54,6 +54,7 @@ aktiv, ab `compress.maxContextLimit` verstärkt; zusätzlich räumen die Strateg
 | `homeassistant` | remote | `https://intern-homeassistant.mueller-nas.de/api/mcp` | `Authorization: Bearer {env:HA_LLA_TOKEN}` | homeassistant |
 | `homeassistant-kleve` | remote | `http://192.168.178.52:8123/api/mcp` | `Authorization: Bearer {env:HA_KLEVE_LLA_TOKEN}` | cleve |
 | `homarr` | remote | `https://homarr.mueller-nas.de/api/mcp` (Homarr, nativer MCP v2) | `ApiKey: {env:HOMARR_API_KEY}` (OpenBao `secret/data/mcp/homarr`) | server-management |
+| `grafana` | local | offizieller `grafana/mcp-grafana` (Binary `/root/.local/bin/mcp-grafana`, Pin `GRAFANA_MCP_VERSION`) | `GRAFANA_URL`, `GRAFANA_SERVICE_ACCOUNT_TOKEN` ← `{env:GRAFANA_API_KEY}` (OpenBao `secret/data/mcp/grafana`) | grafana |
 | `ocis` | local | `owncloud/ocis-mcp-server` v1.1.0 (Binary `/root/.local/bin/ocis-mcp-server`) | `OCIS_MCP_OCIS_URL`, `OCIS_MCP_APP_TOKEN_USER`, `OCIS_MCP_APP_TOKEN_VALUE` | server-management, homeassistant, svelte, general, minijob |
 | `authentik` | local (via `uvx`) | Community-MCP `nikitatsym/authentik-mcp` | `AUTHENTIK_URL`, `AUTHENTIK_TOKEN` | server-management, svelte |
 | `svelte` | remote | `https://mcp.svelte.dev/mcp` | – | svelte |
@@ -95,6 +96,27 @@ gestartet über `uvx` mit `--extra-index-url`:
 `AUTHENTIK_URL` zeigt auf die Instanz, `AUTHENTIK_TOKEN` wird aus der
 Umgebungsvariable `AUTHENTIK_API_KEY` durchgereicht (Startskript holt den Wert aus
 OpenBao `secret/data/mcp/authentik`).
+
+### `grafana`
+
+Der offizielle Grafana-MCP `grafana/mcp-grafana`, lokal als vorkompiliertes
+Go-Binary aus den GitHub-Releases (`mcp-grafana_Linux_x86_64.tar.gz`, Binary
+`mcp-grafana` auf Top-Level des Archivs), nach `/root/.local/bin/` installiert
+(Stempel-Datei `.mcp-grafana-version`, Pin `GRAFANA_MCP_VERSION` in
+`versions.env`). Dashboard im Image (`infrastructure`-Dockerfile) plus
+Nachinstallation zur Laufzeit (`install_mcp_grafana` in `startup.sh`).
+
+Die beiden Env-Namen sind fest vorgegeben:
+
+```
+GRAFANA_URL                    → https://grafana.mueller-nas.de
+GRAFANA_SERVICE_ACCOUNT_TOKEN  → {env:GRAFANA_API_KEY} (Service-Account-Token aus OpenBao)
+```
+
+Der Server läuft **bewusst ohne** `--disable-*`-Flags (Vollzugriff inkl.
+Schreib-Tools: Dashboards, Alert-Rules, Contact-Points, Silences). Schreibaktionen
+nur nach Rückfrage/explizitem Auftrag — Konvention steht in der `AGENTS.md` des
+Grafana-Spaces.
 
 ## `ssh-mcp`
 
@@ -300,7 +322,7 @@ beide Identitäten gleichzeitig ankommen — der OpenCode-Guardrail greift dort 
 
 Die `docker-host*`-Skills (`docker-host`, `docker-host-compose`,
 `docker-host-filesystem`, `docker-host-git`) sind **generisch** und liegen in
-`skills/shared/` — sie werden von *allen* sechs Workspaces geladen. Was sie nicht
+`skills/shared/` — sie werden von *allen* acht Workspaces geladen. Was sie nicht
 wissen, ist, *welcher* Host gemeint ist.
 
 Das weiß der **Location-Skill `docker-host-location`**. Er existiert zweimal, mit
@@ -321,15 +343,19 @@ Host nennt → `skills/shared/`. Wenn sie einen Host nennt → in den Site-Ordne
 
 ### Lade-Matrix
 
-| Skill-Ordner | server-mgmt | homeassistant | svelte | cleve | general | minijob |
-|--------------|:-----------:|:------------:|:------:|:-----:|:-------:|:-------:|
-| `shared` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `server` | ✅ | ✅ | ✅ | — | — | — |
-| `cleve` | — | — | — | ✅ | — | — |
-| `homeassistant` | — | ✅ | — | — | — | — |
-| `obsidian` | ✅ | ✅ | ✅ | — | ✅ | — |
-| `general` | — | — | — | — | ✅ | — |
-| `minijob` | — | — | — | — | — | ✅ |
+| Skill-Ordner | server-mgmt | homeassistant | svelte | cleve | grafana | general | minijob |
+|--------------|:-----------:|:------------:|:------:|:-----:|:-------:|:-------:|:-------:|
+| `shared` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `server` | ✅ | ✅ | ✅ | — | ◻️ | — | — |
+| `cleve` | — | — | — | ✅ | — | — | — |
+| `homeassistant` | — | ✅ | — | — | — | — | — |
+| `obsidian` | ✅ | ✅ | ✅ | — | ✅ | ✅ | — |
+| `general` | — | — | — | — | — | ✅ | — |
+| `minijob` | — | — | — | — | — | — | ✅ |
+| `grafana` | — | — | — | — | ✅ | — | — |
+
+◻️ = lädt nur einen einzelnen Skill aus der Gruppe (`server/docker-host-location`),
+nicht die ganze Gruppe.
 
 Inhalt der Gruppen:
 
@@ -343,6 +369,9 @@ Inhalt der Gruppen:
 - `skills/homeassistant/` — `home-assistant`, `google-home-exposure`
 - `skills/obsidian/` — `obsidian` (Vault-Zugriff)
 - `skills/minijob/` — `obsidian` (Vault-Zugriff mit MuellerConnect-Zugang)
+- `skills/grafana/` — `grafana-oss`, `dashboarding`, `alerting-irm`
+  (vendored aus `grafana/skills`, Apache-2.0 — Quelle/Update-Prozedur:
+  `skills/grafana/README.md`)
 
 ### Built-in-Skills
 

@@ -3,7 +3,7 @@ FROM buildpack-deps:22.04-curl
 # ── Bake-Baseline: Toolchain ins Image (Kaltstart-Verkürzung) ───────────────
 # Ohne diese Layer installiert der Container bei JEDER Neuerstellung alles
 # nach: Node 22, uv, OpenCode-CLI (~500 MB), DCP (~96 MB), ssh-mcp (~78 MB),
-# ocis-mcp-server – plus ~500 MB npm-Cache. Der Node-Teil lief dabei sogar
+# ocis-mcp-server, mcp-grafana – plus ~500 MB npm-Cache. Der Node-Teil lief dabei sogar
 # *blockierend vor* dem Coder-Agenten, der Workspace wurde also erst nach
 # 20–40 s als „verbunden“ angezeigt.
 #
@@ -22,6 +22,7 @@ ARG OPENCODE_VERSION=2.0.32
 ARG DCP_VERSION=3.2.0
 ARG SSH_MCP_VERSION=2.19.1
 ARG OCIS_MCP_VERSION=1.1.0
+ARG GRAFANA_MCP_VERSION=2.1.1
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -64,7 +65,16 @@ RUN curl -fsSL -o /tmp/ocis-mcp.tar.gz \
  && echo "${OCIS_MCP_VERSION}" > /root/.local/bin/.ocis-mcp-server-version \
  && rm -f /tmp/ocis-mcp.tar.gz /tmp/ocis-mcp-server
 
-# ── 5. Cache-Buster für das Image (erzwingt Rebuild beim Template-Push) ─────
+# ── 5. mcp-grafana (Grafana, Go-Binary aus den GitHub-Releases) ─────────────
+# Release-Asset enthält das Binary „mcp-grafana" auf Top-Level (geprüft v2.1.1).
+RUN curl -fsSL -o /tmp/mcp-grafana.tar.gz \
+      "https://github.com/grafana/mcp-grafana/releases/download/v${GRAFANA_MCP_VERSION}/mcp-grafana_Linux_x86_64.tar.gz" \
+ && tar xzf /tmp/mcp-grafana.tar.gz -C /tmp \
+ && install -m 0755 /tmp/mcp-grafana /root/.local/bin/mcp-grafana \
+ && echo "${GRAFANA_MCP_VERSION}" > /root/.local/bin/.mcp-grafana-version \
+ && rm -f /tmp/mcp-grafana.tar.gz /tmp/mcp-grafana
+
+# ── 6. Cache-Buster für das Image (erzwingt Rebuild beim Template-Push) ─────
 # ⚠️ MUSS am Dateiende stehen (siehe oben): nur so bleiben die Install-Layers
 # über Apply/Neustarts hinweg im Docker-Layer-Cache.
 ARG CACHE_DATE=1

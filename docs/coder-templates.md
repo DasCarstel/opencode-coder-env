@@ -17,7 +17,7 @@ startet und danach den Coder-Agent-Bootstrap per `exec "$@"` ausführt.
 | `datascience` | `coder-ds` | `workspace-datascience:v2` | `datascience` |
 
 ### `infrastructure`
-HA-, Server-Management-, Svelte- und Cleve-Workspaces. `main.tf`-Besonderheiten:
+HA-, Server-Management-, Svelte-, Cleve- und Grafana-Workspaces. `main.tf`-Besonderheiten:
 zusätzliche Capabilities (`NET_ADMIN`) und `/dev/net/tun` für Tailscale, ein
 eigenes persistentes Tailscale-State-Volume, Netzwerk `coder-infra`. Coder-App
 „Infrastructure Workspace" → `herdr`.
@@ -500,6 +500,7 @@ abzuarbeiten — sie hängen nicht voneinander ab und brauchen nur Netz:
 | `npm_chain` | OpenCode-CLI (npm-latest), `ssh-mcp` (Pin; `infrastructure`/`general`), DCP (Pin) | `/tmp/bg-npm.log` |
 | `install_uv` | uv/uvx (für uvx-basierte MCP-Server) | `/tmp/bg-uv.log` |
 | `install_ocis_mcp` | `ocis-mcp-server` (Pin, Go-Binary) | `/tmp/bg-ocis-mcp.log` |
+| `install_mcp_grafana` | `mcp-grafana` (Pin, Go-Binary; nur `infrastructure`) | `/tmp/bg-mcp-grafana.log` |
 | `install_herdr` | Herdr (Pin; Host-Bind oder GitHub-Release-Asset) | `/tmp/bg-herdr.log` |
 | `setup_tailscale` | Tailscale (`infrastructure`) — **nicht getrackt**, nichts hängt davon ab | `/tmp/bg-tailscale.log` |
 
@@ -555,7 +556,8 @@ Startantworten der Herdr-Agenten stehen je Workspace in
    `general`/`muellerconnect` → `workspaces/{general,minijob}/workspace-global.json`.
    Zusätzlich werden die Model-Router-Overrides global abgelegt.
 9. **Env-Injektion** *(nur `infrastructure`)* — `HA_LLA_TOKEN`,
-   `HA_KLEVE_LLA_TOKEN`, `AUTHENTIK_API_KEY`, `HOMARR_API_KEY` per
+   `HA_KLEVE_LLA_TOKEN`, `AUTHENTIK_API_KEY`, `HOMARR_API_KEY`,
+   `GRAFANA_API_KEY` per
    `opencode service set env`. Wichtig: `read_secret` allein genügt nicht — ohne
    diesen Schritt fehlt der Wert im Service-Env und `{env:…}` in der
    `opencode.json` bleibt leer (MCP antwortet dann 401 / `needs_auth`).
@@ -580,7 +582,7 @@ Startantworten der Herdr-Agenten stehen je Workspace in
 
     | Profil | Workspaces (Label → Verzeichnis) |
     |--------|----------------------------------|
-    | `infrastructure` | Home Assistant, Server Management, Svelte, Cleve |
+    | `infrastructure` | Home Assistant, Server Management, Svelte, Cleve, Grafana |
     | `general` | General |
     | `muellerconnect` | MuellerConnect |
     | `datascience` | Data Science |
@@ -590,7 +592,7 @@ Startantworten der Herdr-Agenten stehen je Workspace in
     Parallel-Setup (Funktion `start_ws`, je Workspace ein Log unter
     `/tmp/bg-ws-<label>.log`). Der Endzustand ist identisch — es wird nur nicht
     mehr auf den vorherigen Workspace gewartet, **kein** Lazy-Start. Bei
-    `infrastructure` (4 Workspaces) sank der Kaltstart dadurch von ~25 s auf
+    `infrastructure` (5 Workspaces) sank der Kaltstart dadurch von ~25 s auf
     ~10 s; ein fehlschlagender Workspace wird von `wait_bg` nur als
     „⚠ mit Fehler beendet“ gemeldet und bricht die anderen nicht ab.
 
@@ -631,7 +633,7 @@ Startantworten der Herdr-Agenten stehen je Workspace in
 | Tailscale | ✅ | ❌ | ❌ |
 | oCIS-Vault | privat | privat | Arbeit (MuellerConnect) |
 | Extra-Secrets | HA, authentik, grafana, opencloud, tailscale | `ssh-mcp-pc` | — |
-| Herdr-Workspaces | HA, Server Mgmt, Svelte, Cleve | General | MuellerConnect |
+| Herdr-Workspaces | HA, Server Mgmt, Svelte, Cleve, Grafana | General | MuellerConnect |
 
 `muellerconnect` ist vollständig abgeschnitten: kein `ssh-mcp`, keine SSH-Keys, kein
 internes VLAN. `general` ist ebenfalls abgeschnitten, mit einer Ausnahme: Es hat `ssh-mcp`
@@ -670,7 +672,7 @@ installiert beim Start normalerweise **nichts** mehr nach:
 | 1 | Node.js (`ARG NODE_MAJOR=22`, NodeSource) | — |
 | 2 | uv / uvx (+ Symlinks nach `/usr/local/bin`) | — |
 | 3 | `@opencode/cli` (ungepinnt), `@tarquinen/opencode-dcp` (Pin), `ssh-mcp` (Pin; nur `infrastructure`/`general`) | `.dcp-version`, `.ssh-mcp-version` |
-| 4 | `ocis-mcp-server` (Go-Binary, Pin) | `.ocis-mcp-server-version` |
+| 4 | `ocis-mcp-server` (Go-Binary, Pin), `mcp-grafana` (Go-Binary, Pin; nur `infrastructure`) | `.ocis-mcp-server-version`, `.mcp-grafana-version` |
 
 Die Stempel-Dateien in `/root/.local/bin` sind genau die, die `startup.sh`
 prüft — ohne sie würde trotz Bake erneut installiert. `muellerconnect` und
@@ -735,6 +737,7 @@ oder `npm cache clean --force` in einem Workspace.
 ```ini
 SSH_MCP_VERSION=2.19.1
 OCIS_MCP_VERSION=1.1.0
+GRAFANA_MCP_VERSION=2.1.1
 HERDR_VERSION=0.9.5
 DCP_VERSION=3.2.0
 OPENCODE_VERSION=2.0.32   # nur Bake-Baseline (Dockerfile-ARG), Laufzeit = npm-latest

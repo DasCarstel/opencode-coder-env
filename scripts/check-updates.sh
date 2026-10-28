@@ -40,6 +40,15 @@ else
   row "ocis-mcp" "${OCIS_MCP_VERSION:-?}" "${OCIS_LATEST:-?}" "aktuell"
 fi
 
+# mcp-grafana (GitHub-Repo: grafana/mcp-grafana)
+GRAFANA_LATEST=$(curl -s --max-time 15 https://api.github.com/repos/grafana/mcp-grafana/releases/latest \
+  | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"v//;s/"//')
+if [ -n "${GRAFANA_MCP_VERSION:-}" ] && [ -n "$GRAFANA_LATEST" ] && [ "$GRAFANA_LATEST" != "${GRAFANA_MCP_VERSION}" ]; then
+  row "mcp-grafana" "${GRAFANA_MCP_VERSION}" "$GRAFANA_LATEST" "versions.env: GRAFANA_MCP_VERSION=$GRAFANA_LATEST"
+else
+  row "mcp-grafana" "${GRAFANA_MCP_VERSION:-?}" "${GRAFANA_LATEST:-?}" "aktuell"
+fi
+
 # herdr (GitHub-Repo: herdrdev/herdr; Binary via herdr.dev-API)
 HERDR_LATEST=$(curl -s --max-time 15 https://api.github.com/repos/herdrdev/herdr/releases/latest \
   | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"v//;s/"//')
@@ -65,7 +74,7 @@ BAKE_OK=1
 for df in "$REPO_DIR"/coder-templates/*/Dockerfile; do
   [ -f "$df" ] || continue
   tmpl="$(basename "$(dirname "$df")")"
-  for key in NODE_MAJOR OPENCODE_VERSION DCP_VERSION SSH_MCP_VERSION OCIS_MCP_VERSION; do
+  for key in NODE_MAJOR OPENCODE_VERSION DCP_VERSION SSH_MCP_VERSION OCIS_MCP_VERSION GRAFANA_MCP_VERSION; do
     arg=$(grep -E "^ARG ${key}=" "$df" | head -1 | cut -d= -f2-)
     [ -z "$arg" ] && continue     # z. B. SSH_MCP_VERSION in muellerconnect/datascience
     env_val="${!key:-}"

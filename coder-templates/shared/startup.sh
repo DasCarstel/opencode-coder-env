@@ -58,6 +58,7 @@ else
   echo "⚠ coder-templates/versions.env nicht gefunden – Versionspins nicht verfügbar"
   SSH_MCP_VERSION=""
   OCIS_MCP_VERSION=""
+  GRAFANA_MCP_VERSION=""
   HERDR_VERSION=""
 fi
 # ── Hintergrund-Setup (Kaltstart-Verkürzung) ────────────────────────────────
@@ -96,6 +97,9 @@ wait_bg() {   # alle Hintergrund-Jobs einsammeln und Ergebnis melden
 
 # ssh-mcp wird nur von infrastructure und general gebraucht.
 case "$PROFILE" in infrastructure|general) WANT_SSH_MCP=1 ;; *) WANT_SSH_MCP=0 ;; esac
+
+# mcp-grafana wird nur vom infrastructure-Profil gebraucht (Grafana-Space).
+case "$PROFILE" in infrastructure) WANT_GRAFANA_MCP=1 ;; *) WANT_GRAFANA_MCP=0 ;; esac
 
 # OpenCode-CLI + ssh-mcp + DCP. OpenCode bleibt bewusst ungepinnt (npm-latest,
 # Bake-Baseline siehe versions.env/Dockerfile); ssh-mcp und DCP sind gepinnt
@@ -198,6 +202,38 @@ install_ocis_mcp() {
     fi
   else
     echo "  ✓ ocis-mcp-server bereits auf Pin (v${OCIS_MCP_VERSION})"
+  fi
+}
+
+# Grafana MCP Server (grafana/mcp-grafana), gepinntes Go-Binary.
+install_mcp_grafana() {
+  local bin="/root/.local/bin/mcp-grafana"
+  local stamp="/root/.local/bin/.mcp-grafana-version"
+  local arch
+  case "$(uname -m)" in
+    x86_64)        arch="x86_64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    *)
+      echo "  ⚠ mcp-grafana: nicht unterstützte Architektur $(uname -m) – Installation übersprungen"
+      return 0
+      ;;
+  esac
+  if [ -z "${GRAFANA_MCP_VERSION}" ]; then
+    echo "  ⚠ GRAFANA_MCP_VERSION nicht gesetzt – mcp-grafana läuft weiter in aktueller Version"
+  elif [ ! -x "$bin" ] || [ "$(cat "$stamp" 2>/dev/null)" != "${GRAFANA_MCP_VERSION}" ]; then
+    echo "  → lade mcp-grafana v${GRAFANA_MCP_VERSION} herunter..."
+    if curl -fsSL -o /tmp/mcp-grafana.tar.gz \
+        "https://github.com/grafana/mcp-grafana/releases/download/v${GRAFANA_MCP_VERSION}/mcp-grafana_Linux_${arch}.tar.gz" \
+       && tar xzf /tmp/mcp-grafana.tar.gz -C /tmp \
+       && install -m 0755 /tmp/mcp-grafana "$bin" \
+       && rm -f /tmp/mcp-grafana.tar.gz /tmp/mcp-grafana; then
+      echo "${GRAFANA_MCP_VERSION}" > "$stamp"
+      echo "  ✓ mcp-grafana installiert (v${GRAFANA_MCP_VERSION})"
+    else
+      echo "  ⚠ mcp-grafana konnte nicht auf v${GRAFANA_MCP_VERSION} gebracht werden – alte Version (falls vorhanden) bleibt"
+    fi
+  else
+    echo "  ✓ mcp-grafana bereits auf Pin (v${GRAFANA_MCP_VERSION})"
   fi
 }
 
@@ -424,6 +460,7 @@ echo "=== Parallel-Setup (Hintergrund) ==="
 bg "OpenCode/ssh-mcp/DCP" /tmp/bg-npm.log npm_chain
 bg "uv/uvx"               /tmp/bg-uv.log install_uv
 bg "ocis-mcp-server"      /tmp/bg-ocis-mcp.log install_ocis_mcp
+[ "$WANT_GRAFANA_MCP" = "1" ] && bg "mcp-grafana" /tmp/bg-mcp-grafana.log install_mcp_grafana
 bg "Herdr"                /tmp/bg-herdr.log install_herdr
 
 # Tailscale (nur infrastructure): bewusst NICHT getrackt – nichts im Setup
@@ -1140,6 +1177,11 @@ if [ "$PROFILE" = "infrastructure" ]; then
       && echo "  ✓ HOMARR_API_KEY im OpenCode-Service gesetzt" \
       || echo "  ⚠ HOMARR_API_KEY konnte nicht gesetzt werden"
   fi
+  if [ -n "${GRAFANA_API_KEY:-}" ]; then
+    opencode service set env GRAFANA_API_KEY "$GRAFANA_API_KEY" >/dev/null 2>&1 \
+      && echo "  ✓ GRAFANA_API_KEY im OpenCode-Service gesetzt" \
+      || echo "  ⚠ GRAFANA_API_KEY konnte nicht gesetzt werden"
+  fi
 fi
 
 # ntfy-Token (alle Profile): das Plugin liest NTFY_TOKEN/NTFY_URL aus der
@@ -1527,7 +1569,7 @@ if [ -x "$HERDR_BIN" ]; then
   case "$PROFILE" in
     infrastructure)
       WS_BASE="$REPO_DIR/workspaces/infrastructure"
-      WS_LIST=("Home Assistant:homeassistant:opencode-ha" "Server Management:server-management:opencode-sm" "Svelte:svelte:opencode-svelte" "Cleve:cleve:opencode-cleve")
+      WS_LIST=("Home Assistant:homeassistant:opencode-ha" "Server Management:server-management:opencode-sm" "Svelte:svelte:opencode-svelte" "Cleve:cleve:opencode-cleve" "Grafana:grafana:opencode-grafana")
       ;;
     general)
       WS_BASE="$REPO_DIR/workspaces/general"
@@ -1545,7 +1587,7 @@ if [ -x "$HERDR_BIN" ]; then
 
   # Einen Workspace anlegen (idempotent) und den OpenCode-Agent darin starten.
   # Läuft als Hintergrund-Job (bg): die Workspaces sind voneinander unabhängig,
-  # daher starten sie parallel statt nacheinander – bei infrastructure (4
+  # daher starten sie parallel statt nacheinander – bei infrastructure (5
   # Workspaces) verkürzt das den Kaltstart um ~15 s. Der Endzustand ist
   # identisch (alle Workspaces laufen, kein Lazy-Start), es wartet nur nichts
   # mehr auf das vorherige. Logs: /tmp/bg-ws-<label>.log
