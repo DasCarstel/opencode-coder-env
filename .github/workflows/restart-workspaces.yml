@@ -1,0 +1,57 @@
+name: restart-workspaces
+
+# Automatischer Rollout für Spaces/Templates/Skills auf die laufenden
+# OpenCode-Coder-Workspaces:
+# Push auf coder-templates/**, workspaces/** oder skills/** →
+# Coder-Container (infrastructure, general, muellerconnect) neu starten.
+#
+# Bewusst nur ein plain `docker restart`:
+#   - Kein `coder templates push`: der würde über `CACHE_DATE=timestamp()`
+#     alle vier Images neu bauen — für Repo-Änderungen reiner Overhead.
+#   - Kein Image-Rebuild: die Entrypoints ziehen beim Start
+#     `git fetch --depth 1 origin master && reset --hard`, startup.sh läuft
+#     neu — damit sind die Änderungen aktiv.
+#   - `datascience` ist ausgeschlossen (DinD, heavy) und wird manuell neu
+#     gestartet.
+# Kein Coder-API-Token nötig: läuft per SSH-Deploy-Key vom Self-hosted Runner
+# auf den Coder-Host (Setup: hestia/ci/setup/README.md).
+on:
+  push:
+    branches: [master]
+    paths:
+      - "coder-templates/**"
+      - "workspaces/**"
+      - "skills/**"
+  workflow_dispatch:
+    inputs:
+      targets: {description: "Profil-Regex", required: false, default: "infrastructure|general|muellerconnect"}
+      delay:   {description: "Sekunden vor dem Restart", required: false, default: "0"}
+
+# Doppelter Trigger (Push UND Dispatch) würde zwei parallele Restarts starten
+# und die Workspaces zweimal neu starten. Läuft schon einer, ersetzt ihn der neue.
+concurrency:
+  group: restart-workspaces-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  restart:
+    runs-on: [self-hosted, docker-host]
+    env:
+      CODER_DEPLOY_KEY: ${{ secrets.CODER_DEPLOY_KEY }}
+      TARGETS: ${{ inputs.targets || 'infrastructure|general|muellerconnect' }}
+      DELAY: ${{ inputs.delay || '0' }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Deploy-Key hinterlegen
+        run: |
+          mkdir -p ~/.ssh
+          echo "$CODER_DEPLOY_KEY" > ~/.ssh/id_ed25519_coderdeploy
+          sed -i 's/\r$//' ~/.ssh/id_ed25519_coderdeploy
+          chmod 600 ~/.ssh/id_ed25519_coderdeploy
+          ssh-keyscan -H 10.0.10.17 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Startup-Skript syntax-checken (billiges Gate)
+        run: bash -n coder-templates/shared/startup.sh
+
+      - name: Coder-Container neu starten (Repo-Pull beim Entrypoint)
+        run: bash scripts/restart-workspaces.sh

@@ -779,3 +779,39 @@ brauchen **keinen** Template-Rollout — das Skript kommt beim Container-Start a
 dem Repo-Klon. Ein `docker restart` genügt zum Testen. Achtung: `/tmp` liegt im
 Container-Layer und überlebt den Neustart, `entrypoint-setup.log` wird daher
 **angehängt** — direkt danach steht dort noch der alte Lauf.
+
+## Automatischer Rollout auf die Workspaces (Stand 2026-10-28)
+
+Damit Änderungen an Spaces, Templates und Skills die **laufenden** Workspaces
+überhaupt erreichen, rollt
+[`.github/workflows/restart-workspaces.yml`](../.github/workflows/restart-workspaces.yml)
+sie automatisch aus (vorher geschah bei Push auf diese Pfade: nichts):
+
+- **Trigger:** Push auf `master` mit Änderungen unter `coder-templates/**`,
+  `workspaces/**` oder `skills/**` — plus `workflow_dispatch` mit den Inputs
+  `targets` (Profil-Regex) und `delay` (Sekunden vor dem Restart).
+- **Aktion:** reines `docker restart` der `coder-*`-Container mit Profil
+  `infrastructure|general|muellerconnect`
+  ([`scripts/restart-workspaces.sh`](../scripts/restart-workspaces.sh)).
+  **Kein** `coder templates push` (der würde über `CACHE_DATE=timestamp()`
+  alle vier Images neu bauen) und **kein** Image-Rebuild — der Entrypoint
+  zieht beim Start `git fetch --depth 1 origin master && reset --hard`,
+  danach läuft `startup.sh` neu.
+- **Verifikation:** nach dem Restart muss jeder Container wieder `Up` sein,
+  sonst schlägt der Workflow fehl (das alte `hestia/ci/rollout.sh` druckte
+  den Status immer ohne Prüfung).
+- **`datascience` ist bewusst ausgeschlossen** (DinD, heavy) und muss wie in
+  der Matrix oben beschrieben manuell neu gestartet werden.
+
+Manuell auslösen, z. B. mit 30 s Verzögerung, damit eine laufende Session
+abschließen kann:
+
+```bash
+gh workflow run restart-workspaces.yml -f delay=30
+# oder direkt auf dem Runner/Docker-Host aus:
+TARGETS='infrastructure|general|muellerconnect' DELAY=30 bash scripts/restart-workspaces.sh
+```
+
+Der vollständige **Template-Push** (Abschnitt „Template veröffentlichen“)
+bleibt für Image- und Terraform-Änderungen nötig; für Repo-seitige Änderungen
+an Spaces, Templates und Skills genügt der automatische Restart.
