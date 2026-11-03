@@ -1,17 +1,20 @@
 {
   "enabled": true,
-  // 2026-11-03: Primary von deepseek-v4.1-flash-free (8,6 s/Call) auf
-  // glm-5.3-flash (0,93 s/Call) gedreht. Vorher stand GLM nur in der
-  // Fallback-Kette -- konfiguriert war das langsamste Modell, gelaufen ist
-  // trotzdem GLM. Siehe MODELLREGEL unten (Messung 2026-10-21).
+  // 2026-11-03: Primary = beam-free. Messung ueber den Hestia-Speed-Scan
+  // (3 Samples, echter Tool-Call-Prompt, via OpenCode-Server):
+  //   beam-free        865 ms TTFT /  992 ms Total  (score  979,8)  free
+  //   glm-5.3-flash   1422 ms TTFT / 1699 ms Total  (score 1702,8)  paid
+  //   deepseek-v4.1-flash-free                     (score 8,6 s alt)
+  // beam-free ist damit 42 % schneller als GLM und kostenlos. Die alte
+  // MODELLREGEL unten (GLM 0,93 s) liess sich nicht reproduzieren.
   "primary": {
     "provider": "opencode-go",
-    "model": "glm-5.3-flash"
+    "model": "beam-free"
   },
   "fallback": [
     {
       "provider": "opencode-go",
-      "model": "beam-free"
+      "model": "glm-5.3-flash"
     },
     {
       "provider": "opencode-go",
