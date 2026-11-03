@@ -1653,6 +1653,132 @@ console.log("\nEreignisform 2.0.x (Metadaten in data)");
   );
 }
 
+// ── 37c. Verschwundene Session (verworfen-session-weg) ───────────────────
+//
+// Hestias Probe-Sessions räumen sich selbst ab: beim Versand holt das Plugin
+// Titel/parentID per session.get nach — und bekommt dann 404. Ohne Titel greift
+// weder die Stummschaltung noch die Kind-Regel, und der Klick-Link führte ins
+// Leere. Genau diese Meldungen werden jetzt verworfen. Grundregel: "gone" (404
+// / SessionNotFoundError) verwirft; jeder andere Fehler ("unknown") verschickt
+// die Meldung wie bisher — kein Verlust bei kurzen Netzproblemen.
+console.log("\nVerschwundene Session verwerfen");
+{
+  // Fehler-Mock: session.get schlägt mit "nicht gefunden" fehl, in den drei
+  // Formen, die vorkommen (HTTP-Status, opencode-Fehler-Tag, Fehlertext).
+  const diagEvents = [];
+  let calls = 0;
+  const gone = (error) => {
+    calls += 1;
+    throw error;
+  };
+  const n = makeNotifier({
+    client: {
+      session: {
+        get: async () =>
+          gone(Object.assign(new Error("Session not found: ses_gone0001"), { status: 404 })),
+      },
+    },
+    diag: (event) => diagEvents.push(event),
+  });
+  received.length = 0;
+  const GONE = "ses_gone0001abcdef";
+  n.markWorking(GONE);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: GONE } });
+  eq(received.length, 0, "Session weg (404) → keine Meldung im Sink");
+  ok(
+    diagEvents.includes("verworfen-session-weg"),
+    "die Diagnose nennt verworfen-session-weg"
+  );
+  ok(calls > 0, "die Entscheidung stützt sich auf session.get");
+}
+{
+  // Gleiches Verhalten, wenn der Server nichts findbares als Fehlertext
+  // schickt, sondern den opencode-Fehler-Tag als Zeichenform liefert.
+  const diagEvents = [];
+  const n = makeNotifier({
+    client: {
+      session: {
+        get: async () =>
+          Promise.reject(Object.assign(new Error("—youngling gone—"), { _tag: "SessionNotFoundError" })),
+      },
+    },
+    diag: (event) => diagEvents.push(event),
+  });
+  received.length = 0;
+  const GONE = "ses_gone0002abcdef";
+  n.markWorking(GONE);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: GONE } });
+  eq(received.length, 0, "SessionNotFoundError-Form verwirft ebenfalls");
+  ok(
+    diagEvents.includes("verworfen-session-weg"),
+    "auch diagnostics nennen verworfen-session-weg hier"
+  );
+}
+{
+  // b) Ein anderer Fehler (Server-Wartung, Timeout): die Meldung geht wie
+  //    bisher raus — kein Verlust bei kurzen Netzstörungen.
+  const n = makeNotifier({
+    client: {
+      session: {
+        get: async () => Promise.reject(Object.assign(new Error("backend-rote-Codes"), { status: 500 })),
+      },
+    },
+  });
+  received.length = 0;
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "Fehler 500 → Meldung geht weiterhin raus");
+}
+{
+  // c) Metadaten aus einem früheren Ereignis (Titel gecacht, Pfad fehlt),
+  //    danach session.get 404: der Cache gewinnt — die Meldung geht mit dem
+  //    bekannten Titel raus, genauestens einmal.
+  const diagEvents = [];
+  const n = makeNotifier({
+    client: {
+      session: {
+        get: async () => Promise.reject(Object.assign(new Error("not found"), { status: 404 })),
+      },
+    },
+    diag: (event) => diagEvents.push(event),
+  });
+  received.length = 0;
+  await n.handleEvent({
+    type: "session.created",
+    properties: { info: { id: SESSION, title: "Kurz vor Fertig und tot" } },
+  });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "bekannter Titel schützt vor dem Verwerfen");
+  eq(
+    (diagEvents.filter((e) => e === "verworfen-session-weg").length),
+    0,
+    "es wird nicht verworfen, wenn etwas über die Session bekannt ist"
+  );
+}
+{
+  // d) Regression zur Stummschaltung: stummer Titel (NTFY_IGNORE_TITLES) und
+  //    session.get 404 — hier entscheidet die Stummschaltung, nicht der
+  //    Verwerfungsfall; es geht nichts raus (wie in 37, Cooldown unangetastet).
+  const n = makeNotifier({
+    env: { NTFY_IGNORE_TITLES: "ausfall-probe" },
+    client: {
+      session: {
+        get: async () => Promise.reject(Object.assign(new Error("gone"), { status: 404 })),
+      },
+    },
+  });
+  received.length = 0;
+  await n.handleEvent({
+    type: "session.created",
+    properties: { info: { id: SESSION, title: "Hestia Speed-Probe (Ausfall-Probe)" } },
+  });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 0, "stummer Titel bleibt stumm — auch mit 404");
+  eq(n._state.lastSent.size, 0, "der Cooldown wird auch hier nicht angefasst");
+}
+
 // ── 38. Klickziel-Stil (NTFY_LINK_STYLE) ─────────────────────────────────
 //
 // Übergangslösung: "base" setzt das Klickziel (click-Feld und die Aktion

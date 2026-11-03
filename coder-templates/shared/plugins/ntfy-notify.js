@@ -1065,17 +1065,40 @@ export function createNtfyNotifier(options = {}) {
     state.meta.set(sessionID, entry);
   }
 
-  /** Metadaten bei Bedarf über den Server nachladen (Titel/Pfad fehlen oft). */
+  /**
+   * Ist der Fehler ein "Session existiert nicht mehr"? Hestias Probe-Sessions
+   * räumen sich selbst ab — der Nachlade-Aufruf antwortet dann mit 404. Das
+   * erkennt die Formen: numerischer Status, opencode-Fehler-Tag oder Text.
+   */
+  function sessionGone(error) {
+    if (error?.status === 404) return true;
+    if (error?._tag === "SessionNotFoundError") return true;
+    return /not\s*found|SessionNotFound/i.test(String(error?.message ?? ""));
+  }
+
+  /**
+   * Metadaten bei Bedarf über den Server nachladen (Titel/Pfad fehlen oft).
+   * Rückgabe ist der Status: "ok" (Titel oder Pfad sind bekannt — auch aus dem
+   * Cache, ohne Netzaufruf), "gone" (die Session wurde als nicht mehr
+   * existierend erkannt) oder "unknown" (anderer Fehler, kein Client). Fehl-
+   * geschlagene Nachlade-Aufrufe zählen nur dann als "gone", wenn der Cache
+   * nichts über die Session hergibt — sonst ist das Bekannte weiterhin gültig.
+   */
   async function ensureMeta(sessionID) {
-    if (!sessionID) return;
+    if (!sessionID) return "unknown";
     const entry = metaFor(sessionID);
-    if (entry.title && entry.subpath) return;
-    if (!client?.session?.get) return;
+    const cacheKnown = Boolean(entry.title || entry.subpath);
+    if (entry.title && entry.subpath) return "ok";
+    if (!client?.session?.get) return cacheKnown ? "ok" : "unknown";
     try {
       absorb(await client.session.get({ sessionID }));
     } catch (error) {
       logger("session.get fehlgeschlagen:", error?.message ?? String(error));
+      if (sessionGone(error)) return cacheKnown ? "ok" : "gone";
+      return cacheKnown ? "ok" : "unknown";
     }
+    const updated = metaFor(sessionID);
+    return updated.title || updated.subpath ? "ok" : "unknown";
   }
 
   async function send(payload, sessionID) {
@@ -1177,8 +1200,18 @@ export function createNtfyNotifier(options = {}) {
     // Instanz, die dieses Ereignis verpasst hat, würde die Stummschaltung sonst
     // übergehen — genau das ließ Hestias Ausfall-Proben durchkommen.
     if (sessionID) {
-      await ensureMeta(sessionID);
+      const status = await ensureMeta(sessionID);
       if (isMuted(sessionID)) return false;
+      // Session existiert beim Versand nicht mehr (Probe-Sessions räumen sich
+      // selbst ab): Ohne Titel/Pfad greift keine Stummschaltung, und der
+      // Klick-Link führte ins Leere. Solche Meldungen werden verworfen. Der
+      // Cooldown bleibt wie beim Mute unangetastet; nur ein sicher erkanntes
+      // "gone" verwirft — bei "unknown" (kurzer Netzfehler) geht die Meldung
+      // weiterhin raus.
+      if (status === "gone") {
+        diag("verworfen-session-weg", sessionID);
+        return false;
+      }
     }
     const key = `${sessionID ?? "?"}:${kind}`;
     const t = now();
