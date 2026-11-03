@@ -1,13 +1,17 @@
 {
   "enabled": true,
+  // 2026-11-03: Primary von deepseek-v4.1-flash-free (8,6 s/Call) auf
+  // glm-5.3-flash (0,93 s/Call) gedreht. Vorher stand GLM nur in der
+  // Fallback-Kette -- konfiguriert war das langsamste Modell, gelaufen ist
+  // trotzdem GLM. Siehe MODELLREGEL unten (Messung 2026-10-21).
   "primary": {
     "provider": "opencode-go",
-    "model": "deepseek-v4.1-flash-free"
+    "model": "glm-5.3-flash"
   },
   "fallback": [
     {
       "provider": "opencode-go",
-      "model": "glm-5.3-flash"
+      "model": "beam-free"
     },
     {
       "provider": "opencode-go",

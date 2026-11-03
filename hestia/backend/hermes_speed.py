@@ -10,7 +10,11 @@ Zwei Aufgaben in einer Datei:
      SSE-Stream, danach Session löschen). Gute Gratis-Modelle werden als
      Empfehlung ins Panel gestellt; angewendet wird NUR per Klick
      (apply_recommendation → hermes.apply — die SOT .opencode/hestia-hermes.jsonc
-     bleibt Quelle der Wahrheit). Es gibt hier bewusst KEINEN Auto-Apply.
+     bleibt Quelle der Wahrheit). Auto-Apply (Nachfolger der alten
+     E16-Entscheidung „kein Auto-Apply") gilt NUR für kostenlose Modelle mit
+     deutlich besserem Score (HESTIA_SPEED_AUTO_APPLY +
+     HESTIA_SPEED_AUTO_APPLY_MIN_GAIN); bezahlte Modelle werden nie
+     automatisch angewendet und nur mit Hinweis geloggt.
 
   2. O19-TELEMETRIE: Der Hermes-Container schreibt /opt/data/state.db (SQLite:
      sessions/messages/session_model_usage). Das Panel bekommt die Live-DB nie
@@ -29,8 +33,11 @@ wird known erst NACH der Probe (nie Blindvermerke für ungeprobte Modelle).
 
 Eine Probe ist ein echter API-Aufruf — deshalb: Warm-up (infließend, nicht in
 der Statistik) + N Samples je Kandidat, Tageslimit für neue Kandidaten
-(HESTIA_SPEED_MAX_NEW_PER_DAY) und Archiv für Ausfälle/Langsame (recheckAfter =
-archivedAt + HESTIA_SPEED_ARCHIVE_DAYS). Beide JSON-Dateien werden atomar
+(HESTIA_SPEED_MAX_NEW_PER_DAY) und Archiv für Ausfälle/Langsame: gestaffelte
+Wiederaufnahme-Frist je Grund (RECHECK_FAIL_HOURS nach Messfehlern,
+RECHECK_SLOW_HOURS nach „zu langsam", RECHECK_OK_HOURS für den Bestand;
+revive_due() nimmt fällige Archiv-Einträge wieder auf — inkl. Migration des
+Alt-Bestands nach der alten 90-Tage-Regel). Beide JSON-Dateien werden atomar
 geschrieben (tmp + os.replace).
 
 Adaptiv (je Kandidat ein „schedule“): Nach jeder erfolgreichen Probe wird die
@@ -65,6 +72,14 @@ PROBE_TIMEOUT = int(os.environ.get("HESTIA_SPEED_PROBE_TIMEOUT", "35"))
 MAX_NEW_PER_DAY = int(os.environ.get("HESTIA_SPEED_MAX_NEW_PER_DAY", "5"))
 ARCHIVE_DAYS = int(os.environ.get("HESTIA_SPEED_ARCHIVE_DAYS", "90"))
 FREE_ONLY = os.environ.get("HESTIA_SPEED_FREE_ONLY", "1") == "1"
+# Gestaffelte Wiederaufnahme statt pauschal 90 Tage: Messfehler (Verbindungs-
+# problem) werden schnell wieder versucht (24 h), ein „zu langsam"-Gate später
+# (7 Tage — Modell-Speed kann sich ändern), der Bestand seltener (720 h).
+# ARCHIVE_DAYS bleibt NUR als Obergrenze fürs Archiv-Pruning bestehen.
+RECHECK_FAIL_HOURS = int(os.environ.get("HESTIA_SPEED_RECHECK_FAIL_HOURS", "24"))
+RECHECK_SLOW_HOURS = int(os.environ.get("HESTIA_SPEED_RECHECK_SLOW_HOURS", "168"))
+RECHECK_OK_HOURS = int(os.environ.get("HESTIA_SPEED_RECHECK_OK_HOURS", "720"))
+REVIVE_PER_RUN = int(os.environ.get("HESTIA_SPEED_REVIVE_PER_RUN", "3"))
 # Adaptiver Schedule: Stabil = keine Fehler und beide rel. Änderungen
 # (total p50 UND p95) ≤ Toleranz; nach STABLE_RUNS stabilen Proben in Folge
 # verdoppelt sich das Intervall (24 → 48 → 96 h … bis MAX_INTERVAL_HOURS),
@@ -79,6 +94,12 @@ HISTORY_DB = os.environ.get("HESTIA_SPEED_HISTORY_DB", "/app/data/hermes-speed-h
 # Kostenbremse: bezahlte Modelle werden im Automatik-/Discovery-Lauf höchstens
 # so oft pro UTC-Tag geprobt. Manuelle Probes bleiben bewusst möglich.
 MAX_PAID_PER_DAY = int(os.environ.get("HESTIA_SPEED_MAX_PAID_PER_DAY", "5"))
+# Auto-Apply (Nachfolger der E16-Entscheidung „kein Auto-Apply"): automatisch
+# angewendet wird NUR ein kostenloses Modell, und nur wenn der Score mindestens
+# AUTO_APPLY_MIN_GAIN (relativer Anteil, 0.15 = 15 %) besser ist als der Score
+# des aktuellen Primaries. Bezahlte Modelle: NIE automatisch, nur Log-Hinweis.
+AUTO_APPLY = os.environ.get("HESTIA_SPEED_AUTO_APPLY", "1") == "1"
+AUTO_APPLY_MIN_GAIN = float(os.environ.get("HESTIA_SPEED_AUTO_APPLY_MIN_GAIN", "0.15"))
 # Probe-Sessions nicht sofort löschen: Das ntfy-Plugin lädt parentID/title per
 # session.get nach; nach einem sofortigen DELETE wäre die Session weg und die
 # Probe würde wie eine normale Session gemeldet. 30 s überbrücken Debounce und
@@ -210,11 +231,11 @@ def _ensure_schedule(entry: dict, archived: bool = False,
     try:
         interval = max(1, int(raw.get("intervalHours")))
     except (TypeError, ValueError):
-        interval = ARCHIVE_DAYS * 24 if archived else INTERVAL_HOURS
+        interval = max(1, RECHECK_FAIL_HOURS) if archived else INTERVAL_HOURS
     if archived:
         # Archivierte Modelle werden nicht im Monitoring getaktet; der
-        # nächste Termin ist die recheckAfter-Frist (Archiv-Intervall).
-        interval = ARCHIVE_DAYS * 24
+        # nächste Termin ist die recheckAfter-Frist (gestaffelte Frist).
+        interval = max(1, RECHECK_FAIL_HOURS)
     try:
         streak = int(raw.get("stableStreak") or 0)
     except (TypeError, ValueError):
@@ -233,7 +254,8 @@ def _ensure_schedule(entry: dict, archived: bool = False,
             base_iso = entry.get("recheckAfter")
             if not base_iso:
                 base_ts = _to_epoch(entry.get("lastProbe") or checked_at)
-                base_iso = _now_iso((base_ts or time.time()) + ARCHIVE_DAYS * 86400)
+                base_iso = _now_iso((base_ts or time.time())
+                                    + max(1, RECHECK_FAIL_HOURS) * 3600)
             sch["nextProbeAt"] = base_iso
         else:
             base_ts = _to_epoch(entry.get("lastProbe") or checked_at)
@@ -732,10 +754,48 @@ def probe(ref: str, samples: int | None = None, variant: str = "") -> dict:
 
 # ── Läufe: Discovery/Monitoring/Manual — Status pflegen, archivieren ────────
 
-def _archive_entry(cand: dict) -> dict:
-    now_iso = _now_iso()
-    return {**cand, "status": "archived", "archivedAt": now_iso,
-            "recheckAfter": _now_iso(time.time() + ARCHIVE_DAYS * 86400)}
+def _recheck_hours(reason: str) -> int:
+    """Gestaffelte Wiederaufnahme-Frist je Grund (Stunden): error/slow/ok."""
+    r = str(reason or "")
+    if r == "slow":
+        return max(1, RECHECK_SLOW_HOURS)
+    if r == "ok":
+        return max(1, RECHECK_OK_HOURS)
+    return max(1, RECHECK_FAIL_HOURS)
+
+
+def _archive_entry(cand: dict, reason: str = "error") -> dict:
+    """Archiv-Eintrag bauen: status/reason/archivedAt + gestaffeltes recheckAfter.
+
+    Frist je Grund („archiviert“ ≠ „für immer gesperrt“): Messfehler 24 h,
+    „zu langsam" 7 Tage, Bestand 720 h — siehe RECHECK_*_HOURS.
+    """
+    now_ts = time.time()
+    entry = {k: v for k, v in cand.items() if k != "archiveReason"}
+    entry["status"] = "archived"
+    entry["reason"] = str(reason or "error")
+    entry["archivedAt"] = _now_iso(now_ts)
+    entry["recheckAfter"] = _now_iso(now_ts + _recheck_hours(reason) * 3600)
+    return entry
+
+
+def _archive_due_ts(entry: dict) -> float | None:
+    """Effektive Fälligkeit eines Archiv-Eintrags (Epoch oder None).
+
+    effektive Fälligkeit = min(recheckAfter, archivedAt + Frist(reason)).
+    Der zweite Term migriert den Alt-Bestand, dessen recheckAfter noch nach
+    der alten 90-Tage-Regel weit in der Zukunft liegt: ist die gestaffelte
+    Frist seit archivedAt abgelaufen, ist der Eintrag fällig — auch wenn
+    recheckAfter nominell erst 2027 steht. Ohne jede Basis: None.
+    """
+    due: list = []
+    rc = _to_epoch(entry.get("recheckAfter"))
+    if rc is not None:
+        due.append(rc)
+    arch = _to_epoch(entry.get("archivedAt"))
+    if arch is not None:
+        due.append(arch + _recheck_hours(entry.get("reason") or "error") * 3600)
+    return min(due) if due else None
 
 
 def _flush_archived(st: dict):
@@ -747,7 +807,8 @@ def _flush_archived(st: dict):
     still = []
     for cand in st["candidates"]:
         if cand.get("status") == "archived":
-            st["archive"].append(_archive_entry(cand))
+            st["archive"].append(_archive_entry(
+                cand, cand.get("archiveReason") or "error"))
         else:
             still.append(cand)
     st["candidates"] = still
@@ -758,6 +819,65 @@ def _prune_archive(st: dict):
     cutoff = _now_iso(time.time() - 2 * ARCHIVE_DAYS * 86400)
     st["archive"] = [a for a in st["archive"]
                      if (a.get("archivedAt") or "") >= cutoff]
+
+
+def revive_due(limit: int | None = None) -> list:
+    """Fällige Archiv-Einträge als frische Kandidaten wieder aufnehmen.
+
+    Fällig ist, wer dessen effektive Fälligkeit (siehe _archive_due_ts) vorbei
+    ist — älteste zuerst, maximal `limit` (Default REVIVE_PER_RUN) je Lauf.
+    Wiederaufnahme = frischer Kandidat via _new_candidate (Messwerte/Metadaten
+    zurückgesetzt, status „queued“); der Archiv-Eintrag verschwindet. Modelle,
+    die laut catalog.usable() nicht mehr nutzbar sind, werden NICHT
+    wiederbelebt — sie verbleiben im Archiv (das Pruning räumt sie später ab).
+    Katalogfehler werden geschluckt und sprengen die Funktion nicht; geschieht
+    alles unter FILE_LOCK. Rückgabe: Liste der wiederaufgenommenen refs.
+    """
+    try:
+        n = int(limit) if limit is not None else REVIVE_PER_RUN
+    except (TypeError, ValueError):
+        n = REVIVE_PER_RUN
+    n = max(0, n)
+    if n == 0:
+        return []
+    revived: list = []
+    now_ts = time.time()
+    with FILE_LOCK:
+        st = _load_state()
+        kept: list = []
+        for entry in st["archive"]:
+            if len(revived) >= n:
+                kept.append(entry)
+                continue
+            ref = entry.get("ref") or ""
+            if not ref or entry.get("status") not in (None, "archived"):
+                kept.append(entry)
+                continue
+            due = _archive_due_ts(entry)
+            if due is None or due > now_ts:
+                kept.append(entry)          # (noch) nicht fällig → liegen lassen
+                continue
+            try:
+                m = catalog.find_model(ref)
+                ok, _info = catalog.usable(ref)
+            except Exception as e:  # noqa: BLE001 — Katalogprobleme schluckt das Revive
+                _log(f"revive: Katalogproblem für {ref} "
+                     f"({type(e).__name__}: {e}) — Eintrag bleibt im Archiv")
+                kept.append(entry)
+                continue
+            if not m or not ok:
+                # Modell existiert nicht mehr / ist nicht nutzbar: nicht
+                # wiederbeleben — der Eintrag verbleibt im Archiv.
+                kept.append(entry)
+                continue
+            st["candidates"].append(_new_candidate(m))
+            revived.append(ref)
+            _log(f"revive: {ref} aus dem Archiv zurück in die Warteschlange "
+                 f"(reason={entry.get('reason') or 'error'})")
+        st["archive"] = kept
+        if revived:
+            _save_state(st)
+    return revived
 
 
 def _stable_enough(prev_total: dict | None, new_total: dict, errors: int) -> bool:
@@ -798,14 +918,17 @@ def _probe_and_update(cand: dict, known: dict, samples: int | None = None,
         cand["totalMs"] = res["totalMs"]
         cand["score"] = _score(res["ttfbMs"], res["totalMs"])
         cand["status"] = "monitoring"
+        cand.pop("archiveReason", None)
+        if (res["totalMs"].get("p95") or 0) >= SLOW_P95_MS:
+            cand["status"] = "archived"     # zu langsam (p95-Gesamtzeit)
+            cand["archiveReason"] = "slow"
     else:
         cand["status"] = "archived"     # Fehler → direkt ins Archiv
-    if res["ok"] and (res["totalMs"].get("p95") or 0) >= SLOW_P95_MS:
-        cand["status"] = "archived"     # zu langsam (p95-Gesamtzeit)
+        cand["archiveReason"] = "error"
     # Adaptiver Schedule: Stabilität gegen die vorherige Messung — nach genug
     # stabilen Proben in Folge das Intervall verdoppeln (bis Cap), Drift/Fehler
-    # setzen zurück. Archiviert: Termin ans Archiv-Fenster (kein eigener
-    # Re-Probe-Loop — die Wiederaufnahme läuft über discover/recheckAfter).
+    # setzen zurück. Archiviert: Termin auf die gestaffelte Frist (kein eigener
+    # Re-Probe-Loop — die Wiederaufnahme läuft über revive_due/recheckAfter).
     sch = cand.get("schedule") if isinstance(cand.get("schedule"), dict) else _new_schedule()
     cand["schedule"] = sch
     sch["lastProbeAt"] = cand["lastProbe"]
@@ -826,9 +949,10 @@ def _probe_and_update(cand: dict, known: dict, samples: int | None = None,
             sch["intervalHours"] = INTERVAL_HOURS
         sch["nextProbeAt"] = _now_iso(time.time() + sch["intervalHours"] * 3600)
     else:
+        frist = max(1, _recheck_hours(cand.get("archiveReason") or "error"))
         sch["stableStreak"] = 0
-        sch["intervalHours"] = ARCHIVE_DAYS * 24
-        sch["nextProbeAt"] = _now_iso(time.time() + ARCHIVE_DAYS * 86400)
+        sch["intervalHours"] = frist
+        sch["nextProbeAt"] = _now_iso(time.time() + frist * 3600)
     # known erst NACH der Probe schreiben (nie Blindvermerke für Ausfälle ohne
     # Versuch — so bleibt die Wiederentdeckung über den Hash intakt).
     m = catalog.find_model(ref)
@@ -889,6 +1013,10 @@ def run_discovery(samples: int | None = None) -> dict:
         moved = [r for r, v in results.items() if v["status"] == "archived"]
         if moved:
             _log(f"discovery: archiviert: {', '.join(moved)}")
+        try:
+            maybe_auto_apply()
+        except Exception as e:  # noqa: BLE001 — Auto-Apply darf den Lauf nicht kippen
+            _log(f"Auto-Apply-Check fehlgeschlagen: {type(e).__name__}: {e}")
     except Exception as e:  # noqa: BLE001 — der Lauf darf den Server nie reißen
         err = str(e)
         _log(f"discovery fehlgeschlagen: {e}")
@@ -936,6 +1064,10 @@ def run_monitoring(samples: int | None = None) -> dict:
         _prune_archive(st)
         with FILE_LOCK:
             _save_all(st, known)
+        try:
+            maybe_auto_apply()
+        except Exception as e:  # noqa: BLE001 — Auto-Apply darf den Lauf nicht kippen
+            _log(f"Auto-Apply-Check fehlgeschlagen: {type(e).__name__}: {e}")
     except Exception as e:  # noqa: BLE001
         err = str(e)
         _log(f"monitoring fehlgeschlagen: {e}")
@@ -1014,7 +1146,7 @@ def _thread_main(mode: str, refs: list | None, samples: int | None):
         _log(f"Lauf {mode} fehlgeschlagen: {e}")
 
 
-# ── Empfehlung + Apply (nur per Klick — kein Auto-Apply) ────────────────────
+# ── Empfehlung + Apply (manuell per Klick; Auto-Apply nur für freie Modelle) ─
 
 def recommend():
     """Beste Empfehlung aus den Monitoring-Kandidaten (free-only, niedrigster Score)."""
@@ -1069,6 +1201,99 @@ def apply_recommendation(ref: str | None = None) -> dict:
     _mark_applied(target)
     _log(f"Empfehlung angewendet: primary={target}")
     return {"applied": True, "ref": target, "result": res}
+
+
+def _current_primary_ref() -> str:
+    """Aktuellen Primary-Ref aus der SOT lesen (force=True); "" bei Problemen."""
+    try:
+        cfg = hermes._public(hermes.config(force=True))
+        p = cfg.get("primary") or {}
+        if p.get("provider") and p.get("model"):
+            return f"{p['provider']}/{p['model']}"
+    except Exception as e:  # noqa: BLE001 — ein lesbarer Logeintrag reicht
+        _log(f"Auto-Apply: Primary nicht lesbar ({type(e).__name__}: {e})")
+    return ""
+
+
+def _note_auto_apply(ref: str, gain, old, new):
+    """lastApplied um Auto-Marker ergänzen — best-effort (Apply ist durch)."""
+    try:
+        with FILE_LOCK:
+            st = _load_state()
+            prev = st.get("lastApplied")
+            note = prev if isinstance(prev, dict) and prev.get("ref") == ref \
+                else {"ref": ref, "at": _now_iso()}
+            st["lastApplied"] = {**note, "auto": True, "reason": "free-model-gain",
+                                 "gain": gain, "scoreBefore": old, "scoreAfter": new}
+            _save_state(st)
+    except Exception as e:  # noqa: BLE001 — der Vermerk darf den Apply nie kippen
+        _log(f"Auto-Apply-Vermerk fehlgeschlagen ({ref}): {type(e).__name__}: {e}")
+
+
+def maybe_auto_apply() -> dict:
+    """Auto-Apply: NUR für kostenlose Modelle und nur mit echtem Gain.
+
+    Nachfolge-Entscheidung zu E16 („kein Auto-Apply“): automatisch angewendet
+    wird ausschließlich ein kostenloses Modell, dessen Score mindestens
+    AUTO_APPLY_MIN_GAIN (relativ, 0.15 = 15 %) besser ist als der des
+    aktuellen Primaries — und auch nur, wenn der Kandidat fehlerfrei im
+    Monitoring läuft und unter der Slow-Grenze bleibt. Liegt für den current
+    Primary kein Score vor, wird trotzdem angewendet (mit Logbegründung).
+    Bezahlte Modelle werden NIE automatisch angewendet; sie erzeugen nur einen
+    Log-Hinweis für den manuellen Apply. Apply-Fehler werden geschluckt — ein
+    gescheiterter Deploy darf den Loop niemals reißen.
+    """
+    if not AUTO_APPLY:
+        return {"applied": False, "reason": "deaktiviert"}
+    try:
+        rec = recommend()
+    except Exception as e:  # noqa: BLE001
+        _log(f"Auto-Apply: Empfehlung nicht lesbar ({type(e).__name__}: {e})")
+        return {"applied": False, "reason": "empfehlung-fehler"}
+    if not rec:
+        return {"applied": False, "reason": "keine-empfehlung"}
+    ref = rec.get("ref") or ""
+    st = _load_state()
+    cand = next((c for c in st.get("candidates", []) if c.get("ref") == ref), None)
+    if cand is None or cand.get("status") != "monitoring":
+        return {"applied": False, "reason": "kein-monitoring-kandidat"}
+    if cand.get("free") is not True:
+        # recommend() liefert bereits nur freie Kandidaten — diese Prüfung ist
+        # defensiv; nicht-frei/unbekannt zählt als paid → nie automatisch.
+        _log(f"Empfehlung {ref} ist schneller, aber paid — manuell anwenden")
+        return {"applied": False, "reason": "paid"}
+    if int(cand.get("errors") or 0) != 0:
+        return {"applied": False, "reason": "fehler"}
+    score = cand.get("score")
+    if score is None:
+        return {"applied": False, "reason": "kein-score"}
+    if ((cand.get("totalMs") or {}).get("p95") or 0) >= SLOW_P95_MS:
+        return {"applied": False, "reason": "zu-langsam"}
+    current = _current_primary_ref()
+    if current == ref:
+        return {"applied": False, "reason": "bereits-primary"}
+    p_cand = next((c for c in st.get("candidates", []) if c.get("ref") == current), None)
+    old = p_cand.get("score") if p_cand else None
+    gain = None
+    if old is not None and float(old) > 0:
+        gain = round((float(old) - float(score)) / float(old), 4)
+        if gain < AUTO_APPLY_MIN_GAIN:
+            return {"applied": False, "reason": "gain-zu-klein", "gain": gain}
+    else:
+        _log(f"Auto-Apply: kein Score für den aktuellen Primary "
+             f"{current or '—'} vorhanden — {ref} wird trotzdem angewendet")
+    try:
+        res = apply_recommendation(ref)
+    except Exception as e:  # noqa: BLE001 — Apply-Fehler kippen den Loop nicht
+        _log(f"Auto-Apply fehlgeschlagen ({ref}): {type(e).__name__}: {e}")
+        return {"applied": False, "reason": "apply-fehler", "error": str(e)}
+    if not res.get("applied"):
+        return {"applied": False, "reason": "apply-verweigert"}
+    _note_auto_apply(ref, gain, old, score)
+    _log(f"Auto-Apply: {current or '—'} -> {ref} "
+         f"(Score {score} statt {old if old is not None else 'kein Score'})")
+    return {"applied": True, "ref": ref, "gain": gain, "scoreBefore": old,
+            "scoreAfter": score}
 
 
 # ── O19-Telemetrie: Snapshot der Hermes-state.db lesen (read-only) ──────────
@@ -1200,6 +1425,48 @@ def telemetry(window_hours: int = 24) -> dict:
     return out
 
 
+def runs(ref: str | None = None, limit: int | None = 50) -> list:
+    """Letzte Probe-Läufe aus der SQLite-Historie (read-only, nie werfend).
+
+    Grundlage für die Rohlauf-Details im Panel: zeigt, WAS gemessen wurde
+    (Zeit, Modus, Samples, p50/p95, Fehler). Fehlt die History-DB (erste
+    Installation), kommt [] — der Endpoint darf nie ein 500 liefern.
+    """
+    try:
+        limit = max(1, min(int(limit or 50), 200))
+    except (TypeError, ValueError):
+        limit = 50
+    if not os.path.isfile(HISTORY_DB):
+        return []
+    sql = ("SELECT ts, ref, mode, samples, ttfb_p50, ttfb_p95, total_p50, "
+           "total_p95, errors, ok, score FROM probe_runs")
+    args: list = []
+    if ref:
+        sql += " WHERE ref = ?"
+        args.append(str(ref))
+    sql += " ORDER BY id DESC LIMIT ?"
+    args.append(limit)
+    try:
+        con = sqlite3.connect(
+            f"file:{HISTORY_DB}?mode=ro&immutable=1", uri=True, timeout=5)
+        con.row_factory = sqlite3.Row
+        try:
+            rows = con.execute(sql, args).fetchall()
+        finally:
+            con.close()
+    except Exception as e:  # noqa: BLE001 — Historie ist best-effort (siehe telemetry)
+        _log(f"runs: Historie nicht lesbar: {type(e).__name__}: {e}")
+        return []
+    return [{
+        "ts": r["ts"], "ref": r["ref"], "mode": r["mode"],
+        "samples": int(r["samples"] or 0),
+        "ttfbP50": _fnum(r["ttfb_p50"]), "ttfbP95": _fnum(r["ttfb_p95"]),
+        "totalP50": _fnum(r["total_p50"]), "totalP95": _fnum(r["total_p95"]),
+        "errors": int(r["errors"] or 0), "ok": bool(r["ok"]),
+        "score": _fnum(r["score"]),
+    } for r in rows]
+
+
 # ── Panel-Status + Automatik ────────────────────────────────────────────────
 
 def state() -> dict:
@@ -1229,6 +1496,12 @@ def state() -> dict:
                    "discoveryHours": DISCOVERY_HOURS,
                    "maxPaidPerDay": MAX_PAID_PER_DAY,
                    "sessionDeleteDelay": SESSION_DELETE_DELAY,
+                   "recheckFailHours": RECHECK_FAIL_HOURS,
+                   "recheckSlowHours": RECHECK_SLOW_HOURS,
+                   "recheckOkHours": RECHECK_OK_HOURS,
+                   "revivePerRun": REVIVE_PER_RUN,
+                   "autoApply": AUTO_APPLY,
+                   "autoApplyMinGain": AUTO_APPLY_MIN_GAIN,
                    "probeTimeout": PROBE_TIMEOUT, "maxNewPerDay": MAX_NEW_PER_DAY,
                    "archiveDays": ARCHIVE_DAYS, "freeOnly": FREE_ONLY,
                    "slowP95Ms": SLOW_P95_MS, "providers": ALLOWED_PROVIDERS},
@@ -1269,7 +1542,8 @@ def _seconds_until_auto_run(now: float | None = None) -> float:
 
 
 def loop(stop_event: threading.Event):
-    """Automatik: fällige Monitoring-Kandidaten + Discovery (kein Auto-Apply).
+    """Automatik: Wiederaufnahme fälliger Archiv-Einträge + fälliges Monitoring
+    + Discovery; Auto-Apply ausschließlich für freie Modelle (maybe_auto_apply).
 
     Neustart-Schutz: `_seconds_until_auto_run` liefert die Restzeit bis zur
     nächsten Fälligkeit — ein frischer Deploy mit jungem checkedAt und
@@ -1285,6 +1559,18 @@ def loop(stop_event: threading.Event):
             _log(f"nächster Speed-Lauf in {wait / 3600.0:.1f} h (adaptive Fälligkeit)")
             stop_event.wait(wait)
             continue
+        try:
+            revived = revive_due()
+        except Exception as e:  # noqa: BLE001
+            _log(f"revive fehlgeschlagen: {e}")
+            revived = []
+        if revived:
+            # Wiederaufgenommene Kandidaten sind „queued“ — run_monitoring
+            # nimmt nur fällige monitoring-Einträge, daher direkter Probe-Lauf.
+            try:
+                run_probe_refs(revived)
+            except Exception as e:  # noqa: BLE001
+                _log(f"Probe für wiederbelebte Kandidaten fehlgeschlagen: {e}")
         try:
             run_monitoring()
         except Exception as e:  # noqa: BLE001

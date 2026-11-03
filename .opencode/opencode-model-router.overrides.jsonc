@@ -15,7 +15,7 @@
       "fast": {
         "model": "opencode/deepseek-v4.1-flash-free",
         "costRatio": 1,
-        "description": "MiMo V2.5 für Explorer, Suche und einfache Lesesvorgänge",
+        "description": "DeepSeek V4.1 Flash für Explorer, Suche und einfache Lesesvorgänge",
         "steps": 30,
         "whenToUse": [
           "Codebase-Exploration und Suche",
@@ -27,7 +27,7 @@
       "medium": {
         "model": "opencode/glm-5.3-flash-free",
         "costRatio": 5,
-        "description": "DeepSeek V4 Flash für Implementation, Refactoring und Tests",
+        "description": "GLM 5.3 Flash für Implementation, Refactoring und Tests",
         "steps": 50,
         "whenToUse": [
           "Feature-Implementierung",
@@ -40,7 +40,7 @@
       "heavy": {
         "model": "opencode/gpt-6.1-sol",
         "costRatio": 12,
-        "description": "GLM 5.3 Flash für Architektur, komplexes Debugging und Security",
+        "description": "GPT-6.1 Sol für Architektur, komplexes Debugging und Security",
         "steps": 120,
         "whenToUse": [
           "Architektur-Entscheidungen",

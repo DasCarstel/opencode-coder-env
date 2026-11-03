@@ -38,7 +38,7 @@ import secrets
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
@@ -445,6 +445,22 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 _log(f"hermes speed status error: {e}")
                 return self._json({"error": str(e)}, 502)
+        if path == "/api/hermes/speed/runs":
+            # Rohlauf-Historie: zeigt, WAS gemessen wurde (Zeit, Modus, Samples,
+            # p50/p95, Fehler). Best-effort wie /api/hermes/speed selbst — die
+            # Historie darf den Panel-Aufbau nie stoeren (fehlende/kaputte DB
+            # -> leere Liste statt 500).
+            try:
+                qs = parse_qs(urlparse(self.path).query)
+                ref = ((qs.get("ref") or [None])[0] or None)
+                try:
+                    limit = int((qs.get("limit") or [50])[0])
+                except (TypeError, ValueError):
+                    limit = 50
+                return self._json(hermes_speed_mod.runs(ref=ref, limit=limit))
+            except Exception as e:  # noqa: BLE001
+                _log(f"hermes speed runs error: {e}")
+                return self._json([], 200)
         if path in ("/api/model-health", "/api/hermes/model-health"):
             # Modell-Wächter (echter Hermes-Log-Verkehr): gleiche Nie-ausfallen-
             # Absicherung wie /api/hermes/speed — state() wirft aber ohnehin nie.

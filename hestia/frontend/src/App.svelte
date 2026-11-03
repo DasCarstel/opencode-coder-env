@@ -83,6 +83,11 @@ let speed = $state(null)
 let speedError = $state('')
 let speedBusy = $state(false)
 let speedSel = $state('')
+// Rohlauf-Details (aufklappbar, lazy via GET /api/hermes/speed/runs?ref=…)
+let speedRunsOpen = $state('')
+let speedRunsLoaded = $state({})
+let speedRunsBusy = $state('')
+let speedRunsError = $state('')
 
 const VARIANT_RANK = { minimal: 1, none: 2, low: 3, medium: 4, thinking: 4, high: 5, xhigh: 6, max: 7 }
 function highestVariantOf(ref) {
@@ -1118,6 +1123,7 @@ async function runSpeed(mode) {
     const body = mode === 'probe' ? { mode, refs: [speedSel], samples: 3 } : { mode }
     await api('/api/hermes/speed/run', { body })
     speedError = ''
+    speedRunsLoaded = {} // Rohlauf-Detail beim nächsten Aufklappen neu laden
     // Messung läuft im Backend — Panel erst nach ~1,5 s frisch laden, dann Buttons wieder frei geben
     setTimeout(() => {
       loadSpeed()
@@ -1214,6 +1220,78 @@ function speedNextDue() {
     .map((c) => Date.parse(c?.schedule?.nextProbeAt || ''))
     .filter((n) => Number.isFinite(n))
   return times.length ? new Date(Math.min(...times)).toISOString() : null
+}
+
+// ── Speed-Transparenz: Archiv, Rohläufe, Auto-Apply ─────────────────────────
+
+// Archiv-Liste: nach archivedAt absteigend (neueste oben)
+const speedArchive = $derived(
+  [...(speed?.state?.archive || [])].sort((a, b) =>
+    String(b?.archivedAt || '').localeCompare(String(a?.archivedAt || '')))
+)
+
+// Konfigurierter Slow-Schwellenwert (Fallback 4000 ms)
+function speedSlowMs() {
+  return Math.round(Number(speed?.config?.slowP95Ms) || 4000)
+}
+
+// Früheste Wiederaufnahme unter den Archiv-Einträgen (Epoch-ms oder null)
+function speedEarliestRecheck() {
+  const times = (speed?.state?.archive || [])
+    .map((c) => Date.parse(c?.recheckAfter || c?.schedule?.nextProbeAt || ''))
+    .filter((n) => Number.isFinite(n))
+  return times.length ? Math.min(...times) : null
+}
+
+// Archiv-Grund bevorzugt aus reason (error/slow/ok), sonst aus Fehlern/p95 ableiten
+function speedArchiveReason(c) {
+  const r = c?.reason || c?.archiveReason
+  const slowMs = speedSlowMs()
+  if (r === 'slow') return `zu langsam (p95 ≥ ${slowMs} ms)`
+  if (r === 'ok') return 'Bestand (Platz für neue Kandidaten)'
+  if (r === 'error') return 'Messfehler/Verbindung'
+  if (Number(c?.errors) > 0) return 'Messfehler/Verbindung'
+  const p95 = Number(typeof c?.totalMs === 'object' ? c?.totalMs?.p95 : c?.totalMs)
+  if (Number.isFinite(p95) && p95 >= slowMs) return `zu langsam (p95 ≥ ${slowMs} ms)`
+  return 'Bestand (Platz für neue Kandidaten)'
+}
+
+// p95 aus einem Messwert ziehen ({p50,p95} oder Zahl)
+function speedP95(v) {
+  return typeof v === 'object' && v !== null ? (v.p95 ?? null) : (v ?? null)
+}
+
+// Einzelwert als Millisekunden-Text (— bei fehlendem/ungültigem Wert)
+function speedMsVal(v) {
+  const n = Number(v)
+  return Number.isFinite(n) ? `${Math.round(n)} ms` : '—'
+}
+
+// Messmodus lesbar machen
+function speedRunMode(m) {
+  return { discovery: 'Discovery', monitoring: 'Monitoring', probe: 'Probe' }[m] || (m || '—')
+}
+
+// Rohläufe eines Modells: erster Klick lädt lazy über GET /speed/runs, zweiter schließt
+async function toggleSpeedRuns(ref) {
+  if (!ref) return
+  if (speedRunsOpen === ref) {
+    speedRunsOpen = ''
+    speedRunsError = ''
+    return
+  }
+  speedRunsOpen = ref
+  speedRunsError = ''
+  if (speedRunsLoaded[ref]) return // schon geladen (Cache)
+  speedRunsBusy = ref
+  try {
+    const runs = await api('/api/hermes/speed/runs?ref=' + encodeURIComponent(ref) + '&limit=30')
+    speedRunsLoaded = { ...speedRunsLoaded, [ref]: Array.isArray(runs) ? runs : [] }
+  } catch (e) {
+    speedRunsError = 'Speed-Rohläufe: ' + (e?.message || String(e))
+  } finally {
+    speedRunsBusy = ''
+  }
 }
 
 load()
@@ -1547,6 +1625,15 @@ setInterval(loadSuggestStatus, 60000)
       </button>
       <span class="muted" style="color:var(--warn)">⚠ Übernehmen startet Hermes neu — laufende Sessions brechen ab.</span>
     </div>
+    {#if speed?.state?.lastApplied?.ref && speed?.recommendation?.ref !== speed.state.lastApplied.ref}
+      {@const prim = (speed?.state?.candidates || []).find((c) => c.ref === speed.state.lastApplied.ref)}
+      <p class="muted" style="margin-top:6px">
+        Challenger <span class="mono">{speed.recommendation.ref}</span>:
+        Score {speed.recommendation.score ?? '—'} statt {prim?.score ?? '—'} (±{Math.abs((Number(prim?.score) - Number(speed.recommendation.score)) / Number(prim?.score) * 100).toFixed(1)} %)
+      </p>
+    {/if}
+  {:else if speed}
+    <p class="muted">Kein Kandidat hat die Gates bestanden (Messfehler oder p95 ≥ {speedSlowMs()} ms) → siehe Archiv.</p>
   {:else}
     <p class="muted">Noch keine Empfehlung.</p>
   {/if}
@@ -1574,38 +1661,126 @@ setInterval(loadSuggestStatus, 60000)
   </div>
 
   <p class="muted" style="margin-top:6px">
+    Aktuell Primary: <span class="mono">{speed?.state?.lastApplied?.ref || '—'}</span>
+    {#if speed?.state?.lastApplied?.at}· gesetzt <span class="mono">{speedTs(speed.state.lastApplied.at)}</span>{/if}
+    · Quelle: Hermes-SOT
+    · Letzte Discovery <span class="mono">{speedTs(speed?.state?.checkedAt)}</span>
+    {#if speedNextDue()}· Nächste Messung <span class="mono">{speedTs(speedNextDue())}</span>{/if}
+  </p>
+
+  <p class="muted" style="margin-top:6px">
     Adaptiv: neue Modelle sofort, danach 24 h Basis. Nach
     {speed?.config?.stableRuns ?? 3} stabilen Messungen in Folge verdoppelt sich der
     Abstand (24 → 48 → 96 → 168 h); bei Drift oder Fehlern zurück auf 24 h.
     Automatisch werden nur fällige Kandidaten gemessen.
   </p>
 
+  {#if speed?.config?.autoApply}
+    <p class="muted" style="margin-top:6px">
+      Auto-Apply: nur kostenlose Modelle ab {Math.round((Number(speed?.config?.autoApplyMinGain) || 0.15) * 100)} % Score-Verbesserung.
+      {#if speed?.state?.lastApplied?.auto}
+        · zuletzt automatisch angewendet am <span class="mono">{speedTs(speed.state.lastApplied.at)}</span>
+        (Gain {Math.round((Number(speed?.state?.lastApplied?.gain) || 0) * 100)} %)
+      {/if}
+    </p>
+  {/if}
+
   {#if (speed?.state?.candidates || []).length}
     <table>
-      <thead><tr><th>Modell</th><th>Typ</th><th>Total p50</th><th>TTFB p50</th><th>Fehler</th><th>Status</th><th>Takt</th><th>Nächste</th><th>Zuletzt</th></tr></thead>
+      <thead><tr><th>Modell</th><th>Free</th><th>Score</th><th>TTFT p50/p95</th><th>Total p50/p95</th><th>Fehler</th><th>Läufe</th><th>Letzte Messung</th><th>Status</th><th>Nächste Messung</th></tr></thead>
       <tbody>
-        {#each speed.state.candidates.slice(0, 8) as c}
+        {#each speed.state.candidates.slice(0, 50) as c}
+          <tr style="cursor:pointer" onclick={() => toggleSpeedRuns(c.ref)}
+            title="Rohläufe {speedRunsOpen === c.ref ? 'schließen' : 'anzeigen'}">
+            <td class="mono">{speedRunsOpen === c.ref ? '▼' : '▶'} {c.ref}</td>
+            <td>{#if c.free}<span class="badge active">gratis</span>{:else}<span class="badge">bezahlt</span>{/if}</td>
+            <td>{c.score ?? '—'}</td>
+            <td>{speedMsVal(speedP50(c.ttfbMs))} / {speedMsVal(speedP95(c.ttfbMs))}</td>
+            <td>{speedMsVal(speedP50(c.totalMs))} / {speedMsVal(speedP95(c.totalMs))}</td>
+            <td>{c.errors ?? 0}</td>
+            <td>{c.runs ?? 0}</td>
+            <td class="muted">{speedTs(c.lastProbe)}</td>
+            <td>{#if c.status === 'monitoring'}<span class="badge active">{c.status}</span>{:else}<span class="badge">{c.status || '—'}</span>{/if}</td>
+            <td class="muted">{speedTs(c.schedule?.nextProbeAt)}</td>
+          </tr>
+          {#if speedRunsOpen === c.ref}
+            <tr>
+              <td colspan="10" style="padding:8px 12px 12px">
+                <div>
+                  {#if speedRunsBusy === c.ref}
+                    <span class="muted">Rohlauf-Historie laden …</span>
+                  {:else if speedRunsError}
+                    <p><span class="badge err">⚠ {speedRunsError}</span></p>
+                  {:else if !(speedRunsLoaded[c.ref] || []).length}
+                    <span class="muted">Keine Rohlauf-Historie — die SQLite-History ist leer oder das Modell wurde noch nicht gemessen.</span>
+                  {:else}
+                    <table>
+                      <thead><tr><th>Zeit</th><th>Modus</th><th>Samples</th><th>TTFT p50/p95</th><th>Total p50/p95</th><th>Fehler</th><th>OK</th><th>Score</th></tr></thead>
+                      <tbody>
+                        {#each speedRunsLoaded[c.ref] as r}
+                          <tr>
+                            <td class="mono">{speedTs(r.ts)}</td>
+                            <td>{speedRunMode(r.mode)}</td>
+                            <td>{speedNum(r.samples)}</td>
+                            <td>{speedMsVal(r.ttfbP50)} / {speedMsVal(r.ttfbP95)}</td>
+                            <td>{speedMsVal(r.totalP50)} / {speedMsVal(r.totalP95)}</td>
+                            <td>{r.errors ?? 0}</td>
+                            <td>{#if r.ok}<span class="badge active">ja</span>{:else}<span class="badge warn">nein</span>{/if}</td>
+                            <td>{r.score ?? '—'}</td>
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
+                  {/if}
+                </div>
+              </td>
+            </tr>
+          {/if}
+        {/each}
+      </tbody>
+    </table>
+    {#if (speed.state.candidates || []).length > 50}
+      <p class="muted" style="margin-top:4px">zeigt 50 von {speed.state.candidates.length} Kandidaten.</p>
+    {/if}
+  {:else if speed}
+    <div>
+      <p>
+        {#if speed?.running?.error}
+          <span class="badge err">⚠ Grund: {speed.running.error}</span>
+        {:else}
+          <span class="badge">kein Fehler beim letzten Lauf</span>
+        {/if}
+      </p>
+      <p class="muted" style="margin-top:8px">
+        Keine Kandidaten im Speed-Regal — {speedArchive.length} Einträge im Archiv
+        {#if speedEarliestRecheck()}· früheste Wiederaufnahme <span class="mono">{speedTs(speedEarliestRecheck())}</span>{/if}
+        · letzte Discovery <span class="mono">{speedTs(speed?.state?.checkedAt)}</span>
+      </p>
+      <button class="primary" onclick={() => runSpeed('discovery')}
+        disabled={speedBusy || speed?.running?.running}>
+        Jetzt Discovery starten
+      </button>
+    </div>
+  {:else}
+    <p class="muted">Noch keine Messungen — starte „Monitoring messen“ oder „Discovery“.</p>
+  {/if}
+
+  {#if speed && speedArchive.length}
+    <h3 style="margin:18px 0 6px">Archiv ({speedArchive.length})</h3>
+    <table>
+      <thead><tr><th>Modell</th><th>Archiviert</th><th>Grund</th><th>Total p95</th><th>Wiederaufnahme</th></tr></thead>
+      <tbody>
+        {#each speedArchive as c, i (c?.ref ?? i)}
           <tr>
             <td class="mono">{c.ref}</td>
-            <td>{#if c.free}<span class="badge active">gratis</span>{:else}<span class="badge">bezahlt</span>{/if}</td>
-            <td>{speedMs(c.totalMs)}</td>
-            <td>{speedMs(c.ttfbMs)}</td>
-            <td>{c.errors ?? 0}</td>
-            <td class="muted">{c.status || '—'}</td>
-            <td class="muted">
-              {speedInterval(c.schedule?.intervalHours)}
-              {#if (c.schedule?.stableStreak ?? 0) > 0}
-                · {c.schedule.stableStreak}/{speed?.config?.stableRuns ?? 3}
-              {/if}
-            </td>
-            <td class="muted">{speedTs(c.schedule?.nextProbeAt)}</td>
-            <td class="muted">{speedTs(c.lastProbe)}</td>
+            <td class="muted">{speedTs(c.archivedAt)}</td>
+            <td>{speedArchiveReason(c)}</td>
+            <td>{speedMsVal(speedP95(c.totalMs))}</td>
+            <td class="muted">{speedTs(c.recheckAfter || c.schedule?.nextProbeAt)}</td>
           </tr>
         {/each}
       </tbody>
     </table>
-  {:else}
-    <p class="muted">Noch keine Messungen — starte „Monitoring messen“ oder „Discovery“.</p>
   {/if}
 
   <div class="row">

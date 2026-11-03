@@ -38,6 +38,12 @@ Daneben liest hermes_speed.telemetry() den O19-Snapshot der Hermes-state.db
      silent=True; der Automatiklauf legt Eltern+Kind an (Kind mit parentID,
      beide verzögert gelöscht, Fehler räumen die Eltern-Session auf),
      der manuelle Lauf bleibt Root-Session mit sofortigem Löschen.
+  10. Archiv-Wiederaufnahme: gestaffelte Fristen je Grund (error 24 h,
+     slow 168 h, ok 720 h), revive_due() holt fällige Archiv-Einträge (inkl.
+     Migration des Alt-Bestands mit recheckAfter in der Zukunft), respektiert
+     das Limit und lässt kaputte Kataloge keine Exception werfen; Auto-Apply
+     ausschließlich für freie Modelle mit ≥ 15 % Score-Gain
+     (HESTIA_SPEED_AUTO_APPLY, paid → nie, nur Log-Hinweis).
 
 Läuft mit pytest UND direkt:
     pytest -q hestia/ci/test_hermes_speed.py
@@ -70,6 +76,12 @@ ENV_DEFAULTS = {
     "HESTIA_SPEED_PROBE_TIMEOUT": "35",
     "HESTIA_SPEED_MAX_NEW_PER_DAY": "5",
     "HESTIA_SPEED_ARCHIVE_DAYS": "90",
+    "HESTIA_SPEED_RECHECK_FAIL_HOURS": "24",
+    "HESTIA_SPEED_RECHECK_SLOW_HOURS": "168",
+    "HESTIA_SPEED_RECHECK_OK_HOURS": "720",
+    "HESTIA_SPEED_REVIVE_PER_RUN": "3",
+    "HESTIA_SPEED_AUTO_APPLY": "1",
+    "HESTIA_SPEED_AUTO_APPLY_MIN_GAIN": "0.15",
     "HESTIA_SPEED_FREE_ONLY": "1",
     "HESTIA_SPEED_STABILITY_SAMPLES": "5",
     "HESTIA_SPEED_STABLE_RUNS": "3",
@@ -810,11 +822,13 @@ def main():
           and cand["schedule"]["stableStreak"] == 0, str(cand["schedule"]))
     box["q"] = [_result(None, errors=2)]
     mod._probe_and_update(cand, known, samples=5, mode="monitoring")
-    check("Fehler → archiviert, Archiv-Intervall, streak 0, Termin auf Archiv-Frist",
+    check("Fehler → archiviert, gestaffelte Fehler-Frist 24 h, streak 0",
           cand["status"] == "archived"
-          and cand["schedule"]["intervalHours"] == mod.ARCHIVE_DAYS * 24
+          and cand.get("archiveReason") == "error"
+          and cand["schedule"]["intervalHours"] == 24
           and cand["schedule"]["stableStreak"] == 0
-          and mod._to_epoch(cand["schedule"]["nextProbeAt"]) > time.time() + 80 * 86400,
+          and 0 <= mod._to_epoch(cand["schedule"]["nextProbeAt"])
+          - time.time() <= 24 * 3600,
           str(cand["schedule"]))
 
     # c) run_monitoring: nur fällige monitoring-Kandidaten, 5 Samples, Archiv ruht
@@ -1151,6 +1165,269 @@ def main():
           res.get("action") == "ran" and captured.get("silent") is True
           and captured.get("override_ref") == "" and captured.get("override_variant") == "",
           f"{captured} / {res}")
+
+    print("\n[17] runs(): Historie-Rohläufe (read-only)")
+    mod = reset()
+    check("runs(): fehlende History-DB → leere Liste (kein 500)", mod.runs() == [],
+          str(mod.runs()))
+    # neue/ungeordnete DB ausholen
+    hist = os.environ["HESTIA_SPEED_HISTORY_DB"]
+    con = sqlite3.connect(hist)
+    try:
+        con.executescript(mod._HIST_SCHEMA)
+        con.executemany(
+            "INSERT INTO probe_runs (ts, ref, mode, samples, ttfb_p50, ttfb_p95, "
+            "total_p50, total_p95, errors, ok, score) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            [("2026-11-01T00:00:00Z", "opencode-go/beam-free", "monitoring", 5,
+              110.0, 130.0, 240.0, 300.0, 0, 1, 140.0),
+             ("2026-11-02T00:00:00Z", "opencode-go/dash-free", "discovery", 3,
+              90.0, 200.0, 150.0, 4800.0, 1, 1, 130.0),
+             ("2026-11-03T00:00:00Z", "opencode-go/beam-free", "probe", 3,
+              120.0, 125.0, 250.0, 260.0, 0, 0, 145.0)])
+        con.commit()
+    finally:
+        con.close()
+    all_runs = mod.runs()
+    check("runs(): die letzten Läufe zuerst, Feldnamen gemappt",
+          [r["ref"] for r in all_runs] == ["opencode-go/beam-free", "opencode-go/dash-free",
+                                           "opencode-go/beam-free"]
+          and all_runs[0] == {"ts": "2026-11-03T00:00:00Z", "ref": "opencode-go/beam-free",
+                              "mode": "probe", "samples": 3, "ttfbP50": 120.0,
+                              "ttfbP95": 125.0, "totalP50": 250.0, "totalP95": 260.0,
+                              "errors": 0, "ok": False, "score": 145.0},
+          str(all_runs[:1]))
+    check("runs(): Ref-Filter", set(r["ref"] for r in mod.runs(ref="opencode-go/beam-free"))
+          == {"opencode-go/beam-free"} and len(mod.runs(ref="opencode-go/beam-free")) == 2,
+          str(mod.runs(ref="opencode-go/beam-free")))
+    check("runs(): Limit berücksichtigt, ok als bool",
+          len(mod.runs(limit=2)) == 2
+          and isinstance(mod.runs()[1]["ok"], bool), str(mod.runs(limit=2)))
+    check("runs(): invalide Werte fallen auf die Defaults",
+          len(mod.runs(limit="kaputt")) == 3, str(mod.runs(limit="kaputt")))
+    os.environ["HESTIA_SPEED_HISTORY_DB"] = os.path.join(TMP, "caput-history.db")
+    with open(os.environ["HESTIA_SPEED_HISTORY_DB"], "wb") as f:
+        f.write(b"da habe ich mir mal etwas anderes vorgestellt")
+    sys.modules.pop("hermes_speed", None)
+    mod = importlib.import_module("hermes_speed")
+    check("runs(): unlesbare/ungültige DB → leere Liste (best-effort, keine Exception)",
+          mod.runs() == [], str(mod.runs()))
+
+    print("\n[18] Archiv-Wiederaufnahme (revive_due) + Auto-Apply nur für freie Modelle")
+    t18 = time.time()
+    past18 = mod._now_iso(t18 - 2 * 86400)          # 2 Tage alt (error → fällig)
+    near18 = mod._now_iso(t18 - 2 * 3600)           # 2 Stunden alt (error → noch nicht fällig)
+    old18 = mod._now_iso(t18 - 300 * 86400)         # Alt-Bestand: sehr alt
+
+    # a) _archive_entry wählt die Frist nach reason
+    mod = reset()
+    e_err = mod._archive_entry({"ref": "r/x"}, reason="error")
+    e_slow = mod._archive_entry({"ref": "r/x"}, reason="slow")
+    e_ok = mod._archive_entry({"ref": "r/x"}, reason="ok")
+    e_def = mod._archive_entry({"ref": "r/x"})
+    check("_archive_entry: reason error → 24 h",
+          abs(mod._to_epoch(e_err["recheckAfter"]) - (t18 + 24 * 3600)) < 120,
+          str(e_err["recheckAfter"]))
+    check("_archive_entry: reason slow → 168 h",
+          abs(mod._to_epoch(e_slow["recheckAfter"]) - (t18 + 168 * 3600)) < 120,
+          str(e_slow["recheckAfter"]))
+    check("_archive_entry: reason ok → 720 h",
+          abs(mod._to_epoch(e_ok["recheckAfter"]) - (t18 + 720 * 3600)) < 120,
+          str(e_ok["recheckAfter"]))
+    check("_archive_entry: ohne reason → Default (error/24 h)",
+          abs(mod._to_epoch(e_def["recheckAfter"]) - (t18 + 24 * 3600)) < 120,
+          str(e_def["recheckAfter"]))
+    check("_archive_entry: reason + archivedAt + status gespeichert",
+          e_slow["reason"] == "slow" and e_slow["status"] == "archived"
+          and e_slow["archivedAt"] is not None, str(e_slow))
+
+    # b) Migration: Alt-Eintrag (recheckAfter nach alter 90-Tage-Regel weit away)
+    #    wird über archivedAt + Frist(reason) wiederbelebt
+    mod = reset()
+    st = json.loads(json.dumps(DEFAULT_SPEED_STATE))
+    st["archive"] = [{
+        "ref": "opencode-go/longcat-free", "free": True, "provider": "opencode-go",
+        "model": "longcat-free", "runs": 2, "ttfbMs": {"p50": 1.0, "p95": 2.0},
+        "totalMs": {"p50": 3.0, "p95": 4.0}, "toolOk": None, "errors": 1, "score": 2.0,
+        "status": "archived", "reason": "error", "lastProbe": old18,
+        "archivedAt": old18, "recheckAfter": mod._now_iso(t18 + 90 * 86400),
+    }]
+    _write_state(mod, st)
+    revived = mod.revive_due(limit=1)
+    st2 = _read_state(mod)
+    check("Migration: Alt-Eintrag (recheckAfter in der Zukunft, archivedAt alt) → Wiederaufnahme",
+          revived == ["opencode-go/longcat-free"], str(revived))
+    check("Wiederaufnahme löst den Archiv-Eintrag auf",
+          st2["archive"] == [] and len(st2["candidates"]) == 1, str(st2["archive"]))
+    cand = st2["candidates"][0]
+    check("wiederbelebter Kandidat ist frisch (queued, Messwerte zurückgesetzt)",
+          cand["ref"] == "opencode-go/longcat-free" and cand["status"] == "queued"
+          and cand["runs"] == 0 and cand["score"] is None
+          and cand["ttfbMs"]["p50"] is None and cand["totalMs"]["p50"] is None, str(cand))
+
+    # c) revive_due: limit + älteste zuerst + nicht-Fällige liegen lassen
+    mod = reset()
+    st = json.loads(json.dumps(DEFAULT_SPEED_STATE))
+    st["archive"] = [
+        {"ref": "opencode-go/longcat-free", "free": True, "provider": "opencode-go",
+         "model": "longcat-free", "status": "archived", "reason": "error",
+         "archivedAt": old18, "recheckAfter": mod._now_iso(t18 + 90 * 86400)},
+        {"ref": "opencode-go/dash-free", "free": True, "provider": "opencode-go",
+         "model": "dash-free", "status": "archived", "reason": "slow",
+         "archivedAt": near18, "recheckAfter": past18},
+        {"ref": "opencode-go/beam-free", "free": True, "provider": "opencode-go",
+         "model": "beam-free", "status": "archived", "reason": "error",
+         "archivedAt": near18, "recheckAfter": mod._now_iso(t18 + 2 * 3600)},
+    ]
+    _write_state(mod, st)
+    revived = mod.revive_due(limit=2)
+    check("revive_due(limit=2): die zwei ältesten FÄLLIGEN zuerst",
+          revived == ["opencode-go/longcat-free", "opencode-go/dash-free"], str(revived))
+    st2 = _read_state(mod)
+    check("limit respektiert; nicht-Fälliger bleibt im Archiv",
+          len(st2["candidates"]) == 2 and len(st2["archive"]) == 1
+          and st2["archive"][0]["ref"] == "opencode-go/beam-free", str(st2["archive"]))
+    check("revive_due() ohne Limit: fällig ist längst nichts mehr",
+          mod.revive_due() == [], "keine zweite Welle")
+    st3 = _read_state(mod)
+    check("nicht-fälliger Eintrag liegt weiter im Archiv",
+          len(st3["archive"]) == 1 and st3["archive"][0]["ref"] == "opencode-go/beam-free",
+          str(st3["archive"]))
+
+    # d) kaputter/leerer Katalog: keine Exception, Einträge bleiben drin
+    mod = reset()
+    st = json.loads(json.dumps(DEFAULT_SPEED_STATE))
+    st["archive"] = [
+        {"ref": "opencode-go/beam-free", "free": True, "provider": "opencode-go",
+         "model": "beam-free", "status": "archived", "reason": "error",
+         "archivedAt": past18, "recheckAfter": past18},
+        {"ref": "opencode-go/verschollen", "free": True, "provider": "opencode-go",
+         "model": "verschollen", "status": "archived", "reason": "error",
+         "archivedAt": past18, "recheckAfter": past18},
+    ]
+    _write_state(mod, st)
+    fake_cat = mod.catalog
+    saved_find, saved_usable = fake_cat.find_model, fake_cat.usable
+
+    def _boom(ref):
+        raise RuntimeError("Katalog kaputt")
+
+    fake_cat.find_model = _boom
+    fake_cat.usable = _boom
+    try:
+        revived = mod.revive_due()
+    except Exception as e:  # noqa: BLE001
+        revived = f"EXCEPTION: {type(e).__name__}: {e}"
+    finally:
+        fake_cat.find_model, fake_cat.usable = saved_find, saved_usable
+    st2 = _read_state(mod)
+    check("kaputter Katalog → keine Exception, Einträge bleiben im Archiv",
+          revived == [] and len(st2["archive"]) == 2
+          and not st2["candidates"], str(revived))
+    revived = mod.revive_due()
+    st2 = _read_state(mod)
+    check("Katalog wieder da: existierendes Modell wird geholt, fehlendes NICHT",
+          revived == ["opencode-go/beam-free"]
+          and [a["ref"] for a in st2["archive"]] == ["opencode-go/verschollen"]
+          and [c["ref"] for c in st2["candidates"]] == ["opencode-go/beam-free"],
+          str(revived))
+
+    # e) _prune_archive entfernt weiterhin alte Einträge (ARCHIVE_DAYS bleibt)
+    mod = reset()
+    st = json.loads(json.dumps(DEFAULT_SPEED_STATE))
+    st["archive"] = [
+        {"ref": "opencode-go/uralt", "status": "archived", "reason": "error",
+         "archivedAt": mod._now_iso(t18 - 200 * 86400),
+         "recheckAfter": mod._now_iso(t18 + 720 * 3600)},
+        {"ref": "opencode-go/frisch-archiviert", "status": "archived", "reason": "slow",
+         "archivedAt": past18, "recheckAfter": mod._now_iso(t18 + 720 * 3600)},
+    ]
+    mod._prune_archive(st)
+    check("_prune_archive: Einträge älter als 2×ARCHIVE_DAYS fliegen weiter raus",
+          [a["ref"] for a in st["archive"]] == ["opencode-go/frisch-archiviert"],
+          str(st["archive"]))
+
+    # f) maybe_auto_apply: free + Gate erfüllt + Gain ≥ 15 % → Apply
+    def _auto_seed(mod, refs_scores, primary):
+        st = json.loads(json.dumps(DEFAULT_SPEED_STATE))
+        for ref, score in refs_scores:
+            st["candidates"].append(_mon(ref, score, "2000-01-01T00:00:00Z", past18))
+        _write_state(mod, st)
+        HERMES_STATE["sot"]["primary"] = primary
+
+    mod = reset()
+    _auto_seed(mod, [("opencode-go/beam-free", 1000.0),
+                     ("opencode-go/longcat-free", 100.0)],
+               {"provider": "opencode-go", "model": "beam-free"})
+    res = mod.maybe_auto_apply()
+    check("free + Gain 90 % ≥ 15 % → Auto-Apply",
+          res.get("applied") is True and HERMES_STATE["applied"]
+          and HERMES_STATE["applied"][-1]["primary"]
+          == {"provider": "opencode-go", "model": "longcat-free"}, str(res))
+    st2 = _read_state(mod)
+    check("lastApplied trägt auto=True + gain",
+          st2["lastApplied"]["ref"] == "opencode-go/longcat-free"
+          and st2["lastApplied"]["auto"] is True
+          and abs(st2["lastApplied"]["gain"] - 0.9) < 1e-6, str(st2["lastApplied"]))
+
+    # g) paid-Empfehlung → nie applied (nur Log-Hinweis)
+    mod = reset()
+    _auto_seed(mod, [], {"provider": "opencode-go", "model": "dash-free"})
+    st = _read_state(mod)
+    st["candidates"].append(_mon("opencode-go/glm-5.3-flash", 10.0,
+                                 "2000-01-01T00:00:00Z", past18, free=False))
+    _write_state(mod, st)
+    mod.recommend = lambda: {"ref": "opencode-go/glm-5.3-flash", "score": 10.0}
+    res = mod.maybe_auto_apply()
+    check("paid → kein Auto-Apply",
+          res.get("applied") is False and res.get("reason") == "paid"
+          and HERMES_STATE["applied"] == [], str(res))
+
+    # h) Gain < 15 % → kein Apply
+    mod = reset()
+    _auto_seed(mod, [("opencode-go/beam-free", 100.0),
+                     ("opencode-go/longcat-free", 95.0)],
+               {"provider": "opencode-go", "model": "beam-free"})
+    res = mod.maybe_auto_apply()
+    check("Gain 5 % < 15 % → kein Auto-Apply",
+          res.get("applied") is False and res.get("reason") == "gain-zu-klein"
+          and HERMES_STATE["applied"] == [], str(res))
+
+    # i) AUTO_APPLY=0 → kein Apply
+    mod = reset({"HESTIA_SPEED_AUTO_APPLY": "0"})
+    _auto_seed(mod, [("opencode-go/beam-free", 1000.0),
+                     ("opencode-go/longcat-free", 100.0)],
+               {"provider": "opencode-go", "model": "beam-free"})
+    res = mod.maybe_auto_apply()
+    check("Flag aus → kein Auto-Apply",
+          res.get("applied") is False and res.get("reason") == "deaktiviert"
+          and HERMES_STATE["applied"] == [], str(res))
+
+    # j) state() zeigt die neuen Config-Werte fürs Panel
+    mod = reset()
+    cfg = mod.state()["config"]
+    check("state-config: gestaffelte Wiederaufnahme + Auto-Apply-Keys",
+          cfg["recheckFailHours"] == 24 and cfg["recheckSlowHours"] == 168
+          and cfg["recheckOkHours"] == 720 and cfg["revivePerRun"] == 3
+          and cfg["autoApply"] is True
+          and abs(cfg["autoApplyMinGain"] - 0.15) < 1e-9, str(cfg))
+
+    # k) Auto-Loop: revive läuft vor dem Monitoring, Wiederaufgenommene werden geprobt
+    mod = reset()
+    st = json.loads(json.dumps(DEFAULT_SPEED_STATE))
+    st["archive"] = [{
+        "ref": "opencode-go/dash-free", "free": True, "provider": "opencode-go",
+        "model": "dash-free", "status": "archived", "reason": "error",
+        "archivedAt": past18, "recheckAfter": past18}]
+    _write_state(mod, st)
+    ev = _StopAfterWait()
+    mod.loop(ev)
+    st2 = _read_state(mod)
+    dash = next((c for c in st2["candidates"] if c["ref"] == "opencode-go/dash-free"), None)
+    check("Loop: wiederbelebter Kandidat wurde geprobt (jetzt monitoring)",
+          dash is not None and dash["status"] == "monitoring", str(dash))
+    check("Loop: Archiv-Eintrag nach der Wiederaufnahme aufgelöst",
+          all(a["ref"] != "opencode-go/dash-free" for a in st2["archive"]),
+          str(st2["archive"]))
 
     return 1 if fails else 0
 
