@@ -48,6 +48,10 @@ function testEnv(env = {}) {
     // beeinflussen. Tests, die die Drossel über einen "Neustart" hinweg prüfen,
     // geben denselben Pfad ausdrücklich mit.
     NTFY_STATE_FILE: testPath(`drossel-${++stateFileSeq}.json`),
+    // „Fertig" ohne Haltefenster: sonst würden alle bestehenden Tests 3 s
+    // warten. Die Tests zur Hintergrundarbeit geben kleine Werte ausdrücklich
+    // vor (die Wrapper unten reichen diese Env auch an die Plugin-Runtime).
+    NTFY_FINISH_HOLD_MS: "0",
     ...env,
   };
 }
@@ -187,6 +191,11 @@ function freshState() {
     // Sessions mit tatsächlich gesendeter Meldung — Grundlage des Ausblendens
     // beim nächsten Nutzer-Turn (NTFY_CLEAR_ON_RESUME, siehe Plugin).
     notified: new Set(),
+    // Hintergrundarbeit (siehe newState im Plugin): laufende Kinder, offene
+    // Shells, geklärte Elternschaft.
+    childBusy: new Map(), // Kind-Session → Zeitstempel des letzten Lebenszeichens
+    shells: new Map(), // Session → Anzahl offener Shell-Aufrufe
+    parentage: new Set(), // Sessions, deren Elternschaft bereits geklärt ist
     errorThrottle: { file: "", loaded: false, sent: new Map() },
   };
 }
@@ -200,6 +209,9 @@ function makeNotifier(extra = {}) {
     },
     log: () => {},
     state: extra.state ?? freshState(),
+    // Standard ohne Haltefenster; Tests zur Hintergrundarbeit geben kleine
+    // Werte ausdrücklich vor (ausdrückliche Werte gewinnen).
+    finishHoldMs: 0,
     ...extra,
   });
 }
@@ -2191,6 +2203,166 @@ console.log("\nAusblenden (Sequenz-ID, clear, NTFY_CLEAR_ON_RESUME)");
   );
   cleanup();
   await wait();
+}
+
+// ── 43. „Fertig" erst am echten Chat-Ende (Hintergrundarbeit) ────────────
+//
+// OpenCode 2.2.5 beendet bei Hintergrundaufgaben (Subagent im Hintergrund,
+// Hintergrund-Shell) zunächst nur EIN Ausführungs-Segment
+// (session.execution.succeeded), schreibt eine Idle-Markierung und weckt die
+// Session beim Ende der Aufgabe erneut (synthetische Nachricht). Ohne
+// Behandlung meldete das Plugin pro Chat mehrfach, teils zu früh. Diese Tests
+// stellen den Ablauf nach: laufende Kinder und offene Shells halten die
+// Meldung zurück (NTFY_FINISH_HOLD_MS).
+console.log("\nFertig erst am echten Chat-Ende");
+
+/** Zwei Hintergrund-Kinder des Test-Chats (parentID kommt nur aus session.get). */
+const CHILD_A = "ses_kind0011aaaa";
+const CHILD_B = "ses_kind0022bbbb";
+
+/** client-Mock: die Kinder tragen parentID, die Eltern-Session nicht. */
+const kindClient = () => ({
+  session: {
+    get: async ({ sessionID }) =>
+      sessionID === CHILD_A || sessionID === CHILD_B
+        ? {
+            id: sessionID,
+            parentID: SESSION,
+            title: "Unteraufgabe",
+            subpath: "workspaces/infrastructure/server-management",
+            location: { directory: `${REPO_DIR}/workspaces/infrastructure/server-management` },
+          }
+        : info(sessionID),
+  },
+});
+
+{
+  // a) Laufendes Kind: das Eltern-Segmentende meldet nichts.
+  const logPath = testPath("ntfy-kind-laeuft.log");
+  rmSync(logPath, { force: true });
+  writeFileSync(logPath, "");
+  const n = makeNotifier({ client: kindClient(), env: { NTFY_REPLY_LOG: logPath } });
+  received.length = 0;
+  await n.handleEvent(v2("session.execution.started", {}, { sessionID: CHILD_A }));
+  await n.handleEvent(v2("session.execution.started", {})); // Eltern-Segment
+  await n.handleEvent(v2("session.execution.succeeded", {})); // Segmentende
+  eq(received.length, 0, "laufendes Kind → Segmentende meldet nichts");
+  ok(
+    readFileSync(logPath, "utf8").includes("fertig-zurueckgestellt"),
+    "die Zurückstellung ist im Diagnose-Log belegt (fertig-zurueckgestellt)"
+  );
+}
+{
+  // b) Das Kind wird fertig: das nächste Eltern-Segmentende meldet genau einmal.
+  const n = makeNotifier({ client: kindClient() });
+  received.length = 0;
+  await n.handleEvent(v2("session.execution.started", {}, { sessionID: CHILD_A }));
+  await n.handleEvent(v2("session.execution.succeeded", {}, { sessionID: CHILD_A }));
+  await n.handleEvent(v2("session.execution.started", {})); // Eltern-Segment
+  await n.handleEvent(v2("session.execution.succeeded", {})); // Segmentende
+  eq(received.length, 1, "fertiges Kind → Segmentende meldet genau eine Meldung");
+  ok(
+    String(received[0]?.body?.title ?? "").includes("✅ Fertig"),
+    "die Meldung ist die gewohnte Fertig-Meldung"
+  );
+}
+{
+  // c) Haltefenster (finishHoldMs: 40): direkt nach dem Segmentende kommt
+  //    nichts, nach dem Fenster genau eine Meldung.
+  const n = makeNotifier({ finishHoldMs: 40 });
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 0, "direkt nach dem Segmentende ist keine Meldung da");
+  ok(await until(() => received.length >= 1), "nach dem Haltefenster kommt die Meldung");
+  eq(received.length, 1, "das Haltefenster hält die Meldung nur einmal zurück");
+}
+{
+  // d) Offene Shell: keine Meldung; nach der Shell-Ende meldet das nächste
+  //    Segmentende genau einmal.
+  const n = makeNotifier();
+  received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
+  n.markWorking(SESSION);
+  await n.handleEvent(v2("session.shell.started", { shellID: "sh_1" }));
+  await n.handleEvent(v2("session.execution.succeeded", {}));
+  eq(received.length, 0, "offene Shell → keine Meldung");
+  eq(n.hasPendingBackground(SESSION), true, "die offene Shell zählt als Hintergrundarbeit");
+  await n.handleEvent(v2("session.shell.ended", { shellID: "sh_1" }));
+  eq(n.hasPendingBackground(SESSION), false, "nach dem Shell-Ende ist keine Arbeit offen");
+  await n.handleEvent(v2("session.execution.started", {})); // neues Segment
+  await n.handleEvent(v2("session.execution.succeeded", {})); // Segmentende
+  eq(received.length, 1, "nach dem Shell-Ende meldet genau eine Meldung");
+}
+{
+  // e) Dauerhaft laufendes Kind: auch nach dem Haltefenster kommt nichts —
+  //    erst das Kind-Ende und ein neues Eltern-Segmentende melden.
+  const n = makeNotifier({ client: kindClient(), finishHoldMs: 40 });
+  received.length = 0;
+  await n.handleEvent(v2("session.execution.started", {}, { sessionID: CHILD_A })); // Kind läuft
+  await n.handleEvent(v2("session.execution.started", {})); // Eltern-Segment
+  await n.handleEvent(v2("session.execution.succeeded", {})); // Segmentende
+  eq(received.length, 0, "das Segmentende geht still zurückgestellt");
+  // Etwas länger warten als das Haltefenster (40 ms): trotzdem keine Meldung.
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  eq(received.length, 0, "auch nach dem Haltefenster kommt keine Meldung");
+  // Das Kind wird fertig; das nächste Eltern-Segmentende meldet echt (nach dem
+  // Haltefenster).
+  await n.handleEvent(v2("session.execution.succeeded", {}, { sessionID: CHILD_A }));
+  await n.handleEvent(v2("session.execution.started", {}));
+  await n.handleEvent(v2("session.execution.succeeded", {}));
+  ok(await until(() => received.length >= 1), "nach dem Kind-Ende meldet genau eine Meldung");
+  eq(received.length, 1, "es ist genau eine Meldung");
+  ok(
+    String(received[0]?.body?.title ?? "").includes("✅ Fertig"),
+    "die Meldung ist die echte Fertig-Meldung"
+  );
+}
+{
+  // f) Ablauf vom 18.11 nachspielen: 3 Eltern-Segmente, 2 Hintergrund-Kinder —
+  //    insgesamt genau EINE „Fertig"-Meldung.
+  const logPath = testPath("ntfy-ablauf-1811.log");
+  rmSync(logPath, { force: true });
+  writeFileSync(logPath, "");
+  const n = makeNotifier({
+    client: kindClient(),
+    env: {
+      NTFY_URL: SINK_URL,
+      NTFY_TOKEN: "tk_test",
+      NTFY_REPLY_LOG: logPath,
+    },
+  });
+  received.length = 0;
+  // Kind A startet im Hintergrund; Eltern-Segment 1 endet.
+  await n.handleEvent(v2("session.execution.started", {}, { sessionID: CHILD_A }));
+  await n.handleEvent(v2("session.execution.started", {}));
+  await n.handleEvent(v2("session.execution.succeeded", {}));
+  // Kind A fertig; Kind B startet im Hintergrund; Eltern-Segment 2 endet.
+  await n.handleEvent(v2("session.execution.succeeded", {}, { sessionID: CHILD_A }));
+  await n.handleEvent(v2("session.execution.started", {}, { sessionID: CHILD_B }));
+  await n.handleEvent(v2("session.execution.started", {}));
+  await n.handleEvent(v2("session.execution.succeeded", {}));
+  // Kind B fertig; Eltern-Segment 3 endet — jetzt ist der Chat fertig.
+  await n.handleEvent(v2("session.execution.succeeded", {}, { sessionID: CHILD_B }));
+  await n.handleEvent(v2("session.execution.started", {}));
+  await n.handleEvent(v2("session.execution.succeeded", {}));
+  eq(received.length, 1, "drei Segmente mit zwei Kindern ergeben genau eine Meldung");
+  ok(
+    String(received[0]?.body?.title ?? "").includes("✅ Fertig"),
+    "es ist die gewohnte Fertig-Meldung"
+  );
+  const diagText = readFileSync(logPath, "utf8");
+  eq(
+    (diagText.match(/fertig-zurueckgestellt/g) ?? []).length,
+    2,
+    "die ersten beiden Segmentende wurden zurückgestellt"
+  );
+  eq(
+    (diagText.match(/\bfertig-versand\b/g) ?? []).length,
+    1,
+    "die echte Meldung geht genau einmal raus"
+  );
 }
 
 sink.close();

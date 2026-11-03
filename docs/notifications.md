@@ -252,6 +252,13 @@ Das Plugin meldet ohne Zutun der Agenten:
 | `permission.asked` | `🔐 Freigabe — <Projekt>` + Grund/Befehl | 4 | `lock` |
 | `session.error` | `⚠️ Fehler — <Projekt>` | 5 | `warning` |
 
+Die „Fertig"-Meldung geht nur am **echten Chat-Ende** raus — nicht schon am Ende
+eines Ausführungs-Segments. Das ist nötig, weil OpenCode V2 bei Hintergrundaufgaben
+(`subagent`/`shell` mit `background`) nur das Segment beendet und die Session beim
+Fertigwerden erneut weckt; laufende Kind-Sessions (`parentID`) und offene Shells
+halten die Meldung deshalb zurück. Die Idle-Markierung allein reicht nicht als
+Ende-Signal, weil sie auch geschrieben wird, während Hintergrundarbeit noch läuft.
+
 Eigenschaften:
 
 - Topic default `ai`, Klick-URL zeigt auf die Coder-App der Workspace
@@ -306,6 +313,7 @@ und Fehler werden still ignoriert. Abschaltbar mit `NTFY_CLEAR_ON_RESUME=0`
 | `NTFY_IGNORE_TITLES` | Kommagetrennte Titel-Teile, die stumm bleiben (Standard: `Ausfall-Probe,Speed-Probe`). |
 | `NTFY_CLEAR_ON_RESUME` | Ausblenden der letzten Meldung beim nächsten Nutzer-Turn (Default **an**): `PUT <hub>/<topic>/oc-<sessionID>/clear` — die Meldung verschwindet aus der Benachrichtigungsleiste, bleibt aber im Topic. `0`/`false` = aus. |
 | `NTFY_DEBOUNCE_MS` | Verzögerung für „Fertig"-Meldungen in Millisekunden (im Workspace `0` = sofort, siehe `startup.sh`): eine Meldung wird erst nach N ms ohne neue Aktivität verschickt; neue Aktivität bricht den Timer ab. Ohne Wert meldet das Plugin sofort. Zu groß gewählt kostet nur Reaktionszeit (die Meldung kommt, wenn der Chat längst gelesen ist), zu klein erzeugt in aktiv geführten Gesprächen eine Meldung je Antwort. |
+| `NTFY_FINISH_HOLD_MS` | Kurzes Haltefenster (in ms, Default `3000`) vor der „Fertig"-Meldung: sie geht erst raus, wenn im Fenster keine neue Aktivität kam; neue Aktivität (Lücke zwischen Segmentende und Idle-Markierung bzw. ein soeben fertig gewordenes Hintergrund-Kind) bricht das Fenster ab. Bewusst klein — 15 s/60 s wurden als „zu spät" empfunden. `0` = sofort senden (kein Haltefenster). |
 | `NTFY_ERROR_THROTTLE_MS` | Fenster der Fehler-Drossel in Millisekunden (Default `86400000` = 24 h): denselben Fehlertext meldet das Plugin höchstens einmal je Fenster, ein anderer Fehlertext kommt weiterhin sofort. `0` = Drossel aus (jeder Fehlschlag wird gemeldet). |
 | `NTFY_STATE_FILE` | Datei mit den Zeitstempeln der Fehler-Drossel (Default `~/.local/share/opencode/ntfy-notify-state.json`). Liegt im OpenCode-Datenverzeichnis (im Container `/etc/opencode-data/<nutzer>`, siehe `coder-templates/*/main.tf`) und übersteht damit die Neuerstellung des Containers. Die Datei enthält nur Fehler-Fingerabdrücke und Zeitstempel, keine Fehlertexte. |
 | `NTFY_REPLY_LOG` | Pfad des Diagnose-Logs (z. B. `/tmp/opencode/ntfy-diag.log`); leer = aus. |
@@ -360,7 +368,10 @@ passierte am 18.10.2026: `NTFY_DEBOUNCE_MS` wurde in der Datei von `60000` über
 Wieviel Zeit zwischen Turn-Ende und Versand liegt, steht ebenfalls im
 Diagnose-Log: `fertig-ausgeloest` (Turn-Ende verarbeitet) → `fertig-versand`
 (POST geht raus). Bei `debounce=0` liegen beide Zeilen wenige Millisekunden
-auseinander.
+auseinander. Ist die Meldung zurückgestellt bzw. abgesagt, stehen stattdessen
+die Zeilen `fertig-zurueckgestellt` (Hintergrundarbeit hält die Session wach,
+Haltefenster läuft) und `fertig-verworfen` (neue Aktivität hat das Haltefenster
+abgebrochen — kein Versand).
 
 Diagnose im Container (Token aus der Env-Datei, echte Nachricht):
 

@@ -1082,6 +1082,11 @@ set_env_default NTFY_REPLY_LOG     "/tmp/opencode/ntfy-diag.log"
 # will, setzt hier z. B. 15000 ein — Doppelmeldungen bei sehr schnellen
 # Doppel-Turns verhindert weiterhin der 15-s-Cooldown je Session im Plugin.
 set_env_default NTFY_DEBOUNCE_MS  "0"
+# „Fertig" geht erst nach einem kurzen Haltefenster raus: bricht eine neue
+# Aktivität ab (Lücke zwischen Segmentende und Idle-Markierung bzw. Aufwecken
+# durch ein soeben fertig gewordenes Hintergrund-Kind). Bewusst klein — 15 s
+# und 60 s wurden als zu spät empfunden.
+set_env_default NTFY_FINISH_HOLD_MS "3000"
 # Fehler-Drossel (siehe docs/notifications.md): denselben Fehlertext höchstens
 # einmal je Fenster melden (24 h). Ein wiederkehrendes Provider-Limit
 # ("Go usage limit exceeded") erzeugte bisher pro Turn eine Meldung. Der Zustand

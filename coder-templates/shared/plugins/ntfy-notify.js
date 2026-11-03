@@ -44,6 +44,13 @@
 // Fehlertext wird zusätzlich gedrosselt (siehe errorThrottleDecision) und
 // höchstens einmal je NTFY_ERROR_THROTTLE_MS gemeldet.
 //
+// „Fertig" meldet nur am echten Ende eines Chats: Bei Hintergrundaufgaben
+// (Subagent im Hintergrund, Hintergrund-Shell) beendet OpenCode 2.2.x zunächst
+// nur EIN Ausführungs-Segment und weckt die Session erst mit dem Ende der
+// Aufgabe erneut (synthetische Nachricht). Solange ein Hintergrund-Kind läuft
+// (parentID über session.get) oder eine Shell offen ist, wird die Meldung
+// deshalb zurückgestellt (NTFY_FINISH_HOLD_MS).
+//
 // Umgebungsvariablen:
 //   NTFY_URL    Basis-URL        (Default https://ntfy.mueller-nas.de)
 //   NTFY_TOKEN  Bearer-Token     (ohne Token bleibt das Plugin still)
@@ -103,6 +110,11 @@
 //                     Dienstes. Die Datei enthält nur Fehler-Fingerabdrücke und
 //                     Zeitstempel, keine Fehlertexte. Leer/ungesetzt = Default;
 //                     ohne ermittelbaren Pfad wirkt die Drossel nur im Prozess.
+//   NTFY_FINISH_HOLD_MS   Haltefenster vor „Fertig", in Millisekunden
+//                     (Default 3000). Schließt die Lücke zwischen dem Ende
+//                     eines Ausführungs-Segments und der Idle-Markierung —
+//                     bei Hintergrundaufgaben wird eh zurückgestellt, das
+//                     Fenster schützt den Rest. 0 = ohne Haltefenster.
 //   NTFY_LINK_STYLE   "session" (Default) = Klickziel ist der Session-Deep-Link
 //                     (<basis>/server/<schlüssel>/session/<id>); "base" = nur
 //                     die Basis (Startseite der Oberfläche, Übergangslösung).
@@ -180,6 +192,15 @@ const ERROR_HOLD_MS = 3000;
 // "Go usage limit exceeded" schlägt bei jedem weiteren Turn wieder zu — ohne
 // Drossel stünde den ganzen Tag dieselbe Meldung im Topic.
 const ERROR_THROTTLE_MS = 24 * 60 * 60 * 1000;
+// Kurzes Haltefenster vor einer „Fertig"-Meldung (NTFY_FINISH_HOLD_MS).
+// Schließt die Lücke zwischen Segmentende und Idle-Markierung (Millisekunden)
+// und das Aufwecken durch ein soeben fertig gewordenes Kind. Bewusst klein:
+// 15 s und 60 s wurden als „zu spät" empfunden (siehe startup.sh).
+const FINISH_HOLD_MS = 3000;
+// Kind oder Shell ohne Lebenszeichen seit diesem Fenster gilt nicht mehr als
+// laufend (Schutz gegen eine verpasste Ende-Meldung, die sonst „Fertig"
+// dauerhaft unterdrücken würde).
+const STALE_CHILD_MS = 30 * 60 * 1000;
 // Zustandsdatei der Drossel (NTFY_STATE_FILE), relativ zum Home-Verzeichnis.
 // Der Pfad liegt bewusst im OpenCode-Datenverzeichnis: das ist im Container ein
 // Host-Pfad (/etc/opencode-data/<nutzer>, siehe coder-templates/*/main.tf) und
@@ -777,6 +798,11 @@ function newState() {
     // errorThrottleDecision. Prozessweit geteilt wie der übrige Zustand, damit
     // nicht jede Modul-Instanz ihre eigene Liste führt.
     errorThrottle: { file: "", loaded: false, sent: new Map() },
+    // Hintergrundarbeit: Solange ein Kind läuft oder eine Shell offen ist, ist
+    // die Eltern-Session nicht fertig — sie wird beim Ende erneut aufgeweckt.
+    childBusy: new Map(), // Kind-Session → Zeitstempel des letzten Lebenszeichens
+    shells: new Map(), // Session → { count, ts } offener Shell-Aufrufe
+    parentage: new Set(), // Sessions, deren Elternschaft bereits geklärt ist
   };
 }
 
@@ -875,6 +901,16 @@ export function createNtfyNotifier(options = {}) {
   })();
   const pendingFinish = new Map(); // sessionID → { timer }
 
+  // Kurzes Haltefenster vor „Fertig" (siehe FINISH_HOLD_MS): es gilt zusätzlich
+  // zum Debounce; der größere der beiden Werte gewinnt.
+  const finishHoldMs = (() => {
+    const raw = String(options.finishHoldMs ?? env.NTFY_FINISH_HOLD_MS ?? "").trim();
+    if (!raw) return FINISH_HOLD_MS;
+    const value = Number(raw);
+    return Number.isFinite(value) && value >= 0 ? value : FINISH_HOLD_MS;
+  })();
+  const finishWaitMs = Math.max(debounceMs, finishHoldMs);
+
   // Welche Werte DIESE Instanz benutzt, gehört ins Diagnose-Log: die
   // Einstellungen werden beim Erzeugen einmal gelesen. Eine spätere Änderung an
   // /etc/opencode.env erreicht eine bereits laufende Instanz nicht — sie wirkt
@@ -883,7 +919,7 @@ export function createNtfyNotifier(options = {}) {
   // erkennbar, mit welchem Fenster eine Instanz tatsächlich arbeitet.
   diag(
     "notifier-bereit",
-    `debounce=${debounceMs} ms, cooldown=${cooldownMs} ms, fehler-drossel=${errorThrottleMs} ms`
+    `debounce=${debounceMs} ms, halte=${finishHoldMs} ms, cooldown=${cooldownMs} ms, fehler-drossel=${errorThrottleMs} ms`
   );
 
   function cancelPendingFinish(sessionID) {
@@ -1275,6 +1311,83 @@ export function createNtfyNotifier(options = {}) {
     return state.children.has(sessionID);
   }
 
+  /** Shell-Zähler einer Session fortschreiben (session.shell.started/ended). */
+  function bumpShells(sessionID, delta) {
+    const current = state.shells.get(sessionID);
+    const count = (current?.count ?? 0) + delta;
+    // Zeitstempel des letzten Shell-Ereignisses: ein verpasstes Ende darf die
+    // „Fertig"-Meldung nicht für immer unterdrücken (siehe hasPendingBackground).
+    if (count > 0) state.shells.set(sessionID, { count, ts: now() });
+    else state.shells.delete(sessionID);
+  }
+
+  /**
+   * Lebenszeichen einer Session verbuchen — auch für Kind-Sessions, deren
+   * Ereignisse sonst früh verworfen werden (siehe handleEvent). Grundlage von
+   * hasPendingBackground: solange ein Hintergrund-Kind läuft oder eine Shell
+   * offen ist, darf keine „Fertig"-Meldung raus.
+   */
+  async function trackLiveness(type, sessionID) {
+    if (!sessionID) return;
+    if (type === "session.shell.started") bumpShells(sessionID, 1);
+    else if (type === "session.shell.ended") bumpShells(sessionID, -1);
+    // Elternschaft einmalig klären (parentID liefert nur session.get).
+    if (!state.parentage.has(sessionID)) {
+      if (type !== "session.execution.started" && type !== "session.step.started") return;
+      await isSubagent(sessionID);
+      state.parentage.add(sessionID);
+    }
+    if (!state.children.has(sessionID)) return;
+    const t = now();
+    if (
+      type === "session.execution.started" ||
+      type === "session.step.started" ||
+      type === "session.shell.started"
+    ) {
+      state.childBusy.set(sessionID, t);
+      return;
+    }
+    if (
+      type === "session.execution.succeeded" ||
+      type === "session.execution.failed" ||
+      type === "session.execution.interrupted" ||
+      type === "session.idle" ||
+      type === "session.deleted"
+    ) {
+      state.childBusy.delete(sessionID);
+    }
+  }
+
+  /** Läuft für diese Session noch Hintergrundarbeit? */
+  function hasPendingBackground(sessionID) {
+    if (!sessionID) return false;
+    const stale = now() - STALE_CHILD_MS;
+    // Offene Shell: gilt nur, solange das letzte Shell-Ereignis nicht zu alt
+    // ist — genauso wie bei den Kindern.
+    const shell = state.shells.get(sessionID);
+    if (shell && shell.ts >= stale) return true;
+    for (const [child, parent] of state.children) {
+      if (parent !== sessionID) continue;
+      const seen = state.childBusy.get(child);
+      if (seen !== undefined && seen >= stale) return true;
+    }
+    return false;
+  }
+
+  /** Läuft die Session inzwischen wieder? (Schutz gegen Doppelmeldungen) */
+  async function busyAgain(sessionID) {
+    if (!client?.session?.get) return false;
+    try {
+      const info = await client.session.get({ sessionID });
+      const busy = Number(info?.time?.busy);
+      const idle = Number(info?.time?.idle);
+      if (!Number.isFinite(busy)) return false;
+      return !Number.isFinite(idle) || busy > idle;
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Turn-Ende melden. Ausgelöst von session.execution.succeeded (Turn-Ende in
    * V2), session.step.ended mit finish=stop (Vorgänger-Event) oder
@@ -1304,11 +1417,27 @@ export function createNtfyNotifier(options = {}) {
       return;
     }
     await ensureMeta(sessionID);
+    // Läuft Hintergrundarbeit (Kind-Session oder Shell), ist der Chat nicht
+    // fertig: jetzt still zurückstellen — das Ende der Arbeit weckt die
+    // Session, und der nächste Turn entscheidet neu.
+    if (hasPendingBackground(sessionID)) {
+      cancelPendingFinish(sessionID);
+      diag(
+        "fertig-zurueckgestellt",
+        `${projectFor(sessionID)} (shells=${state.shells.get(sessionID)?.count ?? 0})`
+      );
+      return;
+    }
     // Zeitstempel-Beweis: zwischen „fertig-ausgeloest" (Turn-Ende verarbeitet)
     // und „fertig-versand" (POST geht raus) liegt genau das Debounce-Fenster.
-    diag("fertig-ausgeloest", `debounce=${debounceMs} ms`);
+    diag("fertig-ausgeloest", `debounce=${debounceMs} ms, halte=${finishHoldMs} ms`);
     const doSend = async () => {
       pendingFinish.delete(sessionID);
+      // Zwischenzeitlich wieder aufgeweckt: die Meldung wäre zu früh.
+      if (await busyAgain(sessionID)) {
+        diag("fertig-verworfen", "session laeuft wieder");
+        return;
+      }
       diag("fertig-versand", `${projectFor(sessionID)}`);
       await sendOnce(sessionID, "idle", {
         title: `✅ Fertig — ${projectFor(sessionID)}`,
@@ -1318,8 +1447,9 @@ export function createNtfyNotifier(options = {}) {
         click: linkFor(sessionID),
       });
     };
-    // Debounce: erst nach N ms ohne neue Aktivität verschicken. 0 = sofort.
-    if (debounceMs <= 0) {
+    // Debounce: erst nach N ms ohne neue Aktivität verschicken. Das kurze
+    // Haltefenster (FINISH_HOLD_MS) gilt zusätzlich; der größere Wert gewinnt.
+    if (finishWaitMs <= 0) {
       await doSend();
       return;
     }
@@ -1328,7 +1458,7 @@ export function createNtfyNotifier(options = {}) {
       doSend().catch((error) => {
         logger("Fertig-Meldung nicht verschickt:", error?.message ?? String(error));
       });
-    }, debounceMs);
+    }, finishWaitMs);
     if (typeof timer?.unref === "function") timer.unref();
     pendingFinish.set(sessionID, { timer });
   }
@@ -1513,6 +1643,10 @@ export function createNtfyNotifier(options = {}) {
     // V2 liefert den Projekt-Kontext direkt mit: location.directory.
     absorbLocation(sessionID, event?.location?.directory);
 
+    // Lebenszeichen verbuchen — auch für Kind-Sessions, deren Ereignisse unten
+    // früh verworfen werden (siehe trackLiveness/hasPendingBackground).
+    await trackLiveness(type, sessionID);
+
     // Abbruch und Dienst-Neustart melden nie etwas von sich aus — sie
     // verwerfen nur eine noch zurückgehaltene Fehlermeldung (siehe
     // reportError). Ohne das käme nach einem selbst abgebrochenen Turn oder
@@ -1572,6 +1706,8 @@ export function createNtfyNotifier(options = {}) {
       case "session.tool.success":
       case "session.tool.failed":
       case "session.shell.started":
+      case "session.synthetic":
+      case "session.inbox.delivered":
       case "session.retry.scheduled":
       case "message.part.updated":
       case "message.updated":
@@ -1663,6 +1799,7 @@ export function createNtfyNotifier(options = {}) {
           state.meta.delete(sessionID);
           state.working.delete(sessionID);
           state.lastText.delete(sessionID);
+          state.shells.delete(sessionID);
         }
         return;
       }
@@ -1699,6 +1836,8 @@ export function createNtfyNotifier(options = {}) {
     ensureMeta,
     projectFor,
     linkFor,
+    // Läuft für diese Session noch Hintergrundarbeit? (Diagnose)
+    hasPendingBackground,
     // Das tatsächlich verwendete Topic (ggf. mit NTFY_TOPIC_PREFIX): die
     // Aktiv-Zeile in createPluginRuntime nennt damit den echten Wert.
     topic,
