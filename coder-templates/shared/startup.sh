@@ -1360,8 +1360,11 @@ PY
 if [ "${OPENCODE_SSO_PROXY:-1}" != "0" ] && [ "${OPENCODE_SSO_PROXY:-1}" != "false" ]; then
   SSO_PROXY_SRC="$SCRIPT_DIR/opencode-sso-proxy.js"
   if [ -f "$SSO_PROXY_SRC" ]; then
+    pkill -f "sso-proxy-watchdog" 2>/dev/null || true
     pkill -f "opencode-sso-proxy.js" 2>/dev/null || true
-    setsid nohup node "$SSO_PROXY_SRC" > /tmp/opencode-sso-proxy.log 2>&1 < /dev/null &
+    # Watchdog statt Einzelprozess: Stirbt der Proxy (Crash, pkill, OOM), fehlt
+    # die Port-App 49375 und Coder liefert 502. Endlos-Neustart mit 5 s Pause.
+    setsid nohup bash -c 'while true; do node "$1"; echo "[watchdog] SSO-Proxy beendet (rc=$?), Neustart in 5s"; sleep 5; done' sso-proxy-watchdog "$SSO_PROXY_SRC" > /tmp/opencode-sso-proxy.log 2>&1 < /dev/null &
     # Health-Check: 3 Versuche, zwischen den Versuchen 2 s. Fehlt der Listener,
     # obwohl OPENCODE_SERVER_PASSWORD gesetzt ist, einmalig neu starten.
     _sso_ready=0
@@ -1372,8 +1375,11 @@ if [ "${OPENCODE_SSO_PROXY:-1}" != "0" ] && [ "${OPENCODE_SSO_PROXY:-1}" != "fal
     done
     if [ "$_sso_ready" != "1" ] && [ -n "${OPENCODE_SERVER_PASSWORD:-}" ]; then
       echo "  ⚠ SSO-Proxy-Listener fehlt – Neustart (Health-Check 3× fehlgeschlagen)"
+      pkill -f "sso-proxy-watchdog" 2>/dev/null || true
       pkill -f "opencode-sso-proxy.js" 2>/dev/null || true
-      setsid nohup node "$SSO_PROXY_SRC" > /tmp/opencode-sso-proxy.log 2>&1 < /dev/null &
+      # Watchdog statt Einzelprozess: Stirbt der Proxy (Crash, pkill, OOM), fehlt
+      # die Port-App 49375 und Coder liefert 502. Endlos-Neustart mit 5 s Pause.
+      setsid nohup bash -c 'while true; do node "$1"; echo "[watchdog] SSO-Proxy beendet (rc=$?), Neustart in 5s"; sleep 5; done' sso-proxy-watchdog "$SSO_PROXY_SRC" > /tmp/opencode-sso-proxy.log 2>&1 < /dev/null &
       for _sso_attempt in 1 2 3; do
         _sso_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:49375/api/info 2>/dev/null)
         if [ -n "$_sso_code" ] && [ "$_sso_code" != "000" ]; then _sso_ready=1; break; fi
