@@ -1273,6 +1273,20 @@ def maybe_auto_apply() -> dict:
     if current == ref:
         return {"applied": False, "reason": "bereits-primary"}
     p_cand = next((c for c in st.get("candidates", []) if c.get("ref") == current), None)
+    # Ein bewusst gesetzter bezahlter Primary bleibt stehen: Auto-Apply
+    # optimiert nur INNERHALB der kostenlosen Klasse. Sonst würde der
+    # schnellste Free-Kandidat einen vom Nutzer gewählten paid-Primary
+    # verdrängen, sobald für diesen (noch) kein Messwert vorliegt.
+    p_free = p_cand.get("free") if p_cand else None
+    if p_free is None and current:
+        try:
+            p_free = catalog.is_free(current)
+        except Exception:  # noqa: BLE001 — Katalog nicht erreichbar → unbekannt
+            p_free = None
+    if p_free is False:
+        _log(f"Auto-Apply übersprungen: Primary {current} ist paid — "
+             f"{ref} wäre schneller, der Wechsel bleibt aber manuell")
+        return {"applied": False, "reason": "primary-paid", "ref": ref}
     old = p_cand.get("score") if p_cand else None
     gain = None
     if old is not None and float(old) > 0:

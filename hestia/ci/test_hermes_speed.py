@@ -1392,6 +1392,19 @@ def main():
           res.get("applied") is False and res.get("reason") == "gain-zu-klein"
           and HERMES_STATE["applied"] == [], str(res))
 
+    # h2) Primary ist paid → kein Auto-Apply (bewusst gewählter paid bleibt stehen)
+    mod = reset()
+    _auto_seed(mod, [("opencode-go/longcat-free", 100.0)],
+               {"provider": "opencode-go", "model": "glm-5.3-flash"})
+    st = _read_state(mod)
+    st["candidates"].append(_mon("opencode-go/glm-5.3-flash", 1000.0,
+                                 "2000-01-01T00:00:00Z", past18, free=False))
+    _write_state(mod, st)
+    res = mod.maybe_auto_apply()
+    check("Primary paid → kein Auto-Apply",
+          res.get("applied") is False and res.get("reason") == "primary-paid"
+          and HERMES_STATE["applied"] == [], str(res))
+
     # i) AUTO_APPLY=0 → kein Apply
     mod = reset({"HESTIA_SPEED_AUTO_APPLY": "0"})
     _auto_seed(mod, [("opencode-go/beam-free", 1000.0),
