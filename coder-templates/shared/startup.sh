@@ -1404,6 +1404,19 @@ except Exception:
 R_DB_PATH="-"
 db_check() {
   R_DB=2
+  # Zuverlässigste Quelle ist die CLI selbst ('opencode auth list'): sie zeigt
+  # 'stored' vs 'environment' an und braucht kein sqlite3 (fehlt in den Containern).
+  if command -v opencode >/dev/null 2>&1; then
+    if _al="$(opencode auth list 2>/dev/null)"; then
+      R_DB_PATH="opencode auth list"
+      if printf '%s\n' "$_al" | grep -i 'OpenCode Go' | grep -qi 'stored'; then
+        R_DB=1
+      else
+        R_DB=0
+      fi
+      return 0
+    fi
+  fi
   for _db in /root/.local/share/opencode/opencode.db /root/.opencode/opencode.db; do
     [ -f "$_db" ] || continue
     R_DB_PATH="$_db"
@@ -1425,8 +1438,8 @@ show_db() {
   db_check
   case "$R_DB" in
     0) echo "  DB      ($R_DB_PATH)   ✓ kein gespeichertes 'OpenCode Go'-Credential — ENV greift" ;;
-    1) echo "  DB      ($R_DB_PATH)   ✗ gespeichertes Credential überschreibt ENV (Option: oc-go repair + Kontoinfo)!" ;;
-    *) echo "  DB      (—)            ⚠ nicht prüfbar (opencode.db oder sqlite3 fehlt)" ;;
+    1) echo "  DB      ($R_DB_PATH)   ✗ gespeichertes Credential überschreibt ENV → opencode auth logout \"OpenCode Go\" <label>" ;;
+    *) echo "  DB      (—)            ⚠ nicht prüfbar (weder 'opencode auth list' noch sqlite3 verfügbar)" ;;
   esac
 }
 
