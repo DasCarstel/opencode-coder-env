@@ -600,6 +600,9 @@ def switch_account(target: str, reason: str = "", force: bool = False, by: str =
         STATE["switching"] = False
         STATE["switchPending"] = pending
     _log(f"Wechsel angestoßen: {target} (via {by}, {SWITCH_WORKFLOW}) — Verifikation läuft")
+    # Event für den Panel-Feed: der Wechsel wurde angenommen und ist jetzt
+    # pending (die eigentliche Bestätigung folgt als switch-ok/switch-error).
+    _event(type="switch", target=target, reason=reason or "hestia", by=by)
     # 2) Verifikation im Hintergrund (Daemon: stirbt mit dem Panel-Prozess).
     threading.Thread(target=_verify_switch, args=(pending,), daemon=True).start()
     return {

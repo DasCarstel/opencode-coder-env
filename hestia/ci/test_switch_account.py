@@ -72,23 +72,47 @@ def fake_dispatch(workflow, ref=None, inputs=None):
     return {"dispatched": True, "workflow": workflow, "ref": ref or "master"}
 
 
+FAKE_RUN_URL = "https://github.com/DasCarstel/opencode-coder-env/actions/runs/4242"
+RUN_RESULT = "success"   # conclusion der gestubbten run_status() — global steuerbar
+
+
+def fake_find_run(workflow, since_ts, within_seconds=120):
+    """Dispatched Run stubben: sofort 'gefunden' (nach einem kurzen Halt, damit
+    die synchronen Annahme-Checks in Test 3 dem Verifikations-Thread zuvorkommen)."""
+    time.sleep(0.05)
+    return {"id": 4242, "run_number": 7, "html_url": FAKE_RUN_URL,
+            "status": "queued", "conclusion": None,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+
+
+def fake_run_status(run_id, *a, **kw):
+    """Run-Status stubben: sofort 'completed' mit conclusion=RUN_RESULT."""
+    return {"id": run_id, "status": "completed", "conclusion": RUN_RESULT,
+            "html_url": FAKE_RUN_URL, "run_number": 7,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+
+
 # Original-Funktion VOR dem Patch festhalten (accounts.github_api ist dasselbe
 # Modulobjekt wie github_api — der Patch wirkt sonst global).
 real_dispatch_workflow = github_api.dispatch_workflow
 accounts._config = lambda force=False: CFG
+accounts._sync_hermes_pool = lambda *a, **kw: False   # kein Hermes-Run im Test
+# Verifikations-Thread stark beschleunigen (Sekundenwerte -> Millisekunden):
+accounts.VERIFY_POLL_INTERVAL = 0.01
+accounts.VERIFY_FIND_TIMEOUT = 1
+accounts.VERIFY_MAX_RUNTIME = 5
+accounts.PENDING_RETENTION = 0.05
 accounts.github_api.get_file = fake_get_file
 accounts.github_api.put_files = fake_put_files
 accounts.github_api.dispatch_workflow = fake_dispatch
+accounts.github_api.find_dispatched_run = fake_find_run
+accounts.github_api.run_status = fake_run_status
 
 
 def reset():
     """Zustand UND die Aufzeichnungen der Stubs zurücksetzen."""
     CALLS.clear()
     SOT_WRITES.clear()
-
-
-def reset():
-    CALLS.clear()
     accounts.STATE.update({
         "accounts": [
             {"id": "default1", "hasKey": True, "ok": True, "error": None},
@@ -96,7 +120,8 @@ def reset():
             {"id": "default3", "hasKey": False, "ok": False, "error": "kein Key im Env"},
         ],
         "events": [], "lastSwitch": None, "switching": False, "interval": 300,
-        "mode": "auto", "recommendation": {"switchRecommended": False, "target": None, "reason": ""},
+        "mode": "auto", "active": "default1", "switchPending": None,
+        "recommendation": {"switchRecommended": False, "target": None, "reason": ""},
     })
 
 
@@ -107,6 +132,23 @@ def check(label, cond, extra=""):
     print(("  ok   " if cond else "  FAIL ") + label + (f"  [{extra}]" if extra else ""))
     if not cond:
         fails.append(label)
+
+
+def wait_pending(timeout=3.0):
+    """Warten bis der Verifikations-Thread fertig ist (pending abgeräumt).
+
+    liefert den letzten beobachteten pending-Zustand (None, wenn nie gesetzt).
+    """
+    snap = None
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        p = accounts.STATE.get("switchPending")
+        if p is None:
+            return snap
+        snap = dict(p)
+        time.sleep(0.02)
+    p = accounts.STATE.get("switchPending")
+    return dict(p) if p else snap
 
 
 print("== 1) unbekanntes Ziel ==")
@@ -122,44 +164,87 @@ r = accounts.switch_account("default3")
 check("kein Key -> Fehler", "kein Key" in (r.get("error") or ""), r.get("error"))
 check("kein Dispatch", CALLS == [])
 
-print("== 3) Erfolg setzt lastSwitch + Event + Inputs ==")
+print("== 3) Annahme: Dispatch ok, SOT/lastSwitch bleiben vorerst unangetastet ==")
 reset()
-before = time.time()
 r = accounts.switch_account("default2", "Test", by="manual")
 check("switched=True", r.get("switched") is True, str(r.get("error")))
-check("target", r.get("target") == "default2")
-check("by", r.get("by") == "manual")
-check("dispatched im Ergebnis", r.get("dispatched", {}).get("dispatched") is True)
-check("lastSwitch gesetzt", accounts.STATE["lastSwitch"] and accounts.STATE["lastSwitch"] >= before)
+check("accepted=True", r.get("accepted") is True)
+check("sotWritten=False", r.get("sotWritten") is False)
+check("kein commit im Ergebnis", not r.get("commit"), str(r.get("commit")))
+check("lastSwitch bleibt None", accounts.STATE["lastSwitch"] is None)
+check("active unverändert (default1)", accounts.STATE["active"] == "default1",
+      str(accounts.STATE["active"]))
+check("kein SOT-Schreiben (noch)", SOT_WRITES == [])
 check("switching zurückgesetzt", accounts.STATE["switching"] is False)
 check("genau 1 Dispatch", len(CALLS) == 1)
-check("genau 1 SOT-Schreiben", len(SOT_WRITES) == 1)
-check("commit zurückgegeben", r.get("commit") == "deadbeef", str(r.get("commit")))
+# r["pending"] ist die Kopie vom Rückgabezeitpunkt — phase "dispatch" ist dort garantiert.
+check("pending.phase == dispatch", r.get("pending", {}).get("phase") == "dispatch",
+      str(r.get("pending")))
+check("pending.target == default2", r.get("pending", {}).get("target") == "default2")
 # CALL_DEREF statt CALLS[0]: leerer Dispatch-Container -> "" (sauberer FAIL),
 # nicht IndexError (der war der ursprüngliche Bug-Abbruch des Tests).
 CALL_DEREF = CALLS[0] if CALLS else {}
 check("Workflow = switch-account.yml", CALL_DEREF.get("workflow") == "switch-account.yml", str(CALL_DEREF.get("workflow")))
 check("inputs korrekt", CALL_DEREF.get("inputs") == {"account": "default2", "reason": "Test"}, str(CALL_DEREF.get("inputs")))
-check("SOT enthält active=default2", '"active": "default2"' in str(SOT_WRITES[0]["files"] if SOT_WRITES else ""))
 ev = [e for e in accounts.STATE["events"] if e.get("type") == "switch"]
-check("Event type=switch", len(ev) == 1 and ev[0]["target"] == "default2" and ev[0]["by"] == "manual")
+check("Event type=switch (beim Dispatch)", len(ev) == 1 and ev[0]["target"] == "default2" and ev[0]["by"] == "manual", str(ev))
+wait_pending()   # Hintergrund-Thread (success) auslaufen lassen
+
+print("== 3b) Verifikation erfolgreich: SOT erst NACH CI-Erfolg ==")
+reset()
+RUN_RESULT = "success"
+r = accounts.switch_account("default2", "Test3b", by="manual")
+snap = wait_pending()
+check("Verifikation abgeschlossen", snap is not None and snap.get("phase") == "done", str(snap))
+check("SOT_WRITES genau 1", len(SOT_WRITES) == 1, str(len(SOT_WRITES)))
+check("SOT enthält active=default2", '"active": "default2"' in str(SOT_WRITES[0]["files"] if SOT_WRITES else ""), str(SOT_WRITES))
+check("active == default2", accounts.STATE["active"] == "default2", str(accounts.STATE["active"]))
+check("lastSwitch gesetzt", bool(accounts.STATE["lastSwitch"]))
+evok = [e for e in accounts.STATE["events"] if e.get("type") == "switch-ok"]
+check("Event switch-ok vorhanden", len(evok) == 1 and evok[0]["target"] == "default2", str(evok))
+
+print("== 3c) CI-Fehler: kein SOT, active bleibt, kein Cooldown ==")
+reset()
+RUN_RESULT = "failure"
+prev_active = accounts.STATE["active"]
+r = accounts.switch_account("default2", "Test3c", by="manual")
+snap = wait_pending()
+check("phase failed erreicht", snap is not None and snap.get("phase") == "failed", str(snap))
+check("kein SOT-Schreiben", SOT_WRITES == [])
+check("active bleibt vorheriger Wert", accounts.STATE["active"] == prev_active,
+      str(accounts.STATE["active"]))
+check("lastSwitch bleibt None", accounts.STATE["lastSwitch"] is None)
+ev_err = [e for e in accounts.STATE["events"] if e.get("type") == "switch-error"]
+check("Event switch-error mit CI-Grund + Run-URL",
+      len(ev_err) == 1 and "CI fehlgeschlagen" in str(ev_err[0].get("reason"))
+      and FAKE_RUN_URL in str(ev_err[0].get("reason")), str(ev_err))
+RUN_RESULT = "success"
 
 print("== 4) Cooldown greift ==")
+reset()
+accounts.STATE["lastSwitch"] = time.time()
 r2 = accounts.switch_account("default1")
 check("switched=False", r2.get("switched") is False)
 check("error 'Cooldown aktiv'", r2.get("error") == "Cooldown aktiv", str(r2.get("error")))
 check("cooldownRemaining gesetzt", 0 < int(r2.get("cooldownRemaining") or 0) <= 1800, str(r2.get("cooldownRemaining")))
-check("kein 2. Dispatch", len(CALLS) == 1)
+check("kein Dispatch", CALLS == [])
+check("kein pending", accounts.STATE["switchPending"] is None)
 
 print("== 5) force umgeht den Cooldown ==")
+accounts.STATE["lastSwitch"] = time.time()
 r3 = accounts.switch_account("default1", force=True, by="panel")
 check("switched=True", r3.get("switched") is True, str(r3.get("error")))
-check("2. Dispatch erfolgt", len(CALLS) == 2)
+check("accepted=True", r3.get("accepted") is True)
+check("pending gesetzt", accounts.STATE["switchPending"] is not None
+      and r3.get("pending", {}).get("phase") == "dispatch")
+check("Dispatch erfolgt", len(CALLS) == 1, str(len(CALLS)))
+wait_pending()
+accounts.STATE["switchPending"] = None
 
 print("== 6) leeres Ziel ==")
 check("kein Zielkonto", accounts.switch_account("").get("error") == "kein Zielkonto")
 
-print("== 7) Dispatch-Fehler -> switched=False, lastSwitch unverändert ==")
+print("== 7) Dispatch-Fehler -> switched=False, kein pending/SOT/lastSwitch ==")
 reset()
 saved = accounts.STATE["lastSwitch"]
 
@@ -172,7 +257,9 @@ accounts.github_api.dispatch_workflow = boom
 r4 = accounts.switch_account("default2")
 check("switched=False", r4.get("switched") is False)
 check("Fehler durchgereicht", "401" in (r4.get("error") or ""), str(r4.get("error")))
-check("lastSwitch unveraendert", accounts.STATE["lastSwitch"] == saved)
+check("lastSwitch unveraendert", accounts.STATE["lastSwitch"] == saved and saved is None)
+check("kein pending gesetzt", accounts.STATE["switchPending"] is None)
+check("kein SOT-Schreiben", SOT_WRITES == [])
 check("switching zurückgesetzt", accounts.STATE["switching"] is False)
 accounts.github_api.dispatch_workflow = fake_dispatch
 
@@ -182,7 +269,10 @@ reset()
 accounts.STATE.update({"mode": "auto", "recommendation": {"switchRecommended": True, "target": "default2", "reason": "aktiv erschöpft"}})
 accounts._apply_policy()
 check("auto dispatcht", len(CALLS) == 1 and CALLS[0]["inputs"]["account"] == "default2")
-check("by=auto", accounts.STATE["events"][-1].get("by") == "auto")
+ev_auto = [e for e in accounts.STATE["events"] if e.get("type") == "switch"]
+check("Event type=switch by=auto", len(ev_auto) == 1 and ev_auto[0]["by"] == "auto"
+      and ev_auto[0]["target"] == "default2", str(ev_auto))
+wait_pending()   # Hintergrund-Thread (success) auslaufen lassen
 
 # notify → nur Event, kein Dispatch, dedupliziert
 reset()
