@@ -1753,7 +1753,34 @@ console.log("\nVerschwundene Session verwerfen");
   eq(
     (diagEvents.filter((e) => e === "verworfen-session-weg").length),
     0,
-    "es wird nicht verworfen, wenn etwas über die Session bekannt ist"
+    "es wird nicht verworfen, wenn der Titel bekannt ist"
+  );
+}
+{
+  // c2) Live-Befund: nur der Pfad bekannt (die Events bringen das Verzeichnis
+  //     mit, der Titel fehlt) und session.get antwortet 404 — der Pfad schützt
+  //     NICHT vor dem Verwerfen, denn Stummschaltung und Meldung brauchen den
+  //     Titel. Genau so kam der Spam von Hestias Probe-Sessions durch.
+  const diagEvents = [];
+  const n = makeNotifier({
+    client: {
+      session: {
+        get: async () => Promise.reject(Object.assign(new Error("gone"), { status: 404 })),
+      },
+    },
+    diag: (event) => diagEvents.push(event),
+  });
+  received.length = 0;
+  await n.handleEvent({
+    type: "session.created",
+    properties: { info: { id: SESSION, location: { directory: REPO_DIR } } },
+  });
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 0, "bekannter Pfad ohne Titel → Meldung wird verworfen");
+  ok(
+    diagEvents.includes("verworfen-session-weg"),
+    "die Diagnose nennt verworfen-session-weg"
   );
 }
 {

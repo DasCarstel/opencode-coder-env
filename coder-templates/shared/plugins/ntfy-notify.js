@@ -1078,15 +1078,18 @@ export function createNtfyNotifier(options = {}) {
 
   /**
    * Metadaten bei Bedarf über den Server nachladen (Titel/Pfad fehlen oft).
-   * Rückgabe ist der Status: "ok" (Titel oder Pfad sind bekannt — auch aus dem
-   * Cache, ohne Netzaufruf), "gone" (die Session wurde als nicht mehr
-   * existierend erkannt) oder "unknown" (anderer Fehler, kein Client). Fehl-
-   * geschlagene Nachlade-Aufrufe zählen nur dann als "gone", wenn der Cache
-   * nichts über die Session hergibt — sonst ist das Bekannte weiterhin gültig.
+   * Rückgabe ist der Status: "ok" (nützliche Metadaten im Cache — das ist der
+   * frühe Rückfall ohne Netzaufruf), "gone" (die Session wurde als nicht mehr
+   * existierend erkannt) oder "unknown" (anderer Fehler, kein Client). Zu
+   * "gone" zählt ein fehlgeschlagener Nachlade-Aufruf nur dann, wenn der Cache
+   * keinen Titel hergibt: Für die Stummschaltung (NTFY_IGNORE_TITLES) und für
+   * eine verständliche Meldung zählt allein der Titel — der Pfad allein schützt
+   * eine verschwundene Session nicht mehr vor dem Verwerfen.
    */
   async function ensureMeta(sessionID) {
     if (!sessionID) return "unknown";
     const entry = metaFor(sessionID);
+    const cacheTitle = Boolean(entry.title);
     const cacheKnown = Boolean(entry.title || entry.subpath);
     if (entry.title && entry.subpath) return "ok";
     if (!client?.session?.get) return cacheKnown ? "ok" : "unknown";
@@ -1094,8 +1097,8 @@ export function createNtfyNotifier(options = {}) {
       absorb(await client.session.get({ sessionID }));
     } catch (error) {
       logger("session.get fehlgeschlagen:", error?.message ?? String(error));
-      if (sessionGone(error)) return cacheKnown ? "ok" : "gone";
-      return cacheKnown ? "ok" : "unknown";
+      if (sessionGone(error)) return cacheTitle ? "ok" : "gone";
+      return cacheTitle ? "ok" : "unknown";
     }
     const updated = metaFor(sessionID);
     return updated.title || updated.subpath ? "ok" : "unknown";
@@ -1203,8 +1206,9 @@ export function createNtfyNotifier(options = {}) {
       const status = await ensureMeta(sessionID);
       if (isMuted(sessionID)) return false;
       // Session existiert beim Versand nicht mehr (Probe-Sessions räumen sich
-      // selbst ab): Ohne Titel/Pfad greift keine Stummschaltung, und der
-      // Klick-Link führte ins Leere. Solche Meldungen werden verworfen. Der
+      // selbst ab): Ohne bekannten Titel greift keine Stummschaltung, und der
+      // Klick-Link führte ins Leere — der Pfad allein rettet die Meldung
+      // nicht. Solche Meldungen werden verworfen. Der
       // Cooldown bleibt wie beim Mute unangetastet; nur ein sicher erkanntes
       // "gone" verwirft — bei "unknown" (kurzer Netzfehler) geht die Meldung
       // weiterhin raus.

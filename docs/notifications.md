@@ -376,9 +376,12 @@ abgebrochen — kein Versand).
 Eine dritte Verwerfens-Zeile ist `verworfen-session-weg`: die Session existierte
 beim Versand nicht mehr (z. B. Hestias Probe-Sessions räumen sich selbst ab;
 der Nachlade-Aufruf `session.get` antwortet mit 404 /
-`SessionNotFoundError`). Ohne Titel/Pfad greift weder die
+`SessionNotFoundError`). Ohne bekannten Titel greift weder die
 `NTFY_IGNORE_TITLES`-Stummschaltung noch die Kind-Regel, und der Klick-Link
-führte ins Leere — solche Meldungen werden verworfen. Jeder andere
+führte ins Leere — solche Meldungen werden verworfen. Entscheidend ist der
+**Titel**: Nur ein bekannter Titel rettet die Meldung; der Pfad allein
+(location/directory aus den Ereignissen) schützt eine verschwundene Session
+nicht mehr vor dem Verwerfen. Jeder andere
 Nachlade-Fehler (kurzer Netzfehler, Server-Wartung) verwirft nichts: die
 Meldung geht dann weiterhin raus. Ist aus einem früheren Ereignis wenigstens
 der Titel bekannt, zählt der Cache und es wird ebenfalls nicht verworfen.
