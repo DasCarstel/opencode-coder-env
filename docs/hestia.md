@@ -124,7 +124,7 @@ Autorisierung; ein GET auf einen POST-only-Endpunkt liefert 405 mit Klartext-Hin
 | `/api/catalog` | Live-Modellkatalog + erlaubte Provider + aktiver Preset-Provider; zusätzlich `benchmarks` je Modell und `benchmarksStatus` |
 | `/api/benchmarks/status` | Benchmark-Cache: Quelle, Datenstand/Alter, Anzahl, fehlende Modelle |
 | `/api/config` | aktiver Preset, Tiers, effektive Primary-Agents, Fallbacks, verfügbare Modes, Git-SHA und HTML-URL der Overrides |
-| `/api/rollout/status` | letzter Lauf des Rollout-Workflows |
+| `/api/rollout/status` | Rollout-Fortschritt: `pending` (Phasen + Run-Info + Elapsed), `last` (letzter abgeschlossener Run), `events` (letzte 20 Rollout-Ereignisse), `workflow`; zusätzlich Abwärtskompatibilitätsfelder des letzten Laufs (`run_number`/`status`/`conclusion`/`html_url`/`event`/`created_at`) |
 | `/api/failover/status` | Auto-Failover-Zustand |
 | `/api/suggest/status` | KI-Vorschlag-Zustand (läuft gerade? welches Modell, welcher Versuch, Laufzeit) + `auto` (Automatik-Einstellungen, Fingerprint, nächste Prüfung) + `proposal` (letzter automatischer Vorschlag) |
 | `/api/accounts`, `/api/accounts/status` | Kontostand, Restbudget je Fenster, `isActive`, `expiring`, Modus |
@@ -135,7 +135,7 @@ Autorisierung; ein GET auf einen POST-only-Endpunkt liefert 405 mit Klartext-Hin
 
 | Pfad | Wirkung |
 |------|---------|
-| `/api/apply` | Tier-Konfiguration validieren + committen + Rollout auslösen |
+| `/api/apply` | Tier-Konfiguration validieren + committen + Rollout auslösen (Änderung → Commit → Push-Run; unverändert → Dispatch-Run). Antwort enthält `rollout: {started, pending, …}` — `applied` bleibt auch bei Rollout-Fehlern `true` |
 | `/api/suggest` | KI-Modellvorschlag starten (asynchron) |
 | `/api/suggest/settings` | KI-Vorschlag-Automatik speichern (SOT-Commit, wirkt sofort) |
 | `/api/failover/check` | Failover-Probe sofort ausführen |
@@ -145,7 +145,58 @@ Autorisierung; ein GET auf einen POST-only-Endpunkt liefert 405 mit Klartext-Hin
 | `/api/accounts/switch` | manueller Kontowechsel |
 | `/api/hermes/apply` | Hermes-Konfiguration verteilen |
 | `/api/dcp/settings` | DCP-Schwellenwerte + Aktiv-Schalter speichern (SOT-Commit, Rollout) |
-| `/api/rollout` | Rollout erneut auslösen |
+| `/api/rollout` | Force-Rollout (Workflow-Dispatch, kein Commit); **409**, wenn bereits ein Rollout läuft |
+
+## Rollout-Fortschritt
+
+Sowohl ein Force-Rollout (`POST /api/rollout`) als auch das Anwenden einer
+Tier-Änderung (`POST /api/apply`) laufen in denselben Live-Fortschritt — gleiches
+Muster wie beim Konto-Wechsel (`switchPending`). Zustandsquelle ist
+`hestia/backend/rollout.py`; abgefragt wird der Stand über `GET
+/api/rollout/status`.
+
+**Phasen** (`pending.phase`, Panel zeigt Leiste + Elapsed + Run-Link):
+`wait-run` → `running` → `done`; Fehler bzw. Timeout endet in `failed` (mit
+Fehlergrund inkl. Run-URL). Beispiel:
+
+```jsonc
+{
+  "pending": {
+    "workflow": "rollout.yml",
+    "mode": "dispatch",        // "dispatch" (Force) | "push" (Apply)
+    "phase": "running",        // wait-run | running | done | failed
+    "startedAt": 1762160000.0, // Unix-Sekunden
+    "runId": 4242424,
+    "runNumber": 47,
+    "runUrl": "https://github.com/…/actions/runs/4242424",
+    "headSha": "cafef00d…",    // gesetzt bei mode=push (Commit-SHA)
+    "error": null,             // Fehlergrund bei failed
+    "elapsed": 12.3,           // s — läuft live mit, friert bei done/failed ein
+    "by": "manual",
+    "reason": "force"
+  },
+  "last": { "runId": "…", "runNumber": "…", "runUrl": "…", "conclusion": "success",
+            "workflow": "rollout.yml", "at": "…", "duration": 38.4 },
+  "events": [ { "at": "…", "type": "rollout|rollout-ok|rollout-error", "…": "…" } ],
+  "workflow": "rollout.yml",
+  // Abwärtskompatibilität (altes „Letzter Rollout“-Badge):
+  "run_number": 47, "status": "completed", "conclusion": "success",
+  "html_url": "…", "event": "push", "created_at": "…"
+}
+```
+
+**dispatch vs. push:** Ein Force-Rollout dispatcht `rollout.yml` direkt; der
+Verifikations-Thread sucht den Run per `event=workflow_dispatch`. Apply mit
+Änderung macht KEINEN Dispatch — der Commit-Push feuert den Workflow selbst;
+der Run wird deshalb über den Parameter `head_sha` (Commit-SHA) gefunden, damit
+nicht der VORHERIGE Run abgefangen wird (und keine doppelten Rollouts
+entstehen). Apply „unverändert“ nutzt den Dispatch-Weg.
+
+**409 bei laufendem Rollout:** Max. 1 gleichzeitiger Rollout. Läuft bereits
+einer (Phase `wait-run`/`running`), antworten `POST /api/rollout` und ein neuer
+Anstoßen mit HTTP 409 — Body enthält `error: "Rollout läuft bereits"` und das
+aktive `pending`. Abgeschlossene Pendings (`done`/`failed`, ~180 s nachlesbar)
+blockieren nicht.
 
 ## Ablauf „Anwenden"
 

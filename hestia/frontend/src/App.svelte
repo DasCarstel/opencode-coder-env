@@ -1,5 +1,6 @@
 <script>
 import { api, setPassword, getPassword } from './lib/api.js'
+import { onDestroy } from 'svelte'
 
 let health = $state(null)
 let config = $state(null)
@@ -45,6 +46,8 @@ function setTab(t) {
 
 // Phasen des Kontowechsels (accStatus.switchPending.phase) für die Fortschritts-Anzeige
 const SWITCH_PHASES = ['dispatch', 'ci', 'verify', 'done']
+// Phasen des Modell-/Tier-Rollouts (rolloutState.pending.phase)
+const ROLLOUT_PHASES = ['wait-run', 'running', 'done']
 // Ereignis-Feed: Typ-Badge-Klasse (switch-ok / switch / switch-error / switch-skipped …)
 function evtBadgeClass(kind) {
   if (/ok|success|done/i.test(kind)) return 'active'
@@ -105,7 +108,14 @@ let suggestBusy = $state(false)
 let applyBusy = $state(false)
 let applyResult = $state(null)
 let rolloutResult = $state(null)
-let rolloutStatus = $state(null)
+// Live-Fortschritt des Rollouts (GET /api/rollout/status): pending (Phasen
+// wait-run/running/done/failed) + last + events; dieselbe Antwort enthält die
+// Abwärtskompatibilitätsfelder des letzten Laufs (run_number/status/conclusion/
+// html_url/event/created_at) — die ersetzen das alte rolloutStatus-Objekt.
+let rolloutState = $state(null)
+// Läuft gerade ein Rollout (pending aktiv, noch nicht done/failed)?
+const rolloutPendingActive = $derived(!!rolloutState?.pending
+  && rolloutState.pending.phase !== 'done' && rolloutState.pending.phase !== 'failed')
 let error = $state(null)
 let pwOpen = $state(false)
 let pwInput = $state(getPassword())
@@ -735,7 +745,17 @@ async function runApply() {
     }
     applyResult = await api('/api/apply', { body })
     await load()
-    await loadRolloutStatus()
+    // Live-Begleitung: Apply committet → Rollout-Run kommt vom Push;
+    // rollout.pending schnell anzeigen und auf 3-s-Polling schalten.
+    const ro = applyResult?.rollout
+    if (ro?.pending) {
+      rolloutState = { ...(rolloutState || {}), pending: ro.pending }
+      startRolloutPoll()
+    } else if (ro && ro.started === false) {
+      error = 'Anwenden: Rollout nicht gestartet — ' + (ro.error || ro.note || 'unbekannt')
+    } else {
+      await loadRolloutStatus()
+    }
   } catch (e) {
     error = 'Anwenden: ' + e.message
   } finally {
@@ -745,17 +765,52 @@ async function runApply() {
 
 async function runRollout() {
   rolloutResult = null
+  clearRolloutPoll()
   try {
     rolloutResult = await api('/api/rollout', { body: {} })
-    setTimeout(loadRolloutStatus, 8000)
+    if (rolloutResult?.started && rolloutResult?.pending) {
+      rolloutState = { ...(rolloutState || {}), pending: rolloutResult.pending,
+                       workflow: rolloutResult.workflow }
+      startRolloutPoll()
+    }
   } catch (e) {
+    // 409: es läuft bereits ein Rollout — Fehlermeldung zeigen; den laufenden
+    // pending-Stand holt das finally über loadRolloutStatus().
     error = 'Rollout: ' + e.message
+  } finally {
+    await loadRolloutStatus()
   }
 }
 
-async function loadRolloutStatus() {
-  try { rolloutStatus = await api('/api/rollout/status') } catch { /* ignore */ }
+// Polling des Rollout-Fortschritts: 3-s-Takt (klassische setTimeout-Rekursion,
+// Muster wie beim Kontowechsel). Endet von selbst, sobald pending leer oder
+// done/failed ist — Timer wird bei erneutem Start und beim Unmount geleert.
+let rolloutPendingTimer = null
+function clearRolloutPoll() {
+  if (rolloutPendingTimer) {
+    clearTimeout(rolloutPendingTimer)
+    rolloutPendingTimer = null
+  }
 }
+function startRolloutPoll() {
+  if (rolloutPendingTimer) return
+  rolloutPendingTimer = setTimeout(async () => {
+    rolloutPendingTimer = null
+    const p = rolloutState?.pending
+    if (!p || p.phase === 'done' || p.phase === 'failed') return
+    await loadRolloutStatus()
+  }, 3000)
+}
+
+async function loadRolloutStatus() {
+  try {
+    rolloutState = await api('/api/rollout/status')
+    const p = rolloutState?.pending
+    if (p && p.phase !== 'done' && p.phase !== 'failed') startRolloutPoll()
+  } catch { /* ignore */ }
+}
+
+onDestroy(clearRolloutPoll)
 
 async function loadFailover() {
   try {
@@ -1925,26 +1980,56 @@ setInterval(loadSuggestStatus, 60000)
     {/if}
   {/each}
   <div class="row">
-    <button class="primary" onclick={runApply} disabled={applyBusy}>
+    <button class="primary" onclick={runApply} disabled={applyBusy || rolloutPendingActive}>
       {applyBusy ? 'Validiere & committe…' : '✔ Anwenden (Commit + CI/CD-Rollout)'}
     </button>
-    <button onclick={runRollout}>⏩ Force-Rollout</button>
+    <button onclick={runRollout} disabled={applyBusy || rolloutPendingActive}>⏩ Force-Rollout</button>
     {#if applyResult?.commit}
       <span class="muted">
         Commit <a href={applyResult.commit.html_url} target="_blank" rel="noreferrer">{applyResult.commit.sha?.slice(0, 8)}</a>
-        — {applyResult.rollout}
+        — Rollt über den Commit-Push ({rolloutPendingActive ? 'Fortschritt unten' : 'läuft im Hintergrund'})
       </span>
     {:else if applyResult?.unchanged}
-      <span class="muted">Keine Änderung — {applyResult.rollout}</span>
+      <span class="muted">Keine Änderung — {applyResult.rollout?.note || 'kein Rollout gestartet'}</span>
     {/if}
-    {#if rolloutResult?.dispatched}<span class="muted">Rollout-Workflow gestartet.</span>{/if}
-    {#if rolloutStatus?.run_number}
-      <span class="badge {rolloutStatus.conclusion === 'success' ? 'active' : (rolloutStatus.conclusion === 'failure' ? 'err' : 'warn')}">
-        Letzter Rollout #{rolloutStatus.run_number}: {rolloutStatus.conclusion || rolloutStatus.status}
+    {#if !rolloutState?.pending && rolloutState?.run_number}
+      <span class="badge {rolloutState.conclusion === 'success' ? 'active' : (rolloutState.conclusion === 'failure' ? 'err' : 'warn')}">
+        Letzter Rollout #{rolloutState.run_number}: {rolloutState.conclusion || rolloutState.status}
       </span>
-      {#if rolloutStatus.html_url}<a class="muted" href={rolloutStatus.html_url} target="_blank" rel="noreferrer">Log</a>{/if}
+      {#if rolloutState.html_url}<a class="muted" href={rolloutState.html_url} target="_blank" rel="noreferrer">Log</a>{/if}
     {/if}
   </div>
+  {#if rolloutState?.pending}
+    <!-- Rollout-Fortschritt: Phasenleiste + Run-Link + Elapsed (Muster: switchPendingNote) -->
+    {@const p = rolloutState.pending}
+    {@const cur = ROLLOUT_PHASES.indexOf(p.phase)}
+    <div class="card switchNote" class:done={p.phase === 'done'} class:failed={p.phase === 'failed'}>
+      <div class="switchPhases" aria-hidden="true">
+        {#each ROLLOUT_PHASES as ph, i (ph)}
+          <span class="switchPhase"
+            class:active={p.phase === ph}
+            class:past={p.phase !== 'failed' && cur > i}>{ph}</span>
+        {/each}
+        {#if p.phase === 'failed'}<span class="switchPhase failed">failed</span>{/if}
+      </div>
+      <p class="switchText">
+        {#if p.phase === 'wait-run'}
+          {p.mode === 'push' ? 'Commit-Push' : 'Dispatch'} erfolgt — warte auf Run …
+        {:else if p.phase === 'running'}
+          Rollout läuft ({p.mode === 'push' ? 'Push' : 'Dispatch-Run'})
+          {#if p.runUrl}
+            · <a href={p.runUrl} target="_blank" rel="noreferrer">{p.runNumber != null ? `Run #${p.runNumber}` : 'Run ansehen'}</a>
+          {/if}
+        {:else if p.phase === 'done'}
+          ✓ Rollout fertig (Run {p.runNumber != null ? `#${p.runNumber}` : ''} {rolloutState?.last?.conclusion || 'success'})
+        {:else if p.phase === 'failed'}
+          ✗ Rollout fehlgeschlagen: {p.error || 'unbekannter Fehler'}
+        {/if}
+        {#if p.reason && p.phase !== 'failed'}· {p.reason}{/if}
+        {#if p.elapsed != null}· {Math.round(Number(p.elapsed))} s{/if}
+      </p>
+    </div>
+  {/if}
   <p class="muted" style="margin-top:10px; border-top:1px solid var(--line); padding-top:10px">
     <strong>✔ Anwenden</strong> — speichert deine Auswahl im Repo (Commit) und rollt sie automatisch auf alle
     Container aus.<br />

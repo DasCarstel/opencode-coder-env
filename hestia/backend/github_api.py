@@ -170,20 +170,31 @@ def run_status(run_id: int) -> dict:
     }
 
 
-def find_dispatched_run(workflow: str, since_ts: float, within_seconds: int = 120) -> dict | None:
-    """Neuesten workflow_dispatch-Run eines Workflows seit since_ts finden.
+def find_run(workflow: str, since_ts: float, within_seconds: int = 180,
+             head_sha: str | None = None, event: str | None = None) -> dict | None:
+    """Neuesten passenden Run eines Workflows seit since_ts finden.
 
-    Der Dispatch bestätigt selbst nur 204 — die Run-Liste legt den Run kurz
-    verzögert an. Deshalb: Toleranz von 5 s nach hinten und None (statt
-    Fehler), wenn noch kein passender Run existiert.
+    Der Dispatch/Push bestätigt sich selbst nur indirekt — die Run-Liste legt
+    den Run kurz verzögert an. Deshalb: Toleranz von 5 s nach hinten und None
+    (statt Fehler), wenn noch kein passender Run existiert. Ob `within_seconds`
+    die Anzahl der abzufragenden Läufe begrenzt, ist bewusst nur informativ
+    (per_page=20): selbst bei langen Queues ist der eigene Run in den letzten
+    20 Läufen nahezu sicher enthalten.
 
-    Rückgabe: {id, run_number, html_url, status, conclusion, created_at} oder None.
+    event:   optionaler GitHub-Event-Filter (z. B. "workflow_dispatch") — nur
+             gesetzt, wenn übergeben; ohne Filter greifen alle Events (nötig
+             für Push-Runs).
+    head_sha: wenn gesetzt, nur Runs mit genau diesem Commit (nötig, um beim
+             Push-Trigger den VORHERIGEN Run nicht abzufangen).
+
+    Rückgabe: {id, run_number, html_url, status, conclusion, created_at,
+    head_sha} oder None.
     """
-    status, d = _req(
-        "GET",
-        f"{GITHUB_API}/repos/{GITHUB_REPO}/actions/workflows/{workflow}/runs"
-        f"?event=workflow_dispatch&per_page=10",
-    )
+    url = (f"{GITHUB_API}/repos/{GITHUB_REPO}/actions/workflows/{workflow}/runs"
+           f"?per_page=20")
+    if event:
+        url += f"&event={event}"
+    status, d = _req("GET", url)
     if status != 200:
         raise ConfigError(f"Workflow-Läufe nicht lesbar ({status}): {d.get('message', '')}")
     runs = d.get("workflow_runs") or []
@@ -197,16 +208,33 @@ def find_dispatched_run(workflow: str, since_ts: float, within_seconds: int = 12
             ).timestamp()
         except ValueError:
             continue
-        if created >= since_ts - 5:
-            return {
-                "id": r.get("id"),
-                "run_number": r.get("run_number"),
-                "html_url": r.get("html_url"),
-                "status": r.get("status"),
-                "conclusion": r.get("conclusion"),
-                "created_at": created_at,
-            }
+        if created < since_ts - 5:
+            continue
+        if head_sha and str(r.get("head_sha") or "") != head_sha:
+            continue
+        return {
+            "id": r.get("id"),
+            "run_number": r.get("run_number"),
+            "html_url": r.get("html_url"),
+            "status": r.get("status"),
+            "conclusion": r.get("conclusion"),
+            "created_at": created_at,
+            "head_sha": r.get("head_sha"),
+        }
     return None
+
+
+def find_dispatched_run(workflow: str, since_ts: float, within_seconds: int = 120) -> dict | None:
+    """Neuesten workflow_dispatch-Run eines Workflows seit since_ts finden.
+
+    Wrapper um find_run (event-Filter workflow_dispatch) — Signatur
+    unverändert, accounts._verify_switch nutzt sie weiter.
+
+    Rückgabe: {id, run_number, html_url, status, conclusion, created_at,
+    head_sha} oder None.
+    """
+    return find_run(workflow, since_ts, within_seconds=within_seconds,
+                    event="workflow_dispatch")
 
 
 def get_file(path: str) -> str | None:

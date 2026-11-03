@@ -55,6 +55,7 @@ import hermes_speed as hermes_speed_mod  # noqa: E402
 import model_watch as model_watch_mod  # noqa: E402
 import benchmarks as benchmarks_mod  # noqa: E402
 import dcp as dcp_mod  # noqa: E402
+import rollout as rollout_mod  # noqa: E402
 
 STATIC_DIR = os.environ.get(
     "HESTIA_STATIC", os.path.join(os.path.dirname(BASE_DIR), "frontend", "dist")
@@ -386,13 +387,21 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"error": str(e)}, 500)
         if path == "/api/rollout/status":
+            # Live-Fortschritt (pending/last/events) + Abwärtskompatibilitäts-
+            # felder des letzten Laufs (run_number/status/... für das alte
+            # Badge). latest_run-Fehler dürfen den Status nicht reißen (kein
+            # 500): dann kommt nur der rollout-State.
+            wf = rollout_mod.WORKFLOW
+            out = rollout_mod.state()
             try:
-                wf = os.environ.get("ROLLOUT_WORKFLOW", "rollout.yml")
-                return self._json(github_api.latest_run(wf))
-            except ConfigError as e:
-                return self._json({"error": str(e)}, 502)
-            except Exception as e:
-                return self._json({"error": str(e)}, 500)
+                last = github_api.latest_run(wf)
+                for k in ("run_number", "status", "conclusion", "html_url",
+                          "event", "created_at"):
+                    if k in last:
+                        out[k] = last[k]
+            except Exception as e:  # noqa: BLE001
+                _log(f"rollout status latest_run error: {e}")
+            return self._json(out)
         if path == "/api/failover/status":
             with failover_mod.LOCK:
                 st = dict(failover_mod.STATE)
@@ -556,15 +565,27 @@ class Handler(BaseHTTPRequestHandler):
                 if (new_jsonc.strip() == (r["content"] or "").strip()
                         and agents_json.strip() == agents_current.strip()
                         and fb_json.strip() == fb_current.strip()):
-                    wf = os.environ.get("ROLLOUT_WORKFLOW", "rollout.yml")
+                    # Unverändert: Force-Rollout über rollout.py — der Run wird
+                    # bewusst dispatcht und sein Fortschritt live gemeldet.
                     try:
-                        github_api.dispatch_workflow(wf)
-                        note = f"unverändert — Rollout ({wf}) direkt gestartet"
-                    except ConfigError as e:
+                        ro = rollout_mod.dispatch(mode="dispatch", by="manual",
+                                                  reason="apply (unverändert)")
+                        if ro.get("started"):
+                            note = f"unverändert — Rollout ({rollout_mod.WORKFLOW}) gestartet"
+                        else:
+                            note = f"unverändert — KEIN Rollout gestartet: {ro.get('error')}"
+                    except Exception as e:  # noqa: BLE001 — Apply ergebnis darf nicht kippen
+                        _log(f"apply rollout dispatch error: {e}")
+                        ro = {"started": False, "error": str(e)}
                         note = f"unverändert — KEIN Rollout gestartet: {e}"
                     _log(f"apply unchanged: {models_desc} | agents {agents_desc}")
-                    return self._json({"applied": True, "unchanged": True, "tiers": models_desc,
-                                       "primaryAgents": agents_desc, "rollout": note})
+                    return self._json({
+                        "applied": True, "unchanged": True, "tiers": models_desc,
+                        "primaryAgents": agents_desc,
+                        "rollout": {"started": bool(ro.get("started")),
+                                    "pending": ro.get("pending"),
+                                    "error": ro.get("error"), "note": note},
+                    })
 
                 msg = (
                     "hestia: Tier-Update\n\n"
@@ -577,6 +598,21 @@ class Handler(BaseHTTPRequestHandler):
                     FALLBACKS_PATH: fb_json,
                 }, msg)
                 _log(f"apply ok: {models_desc} | agents {agents_desc}")
+                # Rollout-Begleitung best effort: bei Änderung kommt der Run vom
+                # Push (event=push, head_sha=Commit) — KEIN zusätzlicher Dispatch,
+                # sonst würde doppelt gerollt. Ein Rollout-Fehler kippt das
+                # erfolgreiche Apply nicht (applied bleibt True).
+                try:
+                    if (res or {}).get("unchanged"):
+                        ro = rollout_mod.dispatch(mode="dispatch", by="manual", reason="apply")
+                    else:
+                        ro = rollout_mod.dispatch(
+                            mode="push", commit=str((res or {}).get("sha") or ""),
+                            by="manual", reason="apply",
+                        )
+                except Exception as e:  # noqa: BLE001
+                    _log(f"apply rollout tracking error: {e}")
+                    ro = {"started": False, "error": str(e)}
                 return self._json({
                     "applied": True,
                     "unchanged": False,
@@ -584,7 +620,9 @@ class Handler(BaseHTTPRequestHandler):
                     "primaryAgents": agents_desc,
                     "fallbacks": fb_desc,
                     "commit": res,
-                    "rollout": "CI/CD läuft (validate + Container-Restart)",
+                    "rollout": {"started": bool(ro.get("started")),
+                                "pending": ro.get("pending"),
+                                "error": ro.get("error")},
                 })
             except ApplyError as e:
                 return self._json({"error": str(e)}, 400)
@@ -774,13 +812,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": str(e)}, 500)
 
         if path == "/api/rollout":
+            # Force-Rollout über rollout.py: Dispatch + Live-Verifikation
+            # (pending-Phasen wie beim Kontowechsel). Läuft schon ein Rollout → 409.
             try:
                 payload = self._body()
-                wf = payload.get("workflow") or os.environ.get("ROLLOUT_WORKFLOW", "rollout.yml")
-                return self._json(github_api.dispatch_workflow(wf))
-            except ConfigError as e:
-                return self._json({"error": str(e)}, 502)
+                res = rollout_mod.dispatch(
+                    workflow=payload.get("workflow"),
+                    by="manual",
+                    reason=str(payload.get("reason") or "force"),
+                )
+                return self._json(res, 200 if res.get("started") else 409)
             except Exception as e:
+                _log(f"rollout error: {e}")
                 return self._json({"error": str(e)}, 500)
 
         return self._json({"error": "unknown endpoint"}, 404)

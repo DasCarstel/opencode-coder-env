@@ -33,6 +33,8 @@ jobs:
         run: python hestia/ci/test_benchmarks.py
       - name: Konto-Wechsel testen (kein Netz, kein GITHUB_TOKEN)
         run: python hestia/ci/test_switch_account.py
+      - name: Rollout-Fortschritt testen (kein Netz)
+        run: python hestia/ci/test_rollout.py
       - name: Hermes-Panel testen (kein Netz)
         run: python hestia/ci/test_hermes.py
       - name: Hermes-Speed + O19-Telemetrie testen (kein Netz)
