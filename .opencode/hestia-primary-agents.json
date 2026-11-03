@@ -1,12 +1,12 @@
 {
   "build": {
-    "model": "opencode-go/glm-5.3-flash",
+    "model": "opencode-go/deepseek-v4.1-flash",
     "variant": "",
-    "source": "derived"
+    "source": "manual"
   },
   "plan": {
-    "model": "opencode-go/glm-5.3-flash",
-    "variant": "max",
-    "source": "derived"
+    "model": "opencode-go/deepseek-v4.1-flash",
+    "variant": "",
+    "source": "manual"
   }
 }

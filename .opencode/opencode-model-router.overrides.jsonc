@@ -13,7 +13,7 @@
   "presets": {
     "hestia": {
       "fast": {
-        "model": "opencode-go/deepseek-v4.1-flash",
+        "model": "opencode/deepseek-v4.1-flash-free",
         "costRatio": 1,
         "description": "MiMo V2.5 für Explorer, Suche und einfache Lesesvorgänge",
         "steps": 30,
@@ -22,11 +22,10 @@
           "Einfache File-Lese- und Listing-Operationen",
           "Grep/glob-Operationen",
           "Schnelle Lookups und Recherche"
-        ],
-        "variant": "low"
+        ]
       },
       "medium": {
-        "model": "opencode-go/glm-5.3-flash",
+        "model": "opencode/glm-5.3-flash-free",
         "costRatio": 5,
         "description": "DeepSeek V4 Flash für Implementation, Refactoring und Tests",
         "steps": 50,
@@ -39,7 +38,7 @@
         ]
       },
       "heavy": {
-        "model": "opencode-go/glm-5.3",
+        "model": "opencode/gpt-6.1-sol",
         "costRatio": 12,
         "description": "GLM 5.3 Flash für Architektur, komplexes Debugging und Security",
         "steps": 120,
@@ -49,7 +48,7 @@
           "Security-Review",
           "Performance-Optimierung"
         ],
-        "variant": "max"
+        "variant": "high"
       }
     }
   }
