@@ -12,6 +12,7 @@ import json
 import os
 import urllib.request
 import urllib.error
+from datetime import datetime
 
 GITHUB_API = "https://api.github.com"
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
@@ -142,6 +143,70 @@ def latest_run(workflow: str) -> dict:
         "html_url": r.get("html_url"),
         "created_at": r.get("created_at"),
     }
+
+
+def run_status(run_id: int) -> dict:
+    """Einzelnen Workflow-Lauf auslesen (Live-Status für die Wechsel-Verifikation).
+
+    Rückgabe: {id, status, conclusion, html_url, created_at, head_sha, event,
+    jobs_url}. Errors kommen als ConfigError (HTTP-Fehler) raus.
+    """
+    status, d = _req(
+        "GET", f"{GITHUB_API}/repos/{GITHUB_REPO}/actions/runs/{run_id}"
+    )
+    if status != 200:
+        raise ConfigError(
+            f"Workflow-Lauf {run_id} nicht lesbar ({status}): {d.get('message', '')}"
+        )
+    return {
+        "id": d.get("id"),
+        "status": d.get("status"),
+        "conclusion": d.get("conclusion"),
+        "html_url": d.get("html_url"),
+        "created_at": d.get("created_at"),
+        "head_sha": d.get("head_sha"),
+        "event": d.get("event"),
+        "jobs_url": d.get("jobs_url"),
+    }
+
+
+def find_dispatched_run(workflow: str, since_ts: float, within_seconds: int = 120) -> dict | None:
+    """Neuesten workflow_dispatch-Run eines Workflows seit since_ts finden.
+
+    Der Dispatch bestätigt selbst nur 204 — die Run-Liste legt den Run kurz
+    verzögert an. Deshalb: Toleranz von 5 s nach hinten und None (statt
+    Fehler), wenn noch kein passender Run existiert.
+
+    Rückgabe: {id, run_number, html_url, status, conclusion, created_at} oder None.
+    """
+    status, d = _req(
+        "GET",
+        f"{GITHUB_API}/repos/{GITHUB_REPO}/actions/workflows/{workflow}/runs"
+        f"?event=workflow_dispatch&per_page=10",
+    )
+    if status != 200:
+        raise ConfigError(f"Workflow-Läufe nicht lesbar ({status}): {d.get('message', '')}")
+    runs = d.get("workflow_runs") or []
+    for r in runs:   # GitHub liefert neueste zuerst → erster Treffer = neuester
+        created_at = str(r.get("created_at") or "")
+        if not created_at:
+            continue
+        try:
+            created = datetime.fromisoformat(
+                created_at.replace("Z", "+00:00")
+            ).timestamp()
+        except ValueError:
+            continue
+        if created >= since_ts - 5:
+            return {
+                "id": r.get("id"),
+                "run_number": r.get("run_number"),
+                "html_url": r.get("html_url"),
+                "status": r.get("status"),
+                "conclusion": r.get("conclusion"),
+                "created_at": created_at,
+            }
+    return None
 
 
 def get_file(path: str) -> str | None:

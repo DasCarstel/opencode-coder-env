@@ -233,6 +233,25 @@ accounts.py → switch_account()
       KEIN Container-Neustart
 ```
 
+Der CI-Run verifiziert den Wechsel **vor dem `active`-Wechsel zum Zielkonto** über den
+Mini-Modellaufruf am Ende von `switch-account.sh` (inklusive `--fix`-Selbstheilung
+gegen gespeicherte opencode.db-Credentials). Erst nach erfolgreicher CI-Verifikation
+setzt das Panel `active`/`lastSwitch` und schreibt die SOT; bei Fehlschlag bleibt der
+bisherige Account aktiv (Event `switch-error` mit Run-Link), und der Fehlversuch löst
+**keinen** Cooldown aus. Der `cooldownSeconds`-Cooldown gilt für alle Wechsel; das
+Panel bietet bei 409 „Cooldown aktiv" einen bewussten Force-Retry (`force: true`) an.
+
+Das Key-Lesen in `switch-account.sh` lief seit 2026-10-30 mit `python3 -I` über
+stdin statt als Heredoc-Datei in /tmp — eine Fremd-/Schad-Datei `/tmp/<modul>.py`
+kann sonst ein Stdlib-Modul verdrängen (damaliger Ausfall: „Exit 1 nach 50 ms" bei
+jedem Switch-Run).
+
+`coder-templates/shared/startup.sh` legt bei jedem Container-Start
+**`/etc/opencode-go.env`** an (umask 077, chmod 600, root, idempotent überschrieben):
+`export OC_GO_DEFAULT1..4` (nur non-empty Felder) und `OC_GO_ACTIVE_FIELD` (Spiegel
+der SOT). `oc-go` liest daraus; `/etc/opencode.env` (BAO/GITHUB/NTFY-Token-File)
+dient nur in Altcontainern als Fallback.
+
 ## Selbstheilung
 
 ### Credential-Kette — `verify-oc-credentials.yml`
@@ -276,14 +295,57 @@ Neustart von einem Selbstheilungs-Fall befreit.
 Im Container gibt es ein Shell-Kommando zum manuellen Umschalten, ohne Panel:
 
 ```bash
-oc-go list            # zeigt den lokal gesetzten Key/Account (verwaltet von Hestia)
-oc-go use default1    # Key lokal wechseln
+oc-go list            # Konten + Key-Status + aktives Konto aus 3 Quellen
+oc-go status          # list + Prüfung gespeicherter opencode.db-Credentials
+oc-go use default1    # Key lokal setzen (Test-Umschaltung) + Mini-Verifikation
 oc-go use default2
 oc-go use default3
+oc-go repair [name] [key]   # Notfall-Reparatur mit manuellem Key
 ```
 
-Der Wechsel schreibt `.bashrc` und das Service-Env — **kein** OpenBao-Schreibzugriff,
-kein Container-Neustart.
+`oc-go list`/`oc-go status` ermitteln das aktive Konto aus **drei Quellen** und
+zeigen je Quelle ✓/✗ — bei Abweichung eine zentrale Warnung
+(`⚠ ABWEICHUNG: SOT=default2, Shell=default1, Service=…`):
+
+1. **SOT** — das Feld `active` in `.opencode/hestia-accounts.jsonc` des
+   Repo-Checkouts (Priorität `$OC_REPO_ROOT`, sonst `/home/*/opencode-coder-env`;
+   Fallback auf `OC_GO_ACTIVE_FIELD` aus `/etc/opencode-go.env`),
+2. **Shell** — die `export OPENCODE_API_KEY=`-Zeile in `/root/.bashrc`,
+3. **Service** — `opencode service env` (via `service.json`).
+
+`oc-go status` prüft zusätzlich, ob in `~/.local/share/opencode/opencode.db`
+ein **gespeichertes** „OpenCode Go"-Credential liegt (schreibgeschützte sqlite3-Abfrage) —
+dieses würde die ENV-Variable überstimmen (siehe „Credential-Kette" oben). Der
+Wechsel über `use` verifiziert den Key danach per Mini-Usage-Request gegen
+`https://opencode.ai/zen/go/v1/usage` (200 = ok, 401/403 = Key falsch,
+404 = Konto nicht abonniert) und zeigt bei Fehlschlag eine klare Warnung.
+
+Der Wechsel schreibt `.bashrc` (deduppt) und das Service-Env sowie
+`/etc/opencode-go.env` — **kein** OpenBao-Schreibzugriff, kein Container-Neustart.
+
+### `oc-go repair` — Notfall-Reparatur
+
+Wenn das Panel nicht erreichbar ist und weder SOT noch env-Datei weiterhelfen:
+
+```bash
+# interaktiv (Key-Eingabe ohne Echo):
+oc-go repair default2
+# oder komplett als Argument (scripted):
+oc-go repair default2 'oc_sk_…'
+```
+
+Validierung: Key darf nicht leer sein, muss >= 40 Zeichen lang sein und mit
+`oc_sk_` beginnen (sonst Fehler + Exit 1). Danach setzt `repair` den Key in
+`/root/.bashrc` (deduppt, genau eine Zeile), exportiert ihn für die Shell, setzt
+das Service-Env (`opencode service set env OPENCODE_API_KEY`) und — wenn ein
+Konto-Name angegeben war — `OC_GO_ACTIVE_FIELD=<name>` in `/etc/opencode-go.env`.
+Der Key erscheint **nicht** im Log (nur Länge + Präfix) und nicht in der
+Shell-History. Weicht der eingegebene Key vom hinterlegten Mapping-Key ab, wird
+nur gewarnt — der manuelle Key hat beim Repair Vorrang.
+
+Danach läuft dieselbe Usage-Verifikation (HTTP-Code-Ausgabe) und die Frage
+**„OpenCode-Service jetzt neu starten? [j/N]"** — Default ist **NEIN**, weil jeder
+Service-Neustart laufende Sessions abbricht; bei `j` folgt `opencode service restart`.
 
 Ein `oc-go default` gibt es **nicht mehr**; der Aufruf wird mit einer Fehlermeldung
 abgewiesen. Welcher Account aktiv ist, steht im SOT-Feld `active` — nicht in einer

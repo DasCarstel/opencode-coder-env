@@ -51,23 +51,27 @@ fi
 VAULT_TOKEN="$(cat "$OPENBAO_TOKEN_FILE")"
 echo "→ Konto: $ACCOUNT (Grund: $REASON)"
 
-cleanup() { rm -f "${KEY_PY:-}"; }
-trap cleanup EXIT
-
 # --- 2) Key lesen --------------------------------------------------------------
-# jq ist auf dem Runner nicht garantiert → python3 (läuft dort ohnehin, s. bootstrap.py).
-# Quotiertes Heredoc = garantiert literaler Python-Code; das Feld kommt als argv[1].
-KEY_PY="$(mktemp -t ocgo_keyread.XXXXXX.py)"
-cat >"$KEY_PY" <<'PY'
-import sys, json
+# jq ist auf dem Runner nicht garantiert → python3 (läuft dort ohnehin).
+# CI-Ausfall vom 2026-10-30: der Code lag als Datei in /tmp (mktemp) →
+# sys.path[0]=/tmp und eine Fremddatei /tmp/types.py verdrängte das Stdlib-Modul
+# `types` → sofortiger Abbruch (Exit 1 nach 50 ms) bei JEDEM Lauf.
+# Fix: Code über stdin-Pipe an `python3 -I -c` — -I (isolated mode) ignoriert
+# PYTHON*-Env und User-Site, und bei -c ist sys.path[0] "" (cwd),	NICHT /tmp.
+KEY="$(curl -sS -H "X-Vault-Token: $VAULT_TOKEN" "$OPENBAO_ADDR/v1/$SECRET_PATH" \
+  | python3 -I -c 'import sys, json
 try:
-    data = (json.load(sys.stdin).get("data") or {}).get("data") or {}
-except Exception:
+    data = (json.load(sys.stdin).get("data") or {}).get("data")
+except ValueError as exc:  # JSONDecodeError + Co.
+    sys.stderr.write("OpenBao-Antwort ist kein gueltiges JSON: %r\n" % (exc,))
+    sys.exit(3)
+if not isinstance(data, dict):
     data = {}
 sys.stdout.write(str(data.get(sys.argv[1]) or ""))
-PY
-KEY="$(curl -sS -H "X-Vault-Token: $VAULT_TOKEN" "$OPENBAO_ADDR/v1/$SECRET_PATH" \
-  | python3 "$KEY_PY" "$ACCOUNT")"
+' "$ACCOUNT")" || {
+  echo "✗ Key-Lesen fehlgeschlagen (curl/OpenBao nicht erreichbar, oder Python/JSON-Fehler)" >&2
+  exit 1
+}
 if [[ -z "$KEY" ]]; then
   echo "✗ Kein Key für Konto '$ACCOUNT' unter $OPENBAO_ADDR/v1/$SECRET_PATH" >&2
   exit 1

@@ -6,13 +6,20 @@ Fallbacks-Datei via GitHub Contents API gelesen). Jedes Konto hat einen
 keyRef auf ein Feld im OpenBao-Pfad secret/data/mcp/opencode-go; der
 bootstrap.py lädt diese Felder als OC_GO_DEFAULT1..3 nach Env.
 
-P1 macht bewusst NUR Abfrage + Anzeige. P2 kommt dazu: switch_account()
-schreibt zuerst das Feld "active" in die SOT (diese Datei) zurück und
-dispatcht danach den Workflow switch-account.yml, der den Key des Zielkontos
-aus OpenBao (secret/data/mcp/opencode-go) liest und in die OpenCode-Container
-setzt. Hestia ist damit die EINZIGE Stelle, die den aktiven Account bestimmt —
-das gleichnamige Feld "active" im OpenBao-Secret wird nicht mehr benutzt.
-Der Wechsel passiert asynchron im CI; der Key wird im Panel-Prozess nie berührt.
+P1 macht bewusst NUR Abfrage + Anzeige. switch_account() dispatcht zuerst den
+Workflow switch-account.yml (der Key des Zielkontos aus OpenBao
+secret/data/mcp/opencode-go wird im CI in die OpenCode-Container gesetzt).
+Die Bestätigung ist bewusst ASYNCHRON: der Verifikations-Thread
+(_verify_switch) sucht den dispatched Run, pollt seinen Status und schreibt
+erst bei conclusion "success" das Feld "active" in die SOT (diese Datei)
+zurück — bei CI-Fehlern bleibt die SOT unangetastet, der aktive Account
+bleibt der alte und es gibt keinen Cooldown (lastSwitch wird nur bei Erfolg
+gesetzt). Früher wurde die SOT VOR dem Dispatch geschrieben und der Erfolg
+gemeldet, bevor CI überhaupt gelaufen war (Panel zeigte den falschen Account,
+real passiert am 2026-10 bei einem CI-Fehler). Hestia ist damit weiterhin die
+EINZIGE Stelle, die den aktiven Account bestimmt — das gleichnamige Feld
+"active" im OpenBao-Secret wird nicht mehr benutzt. Der Key wird im
+Panel-Prozess nie gelesen oder angefasst.
 """
 import json
 import os
@@ -34,6 +41,11 @@ PROBE_MODEL = os.environ.get("HESTIA_PROBE_MODEL", "mimo-v2.6-flash")
 # Workflow, der den eigentlichen Konto-Wechsel ausführt (OpenBao + Container).
 SWITCH_WORKFLOW = os.environ.get("HESTIA_SWITCH_WORKFLOW", "switch-account.yml")
 DEFAULT_COOLDOWN = int(os.environ.get("HESTIA_SWITCH_COOLDOWN") or 1800)   # Sekunden
+# --- Wechsel-Verifikation (SOT-Commit erst nach CI-Erfolg) ---
+VERIFY_FIND_TIMEOUT = int(os.environ.get("HESTIA_VERIFY_FIND_TIMEOUT") or 90)    # s bis der dispatched Run auftaucht
+VERIFY_POLL_INTERVAL = int(os.environ.get("HESTIA_VERIFY_POLL_INTERVAL") or 15)  # s zwischen Status-Polls
+VERIFY_MAX_RUNTIME = int(os.environ.get("HESTIA_VERIFY_MAX_RUNTIME") or 20 * 60)  # s Obergrenze für den CI-Lauf
+PENDING_RETENTION = 120                                     # s: abgeschlossenes pending lesbar halten
 
 LOCK = threading.Lock()
 _CONFIG_CACHE = {"at": 0.0, "cfg": None}
@@ -50,8 +62,12 @@ STATE = {
     "error": None,
     "recommendation": {"switchRecommended": False, "target": None, "reason": ""},
     # --- P2: Wechsel ---
-    "lastSwitch": None,     # Unix-Zeitpunkt des letzten erfolgreichen Dispatches
-    "switching": False,     # gerade ein Wechsel in Arbeit (Cooldown/Anzeige)
+    "lastSwitch": None,     # Unix-Zeitpunkt des letzten ERFOLGREICHEN Wechsels
+                            # (Cooldown startet nur nach Erfolg — Fehlversuche
+                            # blockieren den nächsten manuellen Versuch nicht)
+    "switching": False,     # kurzzeitig WAHREND des Dispatches (nicht mehr für die Verifikation)
+    "switchPending": None,  # Live-Status eines laufenden/abgeschlossenen Wechsels
+                            # (nur im Prozess, kein Redis): siehe switch_account()
     "switchWorkflow": SWITCH_WORKFLOW,
 }
 
@@ -486,18 +502,40 @@ def _set_sot_active(target: str, reason: str) -> str:
 
 
 def switch_account(target: str, reason: str = "", force: bool = False, by: str = "manual") -> dict:
-    """Konto-Wechsel: SOT 'active' setzen, dann Workflow-Dispatch (Container).
+    """Konto-Wechsel anstoßen: Dispatch → Verifikations-Thread → Bestätigung.
 
-    Reihenfolge ist bewusst SOT zuerst: der Workflow bekommt das Zielkonto als
-    Input, und ein CI-Container liest die SOT als Wahrheit. Der Key wird hier
-    NICHT gelesen oder angefasst — das macht der Workflow auf dem Runner
-    (dort liegt der OpenBao-Token). Rückgabe ist immer ein Dict; Fehler kommen
-    als {"switched": False, "error": ...} zurück, damit der Panel-Check und
-    die loop() nicht werfen müssen.
+    Bewusst KEIN SOT-Schreiben vor dem Dispatch: die alte Logik meldete
+    `switched` und setzte `active`, bevor der CI-Lauf überhaupt gelaufen war —
+    bei CI-Fehlern zeigte das Panel dann den falschen aktiven Account und es
+    gab keinen Run-Status und keinen Rollback (real passiert am 2026-10).
+
+    Neue Reihenfolge:
+      1. Validierungen + Cooldown (force umgeht NUR den Cooldown, nie die
+         pending-Sperre — max. 1 gleichzeitiger Wechsel).
+      2. dispatch_workflow (Fehler → pending entfernen, SOT bleibt unangetastet).
+      3. pending setzen, Verifikations-Thread starten und SOFORT
+         {switched: True, accepted: True, pending: {...}} zurückgeben.
+      4. _verify_switch bestätigt im Hintergrund: erst bei conclusion
+         "success" wird die SOT geschrieben und active gesetzt; der Cooldown
+         startet erst mit dem Erfolg (lastSwitch bleibt bei Fehlern unberührt).
+
+    Rückgabe ist immer ein Dict; Fehler kommen als
+    {"switched": False, "error": ...} zurück, damit der Panel-Check und die
+    loop() nicht werfen müssen.
     """
     target = str(target or "").strip()
     if not target:
         return {"switched": False, "error": "kein Zielkonto"}
+
+    # Max. 1 gleichzeitiger Wechsel: ein aktives pending (dispatch/ci/verify)
+    # blockt IMMER — auch bei force. Ein abgeschlossenes pending (done/failed)
+    # blockt nicht mehr, damit ein fehlgeschlagener Wechsel sofort wiederholt
+    # werden kann (kein künstlicher Cooldown nach Fehlern).
+    with LOCK:
+        pend = STATE.get("switchPending")
+        if pend and pend.get("phase") not in ("done", "failed"):
+            return {"switched": False, "error": "Wechsel läuft bereits",
+                    "pending": dict(pend), "target": target}
 
     # Zustand ggf. frisch holen, damit hasKey/ok aus dem aktuellen Lauf stammen
     if not STATE.get("accounts"):
@@ -517,26 +555,22 @@ def switch_account(target: str, reason: str = "", force: bool = False, by: str =
 
     cooldown = _cooldown()
     last = STATE.get("lastSwitch")
-    if last and not force:
+    if last and not force:      # force umgeht NUR den Cooldown
         remaining = cooldown - (time.time() - float(last))
         if remaining > 0:
             _event(type="switch-skipped", target=target, reason="Cooldown aktiv", by=by)
             return {"switched": False, "error": "Cooldown aktiv", "cooldownRemaining": int(remaining)}
 
+    # Vorherigen aktiven Account merken (Fallback für das Panel nach Fail):
+    # erst STATE (schnell), sonst die SOT (Config-Cache).
+    prev = STATE.get("active")
+    if not prev:
+        prev = str((_config() or {}).get("active") or "") or None
+
+    # 1) Dispatch — die SOT bleibt bis zur CI-Bestätigung unangetastet.
     with LOCK:
-        if STATE.get("switching"):
-            return {"switched": False, "error": "Wechsel läuft bereits", "target": target}
         STATE["switching"] = True
     try:
-        # 1) SOT zuerst: 'active' ist die einzige Stelle, die den aktiven Account bestimmt.
-        commit = _set_sot_active(target, reason or by)
-    except Exception as e:  # noqa: BLE001
-        with LOCK:
-            STATE["switching"] = False
-        _event(type="switch-error", target=target, reason=f"SOT: {e}", by=by)
-        return {"switched": False, "error": f"SOT nicht geschrieben: {e}"}
-    try:
-        # 2) Danach der Workflow: Key aus OpenBao lesen und in die Container setzen.
         disp = github_api.dispatch_workflow(
             SWITCH_WORKFLOW,
             inputs={"account": target, "reason": reason or "hestia"},
@@ -544,20 +578,179 @@ def switch_account(target: str, reason: str = "", force: bool = False, by: str =
     except Exception as e:  # noqa: BLE001
         with LOCK:
             STATE["switching"] = False
-        STATE["active"] = target          # SOT steht schon auf dem neuen Konto
-        _event(type="switch-error", target=target, reason=str(e), by=by)
-        return {"switched": False, "error": str(e), "commit": commit, "sotWritten": True}
+        err = f"Dispatch fehlgeschlagen: {e}"
+        _event(type="switch-error", target=target, reason=err, by=by)
+        _log(f"Wechsel nicht angestoßen: {target} — {err}")
+        return {"switched": False, "error": str(e)}
+    pending = {
+        "target": target,
+        "previous": prev,
+        "startedAt": time.time(),
+        "phase": "dispatch",
+        "runId": None,
+        "runNumber": None,
+        "runUrl": None,
+        "error": None,
+        "elapsed": None,
+        # Zusatzinfos (Panel darf sie anzeigen, das Frontend kann sie ignorieren)
+        "reason": reason or "hestia",
+        "by": by,
+    }
     with LOCK:
         STATE["switching"] = False
-        STATE["lastSwitch"] = time.time()
-        STATE["active"] = target
-        _CONFIG_CACHE["at"] = 0.0         # nächster _config() liest die neue SOT
-    _event(type="switch", target=target, reason=reason or "hestia", by=by)
-    _log(f"Wechsel angestoßen: {target} (via {by}, {SWITCH_WORKFLOW})")
-    res = {"switched": True, "target": target, "by": by, "dispatched": disp,
-           "commit": commit, "sotWritten": True}
-    res["hermesSync"] = _sync_hermes_pool(target, reason)
-    return res
+        STATE["switchPending"] = pending
+    _log(f"Wechsel angestoßen: {target} (via {by}, {SWITCH_WORKFLOW}) — Verifikation läuft")
+    # 2) Verifikation im Hintergrund (Daemon: stirbt mit dem Panel-Prozess).
+    threading.Thread(target=_verify_switch, args=(pending,), daemon=True).start()
+    return {
+        "switched": True, "accepted": True, "pending": dict(pending),
+        "target": target, "by": by, "dispatched": disp, "sotWritten": False,
+    }
+
+
+def _notify_error(pending: dict, err: str) -> None:
+    """Best-Effort-Benachrichtigung über einen fehlgeschlagenen Wechsel.
+
+    Aktuell nur Log — ein Push-Kanal (z. B. ntfy) kann hier später andocken.
+    Bewusst try/except: Fehler hier dürfen niemals den Fehlerpfad der
+    Verifikation selbst zum Absturz bringen.
+    """
+    try:
+        _log(f"Wechsel fehlgeschlagen gemeldet: {pending.get('target')} — {err}")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _finish_failed(pending: dict, err: str) -> None:
+    """Wechsel als fehlgeschlagen markieren.
+
+    KEIN SOT-Commit, `active` bleibt beim vorherigen Account und KEIN Cooldown
+    (lastSwitch bleibt unangetastet — der nächste Versuch darf sofort laufen,
+    siehe switch_account: abgeschlossenes pending blockt nicht mehr).
+    """
+    with LOCK:
+        pending["phase"] = "failed"
+        pending["error"] = err
+        pending["elapsed"] = round(time.time() - float(pending.get("startedAt") or time.time()), 1)
+    _event(type="switch-error", target=pending.get("target") or "", reason=err)
+    _log(f"Wechsel NICHT bestätigt: {pending.get('target')} — {err}")
+    try:
+        _notify_error(pending, err)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _verify_switch(pending: dict) -> None:
+    """Verifikations-Thread: CI-Lauf abwarten, SOT erst NACH Erfolg schreiben.
+
+    phase-Verlauf im pending (Panel liest STATE["switchPending"] live):
+      dispatch → ci → verify → done    (Erfolgsfall)
+      dispatch → ci          → failed  (Fehlerfall)
+
+    Der Thread darf NIEMALS crashen: jede GitHub-Abfrage ist einzeln in
+    try/except und ein Catch-All fängt unbehandelte Fehler.
+    """
+    target = str(pending.get("target") or "")
+    try:
+        # --- 1) Dispatched Run finden (bis zu VERIFY_FIND_TIMEOUT warten). ---
+        run = None
+        deadline = time.time() + VERIFY_FIND_TIMEOUT
+        while run is None and time.time() < deadline:
+            try:
+                run = github_api.find_dispatched_run(
+                    SWITCH_WORKFLOW, float(pending.get("startedAt") or 0.0)
+                )
+            except Exception as e:  # noqa: BLE001
+                _log(f"[verify] Run-Suche fehlgeschlagen (weiter warten): {e}")
+            if run is None:
+                time.sleep(5)
+        if run is None:
+            _finish_failed(pending, f"kein {SWITCH_WORKFLOW}-Run seit dem Dispatch gefunden "
+                                    f"({VERIFY_FIND_TIMEOUT}s) — Dispatch evtl. von GitHub abgelehnt")
+            return
+        with LOCK:
+            pending["runId"] = run.get("id")
+            pending["runNumber"] = run.get("run_number")
+            pending["runUrl"] = run.get("html_url")
+            pending["phase"] = "ci"
+        _log(f"[verify] Run erkannt: #{run.get('run_number')} id={run.get('id')} "
+             f"({run.get('html_url')})")
+
+        # --- 2) Status pollen (VERIFY_POLL_INTERVAL-Takt, max. VERIFY_MAX_RUNTIME). ---
+        status, conclusion = None, None
+        hard = time.time() + VERIFY_MAX_RUNTIME
+        while time.time() < hard:
+            try:
+                d = github_api.run_status(pending["runId"])
+                status, conclusion = d.get("status"), d.get("conclusion")
+            except Exception as e:  # noqa: BLE001
+                # GitHub-Hackeleien → weiterpollen statt den Wechsel sofort
+                # als failed zu melden; NUR der Timeout entscheidet über Abbruch.
+                _log(f"[verify] run_status fehlgeschlagen (Poll wiederholt): {e}")
+                status = status or "in_progress"
+            with LOCK:
+                pending["phase"] = "ci"
+            if status == "completed":
+                break
+            time.sleep(VERIFY_POLL_INTERVAL)
+
+        # --- 3) Fehlerpfad: kein SOT-Commit, active bleibt previous, kein Cooldown. ---
+        if status != "completed":
+            _finish_failed(pending, f"Timeout beim Warten auf den CI-Run "
+                                    f"(>{VERIFY_MAX_RUNTIME // 60} min, Run {pending.get('runUrl')})")
+            return
+        if conclusion != "success":
+            _finish_failed(pending, f"CI fehlgeschlagen: conclusion={conclusion} "
+                                    f"(Run {pending.get('runUrl')})")
+            return
+
+        # --- 4) Erfolg: SOT-Commit NACH dem CI-Erfolg, dann active setzen. ---
+        with LOCK:
+            pending["phase"] = "verify"
+        try:
+            _set_sot_active(target, str(pending.get("reason") or ""))
+        except Exception as e:  # noqa: BLE001
+            # Der CI-Wechsel ist real durch — ein SOT-Fehler darf das nicht
+            # rückrollen: active trotzdem setzen, aber als switch-warning zeigen.
+            with LOCK:
+                pending["sotError"] = str(e)
+            _event(type="switch-warning", target=target, reason=f"SOT nicht geschrieben: {e}")
+            _log(f"[verify] SOT-Commit nach CI-Erfolg fehlgeschlagen: {e}")
+        with LOCK:
+            STATE["active"] = target
+            STATE["lastSwitch"] = time.time()      # Cooldown startet erst JETZT (nach Erfolg)
+            _CONFIG_CACHE["at"] = 0.0              # nächster _config() liest die neue SOT
+            pending["phase"] = "done"
+            pending["elapsed"] = round(time.time() - float(pending.get("startedAt") or time.time()), 1)
+        _event(type="switch-ok", target=target, reason=str(pending.get("reason") or ""),
+               runNumber=pending.get("runNumber"), runUrl=pending.get("runUrl"))
+        _log(f"Wechsel bestätigt: {target} (Run #{pending.get('runNumber')}, "
+             f"{pending.get('runUrl')})")
+        try:
+            hermes = _sync_hermes_pool(target, str(pending.get("reason") or ""))
+        except Exception as e:  # noqa: BLE001
+            _log(f"[verify] Hermes-Sync fehlgeschlagen: {e}")
+            hermes = False
+        with LOCK:
+            pending["hermesSync"] = hermes
+    except Exception as e:  # noqa: BLE001
+        # Letzte Verteidigungslinie: der Thread darf nie unbeobachtet sterben.
+        _log(f"[verify] unerwarteter Fehler: {e}")
+        try:
+            _finish_failed(pending, f"Verifikation fehlgeschlagen: {e}")
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        # Abgeschlossenes pending noch ~PENDING_RETENTION im STATE lassen
+        # (Panel kann done/failed + error abrufen), dann abräumen — aber nur,
+        # wenn nicht längst ein neuer Wechsel das Feld übernommen hat.
+        try:
+            time.sleep(PENDING_RETENTION)
+        except Exception:  # noqa: BLE001
+            pass
+        with LOCK:
+            if STATE.get("switchPending") is pending:
+                STATE["switchPending"] = None
 
 
 def _sync_hermes_pool(account: str, reason: str = "") -> bool:

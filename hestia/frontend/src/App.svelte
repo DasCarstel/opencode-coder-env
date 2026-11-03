@@ -35,6 +35,34 @@ let foSaveResult = $state(null)
 let accStatus = $state(null)
 let accBusy = $state(false)
 
+// Tab-Schaltung OpenCode ↔ Hermes (Auswahl persistiert in localStorage, Default: opencode)
+const LS_TAB = 'hestia.tab'
+let tab = $state(localStorage.getItem(LS_TAB) === 'hermes' ? 'hermes' : 'opencode')
+function setTab(t) {
+  tab = t
+  try { localStorage.setItem(LS_TAB, t) } catch { /* ignore */ }
+}
+
+// Phasen des Kontowechsels (accStatus.switchPending.phase) für die Fortschritts-Anzeige
+const SWITCH_PHASES = ['dispatch', 'ci', 'verify', 'done']
+// Ereignis-Feed: Typ-Badge-Klasse (switch-ok / switch / switch-error / switch-skipped …)
+function evtBadgeClass(kind) {
+  if (/ok|success|done/i.test(kind)) return 'active'
+  if (/error|fail/i.test(kind)) return 'err'
+  if (/skip|cooldown/i.test(kind)) return 'warn'
+  return ''
+}
+// Zeit im Ereignis-Feed: unix-Sekunden → HH:MM, sonst ISO/Zeitstempel → lokale Zeit
+function evtTime(ev) {
+  const v = ev?.ts ?? ev?.time ?? ev?.at
+  if (v == null) return '—'
+  if (typeof v === 'number') return fmtTime(v)
+  const d = new Date(v)
+  return Number.isNaN(d.getTime())
+    ? String(v)
+    : d.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
 // Hermes-Agent (Nous Research): primäres Modell + Fallback-Kette aus der SOT
 let hermesStatus = $state(null)
 let hermesError = $state('')
@@ -843,8 +871,23 @@ function quarantinedModels() {
 }
 
 // Budget-System (OpenCode Go): Konten + Verbrauchsfenster (Anzeige + Kontowechsel)
+// Läuft ein Kontowechsel (accStatus.switchPending), geht das Panel auf einen 2-s-Takt
+// (klassische setTimeout-Rekursion). Sobald pending wieder null ist, endet das Polling
+// von selbst; das normale 60-s-Intervall bleibt unangetastet bestehen.
+let accPendingTimer = null
+function startAccPendingPoll() {
+  if (accPendingTimer) return
+  accPendingTimer = setTimeout(() => {
+    accPendingTimer = null
+    if (!accStatus?.switchPending) return
+    loadAccounts()
+  }, 2000)
+}
 async function loadAccounts() {
-  try { accStatus = await api('/api/accounts') } catch { /* ignore */ }
+  try {
+    accStatus = await api('/api/accounts')
+    if (accStatus?.switchPending) startAccPendingPoll()
+  } catch { /* ignore */ }
 }
 
 async function runAccountsCheck() {
@@ -860,17 +903,50 @@ async function runAccountsCheck() {
   }
 }
 
-// Konto wechseln: dispatcht switch-account.yml; die OpenCode-Services der Container starten neu
+// Konto wechseln: dispatcht switch-account.yml; die OpenCode-Services der Container starten neu.
+// 409 mit Cooldown → Restzeit aus der Fehlermeldung lesen und „erzwingen" anbieten (force: true).
+// Der api-Client wirft nur die Meldung (`data.error`); die Restzeit wird daraus geparsed.
+function cooldownMinutesFromMsg(msg) {
+  const s = String(msg || '')
+  let m = s.match(/(\d+)\s*min/i)
+  if (m) return Math.max(1, Math.ceil(Number(m[1])))
+  m = s.match(/(\d+)\s*(?:s\b|s(?:ec|ek)?(?:onden)?\b|seconds?\b)/i)
+  if (m && Number(m[1]) > 0) return Math.max(1, Math.ceil(Number(m[1]) / 60))
+  return null
+}
+
+async function postAccountsSwitch(id, force = false) {
+  return api('/api/accounts/switch', { body: force ? { id, force: true } : { id } })
+}
+
 async function runAccountsSwitch(id) {
   if (!id) return
   if (!confirm(`Konto auf "${id}" wechseln?\n\nDer OpenCode-Service der Container wird neu gestartet — laufende Sessions brechen dabei ab.`)) return
   accBusy = true
   error = null
   try {
-    await api('/api/accounts/switch', { body: { id } })
-    await loadAccounts()
+    await postAccountsSwitch(id)
+    await loadAccounts() // startet bei pending automatisch das 2-s-Polling; keine optimistische Anzeige
   } catch (e) {
-    error = 'Wechsel: ' + e.message
+    const msg = e?.message || String(e)
+    if (accStatus?.switchPending) {
+      error = 'Wechsel: es läuft bereits ein Kontowechsel'
+    } else if (/cooldown|409/i.test(msg)) {
+      const mins = cooldownMinutesFromMsg(msg)
+      const rest = mins != null ? `Cooldown aktiv, noch ${mins} min. ` : 'Cooldown aktiv. '
+      if (confirm(`${rest}Trotzdem erzwingen?`)) {
+        try {
+          await postAccountsSwitch(id, true)
+          await loadAccounts()
+        } catch (e2) {
+          error = 'Wechsel (erzwungen): ' + (e2?.message || String(e2))
+        }
+      } else {
+        error = 'Wechsel: ' + msg
+      }
+    } else {
+      error = 'Wechsel: ' + msg
+    }
   } finally {
     accBusy = false
   }
@@ -1130,6 +1206,49 @@ setInterval(loadSuggestStatus, 60000)
 
 {#if error}<div class="card errbox">⚠️ {error}</div>{/if}
 
+<!-- Wechsel-Fortschritt: global sichtbar (auch im Hermes-Tab) — zusätzlich gerendert in der Budget-Karte -->
+{#snippet switchPendingNote()}
+  {#if accStatus?.switchPending}
+    {@const p = accStatus.switchPending}
+    {@const cur = SWITCH_PHASES.indexOf(p.phase)}
+    <div class="card switchNote" class:done={p.phase === 'done'} class:failed={p.phase === 'failed'}>
+      <div class="switchPhases" aria-hidden="true">
+        {#each SWITCH_PHASES as ph, i (ph)}
+          <span class="switchPhase"
+            class:active={p.phase === ph}
+            class:past={p.phase !== 'failed' && cur > i}>{ph}</span>
+        {/each}
+        {#if p.phase === 'failed'}<span class="switchPhase failed">failed</span>{/if}
+      </div>
+      <p class="switchText">
+        {#if p.phase === 'dispatch'}
+          Wechsel zu <span class="mono">{p.target}</span> wird angestoßen …
+        {:else if p.phase === 'ci'}
+          CI-Workflow läuft (Run #{p.runNumber ?? '—'}) …
+          {#if p.runUrl}· <a href={p.runUrl} target="_blank" rel="noreferrer">Log ansehen</a>{/if}
+        {:else if p.phase === 'verify'}
+          Verifikation der Container läuft …
+        {:else if p.phase === 'done'}
+          ✓ {p.target} ist aktiv (verifiziert)
+        {:else}
+          ✗ Wechsel fehlgeschlagen: {p.error || 'unbekannter Fehler'}
+          {#if p.runUrl}· <a href={p.runUrl} target="_blank" rel="noreferrer">Log ansehen</a> · {/if}
+          der bisherige Account bleibt aktiv
+        {/if}
+        {#if p.elapsed}· {durText(p.elapsed)}{/if}
+      </p>
+    </div>
+  {/if}
+{/snippet}
+{@render switchPendingNote()}
+
+<div class="tabBar" role="tablist" aria-label="Panel-Bereich">
+  <button class="tab" class:tabOpen={tab === 'opencode'} role="tab"
+    aria-selected={tab === 'opencode'} onclick={() => setTab('opencode')}>OpenCode</button>
+  <button class="tab tabHermes" class:tabOpen={tab === 'hermes'} role="tab"
+    aria-selected={tab === 'hermes'} onclick={() => setTab('hermes')}>Hermes</button>
+</div>
+
 <!-- gemeinsame Vorschlags-Darstellung (manueller Lauf + gespeicherter Automatik-Vorschlag) -->
 {#snippet suggestTable(res, btnLabel = '↓ In den Editor übernehmen')}
   {#if res.reasoning}<p class="muted">{res.reasoning}</p>{/if}
@@ -1172,6 +1291,7 @@ setInterval(loadSuggestStatus, 60000)
   </div>
 {/snippet}
 
+{#if tab === 'opencode'}
 <div class="card">
   <h2>Aktive Tier-Konfiguration</h2>
   {#if config}
@@ -1212,6 +1332,11 @@ setInterval(loadSuggestStatus, 60000)
     {/if}
   {:else}<p class="muted">Lade Konfiguration…</p>{/if}
 </div>
+{/if}
+
+{#if tab === 'hermes'}
+<div class="tabWrap hermes">
+  <p class="hermesNote">Hermes läuft als eigener Agent-Container; Änderungen hier betreffen nur Hermes.</p>
 
 <div class="card">
   <h2>
@@ -1548,7 +1673,10 @@ setInterval(loadSuggestStatus, 60000)
     {modelHealth?.thresholds?.quarantineHours ?? '—'} h).
   </p>
 </div>
+</div>
+{/if}
 
+{#if tab === 'opencode'}
 <div class="card">
   <h2>DCP — Kontext-Kompaktierung (Schwellenwerte)</h2>
   <p class="muted">
@@ -1937,16 +2065,19 @@ setInterval(loadSuggestStatus, 60000)
   <h2>
     OpenCode Go — Budget
     <label class="muted" style="font-weight:400; margin-left:12px">
-      Modus {accStatus?.mode || '—'} · aktiv: <span class="mono">{accStatus?.active || '—'}</span>
+      Modus {accStatus?.mode || '—'} · aktiv: <span class="mono">{accStatus?.active || '—'}{accStatus?.active && !accStatus?.switchPending ? ' (verifiziert)' : ''}</span>
       {#if accStatus?.lastRun}· zuletzt {fmtTime(accStatus.lastRun)}{/if}
       {#if accStatus?.lastSwitch}· letzter Wechsel {fmtTime(accStatus.lastSwitch)}{/if}
     </label>
   </h2>
 
+  {@render switchPendingNote()}
+
   <div class="row" style="margin-top:0">
-    <button onclick={runAccountsCheck} disabled={accBusy}>
+    <button onclick={runAccountsCheck} disabled={accBusy || !!accStatus?.switchPending}>
       {accBusy ? 'Frage ab …' : '⟳ Jetzt prüfen'}
     </button>
+    {#if accStatus?.switchPending}<span class="badge active switchSpinner">🔄 Wechsel läuft …</span>{/if}
     <span class="muted">
       Abfrage alle {accStatus?.interval || 300}s ·
       {accStatus?.mode === 'auto' ? 'Automatik aktiv (Wechsel bei erschöpftem Abo)'
@@ -1988,7 +2119,8 @@ setInterval(loadSuggestStatus, 60000)
             <span class="badge expiry">⚡ {acc.isActive ? 'wird jetzt leergefahren' : 'bald fällig'} · Reset in {Math.round(acc.expiring.hoursLeft)} h ({WIN_LABELS[acc.expiring.window]})</span>
           {/if}
           {#if !acc.isActive && acc.ok}
-            <button class="mini" onclick={() => runAccountsSwitch(acc.id)} disabled={accBusy}
+            <button class="mini" onclick={() => runAccountsSwitch(acc.id)}
+              disabled={accBusy || !!accStatus?.switchPending}
               title="Konto wechseln (Service-Neustart)">⇄ wechseln</button>
           {/if}
         </div>
@@ -2015,11 +2147,29 @@ setInterval(loadSuggestStatus, 60000)
     <p class="muted">Noch keine Kontendaten — SOT: <span class="mono">.opencode/hestia-accounts.jsonc</span></p>
   {/if}
 
+  {#if (accStatus?.events || []).length}
+    <details class="eventFeed">
+      <summary>Ereignisse — letzte {Math.min(8, accStatus.events.length)} (aufklappen)</summary>
+      <ul>
+        {#each accStatus.events.slice(0, 8) as ev}
+          {@const kind = String(ev?.type || ev?.kind || 'event')}
+          <li>
+            <span class="muted">{evtTime(ev)}</span>
+            <span class="badge {evtBadgeClass(kind)}">{kind}</span>
+            <span class="muted">{ev?.reason || ev?.detail || ev?.message || ''}</span>
+            {#if ev?.target || ev?.id}<span class="mono">{ev?.target || ev?.id}</span>{/if}
+          </li>
+        {/each}
+      </ul>
+    </details>
+  {/if}
+
   {#if accStatus?.recommendation?.switchRecommended}
     <p class="muted" style="margin-top:10px; border-top:1px solid var(--line); padding-top:8px">
       💡 Wechsel empfohlen → <span class="mono">{accStatus.recommendation.target}</span>
       ({accStatus.recommendation.reason})
-      <button class="mini" onclick={() => runAccountsSwitch(accStatus.recommendation.target)} disabled={accBusy}>⇄ jetzt wechseln</button>
+      <button class="mini" onclick={() => runAccountsSwitch(accStatus.recommendation.target)}
+        disabled={accBusy || !!accStatus?.switchPending}>⇄ jetzt wechseln</button>
     </p>
   {:else if accStatus?.recommendation?.reason}
     <p class="muted" style="margin-top:10px; border-top:1px solid var(--line); padding-top:8px">
@@ -2027,6 +2177,7 @@ setInterval(loadSuggestStatus, 60000)
     </p>
   {/if}
 </div>
+{/if}
 
 
 <div class="card">
@@ -2353,4 +2504,46 @@ setInterval(loadSuggestStatus, 60000)
     0%, 100% { box-shadow: 0 0 0 0 rgba(217, 161, 58, 0); }
     50% { box-shadow: 0 0 0 4px rgba(217, 161, 58, .22); }
   }
+
+  /* ── Tab-Schaltung OpenCode ↔ Hermes (Akzentfarbe je Tab) ── */
+  .tabBar { display: flex; gap: 6px; margin-bottom: 16px; }
+  .tabBar .tab {
+    border-radius: 10px 10px 0 0; border-bottom: 0; padding: 8px 20px;
+    font-weight: 600; color: var(--muted);
+  }
+  .tabBar .tab:hover { color: var(--text); }
+  .tabBar .tab.tabOpen { color: var(--text); border-color: var(--fire); background: var(--panel); }
+  .tabBar .tab.tabHermes.tabOpen { border-color: #3bbfae; color: #7fe0d3; }
+  .tabWrap.hermes .card { border-color: rgba(59, 191, 174, .38); border-left-width: 3px; }
+  .tabWrap.hermes h2 { color: #7fe0d3; }
+  .hermesNote {
+    margin: 0 0 12px; padding: 7px 12px; font-size: .8rem; color: #bfeee6;
+    border: 1px dashed rgba(59, 191, 174, .45); border-radius: 8px; background: var(--panel-2);
+  }
+
+  /* ── Wechsel-Fortschritt (Kontowechsel) ── */
+  .switchNote { border-left: 3px solid var(--warn); padding: 10px 14px; }
+  .switchNote.done { border-left-color: var(--ok); }
+  .switchNote.failed { border-left-color: var(--err); }
+  .switchPhases { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 6px; }
+  .switchPhase {
+    font-size: .7rem; padding: 2px 10px; border: 1px solid var(--line);
+    border-radius: 999px; color: var(--muted);
+  }
+  .switchPhase.past { color: var(--ok); border-color: var(--ok); opacity: .85; }
+  .switchPhase.active { color: var(--text); border-color: var(--fire); font-weight: 600; }
+  .switchPhase.failed { color: var(--err); border-color: var(--err); font-weight: 600; }
+  .switchText { margin: 0; font-size: .85rem; }
+  .switchSpinner { animation: switchPulse 1.6s ease-in-out infinite; }
+  @keyframes switchPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .55; }
+  }
+
+  /* ── Ereignis-Feed (letzte Konten-Ereignisse) ── */
+  .eventFeed { margin-top: 10px; }
+  .eventFeed summary { cursor: pointer; color: var(--muted); font-size: .78rem; }
+  .eventFeed ul { margin: 8px 0 0; padding-left: 18px; }
+  .eventFeed li { margin-bottom: 5px; }
+  .eventFeed li .badge { margin: 0 6px; }
 </style>

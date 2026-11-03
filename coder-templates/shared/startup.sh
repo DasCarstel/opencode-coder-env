@@ -1254,6 +1254,24 @@ else
   echo "  ⚠ Kein OpenCode Go Key gefunden"
 fi
 
+# /etc/opencode-go.env: persistentes Mapping für oc-go & Co. Bewusst NICHT in
+# /etc/opencode.env (das ist das 600er-Token-File für BAO/GITHUB/NTFY) — eigene
+# Datei: umask 077, chmod 600, root, bei jedem Start idempotent neu geschrieben
+# (nur non-empty Felder). OC_GO_ACTIVE_FIELD spiegelt die SOT.
+_og_umask="$(umask)"
+umask 077
+{
+  for _og_n in default1 default2 default3 default4; do
+    _og_v="OC_GO_${_og_n^^}"
+    [ -n "${!_og_v:-}" ] && printf "export OC_GO_%s='%s'\n" "${_og_n^^}" "${!_og_v}"
+  done
+  [ -n "${OC_GO_ACTIVE:-}" ] && printf "export OC_GO_ACTIVE_FIELD='%s'\n" "$OC_GO_ACTIVE"
+} > /etc/opencode-go.env 2>/dev/null \
+  && chmod 600 /etc/opencode-go.env \
+  && echo "  ✓ /etc/opencode-go.env geschrieben (Feld aktiv: ${OC_GO_ACTIVE:-?})" \
+  || echo "  ⚠ /etc/opencode-go.env konnte nicht geschrieben werden"
+umask "$_og_umask"
+
 # ── Primary-Agents (build/plan) aus @medium ableiten ───────────────────────
 # build = @medium (Standardvariante), plan = @medium mit höchster Variante.
 # Nutzt den laufenden OpenCode-Server für die Varianten-Liste.
@@ -1267,64 +1285,351 @@ if [ -f "$OVERRIDES_SRC" ]; then
     || echo "  ⚠ Primary-Agents konnten nicht abgeleitet werden"
 fi
 
-# Helper zum Umschalten zwischen den OpenCode-Go-Keys
+# Helper zum Verwalten der OpenCode-Go-Keys (Anzeige, Test-Umschaltung,
+# Notfall-Reparatur). Konto-Auswahl (SOT) bleibt bei Hestia — 'repair' ist ein
+# bewusster Notfall-Ausweg und setzt nur LOKALE Quellen (.bashrc, Service-Env,
+# /etc/opencode-go.env); es schreibt weder OpenBao noch die SOT-Datei.
 cat > /usr/local/bin/oc-go << 'OCGO'
 #!/bin/bash
-# OpenCode Go Key verwalten:
-#   oc-go list              → lokal gesetzter Key/Account (verwaltet von Hestia)
-#   oc-go use <name>        → Key lokal wechseln (.bashrc + Service-Env, kein OpenBao-Schreibzugriff)
-# Hinweis: es gibt bewusst KEIN 'oc-go default' mehr. Welcher Account aktiv ist,
-# entscheidet allein Hestia über .opencode/hestia-accounts.jsonc.
-source /etc/opencode.env 2>/dev/null
+# oc-go — OpenCode-Go-Key verwalten
+#   oc-go list                    Konten + Key-Status + aktives Konto (3 Quellen)
+#   oc-go status                  list + Prüfung gespeicherter opencode.db-Credentials
+#   oc-go use <name>              Key lokal setzen (Test) + Mini-Verifikation
+#   oc-go repair [name] [key]     Notfall-Reparatur (manueller Key, interaktiv oder argv)
+# Es gibt bewusst KEIN 'oc-go default' mehr: der aktive Account kommt allein
+# aus der SOT .opencode/hestia-accounts.jsonc (Feld "active").
+# Kein Key im Log bzw. in der History: nur Länge + Präfix.
+set -u
+HISTFILE=/dev/null
+
+OC_GO_ENV_FILE=/etc/opencode-go.env
+# Altcontainer ohne /etc/opencode-go.env: Fallback aufs alte Token-File, dort
+# stehen OC_GO_* historisch (startup.sh vor 2026-10 schrieb dorthin).
+[ -r "$OC_GO_ENV_FILE" ] || OC_GO_ENV_FILE=/etc/opencode.env
+source "$OC_GO_ENV_FILE" 2>/dev/null || true
+
+OC_GO_NAMES="default1 default2 default3 default4"
+OC_GO_USAGE_URL="https://opencode.ai/zen/go/v1/usage"
+
+# Kontonamen, die überhaupt einen Key haben
+known_names() {
+  for n in $OC_GO_NAMES; do
+    v="OC_GO_${n^^}"
+    [ -n "${!v:-}" ] && echo "$n"
+  done
+}
+
+# Kontoname zu einem Key ("" wenn leer/unbekannt)
+name_of_key() {
+  _k="$1"
+  [ -n "$_k" ] || { echo ""; return 0; }
+  for n in $OC_GO_NAMES; do
+    v="OC_GO_${n^^}"
+    [ "${!v:-}" = "$_k" ] && { echo "$n"; return 0; }
+  done
+  echo ""
+}
+
+# SOT-Feld "active" aus .opencode/hestia-accounts.jsonc des Repo-Checkouts
+# (Priorität $OC_REPO_ROOT, sonst /home/*/opencode-coder-env). python3 -I -c
+# liest über argv — kein /tmp-Syspath-Risiko. Fallback: OC_GO_ACTIVE_FIELD aus
+# /etc/opencode-go.env, falls das Repo-Checkout nicht (mehr) lesbar ist.
+sot_name() {
+  _f=""
+  if [ -n "${OC_REPO_ROOT:-}" ] && [ -r "$OC_REPO_ROOT/.opencode/hestia-accounts.jsonc" ]; then
+    _f="$OC_REPO_ROOT/.opencode/hestia-accounts.jsonc"
+  else
+    for _d in /home/*; do
+      [ -r "$_d/opencode-coder-env/.opencode/hestia-accounts.jsonc" ] && _f="$_d/opencode-coder-env/.opencode/hestia-accounts.jsonc" && break
+    done
+  fi
+  if [ -z "$_f" ] || ! command -v python3 >/dev/null 2>&1; then
+    echo "${OC_GO_ACTIVE_FIELD:-}"
+    return 0
+  fi
+  python3 -I -c 'import json, re, sys
+try:
+    raw = open(sys.argv[1], encoding="utf-8").read()
+    raw = re.sub(r"^[ \t]*//.*$|[ \t]+//.*$", "", raw, flags=re.M)
+    raw = re.sub(r",(\s*[}\]])", r"\1", raw)
+    print(str(json.loads(raw).get("active") or ""))
+except Exception:
+    pass' "$_f" 2>/dev/null
+}
+
+# Aktives Konto aus 3 Quellen ermitteln (R_SOT / R_SH / R_SV, je ✓/✗) und
+# anzeigen; bei Abweichung zentrale Warnung mit allen drei Werten.
+show_active_sources() {
+  R_SOT=""
+  R_SH=""
+  R_SV=""
+  R_SOT="$(sot_name)"
+  if [ -r /root/.bashrc ]; then
+    R_SH="$(grep -m1 '^export OPENCODE_API_KEY=' /root/.bashrc 2>/dev/null | cut -d= -f2- | tr -d "\"'")"
+  fi
+  R_SH="$(name_of_key "$R_SH")"
+  SVC_JSON=/root/.config/opencode/service.json
+  if [ -f "$SVC_JSON" ] && command -v python3 >/dev/null 2>&1; then
+    R_SV="$(python3 -I -c 'import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print(str((d.get("env") or {}).get("OPENCODE_API_KEY") or ""))
+except Exception:
+    pass' "$SVC_JSON" 2>/dev/null)"
+  fi
+  if [ -f "$SVC_JSON" ] && [ -z "$R_SV" ]; then
+    R_SV="$(tr ',' '\n' < "$SVC_JSON" | grep OPENCODE_API_KEY | head -n1 | cut -d'"' -f4 || true)"
+  fi
+  R_SV="$(name_of_key "$R_SV")"
+
+  [ -n "$R_SOT" ] && M_SOT="✓" || M_SOT="✗"
+  [ -n "$R_SH" ] && M_SH="✓" || M_SH="✗"
+  [ -n "$R_SV" ] && M_SV="✓" || M_SV="✗"
+  echo "  SOT     (.opencode/hestia-accounts.jsonc)  ${M_SOT} ${R_SOT:-?}"
+  echo "  Shell   (/root/.bashrc)                    ${M_SH} ${R_SH:-?}"
+  echo "  Service (opencode service env)             ${M_SV} ${R_SV:-?}"
+  if [ -n "$R_SOT" ] && [ "$R_SOT" = "$R_SH" ] && [ "$R_SOT" = "$R_SV" ]; then
+    echo "→ aktiv: $R_SOT (konsistent)"
+    return 0
+  fi
+  echo "  ⚠ ABWEICHUNG: SOT=${R_SOT:-?}, Shell=${R_SH:-?}, Service=${R_SV:-?}"
+  return 1
+}
+
+# Prüfung, ob opencode.db ein GESPEICHERTES 'OpenCode Go'-Credential enthält,
+# das die ENV-Variable OPENCODE_API_KEY überschreibt (Fehler von 2026-10-13).
+# Nur-Lesen; R_DB: 0=kein stored Credential (ENV greift), 1=gespeichert
+# gefunden, 2=unklar (DB/sqlite3 fehlt). Die DB ist klein (Auth/Metadaten) →
+# '.dump'-Freitextsuche reicht und ist robust gegen Schemaänderungen.
+R_DB_PATH="-"
+db_check() {
+  R_DB=2
+  for _db in /root/.local/share/opencode/opencode.db /root/.opencode/opencode.db; do
+    [ -f "$_db" ] || continue
+    R_DB_PATH="$_db"
+    if ! command -v sqlite3 >/dev/null 2>&1; then
+      R_DB=2
+      return 0
+    fi
+    if sqlite3 "$_db" '.dump' 2>/dev/null | grep -qi -e 'zen/go' -e 'OpenCode Go'; then
+      R_DB=1
+    else
+      R_DB=0
+    fi
+    return 0
+  done
+  return 0
+}
+
+show_db() {
+  db_check
+  case "$R_DB" in
+    0) echo "  DB      ($R_DB_PATH)   ✓ kein gespeichertes 'OpenCode Go'-Credential — ENV greift" ;;
+    1) echo "  DB      ($R_DB_PATH)   ✗ gespeichertes Credential überschreibt ENV (Option: oc-go repair + Kontoinfo)!" ;;
+    *) echo "  DB      (—)            ⚠ nicht prüfbar (opencode.db oder sqlite3 fehlt)" ;;
+  esac
+}
+
+# Mini-Verifikation: Usage-Request mit Bearer-Key, Ausgabe NUR HTTP-Code
+# (200 = ok, 401/403 = Key falsch, 404 = Konto nicht abonniert, 000 = Netz).
+verify_key() {
+  _key="$1"
+  [ -n "$_key" ] || { echo "000"; return 0; }
+  _code="$(curl -sS -o /dev/null -w '%{http_code}' -m 15 \
+    -H "Authorization: Bearer $_key" \
+    -H 'x-opencode-session: oc-go' \
+    -H 'User-Agent: Mozilla/5.0' \
+    "$OC_GO_USAGE_URL" 2>/dev/null)"
+  case "$_code" in
+    ''|*[!0-9]*) echo "000" ;;
+    *) echo "$_code" ;;
+  esac
+}
+
+explain_http() {
+  case "$1" in
+    200)     echo "✓ Key nutzbar (HTTP 200)" ;;
+    401|403) echo "✗ Key falsch/abgelehnt (HTTP $1)" ;;
+    404)     echo "✗ Konto nicht abonniert (HTTP 404)" ;;
+    000)     echo "⚠ kein HTTP-Code (Netzwerk/Timeout)" ;;
+    *)       echo "⚠ unerwarteter HTTP-Code: $1" ;;
+  esac
+}
+
+# OC_GO_ACTIVE_FIELD in /etc/opencode-go.env aktualisieren (nur lokal — OpenBao
+# und die SOT-Datei bleiben unangetastet; Hestia ist Quelle der Wahrheit).
+write_env_field() {
+  _name="$1"
+  _f=/etc/opencode-go.env
+  mkdir -p "$(dirname "$_f")" 2>/dev/null || true
+  _t="$(mktemp /tmp/ocgo-env.XXXXXX)" || return 1
+  if [ -f "$_f" ]; then
+    grep -v '^export OC_GO_ACTIVE_FIELD=' "$_f" > "$_t" 2>/dev/null || true
+  fi
+  [ -n "$_name" ] && printf "export OC_GO_ACTIVE_FIELD='%s'\n" "$_name" >> "$_t"
+  chmod 600 "$_t"
+  if mv "$_t" "$_f"; then
+    return 0
+  fi
+  rm -f "$_t"
+  return 1
+}
+
+# Key setzen: Shell + .bashrc (deduppt, genau eine Zeile) + Service-Env.
+apply_key() {
+  _key="$1"
+  export OPENCODE_API_KEY="$_key"
+  sed -i '/^export OPENCODE_API_KEY=/d' /root/.bashrc 2>/dev/null || true
+  printf 'export OPENCODE_API_KEY="%s"\n' "$_key" >> /root/.bashrc
+  echo "✓ Key in /root/.bashrc gesetzt (deduppt, genau eine Zeile)"
+  if command -v opencode >/dev/null 2>&1; then
+    if opencode service set env OPENCODE_API_KEY "$_key" >/dev/null 2>&1; then
+      echo "✓ Key im OpenCode-Service-Env gesetzt"
+    else
+      echo "⚠ opencode service set env fehlgeschlagen — manuell nachholen"
+    fi
+  else
+    echo "⚠ opencode-CLI fehlt — Service-Env nicht gesetzt"
+  fi
+}
+
+show_keys() {
+  echo "Verfügbare OpenCode-Go-Keys (env-Datei: $OC_GO_ENV_FILE):"
+  KN="$(known_names)"
+  if [ -z "$KN" ]; then
+    echo "  (kein OC_GO_*-Key gesetzt — env-Datei prüfen)"
+  else
+    for n in $OC_GO_NAMES; do
+      v="OC_GO_${n^^}"
+      K="${!v:-}"
+      if [ -n "$K" ]; then
+        echo "  - $n   ✓ Key gesetzt (${#K} Zeichen)"
+      else
+        echo "  - $n   ✗ nicht gesetzt"
+      fi
+    done
+  fi
+}
+
+validate_name() {
+  case "$NAME" in
+    *[!A-Za-z0-9_-]*|"") echo "✗ Ungültiger Konto-Name: $NAME" >&2; return 1 ;;
+  esac
+  case "$NAME" in
+    default1|default2|default3|default4) return 0 ;;
+    *) echo "✗ Unbekanntes Konto: $NAME (erlaubt: default1..default4)" >&2; return 1 ;;
+  esac
+}
+
 case "${1:-list}" in
   list)
-    echo "Verfügbare OpenCode-Go-Keys:"
-    for n in default1 default2 default3 default4; do
-      v="OC_GO_${n^^}"; [ -n "${!v:-}" ] && echo "  - $n"
-    done
-    # Aktiv ist der LOKAL gesetzte Key (nicht mehr OpenBao). Quelle der Wahrheit
-    # für die Auswahl bleibt Hestia; hier nur anzeigen, was tatsächlich gesetzt ist.
-    ACT_KEY=""
-    if [ -r /root/.bashrc ]; then
-      ACT_KEY="$(grep -m1 '^export OPENCODE_API_KEY=' /root/.bashrc 2>/dev/null | cut -d= -f2- | tr -d "\"'")"
-    fi
-    [ -z "$ACT_KEY" ] && ACT_KEY="${OPENCODE_API_KEY:-}"
-    ACT="unbekannt"
-    if [ -n "$ACT_KEY" ]; then
-      for n in default1 default2 default3 default4; do
-        v="OC_GO_${n^^}"
-        [ -n "${!v:-}" ] && [ "$v" = "$ACT_KEY" ] && ACT="$n"
-      done
-    fi
-    echo "Aktiv (lokal gesetzt): ${ACT}"
-    echo "  Key: ${ACT_KEY:+gesetzt (${#ACT_KEY} Zeichen)}${ACT_KEY:-NICHT gesetzt}"
-    echo "  Hinweis: Konto-Auswahl wird ausschließlich von Hestia (Panel) verwaltet —"
-    echo "           SOT: .opencode/hestia-accounts.jsonc (Feld \"active\")."
+    show_keys
+    echo ""
+    echo "Aktives Konto (3 Quellen):"
+    show_active_sources || true
+    ;;
+  status)
+    show_keys
+    echo ""
+    echo "Aktives Konto (3 Quellen):"
+    show_active_sources || true
+    echo ""
+    echo "Gespeicherte Credentials (opencode.db):"
+    show_db
     ;;
   use)
     NAME="${2:-}"
     [ -z "$NAME" ] && { echo "Nutzung: oc-go use <default1|default2|default3|default4>"; exit 1; }
-    VAR="OC_GO_${NAME^^}"; KEY="${!VAR:-}"
-    [ -z "$KEY" ] && { echo "Unbekannter Key: $NAME"; exit 1; }
-    # .bashrc erst deduppen, dann genau EINE Zeile anhängen (kein blindes >>).
-    sed -i '/^export OPENCODE_API_KEY=/d' /root/.bashrc 2>/dev/null || true
-    printf 'export OPENCODE_API_KEY="%s"\n' "$KEY" >> /root/.bashrc
-    export OPENCODE_API_KEY="$KEY"
-    opencode service set env OPENCODE_API_KEY "$KEY" >/dev/null 2>&1 || true
-    echo "✓ Lokal aktiv: $NAME (nur dieser Container — dauerhaft umschalten: Hestia-Panel)"
+    validate_name || exit 1
+    VAR="OC_GO_${NAME^^}"
+    KEY="$(printf '%s' "${!VAR:-}")"
+    [ -z "$KEY" ] && { echo "✗ Kein Key für $NAME hinterlegt ($OC_GO_ENV_FILE)"; exit 1; }
+    apply_key "$KEY"
+    CODE="$(verify_key "$KEY")"
+    if [ "$CODE" = "200" ]; then
+      echo "✓ Lokal aktiv: $NAME (nur dieser Container — dauerhaft umschalten: Hestia-Panel)"
+    else
+      echo "⚠ Umschalten OK, ABER Verifikation fehlgeschlagen: $(explain_http "$CODE")"
+      echo "  → Details mit 'oc-go status'; bei hartnäckigem Fehler: 'oc-go repair $NAME'"
+    fi
+    ;;
+  repair)
+    NAME="${2:-}"
+    KEY="${3:-}"
+    if [ -n "$NAME" ]; then
+      case "$NAME" in
+        *[!A-Za-z0-9_-]*) echo "✗ Ungültiger Konto-Name" >&2; exit 1 ;;
+      esac
+    fi
+    if [ -z "$KEY" ]; then
+      printf 'OpenCode-Go-Key: '
+      KEY=""
+      read -rs KEY || true
+      printf '\n'
+    fi
+    # Validierung — der Key erscheint nie im Log (nur Länge + Präfix).
+    if [ -z "$KEY" ]; then
+      echo "✗ Kein Key angegeben" >&2
+      exit 1
+    fi
+    if [ "${#KEY}" -lt 40 ]; then
+      echo "✗ Key zu kurz (${#KEY} Zeichen, erwartet >= 40)" >&2
+      exit 1
+    fi
+    case "$KEY" in
+      oc_sk_*) ;;
+      *) echo "✗ Key hat falsches Präfix (erwartet oc_sk_*)" >&2; exit 1 ;;
+    esac
+    echo "→ Key akzeptiert (Länge: ${#KEY}, Präfix: oc_sk_)"
+    if [ -n "$NAME" ]; then
+      VAR="OC_GO_${NAME^^}"
+      MAPKEY="${!VAR:-}"
+      if [ -z "$MAPKEY" ]; then
+        echo "⚠ Konto '$NAME' hat keinen hinterlegten Key in $OC_GO_ENV_FILE — Key trotzdem setzen (Notfallmodus)"
+      elif [ "$MAPKEY" != "$KEY" ]; then
+        echo "⚠ Key weicht vom hinterlegten Key für $NAME ab — manueller Key hat Vorrang (Repair)"
+      else
+        echo "✓ Key stimmt mit dem hinterlegten Key für $NAME überein"
+      fi
+    fi
+    apply_key "$KEY"
+    if [ -n "$NAME" ]; then
+      if write_env_field "$NAME"; then
+        echo "✓ /etc/opencode-go.env: OC_GO_ACTIVE_FIELD=$NAME"
+      else
+        echo "⚠ /etc/opencode-go.env konnte nicht aktualisiert werden"
+      fi
+    fi
+    CODE="$(verify_key "$KEY")"
+    explain_http "$CODE"
+    printf 'OpenCode-Service jetzt neu starten? [j/N] '
+    ANS=""
+    read -r ANS || true
+    case "${ANS:-}" in
+      j|J|ja|Ja|JA|y|Y|yes|Yes|YES)
+        echo "→ Neustart bricht laufende Sessions ab ..."
+        opencode service restart >/dev/null 2>&1 \
+          && echo "✓ OpenCode-Service neu gestartet" \
+          || echo "⚠ Neustart fehlgeschlagen — 'opencode service restart' manuell nachholen"
+        ;;
+      *)
+        echo "→ Kein Neustart (laufende Sessions bleiben unberührt)"
+        ;;
+    esac
     ;;
   default)
     echo "✗ 'oc-go default' ist entfernt."
     echo "  Der aktive OpenCode-Go-Account wird ausschließlich von Hestia (Panel)"
     echo "  über die SOT .opencode/hestia-accounts.jsonc (Feld \"active\") bestimmt."
     echo "  Für einen lokalen Test: oc-go use <default1|default2|default3|default4>"
+    echo "  Im Notfall (Panel nicht erreichbar): oc-go repair [name] [key]"
     exit 1
     ;;
-  *) echo "Nutzung: oc-go [list | use <name>]";;
+  *) echo "Nutzung: oc-go [list|status|use <name>|repair [name] [key]]";;
 esac
 OCGO
 chmod +x /usr/local/bin/oc-go
-echo "  ✓ Helper 'oc-go' installiert"
+echo "  ✓ Helper 'oc-go' installiert (list/status/use/repair)"
 
 # ── OpenCode-Server (Service): 0.0.0.0 + OpenBao-paritätisches Passwort ─────
 # Der v2-Background-Service regeneriert bei fehlender Konfig Passwort und
