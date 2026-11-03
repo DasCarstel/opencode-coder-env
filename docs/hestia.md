@@ -281,7 +281,23 @@ Geprüft wird (Exit 1 bei Verstoß), je Container:
    nicht gesperrt und nicht ohne Guthaben).
 
 `--fix` zieht einen fehlenden oder abweichenden Key im Service-Env und in
-`/root/.bashrc` (dedupliziert) nach.
+`/root/.bashrc` (dedupliziert) nach. Zusätzlich entfernt `--fix` gespeicherte
+(`stored`) „OpenCode Go"-Credentials automatisch per
+`opencode auth logout 'OpenCode Go' '<Credential-Label>'` — sie überstimmen
+sonst die ENV-Variable (Shadowing) und heilen sich sonst nie von selbst. Der
+Credential-Label kann Leerzeichen enthalten und wird beim Parsen als alles
+zwischen der Provider-Spalte und dem Status-Token gelesen; im Log erscheint
+nur das Label, nie ein Secret. Nach dem Logout prüft der Check direkt erneut —
+liegen noch `stored`-Zeilen vor, bleibt der Lauf rot mit Hinweis auf den
+manuellen Befehl.
+
+`hestia/ci/switch-account.sh` nutzt diesen Check als Verifikations-Gate: ist
+die CI rot (z. B. weil in `opencode.db` noch ein gespeichertes „OpenCode Go"-
+Credential liegt), ist der Wechsel nicht angekommen — das Panel übernimmt
+`active` erst nach erfolgreicher Verifikation. Real passiert in Run #33: ein
+gespeicherter „OpenCode Go"-Account machte den Wechsel unwirksam; seit Run #34
+entfernt `--fix` solche Credentials selbstständig („Geht"-Label), danach war
+der Wechsel grün.
 
 ### Service-Env bei jedem Container-Start
 

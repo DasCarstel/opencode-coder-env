@@ -18,6 +18,11 @@
 # Geprüft wird (Exit 1 bei Verstoß):
 #   1. Je Container: für die Integration "OpenCode Go" existiert KEIN 'stored'
 #      Credential — nur 'environment' (sonst Shadowing → Wechsel wirkungslos).
+#      Das Credential-Label kann Leerzeichen enthalten (alles zwischen der
+#      ersten und der letzten Spalte) — Secrets werden nie ausgegeben, nur Labels.
+#      Mit --fix werden gespeicherte Credentials per 'opencode auth logout'
+#      entfernt; dieser Check ist das Verifikations-Gate von switch-account.sh
+#      (CI rot = Wechsel nicht angekommen).
 #   2. OPENCODE_API_KEY in der Container-/.bashrc entspricht dem Key des in der
 #      SOT als 'active' markierten Abos (sha256-Vergleich, keine Key-Ausgabe).
 #   3. Der Key steht im Service-Env (service.json) des Containers.
@@ -33,6 +38,8 @@
 #
 #   --fix   Selbstheilung: fehlenden/abweichenden Key in Service-Env und
 #           /root/.bashrc (deduppt) nachziehen, Service neu starten, neu prüfen.
+#           Außerdem: gespeicherte 'OpenCode Go'-Credentials (opencode.db,
+#           überschreiben OPENCODE_API_KEY) per 'opencode auth logout' entfernen.
 #           Ohne --fix wird nur geprüft (Default, für Diagnose/CI manuell).
 #
 # Env:
@@ -136,6 +143,26 @@ fi
 ACTIVE_HASH="$(printf '%s' "$ACTIVE_KEY" | sha256sum | cut -c1-16)"
 KEY_PATH_REMOTE="/tmp/ocgo_key_fix"
 hash_of() { printf '%s' "$1" | sha256sum | cut -c1-16; }
+
+# Label gespeicherter 'OpenCode Go'-Credentials aus einem 'opencode auth list'-Text
+# (stdin) herausziehen — genau eins pro Zeile. Das Label ist alles zwischen der
+# Provider-Spalte und dem letzten (Status-)Token und DARF Leerzeichen enthalten,
+# also niemals nur eine einzelne Spalte aufschneiden. Zeilen mit 'environment'
+# werden nicht ausgegeben (kein Shadowing → nichts zu heilen). Enthalten sind
+# nur Labels, nie Secrets.
+go_stored_labels() {
+  grep 'OpenCode Go' \
+    | grep -E '[[:space:]]stored[[:space:]]*$' \
+    | sed -E 's/^[[:space:]]*OpenCode Go[[:space:]]+//;
+              s/[[:space:]]+stored[[:space:]]*$//;
+              s/[[:space:]]+$//'
+}
+
+# Ein einfaches Quote (') für die sh -lc '...'-Ein-Quote-Umgebung escapen:
+# ' -> '\'' (Quote zu, escaped Quote, Quote wieder auf).
+sq_escape() {
+  printf '%s' "${1//"'"/"'\\''"}"
+}
 NAMES="$("${SSH[@]}" "docker ps --format '{{.Names}}' | grep -E '^coder-.*(${HESTIA_TARGETS})\$' || true")"
 if [[ -z "$NAMES" ]]; then
   fail "keine passenden Container gefunden (Muster: coder-* ($HESTIA_TARGETS))"
@@ -181,11 +208,40 @@ for c in $NAMES; do
   CHECKED+=("$c")
 
   # 3a) Shadowing-Check: In der Integration 'OpenCode Go' darf KEIN 'stored' stehen
-  if "${SSH[@]}" "docker exec '$c' sh -lc 'opencode auth list 2>/dev/null'" \
-       | grep -E "OpenCode Go" | grep -q "stored"; then
-    fail "$c: gespeicherter 'OpenCode Go'-Account vorhanden (überschreibt OPENCODE_API_KEY!) → 'opencode auth logout opencode-go <cred>'"
-  else
+  AUTH_LIST="$("${SSH[@]}" "docker exec '$c' sh -lc 'opencode auth list 2>/dev/null'" || true)"
+  STORED_LABELS="$(printf '%s\n' "$AUTH_LIST" | go_stored_labels || true)"
+  if [[ -z "$STORED_LABELS" ]]; then
     echo "✓ $c: keine gespeicherte Go-Credential (nur environment)"
+  elif [[ "$FIX" == "1" ]]; then
+    # Selbstheilung: jeden gespeicherten Account ausloggen — er überschreibt
+    # sonst OPENCODE_API_KEY und macht den Wechsel wirkungslos. Nur Logout,
+    # KEIN 'opencode service restart' an dieser Stelle.
+    while IFS= read -r LABEL; do
+      [[ -z "$LABEL" ]] && continue
+      REMOTE_LABEL="$(sq_escape "$LABEL")"
+      # Zusätzlich für die Remote-Shell-Ebene (sh-Befehl läuft dort in
+      # Doppel-Quotes) sichern: \, ", $ und Backtick.
+      REMOTE_LABEL="${REMOTE_LABEL//\\/\\\\}"
+      REMOTE_LABEL="${REMOTE_LABEL//\"/\\\"}"
+      REMOTE_LABEL="${REMOTE_LABEL//\$/\\\$}"
+      REMOTE_LABEL="${REMOTE_LABEL//\`/\\\`}"
+      if "${SSH[@]}" "docker exec '$c' sh -lc \"opencode auth logout 'OpenCode Go' '$REMOTE_LABEL'\"" >/dev/null 2>&1; then
+        echo "✓ $c: gespeichertes Go-Credential '$LABEL' entfernt (ENV greift jetzt)"
+        FIXED=$((FIXED + 1))
+      else
+        fail "$c: gespeichertes Go-Credential '$LABEL' konnte nicht entfernt werden → manuell: docker exec '$c' sh -lc \"opencode auth logout 'OpenCode Go' '$LABEL'\""
+      fi
+    done <<< "$STORED_LABELS"
+    # Vertrauen ist gut: direkt erneut prüfen (gleiche Erkennung wie oben).
+    REMAINING="$("${SSH[@]}" "docker exec '$c' sh -lc 'opencode auth list 2>/dev/null'" | go_stored_labels || true)"
+    if [[ -n "$REMAINING" ]]; then
+      fail "$c: nach dem Logout liegen noch gespeicherte Go-Credentials vor: ${REMAINING//$'\n'/; } → manuell 'opencode auth logout \"OpenCode Go\" <Credential-Label>' und Check wiederholen"
+    else
+      echo "✓ $c: nach dem Logout keine gespeicherte Go-Credential mehr (ENV greift jetzt)"
+    fi
+  else
+    fail "$c: gespeicherte(r) 'OpenCode Go'-Account(s) vorhanden (überschreibt OPENCODE_API_KEY!): ${STORED_LABELS//$'\n'/; } → '--fix' entfernt sie automatisch oder manuell: opencode auth logout 'OpenCode Go' '<Credential-Label>'"
+    echo "   (nur geprüft — '--fix' loggt die gespeicherten Accounts aus)"
   fi
 
   # 3b) Key in Service-Env (service.json) und /root/.bashrc == SOT-Key?
