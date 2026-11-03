@@ -1,43 +1,37 @@
 {
-  "updatedAt": "2026-11-03T16:22:07Z",
+  "updatedAt": "2026-11-03T16:35:10Z",
   "tiers": {
     "fast": {
       "model": "opencode-go/deepseek-v4.1-flash#low",
       "ok": true,
-      "failStreak": 0,
-      "lastOkAt": "2026-11-03T16:21:58Z"
+      "failStreak": 0
     },
     "medium": {
       "model": "opencode-go/glm-5.3-flash",
       "ok": true,
-      "failStreak": 0,
-      "lastOkAt": "2026-11-03T16:22:05Z"
+      "failStreak": 0
     },
     "heavy": {
       "model": "opencode-go/glm-5.3#max",
       "ok": true,
-      "failStreak": 0,
-      "lastOkAt": "2026-11-03T16:22:07Z"
+      "failStreak": 0
     }
   },
   "models": {
     "opencode-go/deepseek-v4.1-flash#low": {
       "model": "opencode-go/deepseek-v4.1-flash#low",
       "failStreak": 0,
-      "quarantineUntil": "",
-      "lastOkAt": "2026-11-03T16:21:58Z"
+      "quarantineUntil": ""
     },
     "opencode-go/glm-5.3-flash": {
       "model": "opencode-go/glm-5.3-flash",
       "failStreak": 0,
-      "quarantineUntil": "",
-      "lastOkAt": "2026-11-03T16:22:05Z"
+      "quarantineUntil": ""
     },
     "opencode-go/glm-5.3#max": {
       "model": "opencode-go/glm-5.3#max",
       "failStreak": 0,
-      "quarantineUntil": "",
-      "lastOkAt": "2026-11-03T16:22:07Z"
+      "quarantineUntil": ""
     }
   }
 }
