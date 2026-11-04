@@ -168,7 +168,7 @@ def load(loader):
 
 1. **Proxy im Telefon eintragen**: WLAN-Einstellungen → Netzwerk → Erweitert →
    Proxy → Manuell, Host und Port des mitmproxy-Rechners (z. B.
-   `10.0.10.10:8080`).
+   `192.168.1.20:8080`).
 2. **CA-Zertifikat installieren**: im Browser des Telefons `http://mitm.it`
    öffnen, Android wählen, Zertifikat herunterladen. Dann Einstellungen →
    Sicherheit → Weitere Sicherheitseinstellungen → **CA-Zertifikat
@@ -181,9 +181,7 @@ def load(loader):
    python3 -c "import json;[print(r['method'], r['url'], r['status']) for r in map(json.loads, open('/etc/docker/yazio-capture/captures/2026-11-04.jsonl'))]"
    ```
 
-5. **Aufräumen**: Proxy im Telefon wieder auf „Kein Proxy" stellen, danach
-   `docker compose stop mitmproxy`. Das CA-Zertifikat auf dem Telefon löschen
-   (Vertrauenswürdige Zertifikate → Nutzer), wenn es nicht mehr gebraucht wird.
+5. **Aufräumen**: siehe [Nach dem Mitschnitt](#nach-dem-mitschnitt).
 
 ## Stolperfallen, die uns Zeit gekostet haben
 
@@ -196,6 +194,63 @@ def load(loader):
 | `docker logs` bleibt leer | Python puffert die Ausgabe | `PYTHONUNBUFFERED=1` in der Compose-Datei |
 | Wert in `env_file` ist abgeschnitten | Compose interpoliert `$` auch in env-Dateien | `$` als `$$` schreiben |
 | Morphe meldet „für eine ältere Patcher-Version gebaut" | Bundle deklariert Patcher 2.2.0, installierter Morphe ist neuer | Für reine Ressourcen-Patches ohne Bedeutung |
+
+## Nach dem Mitschnitt
+
+Der Mitschnitt ist ein Werkzeug, kein Dauerbetrieb. Wenn er seinen Zweck erfüllt
+hat:
+
+1. Proxy im WLAN wieder auf **Kein Proxy** stellen.
+2. `docker compose stop mitmproxy` — der Container startet auch nach einem
+   Reboot nicht von selbst wieder.
+3. CA-Zertifikat auf dem Telefon löschen: Einstellungen → Sicherheit →
+   Vertrauenswürdige Zertifikate → Reiter **Nutzer** → `mitmproxy`.
+4. Optional die Aufzeichnungen unter `captures/` löschen.
+
+### Zurück zur Play-Store-Version
+
+Der Patch hat danach keine Aufgabe mehr. Zurück geht es so:
+
+1. In Morphe **Settings → Advanced → Export signing keystore** — ohne diesen
+   Keystore sind spätere Patch-Builds eine Neuinstallation statt eines Updates.
+2. Gepatchte App deinstallieren.
+3. App aus dem Play Store installieren und anmelden. Die Daten liegen am Konto,
+   nicht auf dem Gerät; es geht nichts verloren.
+
+Für einen API-Client (Exporter) ist der Patch ohnehin überflüssig: der spricht
+TLS direkt und braucht kein Zertifikat auf dem Gerät.
+
+## Werte aus einem neuen APK lesen, ohne zu patchen
+
+Bei einer neuen YAZIO-Version muss man **nicht** patchen, um an die Werte zu
+kommen, die ein API-Client braucht. Sie stehen als Klartext im Code:
+
+- **`client_id` und `client_secret`**: Klasse `yazio.network.api.Environment`.
+  Dort stehen mehrere lange String-Konstanten; in der Produktionskonfiguration
+  war das Paar an Position 3 und 4 (Index 2 und 3) gültig, die anderen Paare
+  antworten mit `400 Invalid client`. Welches Paar passt, ist in zwei Versuchen
+  geklärt.
+- **App-Version und Build-Nummer** für die Header `x-yazio-app-version` und
+  `x-yazio-build-number`: `versionName` und `versionCode` des APK, z. B. mit
+  `aapt2 dump badging base.apk`.
+
+Weg dorthin: APK besorgen, mit `apktool d` auspacken, die Klasse im Smali lesen.
+Kein Patch, kein Gerät, keine Signatur. Der Patch ist ausschließlich fürs
+Mitlesen des Verkehrs nötig.
+
+## Wie lange das trägt
+
+Die Lösung hängt an Dingen, die YAZIO ändern kann:
+
+| Änderung bei YAZIO | Symptom | Aufwand |
+|---|---|---|
+| Pflicht-Header (App-Version, Build-Nummer) | `400`/`426`, Login scheitert | zwei Zahlen anpassen |
+| API-Version `v22` → `v23`, umbenannte Felder | `404`, fehlende Werte | Pfade und Mapping anpassen |
+| Neue `client_id`/`client_secret` | `400 Invalid client` | Werte aus neuem APK lesen |
+| Geräte-Attestierung (Play Integrity) für den Login | Client ausgesperrt | erneut mitschneiden, dann neu entscheiden |
+
+Keiner dieser Fälle verlangt einen Patch — außer dem letzten, und der ist
+unwahrscheinlich: er würde auch ältere Geräte der eigenen Nutzer aussperren.
 
 ## Was der Mitschnitt ergeben hat
 
