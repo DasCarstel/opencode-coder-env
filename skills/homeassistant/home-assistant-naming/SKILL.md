@@ -116,7 +116,22 @@ Nach jeder Änderung gegen die Live-Registries prüfen
 (`config/label_registry/list`, `config/category_registry/list?scope=…`) und den
 Skill im selben Commit wie die HA-Änderung versionieren und pushen.
 
-## 6. Umsetzen
+## 6. Helfer: Typen & Editierbarkeit
+
+- **UI-/Config-Entry-Helper sind editierbar:** `input_*`, `counter`, `timer`,
+  `schedule` sowie Template-/Integrations-Helper (Config-Flow). Sie liegen in
+  `.storage` und haben `config_entry_id`.
+- **Legacy-YAML-Templates sind NICHT editierbar** (`template:` in
+  `configuration.yaml` / `packages/*.yaml`). State-only-Templates dorthin
+  migrieren; Entity-ID muss exakt erhalten bleiben.
+- **Grenzen der UI-Template-Helper:** kein `trigger:`, keine `attributes:`.
+  Solche Sensoren bleiben YAML (aktuell nur `sensor.aroma_diffuser_laufzeit`
+  und `sensor.tisch_stehen_naechster_reminder`).
+- **Neue Helfer immer über UI/Config-Flow anlegen**, nie neu in YAML.
+- Nach dem Anlegen Icon, Labels und Kategorie nach §2–§4 setzen; jeder Helfer
+  bekommt `helper` plus die Zweck-Labels.
+
+## 7. Umsetzen
 
 - **Namen:** `alias:` in `automations.yaml` / `scripts.yaml` / `packages/*.yaml`
   ändern (Entity-ID bleibt). Danach `check_config` + `automation.reload` / `script.reload`.
