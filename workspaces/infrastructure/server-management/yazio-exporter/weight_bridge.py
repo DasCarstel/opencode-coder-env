@@ -18,6 +18,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -190,15 +191,74 @@ def post_json(client: yz.YazioClient, path: str, payload: dict) -> int:
 
 
 def push_weight(conn: psycopg.Connection, client: yz.YazioClient, moment: datetime, weight: float) -> None:
+    """YAZIO erwartet {"weight": [<eintrag>]}, Eintrag mit clientseitiger UUID.
+
+    Datum im Format "YYYY-MM-DD HH:MM:SS" ohne Zeitzone, sonst wird der Eintrag
+    mit HTTP 201 quittiert, aber nicht gespeichert.
+    """
     if not PUSH_WEIGHT:
         return
-    day = moment.astimezone(LOCAL_TZ).date()
+    local = moment.astimezone(LOCAL_TZ)
+    day = local.date()
     existing = client.get("/v22/user/bodyvalues", date=day.isoformat()) or {}
     if existing.get("weight"):
         log("YAZIO hat fuer %s schon ein Gewicht, kein Eintrag" % day)
         return
-    status = post_json(client, "/v22/user/bodyvalues", {"date": day.isoformat(), "value": weight, "type": "weight"})
-    log("YAZIO-Gewicht fuer %s eingetragen: %s kg (HTTP %s)" % (day, weight, status))
+
+    entry = {
+        "id": str(uuid.uuid4()),
+        "date": local.strftime("%Y-%m-%d %H:%M:%S"),
+        "value": round(float(weight), 3),
+        "source": None,
+        "gateway": None,
+    }
+    for base in ("/v22", "/v20"):
+        try:
+            status = post_json(client, base + "/user/bodyvalues", {"weight": [entry]})
+        except yz.ApiError as error:
+            if error.status in (404, 405) and base == "/v22":
+                continue
+            raise
+        log("YAZIO-Gewicht fuer %s eingetragen: %s kg (HTTP %s, %s)" % (day, weight, status, base))
+        return
+
+
+def import_history(conn: psycopg.Connection, payload: dict) -> None:
+    """openScale sync schickt auf "history" ein Spaltenpaket: fields, units, rows.
+
+    rows sind Listen in der Reihenfolge von fields, die erste Spalte ist der
+    Zeitstempel in Millisekunden. Bereits bekannte Messungen werden uebersprungen,
+    damit ein erneuter Verlaufssync keine Dubletten erzeugt.
+    """
+    fields = [str(field) for field in payload.get("fields") or []]
+    rows = payload.get("rows") or []
+    if not fields or "date" not in fields:
+        return
+
+    stored = 0
+    for row in rows:
+        if not isinstance(row, list) or len(row) != len(fields):
+            continue
+        item = dict(zip(fields, row))
+        raw_date = item.pop("date", None)
+        if raw_date is None:
+            continue
+        try:
+            moment = datetime.fromtimestamp(float(raw_date) / 1000, tz=timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        exists = conn.execute(
+            "SELECT 1 FROM body_measurement WHERE measured_at = %s AND source = 'openscale'",
+            (moment,),
+        ).fetchone()
+        if exists:
+            continue
+        item["date"] = moment.astimezone(LOCAL_TZ).isoformat()
+        item = {key: value for key, value in item.items() if value is not None}
+        if store(conn, item):
+            stored += 1
+
+    log("Verlauf uebernommen: %s neue von %s Messungen" % (stored, len(rows)))
 
 
 def handle(conn: psycopg.Connection, client: yz.YazioClient, event: str, payload: object) -> None:
@@ -207,6 +267,9 @@ def handle(conn: psycopg.Connection, client: yz.YazioClient, event: str, payload
         return
     if event == "delete":
         delete_moment(conn, payload if isinstance(payload, dict) else json.loads(payload))
+        return
+    if isinstance(payload, dict) and isinstance(payload.get("rows"), list) and payload.get("fields"):
+        import_history(conn, payload)
         return
 
     items = payload if isinstance(payload, list) else [payload]
