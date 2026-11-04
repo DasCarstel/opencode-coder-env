@@ -16,6 +16,20 @@ Der Patch ist ein reiner Resource-Patch: er ändert kein Smali und keine
 Dex-Dateien, sondern nur eine XML-Ressource. Dadurch überlebt er App-Updates,
 solange die Datei existiert.
 
+> **Wozu der Patch dient:** ausschließlich zum Mitschneiden des API-Verkehrs
+> über einen eigenen Proxy. Für den dauerhaften Datenexport wird er **nicht**
+> gebraucht — der läuft serverseitig gegen die API. Ohne Proxy tut der Patch
+> nichts und schadet auch nicht.
+
+## Dokumentation
+
+| Dokument | Inhalt |
+|---|---|
+| [Mitschnitt der API mit mitmproxy](docs/mitmproxy-mitschnitt.md) | Proxy-Stack, CA-Zertifikat auf dem Telefon, Auswertung, Aufräumen, Stolperfallen |
+
+Weitere Patches kommen als eigene Einträge dazu; bestehende bleiben erhalten und
+werden nicht ersetzt, damit ältere Builds reproduzierbar bleiben.
+
 ## Benutzung
 
 1. **Morphe** installieren: <https://morphe.software> (oder die Releases von
