@@ -28,7 +28,7 @@ und wird von `startup.sh` in die OpenCode-Service-Umgebung injiziert.
 - Assist-Exposition der Entitäten wird in HA unter "Sprachassistenten" konfiguriert
 
 ## Skills
-`home-assistant`, `google-home-exposure`, `obsidian`,
+`home-assistant`, `home-assistant-naming`, `google-home-exposure`, `obsidian`,
 `docker-host-location` (Krefeld → `docker-host`),
 `docker-host`, `docker-host-compose`, `docker-host-filesystem`, `docker-host-git`,
 `create-skill`

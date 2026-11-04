@@ -77,6 +77,13 @@ Only 5 YAML files are tracked:
 !scripts.yaml
 ```
 
+## Naming & Organisation (Pflicht)
+
+Vor dem Erstellen, Umbenennen oder Einsortieren einer Automation, eines Skripts
+oder eines Helfers zuerst `skill({id:"home-assistant-naming"})` laden — dort
+stehen Namensschema, Icon-Regeln, Labels (Tags) und Kategorien.
+
 ## Related Skills
 
+- **Naming/Icons/Labels/Kategorien:** `skill({id:"home-assistant-naming"})` — Pflicht bei neuen Automationen, Skripten, Helfern
 - **Google Home Exposure:** `skill({id:"google-home-exposure"})` for exposing entities to Google Assistant
