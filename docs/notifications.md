@@ -382,9 +382,25 @@ führte ins Leere — solche Meldungen werden verworfen. Entscheidend ist der
 **Titel**: Nur ein bekannter Titel rettet die Meldung; der Pfad allein
 (location/directory aus den Ereignissen) schützt eine verschwundene Session
 nicht mehr vor dem Verwerfen. Jeder andere
-Nachlade-Fehler (kurzer Netzfehler, Server-Wartung) verwirft nichts: die
-Meldung geht dann weiterhin raus. Ist aus einem früheren Ereignis wenigstens
+Nachlade-Fehler (kurzer Netzfehler, Server-Wartung) löst kein
+`verworfen-session-weg` aus — ob die Meldung trotzdem rausgeht, entscheidet
+die nächste Regel (`verworfen-ohne-arbeitsbereich`, siehe unten). Ist aus
+einem früheren Ereignis wenigstens
 der Titel bekannt, zählt der Cache und es wird ebenfalls nicht verworfen.
+Achtung: Der opencode-Client wirft den 404 nicht immer — er liefert
+`SessionNotFoundError` auch als **Rückgabewert**. Beides (Wurf und Rückgabe)
+gilt hier gleichrangig als „Session weg".
+
+Eine vierte Verwerfens-Zeile ist `verworfen-ohne-arbeitsbereich`: Weder
+der Titel noch ein Arbeitsbereich ist bekannt — die Meldung würde nur
+„Session <id>" mit dem Ersatzprojekt „opencode" zeigen. Solche Sessions legt
+nur Automatik an (per API erzeugte Probe-Läufe, die sich schon wieder
+gelöscht haben); echte Chats liegen in einem Arbeitsbereich oder haben einen
+Titel. Die Regel gilt ausschließlich für **Fertig-Meldungen** (Fragen und
+Fehler tragen ihren Inhalt in sich und gehen weiterhin raus) und ist
+**statusunabhängig**: Sie greift auch, wenn der Nachlade-Aufruf scheitert
+(„unknown") oder ganz fehlt (kein Client) — die Meldung ist dann ohne jeden
+Bezug und wird trotzdem verworfen.
 
 Diagnose im Container (Token aus der Env-Datei, echte Nachricht):
 

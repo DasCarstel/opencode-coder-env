@@ -270,8 +270,12 @@ received.length = 0;
 // ── 4. Zweites idle löst keine zweite Meldung aus ─────────────────────────
 console.log("\nDedup");
 {
+  // Der Session-Titel ist nötig, denn eine Fertig-Meldung ohne Metadaten
+  // (Titel und Arbeitsbereich) wird inzwischen verworfen, bevor der Dedup
+  // greift — hier soll gerade das Dedup geprüft werden.
   const n = makeNotifier();
   received.length = 0;
+  await n.handleEvent({ type: "session.created", properties: { info: info(SESSION) } });
   n.markWorking(SESSION);
   await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
   await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
@@ -1637,19 +1641,21 @@ console.log("\nEreignisform 2.0.x (Metadaten in data)");
 }
 {
   // d) Gegenprobe: eine Prompt-Nutzlast (id + sessionID, aber ohne
-  //    Metadaten) wird nicht als Session-Info missverstanden.
-  const n = makeNotifier();
+  //    Metadaten) wird nicht als Session-Info missverstanden — und ohne
+  //    Metadaten (kein Client ⇒ nichts nachladbar) ist die Fertig-Meldung
+  //    wertlos: sie geht nicht raus ("verworfen-ohne-arbeitsbereich").
+  const diagEvents = [];
+  const n = makeNotifier({ diag: (event) => diagEvents.push(event) });
   received.length = 0;
   await n.handleEvent(
     v2("session.inbox.enqueued", { id: "msg_1", payload: { text: "hallo" } }, { noLocation: true })
   );
   n.markWorking(SESSION);
   await n.handleEvent(v2("session.idle", {}, { noLocation: true }));
-  eq(received.length, 1, "die Meldung geht raus");
-  eq(
-    received[0]?.body?.title,
-    "✅ Fertig — opencode",
-    "ohne echte Session-Infos bleibt es beim Rückfallnamen"
+  eq(received.length, 0, "ohne Metadaten (kein Client) → keine Meldung");
+  ok(
+    diagEvents.includes("verworfen-ohne-arbeitsbereich"),
+    "die Diagnose nennt verworfen-ohne-arbeitsbereich"
   );
 }
 
@@ -1658,9 +1664,14 @@ console.log("\nEreignisform 2.0.x (Metadaten in data)");
 // Hestias Probe-Sessions räumen sich selbst ab: beim Versand holt das Plugin
 // Titel/parentID per session.get nach — und bekommt dann 404. Ohne Titel greift
 // weder die Stummschaltung noch die Kind-Regel, und der Klick-Link führte ins
-// Leere. Genau diese Meldungen werden jetzt verworfen. Grundregel: "gone" (404
-// / SessionNotFoundError) verwirft; jeder andere Fehler ("unknown") verschickt
-// die Meldung wie bisher — kein Verlust bei kurzen Netzproblemen.
+// Leere. Genau diese Meldungen werden jetzt verworfen. Grundregeln: "gone"
+// (404 / SessionNotFoundError) verwirft jedes Mal; und die Fertig-Meldung
+// ohne Titel UND ohne Workspace-Pfad wird statusunabhängig verworfen — auch
+// wenn der Nachlade-Aufruf scheitert ("unknown") oder ganz fehlt (kein
+// Client). Fragen und Fehler bleiben von der zweiten Regel unberührt.
+// Ergänzend verwirft `verworfen-ohne-arbeitsbereich` auch die vom Server
+// bestätigte Session, die sowohl ohne Titel als auch ohne Workspace-Pfad
+// bleibt (Automatik-Sessions).
 console.log("\nVerschwundene Session verwerfen");
 {
   // Fehler-Mock: session.get schlägt mit "nicht gefunden" fehl, in den drei
@@ -1715,19 +1726,27 @@ console.log("\nVerschwundene Session verwerfen");
   );
 }
 {
-  // b) Ein anderer Fehler (Server-Wartung, Timeout): die Meldung geht wie
-  //    bisher raus — kein Verlust bei kurzen Netzstörungen.
+  // b) Ein anderer Fehler (Server-Wartung, Timeout): die Meldung hat trotzdem
+  //    keine Metadaten (kein Titel, kein Workspace-Pfad) — sie ist wertlos und
+  //    wird verworfen. Der Status des Nachlade-Aufrufs spielt dafür keine
+  //    Rolle: eine Fertig-Meldung ohne jeden Bezug geht nie raus.
+  const diagEvents = [];
   const n = makeNotifier({
     client: {
       session: {
         get: async () => Promise.reject(Object.assign(new Error("backend-rote-Codes"), { status: 500 })),
       },
     },
+    diag: (event) => diagEvents.push(event),
   });
   received.length = 0;
   n.markWorking(SESSION);
   await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
-  eq(received.length, 1, "Fehler 500 → Meldung geht weiterhin raus");
+  eq(received.length, 0, "Fehler 500 + keine Metadaten → Meldung wird verworfen");
+  ok(
+    diagEvents.includes("verworfen-ohne-arbeitsbereich"),
+    "die Diagnose nennt verworfen-ohne-arbeitsbereich (nicht session-weg)"
+  );
 }
 {
   // c) Metadaten aus einem früheren Ereignis (Titel gecacht, Pfad fehlt),
@@ -1804,6 +1823,164 @@ console.log("\nVerschwundene Session verwerfen");
   await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
   eq(received.length, 0, "stummer Titel bleibt stumm — auch mit 404");
   eq(n._state.lastSent.size, 0, "der Cooldown wird auch hier nicht angefasst");
+}
+{
+  // e) Live-Befund (November 2026): der Client dieser opencode-Version wirft
+  //    den 404 NICHT, sondern gibt das Fehlerobjekt als Wert zurück — der
+  //    bisherige 404-Schutz feuerte deshalb nie und der Spam lief weiter.
+  //    Ohne Titel → Meldung verwerfen, Diagnose erwähnt session-weg.
+  const diagEvents = [];
+  let calls = 0;
+  const n = makeNotifier({
+    client: {
+      session: {
+        get: async () => {
+          calls += 1;
+          return {
+            _tag: "SessionNotFoundError",
+            sessionID: GONE_RET,
+            message: "Session not found: " + GONE_RET,
+          };
+        },
+      },
+    },
+    diag: (event) => diagEvents.push(event),
+  });
+  received.length = 0;
+  const GONE_RET = "ses_gone0003abcdef";
+  n.markWorking(GONE_RET);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: GONE_RET } });
+  ok(calls > 0, "session.get wurde befragt (Rückgabe-Form)");
+  eq(received.length, 0, "SessionNotFoundError als Rückgabe → keine Meldung");
+  ok(
+    diagEvents.includes("verworfen-session-weg"),
+    "die Diagnose nennt verworfen-session-weg"
+  );
+}
+{
+  // e2) Der Client liefert unbrauchbare Antworten ohne Verbindung zum Fehler:
+  //     undefined oder ein leeres Objekt — beides gilt wie ein Fehler, denn
+  //     ohne Titel ist die Meldung wertlos.
+  const diagEvents = [];
+  for (const untauglich of [undefined, {}]) {
+    const n = makeNotifier({
+      client: {
+        session: {
+          get: async () => untauglich,
+        },
+      },
+      diag: (event) => diagEvents.push(event),
+    });
+    received.length = 0;
+    n.markWorking(SESSION);
+    await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+    eq(
+      received.length,
+      0,
+      "session.get liefert " + (untauglich === undefined ? "undefined" : "{}") + " → keine Meldung"
+    );
+  }
+  ok(
+    diagEvents.includes("verworfen-session-weg"),
+    "auch die Rückgabe-Formen nennen verworfen-session-weg"
+  );
+}
+{
+  // e3)Counterprobe: ein brauchbares Info-Objekt (id-Feld, kein Fehler-Tag)
+  //    wird als gültige Session gewertet — die Meldung geht raus.
+  const n = makeNotifier({
+    client: {
+      session: {
+        get: async () => ({ id: SESSION, title: "Verschwunden-Regression", parentID: undefined }),
+      },
+    },
+  });
+  received.length = 0;
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "gültige Session-Info als Rückgabe → Meldung geht raus");
+}
+{
+  // f) Live-Befund (November 2026): eine per API erzeugte Session ohne Titel,
+  //    per DELETE gelöscht — der Nachlade-Aufruf bestätigt sie sogar (id-Feld),
+  //    aber ohne Titel und ohne Workspace-Pfad (Antwort: /root). Die Meldung
+  //    zeigte dann nur "Session <id>" mit dem Ersatzprojekt "opencode" — genau
+  //    solche Automatik-Sessions werden nun verworfen.
+  const diagEvents = [];
+  const n = makeNotifier({
+    client: {
+      session: {
+        get: async () => ({ id: SESSION, location: { directory: "/root" } }),
+      },
+    },
+    diag: (event) => diagEvents.push(event),
+  });
+  received.length = 0;
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 0, "ohne Titel und ohne Arbeitsbereich → keine Meldung");
+  ok(
+    diagEvents.includes("verworfen-ohne-arbeitsbereich"),
+    "die Diagnose nennt verworfen-ohne-arbeitsbereich"
+  );
+}
+{
+  // f2) Dieselbe Antwort-Form, aber das Verzeichnis liegt im Workspace: die
+  //     Meldung geht raus — "Chat ohne Titel im Arbeitsbereich" bleibt erlaubt
+  //     (der Projektkontext ersetzt den fehlenden Titel).
+  const n = makeNotifier({
+    client: {
+      session: {
+        get: async () => ({
+          id: SESSION,
+          location: { directory: `${REPO_DIR}/workspaces/infrastructure/server-management` },
+        }),
+      },
+    },
+  });
+  received.length = 0;
+  n.markWorking(SESSION);
+  await n.handleEvent({ type: "session.idle", properties: { sessionID: SESSION } });
+  eq(received.length, 1, "Session im Arbeitsbereich ohne Titel → Meldung geht raus");
+}
+
+// ── 37d. Die Metadaten-Regel trifft nur Fertig-Meldungen ─────────────────
+//
+// Das Verwerfen ohne Titel und ohne Workspace-Pfad gilt ausschließlich für
+// die "Fertig"-Meldung (kind "idle"): sie wäre ohne jeden Bezug wertlos.
+// Fragen und Fehler tragen ihren Inhalt in sich — sie gehen auch ohne
+// Metadaten raus, und zwar statusunabhängig (hier: ganz ohne Client).
+console.log("\nFragen und Fehler ohne Metadaten gehen weiterhin raus");
+{
+  const diagEvents = [];
+  const n = makeNotifier({ errorHoldMs: 0, diag: (event) => diagEvents.push(event) });
+  received.length = 0;
+  await n.handleEvent({
+    type: "question.asked",
+    properties: {
+      sessionID: SESSION,
+      questions: [
+        { question: "Ohne Titel: weitermachen?", options: [{ label: "Ja" }] },
+      ],
+    },
+  });
+  eq(received.length, 1, "Frage ohne Metadaten → Meldung geht raus");
+  ok(
+    !diagEvents.includes("verworfen-ohne-arbeitsbereich"),
+    "die Metadaten-Regel berührt Fragen nicht"
+  );
+
+  received.length = 0;
+  await n.handleEvent({
+    type: "session.error",
+    properties: { sessionID: SESSION, error: { message: "kaputt ohne Titel" } },
+  });
+  await until(() => received.length >= 1);
+  eq(received.length, 1, "Fehler ohne Metadaten → Meldung geht raus");
+  ok(
+    !diagEvents.includes("verworfen-ohne-arbeitsbereich"),
+    "die Metadaten-Regel berührt Fehler nicht"
+  );
 }
 
 // ── 38. Klickziel-Stil (NTFY_LINK_STYLE) ─────────────────────────────────

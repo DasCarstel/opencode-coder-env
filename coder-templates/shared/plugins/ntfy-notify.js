@@ -1078,10 +1078,14 @@ export function createNtfyNotifier(options = {}) {
 
   /**
    * Metadaten bei Bedarf über den Server nachladen (Titel/Pfad fehlen oft).
-   * Rückgabe ist der Status: "ok" (nützliche Metadaten im Cache — das ist der
-   * frühe Rückfall ohne Netzaufruf), "gone" (die Session wurde als nicht mehr
-   * existierend erkannt) oder "unknown" (anderer Fehler, kein Client). Zu
+   * Rückgabe ist der Status: "ok" (brauchbare Metadaten im Cache — der frühe
+   * Rückfall ohne Netzaufruf — oder das Nachladen hat geantwortet; die Session
+   * ist damit bestätigt, auch ohne Titel/Pfad), "gone" (die Session wurde als
+   * nicht mehr existierend erkannt) oder "unknown" (anderer Fehler, kein
+   * Client). Zu
    * "gone" zählt ein fehlgeschlagener Nachlade-Aufruf nur dann, wenn der Cache
+   * keinen Titel hergibt — der Client kann den Fehler werfen oder als Wert
+   * zurueckliefern (_tag-Objekt ohne id-Feld), beides gilt als fehlgeschlagen.
    * keinen Titel hergibt: Für die Stummschaltung (NTFY_IGNORE_TITLES) und für
    * eine verständliche Meldung zählt allein der Titel — der Pfad allein schützt
    * eine verschwundene Session nicht mehr vor dem Verwerfen.
@@ -1094,14 +1098,25 @@ export function createNtfyNotifier(options = {}) {
     if (entry.title && entry.subpath) return "ok";
     if (!client?.session?.get) return cacheKnown ? "ok" : "unknown";
     try {
-      absorb(await client.session.get({ sessionID }));
+      const info = await client.session.get({ sessionID });
+      // Der Client dieser Version WIRFT bei 404 nicht, sondern gibt das
+      // Fehlerobjekt zurueck ({_tag:"SessionNotFoundError"}). Unbrauchbare
+      // Antworten (kein id-Feld / Fehler-Tag / error-Feld) gelten wie ein Fehler.
+      if (!info || typeof info !== "object" || !info.id || info._tag || info.error) {
+        logger("session.get ohne Session:", info?._tag ?? info?.message ?? "leer");
+        return cacheTitle ? "ok" : "gone";
+      }
+      absorb(info);
     } catch (error) {
       logger("session.get fehlgeschlagen:", error?.message ?? String(error));
       if (sessionGone(error)) return cacheTitle ? "ok" : "gone";
       return cacheTitle ? "ok" : "unknown";
     }
-    const updated = metaFor(sessionID);
-    return updated.title || updated.subpath ? "ok" : "unknown";
+    // Das Nachladen hat geantwortet: die Session ist bestätigt ("ok"), egal ob
+    // ihre Metadaten nützlich sind — "unknown" bleibt dem fehlgeschlagenen
+    // Aufruf oder einem fehlenden Client vorbehalten, denn bei dem darf die
+    // Meldung nicht am fehlenden Titel scheitern (kurze Netzfehler).
+    return "ok";
   }
 
   async function send(payload, sessionID) {
@@ -1214,6 +1229,18 @@ export function createNtfyNotifier(options = {}) {
       // weiterhin raus.
       if (status === "gone") {
         diag("verworfen-session-weg", sessionID);
+        return false;
+      }
+      // Ohne Titel und ohne Arbeitsbereich ist eine Fertig-Meldung wertlos:
+      // sie zeigt nur "Session <id>" und das Ersatzprojekt "opencode". Solche
+      // Sessions legt nur Automatik an (Probe-Laeufe, API-Sessions); echte
+      // Chats liegen immer in einem Arbeitsbereich oder haben einen Titel.
+      // Bewusst unabhaengig vom Status: auch wenn session.get nichts liefert
+      // ("unknown"), ist die Fertig-Meldung ohne jeden Bezug. Fragen und
+      // Fehler tragen ihren Inhalt in sich und gehen weiterhin raus.
+      const known = metaFor(sessionID);
+      if (kind === "idle" && !known.title && !known.subpath) {
+        diag("verworfen-ohne-arbeitsbereich", sessionID);
         return false;
       }
     }
@@ -1475,14 +1502,18 @@ export function createNtfyNotifier(options = {}) {
         diag("fertig-verworfen", "session laeuft wieder");
         return;
       }
-      diag("fertig-versand", `${projectFor(sessionID)}`);
-      await sendOnce(sessionID, "idle", {
+      // „fertig-versand" erst nach der Entscheidung von sendOnce: Mute,
+      // verworfen-session-weg und verworfen-ohne-arbeitsbereich verhindern den
+      // POST. Vorher stand die Zeile davor — im Log sah es dann aus, als wäre
+      // eine Meldung rausgegangen, obwohl nichts gesendet wurde.
+      const raus = await sendOnce(sessionID, "idle", {
         title: `✅ Fertig — ${projectFor(sessionID)}`,
         message: withHeader(sessionID, summary),
         priority: 3,
         tags: ["white_check_mark"],
         click: linkFor(sessionID),
       });
+      if (raus) diag("fertig-versand", `${projectFor(sessionID)}`);
     };
     // Debounce: erst nach N ms ohne neue Aktivität verschicken. Das kurze
     // Haltefenster (FINISH_HOLD_MS) gilt zusätzlich; der größere Wert gewinnt.
