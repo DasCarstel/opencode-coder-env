@@ -117,6 +117,23 @@ def store(conn: psycopg.Connection, payload: dict) -> tuple[datetime, float] | N
         return None
 
     values = extract(payload)
+    # openScale schickt dieselbe Messung live mit Millisekunden und beim
+    # Verlaufssync ohne. Ohne diesen Abgleich entstehen Dubletten.
+    duplicate = conn.execute(
+        """
+        SELECT id FROM body_measurement
+        WHERE source = 'openscale'
+          AND measured_at BETWEEN %(moment)s::timestamptz - interval '90 seconds'
+                               AND %(moment)s::timestamptz + interval '90 seconds'
+          AND openscale_id IS DISTINCT FROM %(openscale_id)s
+        LIMIT 1
+        """,
+        {"moment": measured_at, "openscale_id": payload.get("id")},
+    ).fetchone()
+    if duplicate:
+        log("Messung fuer %s bereits vorhanden, uebersprungen" % measured_at.isoformat(timespec="seconds"))
+        return None
+
     conn.execute(
         """
         INSERT INTO body_measurement (openscale_id, measured_at, weight_kg, body_fat_pct,
