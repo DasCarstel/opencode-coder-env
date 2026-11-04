@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-11-04T15:51:50Z",
+  "updatedAt": "2026-11-04T18:51:59Z",
   "tiers": {
     "fast": {
       "model": "opencode/deepseek-v4.1-flash-free",
@@ -14,10 +14,10 @@
     "heavy": {
       "model": "opencode/gpt-6.1-sol#high",
       "ok": false,
-      "failStreak": 10,
-      "lastFailAt": "2026-11-04T15:51:50Z",
+      "failStreak": 11,
+      "lastFailAt": "2026-11-04T18:51:59Z",
       "lastFailureKind": "outage",
-      "quarantineUntil": "2026-11-04T21:51:50Z"
+      "quarantineUntil": "2026-11-05T00:51:59Z"
     }
   },
   "models": {
@@ -48,10 +48,10 @@
     },
     "opencode/gpt-6.1-sol#high": {
       "model": "opencode/gpt-6.1-sol#high",
-      "failStreak": 10,
-      "lastFailAt": "2026-11-04T15:51:50Z",
+      "failStreak": 11,
+      "lastFailAt": "2026-11-04T18:51:59Z",
       "lastFailureKind": "outage",
-      "quarantineUntil": "2026-11-04T21:51:50Z"
+      "quarantineUntil": "2026-11-05T00:51:59Z"
     }
   }
 }
