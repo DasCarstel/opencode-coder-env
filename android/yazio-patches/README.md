@@ -20,10 +20,10 @@ solange die Datei existiert.
 
 1. **Morphe** installieren: <https://morphe.software> (oder die Releases von
    [MorpheApp/morphe-manager](https://github.com/MorpheApp/morphe-manager)).
-2. Morphe → **Sources** → **+** → Reiter **Local** → `patches-*.mpp` auswählen.
-   Sobald das Projekt unter `github.com/DasCarstel/yazio-patches` veröffentlicht
-   ist, kann statt der Datei auch diese Adresse im Reiter **Remote** stehen —
-   dann aktualisiert sich die Quelle selbst.
+2. Morphe → **Sources** → **+** → Reiter **Remote** → `github.com/DasCarstel/yazio-patches`
+   eintragen. Damit aktualisiert sich die Quelle selbst. Alternativ Reiter **Local**
+   und eine `patches-*.mpp` aus dem Download-Ordner wählen — die aktualisiert sich nicht
+   von allein, dafür funktioniert sie ohne Netzverbindung zu GitHub.
 3. YAZIO patchen: **Expert mode** einschalten, Patch `Trust user certificates`
    anhaken, APK wählen (`.apkm` von APKMirror funktioniert, Morphe merged die
    Splits selbst).
