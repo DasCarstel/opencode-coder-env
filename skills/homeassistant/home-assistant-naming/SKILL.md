@@ -102,7 +102,21 @@ Schlaf `mdi:power-sleep`, Sensor `mdi:weather-windy`, Sprachassistent
 `mdi:account-voice`, Tisch `mdi:desk`, TrueNAS `mdi:nas`, Tür & Klingel
 `mdi:doorbell`, Wecker `mdi:alarm`
 
-## 5. Umsetzen
+## 5. Skill aktuell halten (Pflicht)
+
+Dieser Skill ist die Doku der Live-Registries und muss **im selben Arbeitsgang**
+mitgepflegt werden:
+
+- Neues Label → Zeile in der Label-Tabelle (§3) ergänzen (`label_id`, Name, Icon, Zweck).
+- Neue Kategorie → im passenden Scope-Block (§4) mit Name + Icon ergänzen.
+- Umbenanntes Label/eine umbenannte Kategorie → beide Stellen (Name und ggf. `label_id`) angleichen.
+- Gelöschtes Label/eine gelöschte Kategorie → aus §3/§4 entfernen.
+
+Nach jeder Änderung gegen die Live-Registries prüfen
+(`config/label_registry/list`, `config/category_registry/list?scope=…`) und den
+Skill im selben Commit wie die HA-Änderung versionieren und pushen.
+
+## 6. Umsetzen
 
 - **Namen:** `alias:` in `automations.yaml` / `scripts.yaml` / `packages/*.yaml`
   ändern (Entity-ID bleibt). Danach `check_config` + `automation.reload` / `script.reload`.
