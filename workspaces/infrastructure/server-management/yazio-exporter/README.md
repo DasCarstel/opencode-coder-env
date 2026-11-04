@@ -103,3 +103,51 @@ docker compose run --rm --no-deps exporter --backfill
 
 Die Quelldateien liegen im Infra-Repo unter
 `workspaces/infrastructure/server-management/yazio-exporter/`.
+
+## Gewicht aus openScale
+
+Die Xiaomi-Waage schickt ihre Messungen an die openScale-App auf dem Handy;
+deren Begleit-App **openScale sync** veröffentlicht sie per MQTT. Der Dienst
+`weight-bridge` hört mit und schreibt sie in die eigene Datenbank — und trägt
+das Gewicht zusätzlich in YAZIO ein, sofern dort für den Tag noch keins steht.
+
+```
+openScale sync  --MQTT-->  mqtt5  -->  weight-bridge  -->  body_measurement
+                                                      \-->  YAZIO bodyvalues
+```
+
+Themen: `openScaleSync/<userId>/measurements/<event>`, Events `insert`,
+`update`, `delete`, `clear`, `last`, `history`. Gewicht in kg, Körperfett,
+Wasser, Muskel, LBM und Knochen in Prozent. Die Messwerte stehen sowohl als
+Bequemlichkeitsfelder als auch vollständig im `values`-Array; gespeichert wird
+beides (`body_measurement`, Spalten plus `raw`).
+
+| Tabelle | Inhalt |
+| --- | --- |
+| `body_measurement` | eine Zeile pro Messung, Schlüssel `openscale_id`, `measured_at`, `weight_kg`, `body_fat_pct`, `water_pct`, `muscle_pct`, `lbm_pct`, `bone_pct` |
+
+YAZIO schreibt der Dienst nur, wenn für den Tag noch kein Gewicht existiert —
+so entstehen keine Dubletten und die App-Einträge bleiben unangetastet.
+Abschaltbar mit `YAZIO_PUSH_WEIGHT=0`.
+
+### Variablen
+
+| Variable | Vorgabe | Zweck |
+| --- | --- | --- |
+| `MQTT_HOST` | `10.0.10.10` | Broker |
+| `MQTT_USER` | `openscale` | Benutzer, ACL nur auf `openScaleSync/#` |
+| `MQTT_PASSWORD` | – | Passwort aus `yazio.env` |
+| `MQTT_TOPIC` | `openScaleSync/#` | Abo |
+| `YAZIO_PUSH_WEIGHT` | `1` | Gewicht nach YAZIO schreiben |
+
+### Altbestand importieren
+
+```sh
+docker compose cp openscale.csv exporter:/tmp/openscale.csv
+docker compose run --rm --no-deps --entrypoint python exporter /app/import_openscale_csv.py /tmp/openscale.csv --dry-run
+docker compose run --rm --no-deps --entrypoint python exporter /app/import_openscale_csv.py /tmp/openscale.csv
+```
+
+Spaltennamen werden tolerant zugeordnet (`weight`/`gewicht`, `fat`/`körperfett`,
+`water`/`wasser`, `muscle`/`muskel`, `lbm`, `bone`/`knochen`); Trennzeichen
+`;` oder `,` werden erkannt.
