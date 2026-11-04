@@ -167,7 +167,7 @@ def clear_all(conn: psycopg.Connection) -> None:
     log("Alle openScale-Messungen geloescht (%s Zeilen)" % cur.rowcount)
 
 
-def post_json(client: yz.YazioClient, path: str, payload: dict) -> int:
+def post_json(client: yz.YazioClient, path: str, payload: dict, method: str = "POST") -> int:
     client.ensure_token()
     request = urllib.request.Request(
         yz.API_BASE + path,
@@ -177,7 +177,7 @@ def post_json(client: yz.YazioClient, path: str, payload: dict) -> int:
             authorization="Bearer " + (client.access_token or ""),
             **{"content-type": "application/json"},
         ),
-        method="POST",
+        method=method,
     )
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
@@ -190,6 +190,19 @@ def post_json(client: yz.YazioClient, path: str, payload: dict) -> int:
         raise
 
 
+def _latest_weight(payload) -> dict | None:
+    """Neuester Gewichtseintrag aus GET /user/bodyvalues?date= (Map von Listen)."""
+    if not isinstance(payload, dict):
+        return None
+    entries = payload.get("weight")
+    if not isinstance(entries, list) or not entries:
+        return None
+    usable = [item for item in entries if isinstance(item, dict) and item.get("id")]
+    if not usable:
+        return None
+    return max(usable, key=lambda item: str(item.get("date") or ""))
+
+
 def push_weight(conn: psycopg.Connection, client: yz.YazioClient, moment: datetime, weight: float) -> None:
     """YAZIO erwartet {"weight": [<eintrag>]}, Eintrag mit clientseitiger UUID.
 
@@ -200,11 +213,6 @@ def push_weight(conn: psycopg.Connection, client: yz.YazioClient, moment: dateti
         return
     local = moment.astimezone(LOCAL_TZ)
     day = local.date()
-    existing = client.get("/v22/user/bodyvalues", date=day.isoformat()) or {}
-    if existing.get("weight"):
-        log("YAZIO hat fuer %s schon ein Gewicht, kein Eintrag" % day)
-        return
-
     entry = {
         "id": str(uuid.uuid4()),
         "date": local.strftime("%Y-%m-%d %H:%M:%S"),
@@ -212,6 +220,35 @@ def push_weight(conn: psycopg.Connection, client: yz.YazioClient, moment: dateti
         "source": None,
         "gateway": None,
     }
+
+    # Neuester Eintrag des Tages: gleiche Zahl ueberspringen, sonst aktualisieren.
+    # YAZIO kennt kein DELETE, ein zweiter Eintrag wuerde also nur doppelt zaehlen.
+    current = _latest_weight(client.get("/v22/user/bodyvalues", date=day.isoformat()))
+    if current:
+        old = float(current.get("value") or 0)
+        if abs(old - entry["value"]) < 0.05:
+            log("YAZIO hat fuer %s bereits %s kg, kein Eintrag" % (day, old))
+            return
+        entry_id = str(current.get("id") or "")
+        if entry_id:
+            for base in ("/v22", "/v20"):
+                try:
+                    status = post_json(
+                        client,
+                        base + "/user/bodyvalues/" + entry_id,
+                        {"value": entry["value"]},
+                        method="PUT",
+                    )
+                except yz.ApiError as error:
+                    if error.status in (404, 405) and base == "/v22":
+                        continue
+                    raise
+                log(
+                    "YAZIO-Gewicht fuer %s aktualisiert: %s -> %s kg (HTTP %s, %s)"
+                    % (day, old, entry["value"], status, base)
+                )
+                return
+
     for base in ("/v22", "/v20"):
         try:
             status = post_json(client, base + "/user/bodyvalues", {"weight": [entry]})
