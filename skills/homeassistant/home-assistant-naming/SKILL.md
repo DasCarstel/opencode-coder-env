@@ -134,6 +134,11 @@ Skill im selben Commit wie die HA-Änderung versionieren und pushen.
   (Config-Flow `group`, Domain `light`), Entity-ID bleibt bei gleichem Namen.
 - **REST-Sensoren** (`rest:`) haben kein UI-Pendant und bleiben YAML
   (aktuell `binary_sensor.jellyfin_admin_spielt`).
+- **Statistik-/Min-Max-/Integration-/Derivative-Sensoren** (`statistics:`,
+  `min_max:`, `integration:`, `derivative:`) → gleichnamige UI-Helper per
+  Config-Flow. Der Flow vergibt ein Gerätepräfix in der Entity-ID; danach per
+  `config/entity_registry/update` mit `new_entity_id` auf die alte ID
+  zurückziehen, damit Automationen weiter greifen.
 - **Neue Helfer immer über UI/Config-Flow anlegen**, nie neu in YAML.
 - Nach dem Anlegen Icon, Labels und Kategorie nach §2–§4 setzen; jeder Helfer
   bekommt `helper` plus die Zweck-Labels.
