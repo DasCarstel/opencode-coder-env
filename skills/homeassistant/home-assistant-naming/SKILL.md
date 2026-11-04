@@ -125,8 +125,15 @@ Skill im selben Commit wie die HA-Änderung versionieren und pushen.
   `configuration.yaml` / `packages/*.yaml`). State-only-Templates dorthin
   migrieren; Entity-ID muss exakt erhalten bleiben.
 - **Grenzen der UI-Template-Helper:** kein `trigger:`, keine `attributes:`.
-  Solche Sensoren bleiben YAML (aktuell nur `sensor.aroma_diffuser_laufzeit`
-  und `sensor.tisch_stehen_naechster_reminder`).
+  - Trigger nur zur zeitlichen Aktualisierung (`time_pattern`) → `now()` im
+    Template verwenden, UI-Helper rendert dann minütlich neu.
+  - Attribute → nur nötig, wenn Dashboards/Automationen sie lesen; sonst
+    weglassen und als normalen UI-Helper anlegen.
+  - Echte Trigger-Logik oder benötigte Attribute → bleibt YAML.
+- **YAML-Licht-/Gruppen-Gruppen** (`light: platform: group`) → UI-Gruppen-Helper
+  (Config-Flow `group`, Domain `light`), Entity-ID bleibt bei gleichem Namen.
+- **REST-Sensoren** (`rest:`) haben kein UI-Pendant und bleiben YAML
+  (aktuell `binary_sensor.jellyfin_admin_spielt`).
 - **Neue Helfer immer über UI/Config-Flow anlegen**, nie neu in YAML.
 - Nach dem Anlegen Icon, Labels und Kategorie nach §2–§4 setzen; jeder Helfer
   bekommt `helper` plus die Zweck-Labels.
