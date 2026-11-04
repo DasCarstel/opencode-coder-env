@@ -61,6 +61,21 @@ export GITHUB_TOKEN=...
 # Ergebnis: patches/build/libs/patches-<version>.mpp
 ```
 
+> [!IMPORTANT]
+> Für Morphe muss das Bundle **dex** enthalten. `./gradlew build` erzeugt dagegen ein
+> JVM-Archiv mit `.class`-Dateien; Morphe Manager lädt Patches ausschließlich aus
+> `classes.dex` und zeigt bei einem Klassen-Bundle `Patches 0` an.
+>
+> Richtig ist:
+>
+> ```sh
+> ./gradlew buildAndroid -Pgpr.user=<github-user> -Pgpr.key="$GITHUB_TOKEN"
+> ```
+>
+> Und zwar als **letzten** Build-Schritt: `build` und `generatePatchesList` bauen das
+> JVM-Archiv und überschreiben dabei `patches/build/libs/patches-<version>.mpp`. Kontrolle:
+> `unzip -l patches/build/libs/patches-<version>.mpp | grep classes.dex`.
+
 ## Patch gegen eine APK testen
 
 Das Modul `harness` wendet ein Bundle auf eine APK an, ohne Morphe:
