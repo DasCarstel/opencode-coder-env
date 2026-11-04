@@ -32,6 +32,24 @@ solange die Datei existiert.
    normale Updates — solange Morphe denselben Keystore benutzt
    (siehe `docs/backup-and-keystore` in der Morphe-Dokumentation).
 
+## Remote-Quelle: zwei Fallstricke
+
+Morphe liest `patches-bundle.json` in ein festes Datenmodell (`ReleaseAsset`) ein.
+Zwei Dinge brechen die Quelle zuverlässig:
+
+- `created_at` muss **ohne Zeitzone** stehen (`2026-11-04T12:55:00`). Ein
+  angehängtes `Z` lässt `LocalDateTime.parse` werfen, und Morphe meldet dann
+  „Metadaten nicht verfügbar".
+- `CHANGELOG.md` muss im Branch `main` liegen. Morphe holt sie fest von
+  `raw.githubusercontent.com/<owner>/<repo>/main/CHANGELOG.md`; fehlt sie,
+  erscheint „Download des Changelogs fehlgeschlagen".
+
+Pflichtfelder im Manifest: `download_url`, `created_at`, `description`,
+`version`. Optional: `public_key` (Signatur), `page_url`.
+
+Nach einer Änderung an diesen Dateien liefert `raw.githubusercontent.com` noch
+einige Minuten die alte Fassung aus dem CDN. Nicht verzweifeln, kurz warten.
+
 ## Selbst bauen
 
 Voraussetzungen: JDK 21, ein GitHub-Token mit `read:packages` (Morphe
