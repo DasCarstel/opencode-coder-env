@@ -32,6 +32,9 @@ MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 MQTT_USER = os.environ.get("MQTT_USER", "openscale")
 MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "")
 MQTT_TOPIC = os.environ.get("MQTT_TOPIC", "openScaleSync/#")
+# Home Assistant schickt Messungen der Waage als eigenes Thema, seit die
+# Auswertung dort stattfindet (Xiaomi S400 ueber ESPHome-Bluetooth-Proxy).
+HA_TOPIC = os.environ.get("MQTT_HA_TOPIC", "yazio/weight")
 PUSH_WEIGHT = os.environ.get("YAZIO_PUSH_WEIGHT", "1") == "1"
 LOCAL_TZ = ZoneInfo(os.environ.get("YAZIO_TIMEZONE", "Europe/Berlin"))
 
@@ -110,7 +113,9 @@ def extract(payload: dict) -> dict:
     return values
 
 
-def store(conn: psycopg.Connection, payload: dict) -> tuple[datetime, float] | None:
+def store(
+    conn: psycopg.Connection, payload: dict, source: str = "openscale"
+) -> tuple[datetime, float] | None:
     measured_at = parse_moment(payload.get("date"))
     if measured_at is None:
         log("Messung ohne lesbares Datum uebersprungen: %s" % payload)
@@ -122,13 +127,13 @@ def store(conn: psycopg.Connection, payload: dict) -> tuple[datetime, float] | N
     duplicate = conn.execute(
         """
         SELECT id FROM body_measurement
-        WHERE source = 'openscale'
+        WHERE source = %(source)s
           AND measured_at BETWEEN %(moment)s::timestamptz - interval '90 seconds'
                                AND %(moment)s::timestamptz + interval '90 seconds'
           AND openscale_id IS DISTINCT FROM %(openscale_id)s
         LIMIT 1
         """,
-        {"moment": measured_at, "openscale_id": payload.get("id")},
+        {"moment": measured_at, "openscale_id": payload.get("id"), "source": source},
     ).fetchone()
     if duplicate:
         log("Messung fuer %s bereits vorhanden, uebersprungen" % measured_at.isoformat(timespec="seconds"))
@@ -139,7 +144,7 @@ def store(conn: psycopg.Connection, payload: dict) -> tuple[datetime, float] | N
         INSERT INTO body_measurement (openscale_id, measured_at, weight_kg, body_fat_pct,
                                       water_pct, muscle_pct, lbm_pct, bone_pct, source, raw)
         VALUES (%(openscale_id)s, %(measured_at)s, %(weight_kg)s, %(body_fat_pct)s,
-                %(water_pct)s, %(muscle_pct)s, %(lbm_pct)s, %(bone_pct)s, 'openscale', %(raw)s)
+                %(water_pct)s, %(muscle_pct)s, %(lbm_pct)s, %(bone_pct)s, %(source)s, %(raw)s)
         ON CONFLICT (openscale_id) WHERE openscale_id IS NOT NULL DO UPDATE
            SET measured_at  = EXCLUDED.measured_at,
                weight_kg    = EXCLUDED.weight_kg,
@@ -155,6 +160,7 @@ def store(conn: psycopg.Connection, payload: dict) -> tuple[datetime, float] | N
             "openscale_id": payload.get("id"),
             "measured_at": measured_at,
             "raw": json.dumps(payload, ensure_ascii=False),
+            "source": source,
             **values,
         },
     )
@@ -315,7 +321,13 @@ def import_history(conn: psycopg.Connection, payload: dict) -> None:
     log("Verlauf uebernommen: %s neue von %s Messungen" % (stored, len(rows)))
 
 
-def handle(conn: psycopg.Connection, client: yz.YazioClient, event: str, payload: object) -> None:
+def handle(
+    conn: psycopg.Connection,
+    client: yz.YazioClient,
+    event: str,
+    payload: object,
+    source: str = "openscale",
+) -> None:
     if event == "clear":
         clear_all(conn)
         return
@@ -334,7 +346,7 @@ def handle(conn: psycopg.Connection, client: yz.YazioClient, event: str, payload
     for item in items:
         if not isinstance(item, dict):
             continue
-        stored = store(conn, item)
+        stored = store(conn, item, source)
         if stored and (newest is None or stored[0] > newest[0]):
             newest = stored
 
@@ -346,8 +358,9 @@ def handle(conn: psycopg.Connection, client: yz.YazioClient, event: str, payload
 
 
 def on_connect(client: mqtt.Client, userdata, flags, reason_code, properties=None) -> None:
-    log("MQTT verbunden (%s), abonniere %s" % (reason_code, MQTT_TOPIC))
+    log("MQTT verbunden (%s), abonniere %s und %s" % (reason_code, MQTT_TOPIC, HA_TOPIC))
     client.subscribe(MQTT_TOPIC, qos=1)
+    client.subscribe(HA_TOPIC, qos=1)
 
 
 def on_message(client: mqtt.Client, userdata, message) -> None:
@@ -359,8 +372,25 @@ def on_message(client: mqtt.Client, userdata, message) -> None:
     except json.JSONDecodeError:
         log("Ungueltiges JSON auf %s" % topic)
         return
+
+    # Home Assistant: {"weight": 62.1, "timestamp": "...", "impedance_low": ...}
+    if topic == HA_TOPIC:
+        if not isinstance(payload, dict) or payload.get("weight") is None:
+            return
+        item = {
+            "weight": payload.get("weight"),
+            "date": payload.get("timestamp") or datetime.now(LOCAL_TZ).isoformat(),
+        }
+        for key in ("impedance_low", "impedance_high"):
+            if payload.get(key) is not None:
+                item[key] = payload[key]
+        payload = item
+        source = "scale"
+    else:
+        source = "openscale"
+
     try:
-        handle(db, yazio, event, payload)
+        handle(db, yazio, event, payload, source)
     except psycopg.Error as error:
         log("Datenbankfehler bei %s: %s" % (topic, error))
     except Exception as error:
