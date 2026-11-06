@@ -62,7 +62,7 @@
     "reasoning_effort": "low",
     "api_max_retries": 2,
     "auto_recovery_cycles": 0,
-    "max_turns": 60
+    "max_turns": null
   },
   "providers": {
     "opencode-go": {

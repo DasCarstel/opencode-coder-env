@@ -355,11 +355,29 @@ Persona. Ein `apply` aus Hestia ist dafür nicht nötig und ändert daran nichts
 ## Turn-Limit
 
 `agent.max_turns` in der SOT begrenzt, wie viele Agent-Schleifen ein Auftrag
-laufen darf. Der Wert stand bis 2026-11-06 auf `12` — zu knapp für echte
-Recherchen, die im Hintergrund weiterlaufen dürfen (die Assist-Anbindung
-quittiert nach 8 s und liefert das Ergebnis später per Push nach). Aktuell: `60`.
-`null` wäre „unbegrenzt" und ist laut Validierung erlaubt, als Dauerzustand aber
-eine Einladung zum Endloslauf; die 60 sind die Bremse, nicht das Ziel.
+laufen darf. Seit 2026-11-06 steht der Wert auf `null` — kein Limit.
+
+Der Grund: die Grenze schützt nichts, sie schneidet nur ab. Die Meldung „das
+dauert länger" kommt **nicht** von Hermes, sondern aus der Assist-Anbindung
+(`hermes_async.py` in Home Assistant). Sie wartet 8 s auf die HTTP-Antwort, gibt
+dann die Quittung an Assist zurück und lässt den Turn im Hintergrund
+weiterlaufen — Hermes merkt davon nichts und arbeitet weiter. Ein
+`max_turns`-Limit würde also mitten in einer Recherche abbrechen, ohne dass
+irgendwo eine Meldung dazu erscheint.
+
+Verbleibende Bremsen:
+
+| Bremse | Wo | Wirkung |
+|--------|----|---------|
+| `max_runtime` 1800 s | HA-Wrapper | Assist gibt nach 30 min auf, bricht den Request ab und schickt die Zwischenmeldung als letztes Lebenszeichen |
+| Provider-/Kontextlimit | Hermes/Modell | Turn endet mit Fehler |
+
+Für Turns, die **nicht** über Assist laufen (ntfy, Dashboard, API), gibt es damit
+keine Zeitbremse mehr. Das ist bewusst so: dort sieht der Nutzer das Ergebnis
+ohnehin erst am Ende.
+
+Historie: `12` (bis 2026-11-06, zu knapp für Hintergrund-Recherchen), `60` (kurze
+Zwischenstufe), dann `null`.
 
 ## Persistentes Gedächtnis (Memory-Slots)
 
