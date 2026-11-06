@@ -332,6 +332,35 @@ und sind vom Host aus nicht einsehbar; für das Dashboard ist
 Nicht zu verwechseln: `hermes proxy` (Port 8645) ist ein **reiner OAuth-Modell-Proxy**
 für Nous/xAI ohne Agent-Funktionalität — nicht der API-Server.
 
+## Persona (`SOUL.md`)
+
+Die Verhaltensvorgabe des Agenten liegt **im Repo**:
+[`hermes/SOUL.md`](../hermes/SOUL.md). Sie wird — anders als `config.yaml` —
+nicht von `apply-hermes.sh` geschrieben, sondern über den normalen Deploy
+ausgeliefert:
+
+```text
+hermes/SOUL.md  --rsync-->  /opt/docker-compose/hermes/SOUL.md
+                --Datei-Mount-->  /opt/data/SOUL.md
+```
+
+Der Datei-Mount liegt über dem Ordner-Mount `/etc/docker/hermes/data:/opt/data`,
+das Muster ist dasselbe wie bei `.env`. Eine im Volume vorhandene Altdatei wird
+dadurch **verdeckt**, nicht gelöscht — sie ist ab dem Mount toter Ballast.
+
+Wirksam wird eine Änderung mit dem Deploy, weil dieser den Container neu
+erzeugt (`docker compose up -d`); das nächste Gespräch nutzt dann die neue
+Persona. Ein `apply` aus Hestia ist dafür nicht nötig und ändert daran nichts.
+
+## Turn-Limit
+
+`agent.max_turns` in der SOT begrenzt, wie viele Agent-Schleifen ein Auftrag
+laufen darf. Der Wert stand bis 2026-11-06 auf `12` — zu knapp für echte
+Recherchen, die im Hintergrund weiterlaufen dürfen (die Assist-Anbindung
+quittiert nach 8 s und liefert das Ergebnis später per Push nach). Aktuell: `60`.
+`null` wäre „unbegrenzt" und ist laut Validierung erlaubt, als Dauerzustand aber
+eine Einladung zum Endloslauf; die 60 sind die Bremse, nicht das Ziel.
+
 ## Persistentes Gedächtnis (Memory-Slots)
 
 Hermes hat ein eingebautes Gedächtnis, das **nicht** in einer Notiz liegt,

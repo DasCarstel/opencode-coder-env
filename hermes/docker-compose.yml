@@ -23,6 +23,10 @@ services:
       # AUSSERHALB des Repos und bleiben beim Deploy erhalten.
       - /etc/docker/hermes/data:/opt/data
       - /opt/docker-compose/hermes/.env:/opt/data/.env
+      # Persona aus dem Repo (hermes/SOUL.md). Der Deploy-rsync legt sie ins
+      # Deploy-Verzeichnis; der Datei-Mount legt sie ueber den Ordner-Mount,
+      # damit /etc/docker/hermes/data unangetastet bleibt. Muster wie .env.
+      - /opt/docker-compose/hermes/SOUL.md:/opt/data/SOUL.md
     environment:
       HERMES_DASHBOARD: "1"
     command: ["hermes"]

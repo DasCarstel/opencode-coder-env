@@ -13,6 +13,7 @@ Details und Betrieb: [`../docs/hermes.md`](../docs/hermes.md).
 |-------|--------|
 | [`Dockerfile`](Dockerfile) | Basis-Image `nousresearch/hermes-agent:latest` + `opencode-mcp@3.0.0` + `ocis-mcp-server` v1.1.0 + node 26.12.1 unter `/opt/node` + spotify-mcp-server, danach wieder `USER hermes` |
 | [`docker-compose.yml`](docker-compose.yml) | Service `hermes`, Netz `coder-infra` (extern), Ports **9119** (Dashboard) und **8642** (API-Server, u. a. Open WebUI), Neustart `unless-stopped` |
+| [`SOUL.md`](SOUL.md) | Persona und Verhaltensregeln des Agenten; wird per Datei-Mount nach `/opt/data/SOUL.md` gelegt |
 
 Der Container nutzt das **Entrypoint des Basis-Images**
 (`/opt/hermes/docker/entrypoint-dispatch.sh`) — es gibt hier bewusst **kein**
@@ -24,6 +25,7 @@ eigenes `entrypoint.sh`. Die früher im Repo liegende `entrypoint.sh`
 ```yaml
 - /etc/docker/hermes/data:/opt/data                  # Volume: config.yaml, profiles/
 - /opt/docker-compose/hermes/.env:/opt/data/.env    # einzelne Datei: Secrets/Pool
+- /opt/docker-compose/hermes/SOUL.md:/opt/data/SOUL.md  # Persona, aus dem Repo
 ```
 
 Beides liegt **außerhalb** dieses Repos:
@@ -32,6 +34,11 @@ Beides liegt **außerhalb** dieses Repos:
   `profiles/<name>/{config.yaml,.env}`.
 - `.env` ist eine einzelne, von Hestia geschriebene Datei direkt im
   Deploy-Verzeichnis auf dem Coder-Host.
+- `SOUL.md` liegt dagegen **im Repo** ([`SOUL.md`](SOUL.md)) und wird per Deploy
+  ins Deploy-Verzeichnis gespiegelt. Der Datei-Mount legt sie über den
+  Ordner-Mount — die im Volume vorhandene Altdatei bleibt damit unberührt und
+  wird nicht mehr gelesen. Änderungen wirken mit dem nächsten
+  `docker compose up -d` (der Deploy recreated den Container ohnehin).
 
 Die Spotify-Zugangsdaten des MCP-Servers liegen dazu im selben Volume unter
 `/opt/data/spotify/spotify-config.json` (0600, außerhalb des Repos); der
