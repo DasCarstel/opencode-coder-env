@@ -379,6 +379,48 @@ ohnehin erst am Ende.
 Historie: `12` (bis 2026-11-06, zu knapp für Hintergrund-Recherchen), `60` (kurze
 Zwischenstufe), dann `null`.
 
+Diese Einstellung gilt **nur fürs Default-Profil**. Das Profil `kleve` hat einen
+eigenen, davon unabhängigen Stand — siehe [Profile](#profile).
+
+## Profile
+
+Am 2026-11-07 existiert neben dem Default-Profil genau eines: **`kleve`**
+(Haus-Hilfe für Kleve — Licht, Heizung, Temperatur — in einfacher Sprache).
+Es ist **kein** eigener Standort-Agent: es gibt nur die eine Hermes-Instanz in
+Krefeld, das Profil läuft über den Default-Profil-Multiplexer desselben
+Containers.
+
+| Ort | Inhalt |
+|-----|--------|
+| `/opt/data/profiles/kleve/config.yaml` | Modell, MCP-Server `homeassistant-kleve` (über das TCP-Relay), Toolsets `clarify` + `mcp-homeassistant-kleve`, deaktivierte Skills |
+| `/opt/data/profiles/kleve/.env` | Zugangsdaten des Profils |
+| `/opt/data/profiles/kleve/SOUL.md` | Persona des Profils |
+
+**Nicht versioniert:** Diese Dateien liegen im Volume und sind — anders als
+[`hermes/SOUL.md`](../hermes/SOUL.md) fürs Default-Profil — nirgends im Repo
+gespiegelt. Deploy und Apply stellen sie nicht wieder her.
+
+### Keine Vererbung des `agent`-Blocks
+
+Ein Profil erbt den `agent`-Block des Default-Profils **nicht**. Nachweis
+(2026-11-07): `hermes --profile kleve config get agent.reasoning_effort` →
+`Config key not set`, obwohl das Default-Profil `low` setzt;
+`agent.api_max_retries` liefert `3` (Hermes-Default) statt `2`.
+
+Für `agent.max_turns` gilt im Profil damit der **Hermes-Default `None`** —
+unbegrenzt. Die `12`, die bis 2026-11-06 im Default-Profil stand, hat dort nie
+gewirkt. Das ist bewusst so geblieben: das Profil hat zwar keinen
+Async-Wrapper vor sich, aber auch nur zwei Toolsets, und ein Limit würde
+lediglich Antworten abschneiden.
+
+### Was die Apply-Kette für Profile tut
+
+`apply-hermes.sh` schreibt je Profil ausschließlich `model.provider`,
+`model.default`, `fallback_providers` und den `.env`-Pool. Ein `agent`-Block im
+Profil wird **nicht** angefasst: er überlebt einen Apply, bleibt aber
+unversioniert. Sollen Profile eigene Agent-Grenzen bekommen, muss das erst in
+der SOT und im Skript ergänzt werden.
+
 ## Persistentes Gedächtnis (Memory-Slots)
 
 Hermes hat ein eingebautes Gedächtnis, das **nicht** in einer Notiz liegt,
