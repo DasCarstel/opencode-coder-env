@@ -91,6 +91,29 @@ def _sources_name(key: str) -> str:
     }.get(str(key or "").lower(), str(key))
 
 
+def _read_fallbacks() -> dict:
+    """Ausfall-Modelle je Tier aus .opencode/hestia-fallbacks.json lesen.
+
+    Bewusst ein lokaler Mini-Reader: suggest.py darf failover NICHT
+    importieren (failover importiert suggest → Import-Zirkel). Die Datei wird
+    von POST /api/apply (server.py) gepflegt und vom Ausfallschutz gelesen.
+    Fehlende/kaputte Datei oder GitHub-Fehler → {} — der Prompt funktioniert
+    dann ohne Fallback-Angaben weiter.
+    """
+    try:
+        import github_api
+        raw = github_api.get_file(os.environ.get(
+            "HESTIA_FALLBACKS_PATH", ".opencode/hestia-fallbacks.json"))
+        data = json.loads(raw) if raw else {}
+    except Exception as e:  # noqa: BLE001
+        _log(f"fallbacks nicht lesbar: {e}")
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {t: data[t] for t in ("fast", "medium", "heavy")
+            if isinstance(data.get(t), dict)}
+
+
 def _benchmarks_block(models: list) -> tuple:
     """Benchmark-Werte je Kandidat-Modell (aus dem lokalen Benchmark-Cache).
 
@@ -110,7 +133,11 @@ def _benchmarks_block(models: list) -> tuple:
         labels = (st.get("fieldLabels") or {}) or bench_mod.field_labels(fields)
     except Exception as e:  # noqa: BLE001 — Benchmarks dürfen nie den Lauf kippen
         _log(f"benchmarks nicht verfügbar: {e}")
-        return {}, None
+        # Drei Werte wie in den Normalpfaden (s. u.) — callers entpacken mit
+        # drei Zielen (bench_rows, bench_meta, bench_effort), zwei Werte
+        # erzeugten hier einen ValueError und brachen den GESAMTEN
+        # Vorschlag ab. Degradation statt Absturz.
+        return {}, None, {}
     cols = [(f, labels.get(f, f)) for f in fields if f in bench_mod.ALL_FIELDS]
     if not cols:
         cols = [("coding_index", "Coding"), ("agentic_index", "Agentic-Index"),
@@ -258,6 +285,12 @@ def _build_prompt() -> str:
         )
     except Exception:
         current_str = "unbekannt"
+    # Aktuelle Ausfall-Modelle je Tier (Ausfallschutz-SOT): das Analyse-Modell
+    # soll sie bewerten und für @heavy ein Ausfallschutz-Modell vorschlagen
+    # können (Feld "fallback") — nicht nur die Preset-Primärmodelle.
+    live_fallbacks = _read_fallbacks()
+    fallbacks_str = (json.dumps(live_fallbacks, ensure_ascii=False)
+                     if live_fallbacks else "unbekannt")
     # Budget-Lage der OpenCode-Go-Konten (P3): das AKTIVE Abo trägt alle opencode-go-Aufrufe.
     try:
         import accounts as accounts_mod
@@ -308,6 +341,8 @@ OPENCODE-KONTEXT — so werden die Modelle tatsächlich eingesetzt:
 => Bewerte Medium deshalb DOPPELT: als Arbeitspferd für Implementation UND als interaktives Chat-/Plan-Modell.
 
 AKTUELLE WERTE: {current_str}
+AKTUELLE AUSFALL-MODELLE: {fallbacks_str}
+(das ist der Inhalt von .opencode/hestia-fallbacks.json — das bezahlte Ausweichmodell je Tier für den Ausfallschutz. Bewerte auch diese Angaben.)
 
 BUDGET-STATUS der OpenCode-Go-Konten (je Fenster "% frei"; das AKTIVE Konto trägt alle
 opencode-go-Aufrufe — @fast/@medium/@heavy laufen über dieses Abo):
@@ -333,7 +368,11 @@ das Abo und belastet es deshalb nicht.
 AUFGABE: Wähle je Tier das kosten-günstigste Modell, das die Rolle zuverlässig bewältigt
 (cheap-but-capable statt Kompromiss-frei). Berücksichtige: Tool-Fähigkeit ist Pflicht;
 @heavy braucht starkes Reasoning (max-effort Variante bevorzugen wenn vorhanden);
-wähle Varianten aus der Liste. Wenn sich zwischen zwei Modellen der Preis kaum
+wähle Varianten aus der Liste. Für @heavy ergänze zusätzlich "fallback" (bezahlt
+Ausweichmodell des Ausfallschutzes): es muss sich vom "paid"-Modell unterscheiden und
+kommt ebenfalls aus der Modelltabelle — sieht man ein gleichwertiges, günstigeres Modell
+als das aktive Ausfall-Modell in den AKTUELLEN AUSFALL-MODELLEN, schlage es vor.
+Wenn sich zwischen zwei Modellen der Preis kaum
 unterscheidet, nimm das neuere/stärkere. Nutze für Qualitätsvergleiche die Bench-Spalte
 der Modelltabelle (nicht-preisliche Argumente). Für @medium gilt zusätzlich die Doppelrolle
 (build/plan interaktiv) aus dem OpenCode-Kontext — träge Standardvarianten abwerten.
@@ -365,11 +404,81 @@ ANTWORTE NUR MIT folgendem JSON (keine weiteren Worte, keine Backticks):
   "medium": {{"paid": {{"model": "<provider>/<modelID>", "variant": "<variant|leer>", "reason": "<1 Satz>"}},
              "free": {{"model": "opencode/<modelID>", "variant": "<variant|leer>", "reason": "<1 Satz>"}}}},
   "heavy":  {{"paid": {{"model": "<provider>/<modelID>", "variant": "<variant|leer>", "reason": "<1 Satz>"}},
-             "free": null}}}}
+              "fallback": {{"model": "<provider>/<modelID>", "variant": "<variant|leer>", "reason": "<1 Satz>"}}}}}}
 
 Für @fast und @medium IMMER beide Varianten angeben: "paid" (stabil, kostenpflichtig) und "free"
-(ein KOSTENLOS-Modell aus der Liste, das die Rolle noch vertretbar erfüllt). Für @heavy nur "paid"
-(free: null).  Ausfallschutz: das bezahlte Modell ist der Standard, das kostenlose die Option."""
+(ein KOSTENLOS-Modell aus der Liste, das die Rolle noch vertretbar erfüllt). Für @heavy entfällt "free"
+bewusst (@heavy läuft nie auf einem volatilen Gratis-Modell); statt dessen gib "fallback" an: das
+bezahlte Ausweichmodell des Ausfallschutzes (.opencode/hestia-fallbacks.json), das bei einem
+Modellausfall des @heavy-Tiers automatisch übernimmt — es darf nicht das bezahlte Modell selbst sein."""
+
+
+def _clean_choice(entry) -> tuple:
+    """Modellwahl (paid/free/fallback) gegen den Live-Katalog prüfen.
+
+    Rückgabe: (bereinigter Eintrag | None, Fehlertext). Bewahrt die übrigen
+    Felder (reason …), normalisiert model/variant. Ein fehlendes oder im
+    Katalog nicht nutzbares Modell, sowie eine Variante, die nicht in den
+    Live-Varianten liegt, verwirft den Eintrag komplett (Ungültiges soll im
+    Panel als Hinweis sichtbar werden, nicht in den Editor geraten).
+    """
+    if not isinstance(entry, dict):
+        return None, "kein Objekt"
+    ref = str(entry.get("model") or "").strip()
+    if not ref:
+        return None, "kein Modell angegeben"
+    ok, res = usable(ref)
+    if not ok:
+        return None, res
+    live = (res.get("variants") or []) if isinstance(res, dict) else []
+    variant = str(entry.get("variant") or "").strip()
+    if variant and variant not in live:
+        return None, (f"Variante '{variant}' gibt es für {ref} nicht "
+                      f"(live: {', '.join(live) or 'keine'})")
+    out = dict(entry)
+    out["model"] = ref
+    out["variant"] = variant
+    return out, ""
+
+
+def _validate_decision(decision: dict) -> dict:
+    """KI-Antwort gegen den Live-Katalog validieren.
+
+    fast/medium: paid + free werden geprüft. heavy: paid + fallback (gemäß
+    Prompt-Schema gibt es für heavy kein "free" mehr — bewusste Regel:
+    @heavy läuft nie auf einem volatilen Gratis-Modell; das bezahlte
+    Ausweichmodell liegt stattdessen unter "fallback").
+
+    Ungültige Eingaben (unbekanntes Modell, unbekannte Variante) werden als
+    Feld verworfen, aber als Liste "warnings" im Ergebnis fürs Panel sichtbar
+    — nicht als Exception. Rückgabe: gesäuberte Decision.
+    """
+    out, warns = {}, []
+    for tier in ("fast", "medium"):
+        src = decision.get(tier) or {}
+        picked = {}
+        for key in ("paid", "free"):
+            cleaned, err = _clean_choice(src.get(key))
+            if cleaned:
+                picked[key] = cleaned
+            elif key in src:
+                warns.append(f"{tier}.{key} verworfen: {err}")
+        if picked:
+            out[tier] = picked
+    heavy = decision.get("heavy") or {}
+    h_clean = {}
+    for key in ("paid", "fallback"):
+        cleaned, err = _clean_choice(heavy.get(key))
+        if cleaned:
+            h_clean[key] = cleaned
+        elif key in heavy:
+            warns.append(f"heavy.{key} verworfen: {err}")
+    if h_clean:
+        out["heavy"] = h_clean
+    out["reasoning"] = decision.get("reasoning")
+    if warns:
+        out["warnings"] = warns[:8]
+    return out
 
 
 def _resolve_tier_model(tier: str, override_ref: str = "", override_variant: str = "") -> tuple:
@@ -398,6 +507,11 @@ def _resolve_tier_model(tier: str, override_ref: str = "", override_variant: str
         return None, {}
     provider, _, mid = ref.partition("/")
     if variant and variant not in (res.get("variants") or []):
+        # Sicherheitsnetz (bleibt als Still-Auswahl bestehen, damit die
+        # Analyse nicht kippt) — aber geloggt, damit die Diskrepanz nicht
+        # unbemerkt bleibt (Panel zeigt dann die Basisvariante an).
+        _log(f"Analyse-Modell {ref}: Variante '{variant}' gibt es im "
+             "Live-Katalog nicht — Variante abgewählt")
         variant = ""
     body = {"providerID": provider, "id": mid}
     if variant:
@@ -817,6 +931,12 @@ def suggest(override_ref: str = "", override_variant: str = "", progress=None,
         try:
             res = _attempt(prompt, model_body, info, on_progress=_tier_progress,
                            silent=silent)
+            # Vorschlag gegen den Live-Katalog validieren (P1c): unbekannte
+            # Modelle/Varianten — insbesondere ein heavy-"fallback" — werden
+            # verworfen und als "warnings" fürs Panel sichtbar gemacht.
+            res["decision"] = _validate_decision(res.get("decision") or {})
+            if not (res["decision"].get("fast") or res["decision"].get("medium")):
+                raise RuntimeError("Antwort enthält keinen brauchbaren fast/medium-Vorschlag")
             res["analyzedWith"] = info
             res["attempt"] = idx + 1
             if idx > 0:
@@ -1039,7 +1159,13 @@ def _require_int(payload: dict, key: str, lo: int, hi: int) -> int:
 
 
 def _require_model(value: str) -> str:
-    """Analyse-Modell prüfen (leer = Tier-Kette aus den Overrides verwenden)."""
+    """Analyse-Modell prüfen (leer = Tier-Kette aus den Overrides verwenden).
+
+    Prüft auch die Variante hinter "#" gegen die Live-Varianten — ein Setup
+    mit unbekannter Variante (z. B. "#xhigh" bei einem Modell ohne xhigh)
+    scheitert sonst erst im Lauf (und wird in _resolve_tier_model still
+    abgewählt). Klarer Fehler beim Speichern wirkt dem entgegen.
+    """
     ref = (value or "").strip()
     if not ref:
         return ""
@@ -1047,6 +1173,12 @@ def _require_model(value: str) -> str:
     ok, res = catalog.usable(base)
     if not ok:
         raise SettingsError(f"'analysisModel': {res}")
+    variant = ref[len(base) + 1:] if "#" in ref else ""
+    live = (res.get("variants") or []) if isinstance(res, dict) else []
+    if variant and variant not in live:
+        raise SettingsError(
+            f"'analysisModel': Variante '{variant}' gibt es für {base} nicht "
+            f"(verfügbar: {', '.join(live) or 'keine'})")
     return ref
 
 

@@ -34,6 +34,10 @@ HEALTH_PATH = ".opencode/hestia-model-health.json"
 FALLBACKS_PATH = ".opencode/hestia-fallbacks.json"
 AGENTS_PATH = ".opencode/hestia-primary-agents.json"
 
+# Live-Varianten für den Fake-Katalog (P4-Tests); reset() leert sie, damit die
+# übrigen Tests unverändert laufen.
+LIVE_VARIANTS = {}
+
 fails = []
 
 
@@ -79,8 +83,21 @@ def _fake_github():
 
 def _fake_catalog():
     c = types.ModuleType("catalog")
-    c.usable = lambda ref: (True, "")
-    c.find_model = lambda ref: {"variants": ["low", "medium", "high"]}
+    # Live-Varianten je Modell-Ref (P4): fehlt der Eintrag, verhält sich
+    # usable() wie vor der Umstellung ((True, "") — keine Varianten-Info).
+    def usable(ref):
+        if ref not in LIVE_VARIANTS:
+            return (True, "")
+        return (True, {"variants": list(LIVE_VARIANTS[ref]), "name": ref})
+
+    def find_model(ref):
+        if ref not in LIVE_VARIANTS:
+            return None
+        return {"variants": list(LIVE_VARIANTS[ref])}
+
+    c.usable = usable
+    c.find_model = find_model
+    c.is_free = lambda ref: str(ref or "").strip().lower().endswith("-free")
     return c
 
 
@@ -126,6 +143,7 @@ def reset(probe_results, preset=None, fallbacks=None, health=None, quota_blocked
     CALLS["put_files"].clear()
     CALLS["dispatch"].clear()
     BEHAVIOUR.clear()
+    LIVE_VARIANTS.clear()
     BEHAVIOUR["probe_results"] = list(probe_results)
     BEHAVIOUR["quota_blocked"] = quota_blocked
     BEHAVIOUR["preset"] = preset or PRESET
@@ -351,6 +369,51 @@ CALLS["dispatch"].clear()
 fo2._dispatch_rollout(["fast"], "restart")
 check("mode='restart' dispatcht rollout.yml", CALLS["dispatch"] == ["rollout.yml"],
       str(CALLS["dispatch"]))
+
+print("\n[15] _highest_variant: nur Live-Varianten (P4a, xhigh-Falle)")
+fo = reset(probe_results=[])
+LIVE_VARIANTS["opencode-go/glm-5.3"] = ["low", "high", "max"]      # KEIN xhigh (Fall vom 2026: glm-5.3 + xhigh → provider.no-route)
+LIVE_VARIANTS["opencode-go/with-xhigh"] = ["low", "high", "xhigh"]
+check("höchste gültige Variante = max (nie xhigh)",
+      fo._highest_variant("opencode-go/glm-5.3") == "max",
+      str(fo._highest_variant("opencode-go/glm-5.3")))
+check("xhigh vergeben, wenn im Live-Katalog",
+      fo._highest_variant("opencode-go/with-xhigh") == "xhigh",
+      str(fo._highest_variant("opencode-go/with-xhigh")))
+check("Modell ohne Varianten-Info → \"\"", fo._highest_variant("opencode-go/ohne-varianten") == "")
+check("unbekanntes Modell → \"\" (kein blindes Effort-Ergebnis)",
+      fo._highest_variant("openai/gpt-bogus") == "")
+
+print("\n[16] Event provider.no-route → Variante geräumt statt Wechsel (P4b)")
+NO_ROUTE_PRESET = {"presets": {"hestia": {
+    "fast": {"model": "opencode-go/deepseek-v4.1-flash"},
+    "medium": {"model": "opencode-go/glm-5.3-flash"},
+    "heavy": {"model": "opencode-go/glm-5.3", "variant": "xhigh"},   # xhigh gibt es hier nicht
+}}}
+fo = reset(probe_results=[], preset=dict(NO_ROUTE_PRESET), fallbacks=dict(FB_ALL))
+LIVE_VARIANTS["opencode-go/glm-5.3"] = ["low", "high", "max"]
+fo.STATE["autoFailover"] = True
+check("Klassifikation variant", fo.classify_error("provider.no-route") == "variant")
+res = fo.handle_execution_failed(_failed_event("provider.no-route", ses="ses_var"))
+check("Klasse = variant", res["kind"] == "variant", str(res))
+check("Variante geräumt (Meldung)", "Variante entfernt" in str(res["swaps"].get("heavy") or ""),
+      str(res["swaps"]))
+ovr = json.loads(FILES[OVERRIDES])
+check("Preset ohne ungültige Variante committet",
+      ovr["presets"]["hestia"]["heavy"] == {"model": "opencode-go/glm-5.3"},
+      str(ovr["presets"]["hestia"]["heavy"]))
+check("kein Swap auf das Ausweich-Modell", res["swapped"] == [], str(res["swapped"]))
+check("KEINE Fehlschlagserie", not res["streaks"], str(res["streaks"]))
+check("genau EIN sync-Rollout", CALLS["dispatch"] == ["sync.yml"], str(CALLS["dispatch"]))
+check("keine Proben verbraucht", len(BEHAVIOUR["probe_results"]) == 0)
+# GitHub spiegelt den Commit (get_overrides liest beim Zweitlauf den geräumten
+# Preset — nichts mehr zu reparieren, idempotent).
+BEHAVIOUR["preset"] = json.loads(FILES[OVERRIDES])
+rep_2 = fo.handle_execution_failed(_failed_event("provider.no-route", ses="ses_var2"))
+check("idempotent beim Zweitlauf (kein Commit/Rollout)",
+      rep_2["variantFixed"] == [] and CALLS["dispatch"] == ["sync.yml"]
+      and len([c for c in CALLS["put_files"] if OVERRIDES in c["paths"]]) == 1,
+      str((rep_2["variantFixed"], CALLS["dispatch"], [c["paths"] for c in CALLS["put_files"]])))
 
 print("\n[7] put_files schreibt nicht, wenn alle Blobs identisch sind")
 sys.modules.pop("github_api", None)          # echte Implementierung laden

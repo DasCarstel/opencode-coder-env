@@ -296,12 +296,18 @@ def read_fallbacks() -> dict:
 # ── Ereignis-Watcher: Modellfehler kommen live aus OpenCode selbst ───────────
 
 def classify_error(etype: str) -> str:
-    """OpenCode-Fehlertyp → Klasse: free_limit | quota | other."""
+    """OpenCode-Fehlertyp → Klasse: free_limit | quota | variant | other."""
     t = str(etype or "")
     if "free-limit" in t:
         return "free_limit"
     if "quota" in t:
         return "quota"
+    if "no-route" in t:
+        # provider.no-route ist meist eine Variante, die es für das Modell
+        # nicht gibt (z. B. xhigh für ein Modell mit nur low/high/max) —
+        # erst die ungültige Variante räumen, nicht aufs Ausweich-Modell
+        # eskalieren (siehe handle_execution_failed, Klasse "variant").
+        return "variant"
     return "other"
 
 
@@ -421,12 +427,42 @@ def _is_free_ref(ref: str) -> bool:
     return False
 
 
+def _strip_invalid_variant(tier: str, ref: str, var: str) -> tuple:
+    """Ungültige Variante aus einem Tier-Eintrag räumen (provider.no-route).
+
+    Prüft gegen die Live-Varianten des Modells (catalog.usable, dieselbe
+    Quelle wie suggest._resolve_tier_model). Ohne eine prüfbare Varianten-
+    Liste wird nichts geschrieben (Blindflug vermeiden). Der Swap ist
+    idempotent: steht das Tier schon ohne Variante, meldet put_files
+    "unchanged" und es gibt keinen Commit/Rollout.
+    """
+    ok, res = catalog.usable(ref)
+    live = (res.get("variants") or []) if ok and isinstance(res, dict) else []
+    if not live:
+        return f"übersprungen — Live-Varianten von {ref} nicht prüfbar", False
+    if var in live:
+        return f"übersprungen — Variante '{var}' ist für {ref} gültig", False
+    try:
+        res_swap = _swap_tier(tier, {"model": ref, "variant": ""})
+    except Exception as e:  # noqa: BLE001
+        return f"FEHLER: {e}", False
+    if res_swap.get("unchanged"):
+        return f"übersprungen — {ref} bereits ohne ungültige Variante", False
+    return (f"Variante entfernt ({ref} kennt '{var}' nicht, "
+            f"live: {', '.join(live)})", True)
+
+
 def handle_execution_failed(event: dict) -> dict:
     """Ein 'session.execution.failed'-Event klassifizieren und umsetzen.
 
     - free_limit → Schwelle 1: sofortiger Swap je Tier mit Ausfall-Modell,
       Rückweg-Timer = now + retryAfterMs (persistiert als tiers[tier].paidUntil).
     - quota      → Schwelle 1, Swap ohne Rückweg-Timer (Konto leer = dauerhaft).
+    - variant    → provider.no-route: vermutlich eine Variante, die es für das
+      gesetzte Modell nicht gibt. Erst die ungültige Variante aus dem Preset
+      räumen (Commit + EIN sync-Rollout) — kein Wechsel aufs Ausweich-Modell
+      und keine Fehlschlag-Serie; der Retry auf demselben Modell ohne Variante
+      genügt.
     - other      → Schwelle aus der SOT (Default 2) wie beim Watchdog.
 
     Quelle der Wahrheit für die Fehlschlagserie ist die PERSISTIERTE Serie im
@@ -460,6 +496,7 @@ def handle_execution_failed(event: dict) -> dict:
     old_sig = _health_sig(health)
     apply = _auto_enabled()
     swaps, streaks, swapped_tiers = {}, {}, []
+    variant_fixed = []
     for tier in TIERS:
         entry = preset.get(tier) or {}
         ref = (entry.get("model") or "").strip()
@@ -474,6 +511,23 @@ def handle_execution_failed(event: dict) -> dict:
         if kind == "free_limit" and not _is_free_ref(ref):
             continue
         if kind == "quota" and not (ref.startswith("opencode/") and not _is_free_ref(ref)):
+            continue
+        if kind == "variant":
+            # provider.no-route: zuerst die ungültige Variante aus dem Preset
+            # entfernen und es erneut probieren — NICHT sofort auf das Ausweich-
+            # Modell eskalieren (kein Rollout doppelt: der sync-Dispatch wird
+            # unten einmal für alle reparierten Tiers ausgelöst). Ohne Variante
+            # im Preset gibt es nichts zu reparieren (idempotent).
+            if var:
+                note, changed = _strip_invalid_variant(tier, ref, var)
+                swaps[tier] = note
+                if changed:
+                    variant_fixed.append(tier)
+                    health["tiers"][tier] = {"model": ref, "ok": True, "failStreak": 0,
+                                             "lastOkAt": _now_iso(),
+                                             "repairedAt": _now_iso()}
+                    health["models"][ref] = {"model": ref, "failStreak": 0,
+                                             "quarantineUntil": "", "lastOkAt": _now_iso()}
             continue
         # Quelle der Wahrheit: persistierte Serie im Health-File (überlebt
         # Neustarts); STATE["fails"] bleibt nur RAM-Cache fürs Panel.
@@ -550,6 +604,9 @@ def handle_execution_failed(event: dict) -> dict:
         # EIN sync-Rollout für alle Wechsel dieses Events (nur Datei-Ersatz,
         # kein Container-Neustart — siehe _dispatch_rollout).
         _dispatch_rollout(swapped_tiers, "sync")
+    if variant_fixed:
+        # Varianten-Reparatur: genauso einmaliger sync (kein Neustart).
+        _dispatch_rollout(variant_fixed, "sync")
     with LOCK:
         STATE["fails"].update(streaks)
         STATE["fallbacks"] = fallbacks
@@ -564,7 +621,7 @@ def handle_execution_failed(event: dict) -> dict:
     if swaps:
         _log(f"Event {etype} ({kind}, Session {session[:12] or '?'}): {swaps}")
     return {"kind": kind, "applied": apply, "swaps": swaps, "swapped": swapped_tiers,
-            "streaks": streaks, "health": health}
+            "variantFixed": variant_fixed, "streaks": streaks, "health": health}
 
 
 def check_returns() -> dict:
@@ -899,11 +956,18 @@ def _dispatch_rollout(tiers: list, mode: str = "sync") -> bool:
 
 
 def _highest_variant(model_ref: str) -> str:
-    """Höchste Effort-Variante eines Modells laut Live-Katalog ("" = keine)."""
-    m = catalog.find_model(model_ref)
-    if not m:
+    """Höchste Effort-Variante eines Modells laut Live-Katalog ("" = keine).
+
+    Prüft wie suggest._resolve_tier_model gegen catalog.usable: eine Variante
+    wird nur vergeben, wenn sie in den Live-Varianten des Modells liegt —
+    sonst "" (keine). So vermieden: 'xhigh' für ein Modell, das nur
+    low/high/max kennt (→ provider.no-route, wertete der Ausfallschutz
+    fälschlich als Ausfall).
+    """
+    ok, res = catalog.usable(model_ref)
+    if not ok or not isinstance(res, dict):
         return ""
-    ranked = sorted([v for v in (m.get("variants") or []) if v in VARIANT_RANK],
+    ranked = sorted([v for v in (res.get("variants") or []) if v in VARIANT_RANK],
                     key=lambda v: VARIANT_RANK[v])
     return ranked[-1] if ranked else ""
 

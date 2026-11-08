@@ -504,8 +504,10 @@ async function load() {
     }
     // Persistierte Ausfall-Modelle aus dem Repository in den Editor spiegeln.
     // Ohne gespeichertes Fallback gilt "bewusst kein Ausfall-Modell" (disabled).
+    // heavy eingeschlossen: der Vorschlag liefert das Ausweich-Modell, das sonst
+    // beim nächsten Apply stillschweigend abgewiesen werden würde.
     const fb = config.fallbacks || {}
-    for (const tier of ['fast', 'medium']) {
+    for (const tier of ['fast', 'medium', 'heavy']) {
       const c = fb[tier]
       fallbacks[tier] = c?.model
         ? { model: c.model, variant: c.variant || '(keine)', disabled: false }
@@ -656,7 +658,9 @@ const editorHeavyDiffers = $derived(
 
 // ── gespeicherter Automatik-Vorschlag ──
 const autoProposal = $derived(suggestStatus?.proposal || null)
-const autoProposalResult = $derived(autoProposal?.result || null)
+// STATE speichert {decision, session, analyzedWith} — die Tabelle will die
+// Decision selbst (inkl. "warnings"/heavy-"fallback").
+const autoProposalResult = $derived(autoProposal?.result?.decision || autoProposal?.result || null)
 
 function tierChoiceOf(res, tier) {
   const d = res?.[tier]
@@ -718,14 +722,24 @@ function acceptSuggestion(res = suggestResult) {
   for (const tier of ['fast', 'medium', 'heavy']) {
     const d = res?.[tier]
     if (!d) continue
-    const chosen = (useFree[tier] && d.free) ? d.free : d.paid
-    const other = (useFree[tier] && d.free) ? d.paid : d.free
+    const chosen = (useFree[tier] && d.free) ? d.free : (d.paid || d.free || null)
+    const other = (useFree[tier] && d.free) ? d.paid :
+      (tier === 'heavy' ? d.fallback : d.free)
     if (!chosen) continue
     const src = { fast, medium, heavy }[tier]
     src.model = chosen.model
     src.variant = chosen.variant || '(keine)'
-    // die nicht gewählte Variante als Ausfall-Modell hinterlegen (fast/medium)
-    if (tier !== 'heavy' && other?.model) {
+    // die nicht gewählte Variante als Ausfall-Modell hinterlegen (fast/medium);
+    // heavy: "fallback" aus dem Vorschlag (Ausfall-Modell des Ausfallschutzes)
+    if (tier === 'heavy') {
+      const fb = d.fallback
+      if (fb?.model) {
+        fallbacks[tier] = { model: fb.model, variant: fb.variant || '(keine)', disabled: false }
+        fbManual[tier] = true
+      } else {
+        fallbacks[tier] = { model: '', variant: '(keine)', disabled: true }
+      }
+    } else if (other?.model) {
       fallbacks[tier] = { model: other.model, variant: other.variant || '(keine)', disabled: false }
     } else {
       fallbacks[tier] = { model: '', variant: '(keine)', disabled: true }
@@ -1387,14 +1401,18 @@ setInterval(loadSuggestStatus, 60000)
 <!-- gemeinsame Vorschlags-Darstellung (manueller Lauf + gespeicherter Automatik-Vorschlag) -->
 {#snippet suggestTable(res, btnLabel = '↓ In den Editor übernehmen')}
   {#if res.reasoning}<p class="muted">{res.reasoning}</p>{/if}
+  {#if res.warnings?.length}
+    <p class="muted fbHint warn">Vom Modell verworfen (nicht im Katalog verfügbar): {res.warnings.join(' · ')}</p>
+  {/if}
   <table>
     <thead><tr><th>Tier</th><th>Wahl</th><th>Modell</th><th>Preis in/out $/M</th><th>Variante</th><th>Begründung</th></tr></thead>
     <tbody>
       {#each ['fast', 'medium', 'heavy'] as tier}
         {@const paid = res[tier]?.paid}
         {@const free = res[tier]?.free}
+        {@const fb = res[tier]?.fallback}
         <tr class={!useFree[tier] ? 'rowActive' : ''}>
-          <td rowspan={free ? 2 : 1} class="tierCell">{TIER_INFO[tier].title}</td>
+          <td rowspan={(free || fb) ? 2 : 1} class="tierCell">{TIER_INFO[tier].title}</td>
           <td>
             <button class="chip {!useFree[tier] ? 'chipActive' : ''}" onclick={() => (useFree[tier] = false)}>
               bezahlt
@@ -1416,6 +1434,15 @@ setInterval(loadSuggestStatus, 60000)
             <td>{priceText(free.model)}</td>
             <td class="muted">{free.variant || '—'}</td>
             <td class="muted">{free.reason}</td>
+          </tr>
+        {/if}
+        {#if fb}
+          <tr>
+            <td class="muted">🛡 Ausfall</td>
+            <td class="mono">{fb.model}</td>
+            <td>{priceText(fb.model || '')}</td>
+            <td class="muted">{fb.variant || '—'}</td>
+            <td class="muted">{fb.reason}</td>
           </tr>
         {/if}
       {/each}
@@ -2101,12 +2128,12 @@ setInterval(loadSuggestStatus, 60000)
         {#each variantOptions(src.model) as v}<option value={v}>{v}</option>{/each}
       </select>
     </div>
-    {#if tier === 'fast' || tier === 'medium'}
+    {#if tier === 'fast' || tier === 'medium' || tier === 'heavy'}
       <div class="tierRow fbRow">
         <div class="tierLabel">
           <strong><span class="fireMark">🛡</span> Ausfallschutz</strong>
           <span class="muted">
-            {#if fbManual[tier]}manuell gewählt{:else}Vorschlag vom Tier-Modell{/if}
+            {#if fbManual[tier]}manuell gewählt{:else}{tier === 'heavy' ? 'vom Vorschlag' : 'Vorschlag vom Tier-Modell'}{/if}
             · greift automatisch bei Fehlern
           </span>
         </div>

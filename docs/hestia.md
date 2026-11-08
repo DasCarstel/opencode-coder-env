@@ -431,19 +431,23 @@ Reset-Zeit** (`Session.StructuredError`):
 |-----------|------|----------|
 | `provider.free-limit` — Gratis-Kontingent erschöpft | 429, mit `retryAfterMs` (rollierendes ~8-h-Fenster) | **Sofort-Swap** auf das Ausweichmodell (Schwelle 1, keine Probe); Rückweg per **Timer** = `now + retryAfterMs` |
 | `provider.quota` — Konto leer | 402 | Swap, **kein** Auto-Rückweg (dauerhaft) |
-| sonstige echte Ausfälle | — | bestehende Fehlerschwelle (2) wie bisher |
+| `provider.no-route` — gesetzte Variante gibt es für das Modell nicht (neue Klasse `variant`) | — | **Variante aus dem Preset räumen** und es erneut probieren: kein Wechsel auf das Ausweichmodell, keine Fehlschlagserie, genau ein sync-Rollout (idempotent, sofern die Variante ungültig war) |
+| sonstige echte Ausfälle (Klasse `other`) | — | bestehende Fehlerschwelle (2) wie bisher |
 
 Fällt der SSE-Strom aus oder fehlt `retryAfterMs`, greift als Sicherheitsnetz
-die **Watchdog-Probe — 1×/h** auf den aktiven Tier-Modellen (statt wie früher
-alle Tiers alle 3 h).
+die **Watchdog-Probe**: sie startet **sofort beim Verlust des Ereignis-Streams**
+und läuft danach höchstens **1×/h** auf den aktiven Tier-Modellen (statt wie
+früher alle Tiers alle 3 h).
 
 **Propagation ohne Neustart:** Der Swap committet die Tier-Modelle nach
 `.opencode/opencode-model-router.overrides.jsonc`. `hestia/ci/sync.sh`
-(Workflow `sync.yml`, rein manuell) ersetzt dann **genau diese eine Datei** in
-den laufenden Coder-Containern —
-`git show FETCH_HEAD:.opencode/opencode-model-router.overrides.jsonc > …`,
-ohne `reset --hard` und ohne Container-Neustart (`rollout.yml` behält den
-Restart-Pfad für echte Deployments). Das Router-Plugin liest die Overrides
+(Workflow `sync.yml`, rein manuell) ersetzt dann **die drei Router-Dateien** in
+den laufenden Coder-Containern — Overrides (Tier-Modelle),
+`.opencode/hestia-fallbacks.json` (Ausfallmodelle) und
+`.opencode/hestia-primary-agents.json` (hergeleitete Agenten) — je Datei per
+`git show FETCH_HEAD:<Datei> > <Datei>`, ohne `reset --hard` und ohne
+Container-Neustart (`rollout.yml` behält den Restart-Pfad für echte
+Deployments). Das Router-Plugin liest die Overrides
 live neu (Cache-Fingerprint über mtime/size) — der **nächste Prompt** fährt
 bereits das neue Modell; ein laufender Agent wird nicht gestört.
 
@@ -452,20 +456,45 @@ bereits das neue Modell; ein laufender Agent wird nicht gestört.
 > Prompt läuft auf dem bezahlten Modell. Lückenloses Überleben mitten im Lauf
 > leistet nur ein Retry-Proxy — bewusst zurückgestellt.
 
-Wird ein Tier auf ein **Gratis-Modell** gesetzt (Kosten 0/0), hinterlegt Hestia
-automatisch das **bezahlte Gegenstück** als Ausfallmodell in
+**Zustandsautomat je Tier:** Default-Zustand = das **Gratis-Modell** (Kosten
+0/0); `heavy` läuft als Ausnahme von vornherein auf dem bezahlten
+`opencode-go/glm-5.3` (Variante `high`). Wird ein Tier auf ein Gratis-Modell
+gesetzt, hinterlegt Hestia das **bezahlte Gegenstück** als Ausfallmodell in
 `.opencode/hestia-fallbacks.json` (Model + Variant je Tier). Dieses Ausfallmodell
 lässt sich im **Tier-Editor** je Tier auch **manuell** wählen — oder bewusst auf
 „kein Ausfall-Modell" setzen; die Auswahl wird mit dem Tier-Update committet.
 
-| Tier | Primär (gratis) | Ausweich (Abo) |
-|------|-----------------|----------------|
+Beim `free-limit`-Event wechselt das Tier **sofort** (Schwelle 1, ohne Probe) auf
+das bezahlte Ausfallmodell — das Preset zeigt es für die Dauer des bezahlten
+Fensters als **primäres Tier-Modell**, und nach Ablauf des Termins springt der
+Rückweg automatisch auf das Gratis-Modell zurück (siehe unten). Der Zustand liegt
+im Modell-Gedächtnis `.opencode/hestia-model-health.json`:
+
+| Feld in der Health-Datei (`health.tiers[tier]`) | Bedeutung |
+|---|---|
+| `primaryModel` / `primaryVariant` | Primärmodell samt Version, auf das der Rückweg zurückwechselt |
+| `paidReason` | Grund des Swaps (`free_limit`, `quota` oder `outage`) |
+| `paidUntil` | Rückweg-Termin = Empfangszeitpunkt + `retryAfterMs`; nur beim `free_limit`-Swap gesetzt |
+| `swappedAt` | Zeitpunkt des Swaps |
+
+Der **Rückweg** läuft zeitgesteuert über `check_returns()` — der Failover-Loop
+ruft es jeden Tick auf (max. alle ≤ 60 s): ist `paidUntil` erreicht, wechselt
+die Funktion auf `primaryModel`/`primaryVariant` zurück — bewusst **ohne
+Modell-Probe**: nach Ablauf von `retryAfterMs` ist das Gratis-Kontingent wieder
+offen, ein Zusatz-Turn würde nur kosten.
+Quota-Swaps haben kein `paidUntil` und bleiben daher dauerhaft. Ein einmaliger
+sync-Rollout verteilt die Rückkehr an alle Container.
+
+| Tier | Primär | Ausweich (bezahltes Ausfallmodell) |
+|------|--------|-----------------------------------|
 | `fast` | `opencode/deepseek-v4.1-flash-free` | `opencode-go/deepseek-v4.1-flash` |
 | `medium` | `opencode/glm-5.3-flash-free` | `opencode-go/glm-5.3-flash` |
-| `heavy` | `opencode/gpt-6.1-sol#high` | **`opencode-go/glm-5.3`** |
+| `heavy` | `opencode-go/glm-5.3` (Variante `high`) | `opencode-go/qwen3.8-max#xhigh` |
 
-> `heavy` läuft primär auf `opencode/gpt-6.1-sol` (Zen) — das Zen-Guthaben ist
-> leer, deshalb ist der Ausweichref `opencode-go/glm-5.3` zwingend.
+> `heavy` ist bewusst kein Gratis-Primärmodell — das Zen-Guthaben für
+> `opencode/gpt-6.1-sol` ist leer, deshalb läuft das Tier direkt auf dem
+> bezahlten `opencode-go/glm-5.3#high` und wählt bei echtem Ausfall
+> `opencode-go/qwen3.8-max#xhigh`.
 
 Bei erschöpftem Gratis-Kontingent schaltet der Auto-Failover auf das bezahlte
 Modell (sofort beim `free-limit`-Event, zurück per Timer — siehe oben). Die
@@ -475,8 +504,8 @@ nur noch als Startwerte, wenn die SOT fehlt:
 
 | Einstellung | Feld in der SOT | Startwert (Env) | Wirkung |
 |-------------|-----------------|-----------------|---------|
-| Auto-Failover | `enabled` | `HESTIA_AUTO_FAILOVER` (`0`) | `false` = nur manuell (Panel-Button), `true` = automatisch beim Probe-Lauf |
-| Prüfintervall | `intervalSeconds` | `HESTIA_PROBE_INTERVAL` (`900`) | Intervall der Erreichbarkeitsproben (60..86400 s) |
+| Auto-Failover | `enabled` | `HESTIA_AUTO_FAILOVER` (`0`) | `false` = nur manuell (Panel-Button), `true` = automatisch beim Event-/Probe-Lauf |
+| Prüfintervall | `intervalSeconds` | `HESTIA_PROBE_INTERVAL` (`900`) | Intervall der Watchdog-Wiederholung (60..86400 s; der Watchdog selbst läuft höchstens 1×/h) |
 | Fehlerschwelle | `threshold` | `HESTIA_FAIL_THRESHOLD` (`2`) | Fehlversuche bis zum Umschalten (1..10) |
 | Probe-Timeout | `timeoutSeconds` | `HESTIA_PROBE_TIMEOUT` (`35`) | Zeitfenster je Probe (5..300 s) |
 | Modell-Quarantäne | `quarantineHours` | `HESTIA_QUARANTINE_HOURS` (`6`) | Stunden, in denen ein mehrfach echt ausgefallenes Modell nicht als Ausweich-Ziel gewählt wird (0..72; `0` = aus) |
@@ -494,7 +523,8 @@ ein Container-Neustart ist nicht nötig.
 > SOT-Synchronisierung wäre ein Failover nur für die Subagent-Tiers wirksam
 > gewesen, nicht für die Chat-Agenten.
 
-Status über `/api/failover/status`, Sofort-Prüfung per `POST /api/failover/check`.
+Status über `/api/failover/status`, Ereignis-Historie per `GET /api/failover/events`,
+Sofort-Prüfung per `POST /api/failover/check`.
 
 ### Warum der Wächter nicht mehr grundlos neu startet
 
@@ -506,7 +536,7 @@ Container-Neustarts auslöste, ohne dass sich etwas geändert hatte:
 |-------|-----------|
 | **Kontingent ≠ Ausfall** — ist das aktive Konto erschöpft/rate-limited (429), passiert nichts; das Feld übernimmt `accounts.py` (Kontowechsel) | Modellwechsel, der gegen ein leeres Kontingent nichts hilft |
 | **Kein No-op-Swap** — steht das Tier schon auf seinem Ausweich-Modell, wird nicht committet; `github_api.put_files` überspringt identische Inhalte generell | Leere Commits + Rollout (die Ursache der Dauer-Neustarts) |
-| **Ausweich-Modell wird vorher geprobt** | Wechsel auf ein Modell, das selbst nicht antwortet |
+| **Ausweich-Modell wird im Watchdog vorher geprobt** (`run_probes`, auch beim manuellen `POST /api/failover/check`) — der Ereignis-Pfad probiert bewusst **nicht**: ein zusätzlicher Probe-Turn kostet einen bezahlten Turn ohne Nutzen, der Swap ist idempotent und der Rückweg-Timer korrigiert im Zweifel selbst | Wechsel auf ein Modell, das selbst nicht antwortet (nur im Probe-Pfad; auf dem Event-Pfad fängt der Rückweg-Timer es) |
 | **Modell-Quarantäne** (`hestia-model-health.json`) — ein mehrfach echt ausgefallenes Modell wird `quarantineHours` lang nicht als Ziel gewählt | Hin-und-Her-Wechseln (Flip-Flop) zwischen zwei Modellen |
 | **Ein Rollout pro Prüflauf** — mehrere gleichzeitig ausgefallene Tiers werden in einem Commit gebündelt und lösen genau einen Rollout aus (zusätzlich `concurrency` in `rollout.yml`) | Parallele Rollouts, die die Workspaces mehrfach neu starten |
 
@@ -545,15 +575,37 @@ bei einer **materiellen Katalogänderung**. Konfiguration in `.opencode/hestia-s
 - **Sichtbarkeit:** Das Panel zeigt den letzten automatischen Vorschlag, markiert
   Abweichungen zur aktiven Konfiguration und kann ihn in den Tier-Editor übernehmen.
 
-- **Default:** `@heavy` aus den committeten Overrides, inklusive Effort-Variante.
-  Im Panel frei wählbar — Editor-Auswahl oder jedes Katalog-Modell.
-- **Fallback-Kette:** `heavy → medium → Session-Default`. Fällt ein Modell aus, wird
-  das nächste probiert, statt den Vorschlag abzubrechen.
+- **Analyse-Modell (Kandidaten-Kette):** Der Lauf wählt das Analyse-Modell aus
+  der Kette **Panel-`analysisModel` (Auto-Lauf bzw. Panel-Auswahl) → `@heavy` →
+  `@medium` → Session-Default**. Ein explizit gewähltes Modell ersetzt den
+  ersten Kandidaten; die dahinter liegenden bleiben als Sicherheitsnetz
+  erhalten. Ohne Panel-Auswahl greift für `@heavy` zuerst `OC_SUGGEST_MODEL`
+  (Env, Format `provider/model#variant`; leer = Tier-Heavy aus den committeten
+  Overrides, inklusive Effort-Variante) — die Env gilt **nur** für `@heavy` und
+  nur, wenn kein Modell im Panel gewählt ist. Varianten werden vor dem Lauf
+  gegen den Live-Katalog geprüft; eine unbekannte Variante wird still
+  abgewählt und protokolliert.
+- **Fallback-Kette:** fährt die Kette von oben runter — antwortet ein Kandidat
+  im Live-Versuch nicht, wird der nächste probiert, statt den Vorschlag
+  abzubrechen.
+- **Kontext:** der Vorschlags-Prompt liest die aktuellen Ausweichmodelle aus
+  `.opencode/hestia-fallbacks.json` („aktuelle Ausfall-Modelle"), sodass das
+  Modell auch diese bewerten und beim Neuvorschlag berücksichtigen kann.
+- **Antwortschema:** für `fast`/`medium` liefert der Vorschlag je ein `paid`
+  (stabil, kostenpflichtig) + `free` (Gratis-Modell); für `heavy` entfällt
+  `free` bewusst — dafür gibt es `paid` + `fallback` (das bezahlte
+  Ausweichmodell des Ausfallschutzes, das beim `@heavy`-Ausfall automatisch
+  übernimmt; es darf nicht das bezahlte `paid`-Modell selbst sein).
+- **Validierung:** jede Vorschlags-Ref wird gegen `catalog.usable` geprüft,
+  jede Variante gegen die Live-Varianten des Modells. Ungültige Vorschläge
+  werden verworfen und als `warnings` (max. 8) im Ergebnis fürs Panel geführt —
+  der Lauf bricht deswegen nicht ab.
+- **Übernehmen:** beim Überführen des Vorschlags in den Tier-Editor landet das
+  heavy-`fallback` als Ausfallmodell in `.opencode/hestia-fallbacks.json`.
 - **Timeouts** (bewusst unterschiedlich): `OC_SUGGEST_STALL_TIMEOUT` = 45 s Stille,
-  `OC_SUGGEST_TIMEOUT` = 300 s gesamt. Der Unterschied ist wichtig: die vollen
-  Katalog-Modelle mit Effort-Variante brauchen deutlich länger als 150 s, ein zu
-  kurzes Gesamtlimit hat den Vorschlag regelmäßig in den `@medium`-Fallback getrieben.
-  Ein Hänger wird über *Stille* erkannt, nicht über das Gesamtlimit.
+  `OC_SUGGEST_TIMEOUT` = 150 s gesamt (beide per Env überschreibbar). Ein Hänger
+  wird über *Stille* erkannt, nicht über das Gesamtlimit — deshalb sind die
+  Grenzen getrennt.
 - **Aufräumen:** die Analyse-Session wird danach automatisch gelöscht;
   `OC_SUGGEST_KEEP_SESSIONS=1` behält sie zum Debuggen.
 
