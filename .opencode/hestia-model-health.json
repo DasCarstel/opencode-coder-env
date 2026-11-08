@@ -1,38 +1,42 @@
 {
-  "updatedAt": "2026-11-08T21:15:14Z",
+  "updatedAt": "2026-11-08T21:24:59Z",
   "tiers": {
     "fast": {
       "model": "opencode-go/deepseek-v4.1-flash",
-      "ok": true,
-      "failStreak": 0,
+      "ok": false,
+      "failStreak": 1,
       "paidUntil": 1794183111.8831804,
       "primaryModel": "opencode/deepseek-v4.1-flash-free",
       "primaryVariant": "",
       "paidReason": "free_limit",
-      "swappedAt": "2026-11-08T21:09:25Z"
+      "swappedAt": "2026-11-08T21:09:25Z",
+      "lastFailAt": "2026-11-08T21:24:56Z",
+      "lastFailureKind": "outage",
+      "quarantineUntil": ""
     },
     "medium": {
       "model": "opencode-go/glm-5.3-flash",
-      "ok": true,
-      "failStreak": 0,
+      "ok": false,
+      "failStreak": 1,
       "paidUntil": 1794183114.9587553,
       "primaryModel": "opencode/glm-5.3-flash-free",
       "primaryVariant": "",
       "paidReason": "free_limit",
-      "swappedAt": "2026-11-08T21:09:28Z"
+      "swappedAt": "2026-11-08T21:09:28Z",
+      "lastFailAt": "2026-11-08T21:24:56Z",
+      "lastFailureKind": "outage",
+      "quarantineUntil": ""
     },
     "heavy": {
-      "model": "opencode-go/glm-5.3#xhigh",
-      "ok": false,
-      "failStreak": 1,
-      "lastFailAt": "2026-11-08T21:15:14Z",
-      "lastFailureKind": "outage",
-      "quarantineUntil": "",
-      "paidUntil": 1794183118.0381973,
+      "model": "opencode-go/qwen3.8-max#xhigh",
+      "ok": true,
+      "failStreak": 0,
+      "lastOkAt": "2026-11-08T21:24:59Z",
+      "swappedAt": "2026-11-08T21:24:59Z",
       "primaryModel": "opencode-go/glm-5.3",
-      "primaryVariant": "",
-      "paidReason": "free_limit",
-      "swappedAt": "2026-11-08T21:09:32Z"
+      "primaryVariant": "xhigh",
+      "paidReason": "other",
+      "quarantineUntil": ""
     }
   },
   "models": {
@@ -43,8 +47,10 @@
     },
     "opencode-go/glm-5.3-flash": {
       "model": "opencode-go/glm-5.3-flash",
-      "failStreak": 0,
-      "quarantineUntil": ""
+      "failStreak": 1,
+      "quarantineUntil": "",
+      "lastFailAt": "2026-11-08T21:24:56Z",
+      "lastFailureKind": "outage"
     },
     "opencode-go/glm-5.3#max": {
       "model": "opencode-go/glm-5.3#max",
@@ -74,8 +80,10 @@
     },
     "opencode-go/deepseek-v4.1-flash": {
       "model": "opencode-go/deepseek-v4.1-flash",
-      "failStreak": 0,
-      "quarantineUntil": ""
+      "failStreak": 1,
+      "quarantineUntil": "",
+      "lastFailAt": "2026-11-08T21:24:56Z",
+      "lastFailureKind": "outage"
     },
     "opencode-go/glm-5.3": {
       "model": "opencode-go/glm-5.3",
@@ -89,12 +97,12 @@
       "model": "opencode-go/qwen3.8-max#xhigh",
       "failStreak": 0,
       "quarantineUntil": "",
-      "lastOkAt": "2026-11-08T21:09:32Z"
+      "lastOkAt": "2026-11-08T21:24:59Z"
     },
     "opencode-go/glm-5.3#xhigh": {
       "model": "opencode-go/glm-5.3#xhigh",
-      "failStreak": 1,
-      "lastFailAt": "2026-11-08T21:15:14Z",
+      "failStreak": 2,
+      "lastFailAt": "2026-11-08T21:24:56Z",
       "lastFailureKind": "outage"
     }
   }
