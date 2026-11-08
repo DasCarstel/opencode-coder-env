@@ -56,8 +56,9 @@ ergänzt und in `toolsets.enabled` als `mcp-<name>` freigeschaltet (danach
 Aktuell: `homeassistant` (http), `notion` (http/oauth), `ocis-private` und
 `ocis-muellerconnect` (stdio), `super-productivity` (http,
 `https://mcp-superproductivity.mueller-nas.de/mcp`, Bearer-Token),
-`spotify` (stdio, `node /opt/spotify-mcp/build/index.js`, 31 Tools) sowie
-`google-calendar` (stdio, `@cocal/google-calendar-mcp`, self-hosted).
+`spotify` (stdio, `node /opt/spotify-mcp/build/index.js`, 31 Tools),
+`google-calendar` (stdio, `@cocal/google-calendar-mcp`, self-hosted) sowie
+`yazio` (stdio, Fork von `tomastaker/yazio-mcp` — siehe unten).
 
 > **Je Toolset eine eigene Listenzeile.** `- mcp-homeassistant - mcp-ocis-private`
 > in einer Zeile ist **ein** Eintrag namens `mcp-homeassistant - mcp-ocis-private`
@@ -210,7 +211,69 @@ danach `docker restart hermes`.
 > „App nicht verifiziert" bleibt auch danach normal. In Produktion laufen die
 > Tokens nicht mehr ab.
 
-## Deploy
+## YAZIO
+
+Der YAZIO-MCP-Server
+([`tomastaker/yazio-mcp`](https://github.com/tomastaker/yazio-mcp), MIT) macht
+das Ernährungstagebuch für den Agenten les- **und** schreibbar: Produktsuche in
+der deutschen YAZIO-Datenbank, Tagebuch lesen, Einträge anlegen/ändern/löschen,
+Wasser, Gewicht und Auswertungen.
+
+**Warum ein Fork.** Upstream ist ein Ein-Personen-Projekt (letzter Commit
+2026-10-14). Erwartung ist bewusst niedrig: das Projekt wird **nicht** als
+gepflegte Abhängigkeit behandelt, sondern als gepinnter Fremdcode. Der Fork
+`DasCarstel/yazio-mcp` hält unseren Stand; das Image baut **einen festen
+Commit** (`ARG YAZIO_MCP_COMMIT`) — kein Auto-Update.
+
+Eigene Patches gegenüber Upstream:
+
+| Patch | Zweck |
+|-------|-------|
+| `feat(saved-meals)` | Tools `list_saved_meals`, `log_saved_meal`, `save_meal` — benannte Mahlzeiten aus `saved-meals.json` in einem Aufruf buchen |
+
+**API-Basis ist `/v19`.** Verifiziert am 2026-11-08: Login per Password-Grant,
+Produktsuche (DE/`de_DE`), Tagebuch und der komplette Schreibzyklus
+(anlegen → per Re-Read verifiziert → Betrag ändern → löschen) funktionieren mit
+unserem Account. Die App-Header (`x-yazio-app-version` …) sind auf `/v19`
+**nicht** nötig; `/v22` wird nur vom Exporter genutzt.
+
+**Zugangsdaten.** OpenBao `secret/data/mcp/yazio` (`username`, `password`,
+`client_id`, `client_secret`) ist die Quelle. `hestia/scripts/yazio_env.py`
+rendert daraus zwei Dateien ins Volume:
+
+| Host-Pfad | Inhalt |
+|-----------|--------|
+| `/etc/docker/hermes/data/yazio/.env` | Umgebungsvariablen, **0600** |
+| `/etc/docker/hermes/data/yazio/run.sh` | Wrapper: `.env` laden, `exec /opt/node/bin/node /opt/yazio-mcp/dist/index.js`, **0700** |
+
+`config.yaml` enthält damit **keine** YAZIO-Secrets, nur
+`command: /opt/data/yazio/run.sh`. Der Token-Cache liegt unter
+`/opt/data/yazio/token.json` (0700-Verzeichnis), `saved-meals.json` daneben.
+
+> **Falle: `$` im Passwort.** In `yazio.env` des Exporters steht `$$`, weil
+> Compose sonst interpoliert (sonst HTTP 400 mit leerem Body). `yazio_env.py`
+> liest den OpenBao-Wert direkt und quotet ihn mit `shlex.quote` — hier wird
+> nichts unescaped.
+
+**Gespeicherte Mahlzeiten.** YAZIO selbst liefert für diesen Account **keine**
+Rezepte (`GET /user/recipes` → `[]`), und `recipe_portions` beim Schreiben ist
+bei keinem Client verifiziert. Deshalb eigene Templates:
+`/opt/data/yazio/saved-meals.json`
+
+```json
+{ "meals": [ { "name": "Chicken Teriyaki", "aliases": ["teriyaki"],
+  "default_daytime": "lunch",
+  "items": [ { "product_id": "<uuid>", "amount": 250, "serving": "gram",
+               "serving_quantity": null } ] } ] }
+```
+
+Anlegen per `save_meal` (validiert die `product_id` gegen die API), buchen per
+`log_saved_meal` — `dry_run` ist default `true` wie bei allen Schreib-Tools.
+
+**Aktivierung.** `mcp-yazio` in `toolsets.enabled` **und** in
+`platform_toolsets.api_server` ergänzen, danach `docker restart hermes`.
+
+
 
 ```text
 Push auf master (Pfade hermes/** oder .github/workflows/deploy-hermes.yml)

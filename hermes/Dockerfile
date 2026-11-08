@@ -67,4 +67,25 @@ RUN set -eux; \
 # Image-Rebuilds ueberleben (die Datei selbst liegt bewusst ausserhalb des Repos).
 RUN ln -sfn /opt/data/spotify/spotify-config.json /opt/spotify-mcp/spotify-config.json
 
+# --- YAZIO-MCP (Fork DasCarstel/yazio-mcp von tomastaker/yazio-mcp) ---------
+# Upstream ist ein Ein-Personen-Projekt (letzter Upstream-Commit 2026-10-14).
+# Deshalb wird nicht "latest" gebaut, sondern ein fester Commit unseres Forks.
+# Gestartet wird NICHT direkt, sondern ueber /opt/data/yazio/run.sh (aus
+# hestia/scripts/yazio_env.py): der Wrapper laedt die Secrets aus
+# /opt/data/yazio/.env und setzt sie nur fuer diesen Prozess. Damit stehen in
+# der config.yaml keine YAZIO-Zugangsdaten.
+# Node >= 20 ist erfuellt; gebaut wird mit /opt/node (siehe Spotify oben).
+ARG YAZIO_MCP_COMMIT=52a53eb9f772fe6c55c9a286ae3beee0794e34a4
+RUN set -eux; \
+    curl -fsSL -o /tmp/yazio-mcp.tar.gz "https://github.com/DasCarstel/yazio-mcp/archive/${YAZIO_MCP_COMMIT}.tar.gz"; \
+    tar -xzf /tmp/yazio-mcp.tar.gz -C /tmp; \
+    mkdir -p /opt/yazio-mcp; \
+    cp -a "/tmp/yazio-mcp-${YAZIO_MCP_COMMIT}/." /opt/yazio-mcp/; \
+    rm -rf /tmp/yazio-mcp.tar.gz "/tmp/yazio-mcp-${YAZIO_MCP_COMMIT}"; \
+    cd /opt/yazio-mcp; \
+    PATH="/opt/node/bin:$PATH" npm ci; \
+    PATH="/opt/node/bin:$PATH" npm run build; \
+    PATH="/opt/node/bin:$PATH" npm prune --omit=dev; \
+    rm -rf src tests scripts .github
+
 USER hermes
