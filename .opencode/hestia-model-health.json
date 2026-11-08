@@ -1,23 +1,29 @@
 {
-  "updatedAt": "2026-11-08T15:21:14Z",
+  "updatedAt": "2026-11-08T18:21:23Z",
   "tiers": {
     "fast": {
       "model": "opencode/deepseek-v4.1-flash-free",
-      "ok": true,
-      "failStreak": 0
+      "ok": false,
+      "failStreak": 1,
+      "lastFailAt": "2026-11-08T18:21:22Z",
+      "lastFailureKind": "outage",
+      "quarantineUntil": ""
     },
     "medium": {
       "model": "opencode/glm-5.3-flash-free",
-      "ok": true,
-      "failStreak": 0
+      "ok": false,
+      "failStreak": 1,
+      "lastFailAt": "2026-11-08T18:21:23Z",
+      "lastFailureKind": "outage",
+      "quarantineUntil": ""
     },
     "heavy": {
       "model": "opencode/gpt-6.1-sol#high",
       "ok": false,
-      "failStreak": 42,
-      "lastFailAt": "2026-11-08T15:21:14Z",
+      "failStreak": 43,
+      "lastFailAt": "2026-11-08T18:21:23Z",
       "lastFailureKind": "outage",
-      "quarantineUntil": "2026-11-08T21:21:14Z"
+      "quarantineUntil": "2026-11-09T00:21:23Z"
     }
   },
   "models": {
@@ -38,20 +44,24 @@
     },
     "opencode/deepseek-v4.1-flash-free": {
       "model": "opencode/deepseek-v4.1-flash-free",
-      "failStreak": 0,
-      "quarantineUntil": ""
+      "failStreak": 1,
+      "quarantineUntil": "",
+      "lastFailAt": "2026-11-08T18:21:22Z",
+      "lastFailureKind": "outage"
     },
     "opencode/glm-5.3-flash-free": {
       "model": "opencode/glm-5.3-flash-free",
-      "failStreak": 0,
-      "quarantineUntil": ""
+      "failStreak": 1,
+      "quarantineUntil": "",
+      "lastFailAt": "2026-11-08T18:21:23Z",
+      "lastFailureKind": "outage"
     },
     "opencode/gpt-6.1-sol#high": {
       "model": "opencode/gpt-6.1-sol#high",
-      "failStreak": 42,
-      "lastFailAt": "2026-11-08T15:21:14Z",
+      "failStreak": 43,
+      "lastFailAt": "2026-11-08T18:21:23Z",
       "lastFailureKind": "outage",
-      "quarantineUntil": "2026-11-08T21:21:14Z"
+      "quarantineUntil": "2026-11-09T00:21:23Z"
     }
   }
 }
