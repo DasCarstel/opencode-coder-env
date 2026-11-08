@@ -8,7 +8,7 @@
     "variant": ""
   },
   "heavy": {
-    "model": "opencode-go/glm-5.3",
-    "variant": ""
+    "model": "opencode-go/qwen3.8-max",
+    "variant": "xhigh"
   }
 }
