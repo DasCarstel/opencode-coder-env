@@ -1,36 +1,41 @@
 {
-  "updatedAt": "2026-11-08T21:06:04Z",
+  "updatedAt": "2026-11-08T21:09:32Z",
   "tiers": {
     "fast": {
       "model": "opencode-go/deepseek-v4.1-flash",
-      "ok": false,
+      "ok": true,
       "failStreak": 0,
-      "lastOkAt": "2026-11-08T19:29:39Z",
-      "swappedAt": "2026-11-08T19:29:39Z",
-      "lastFailAt": "2026-11-08T21:06:01Z",
-      "lastFailureKind": "quota",
-      "quarantineUntil": ""
+      "lastOkAt": "2026-11-08T21:09:25Z",
+      "swappedAt": "2026-11-08T21:09:25Z",
+      "primaryModel": "opencode/deepseek-v4.1-flash-free",
+      "primaryVariant": "",
+      "paidReason": "free_limit",
+      "quarantineUntil": "",
+      "paidUntil": 1794183111.8831804
     },
     "medium": {
       "model": "opencode-go/glm-5.3-flash",
-      "ok": false,
-      "failStreak": 0,
-      "lastOkAt": "2026-11-08T19:29:44Z",
-      "swappedAt": "2026-11-08T19:29:44Z",
-      "lastFailAt": "2026-11-08T21:06:01Z",
-      "lastFailureKind": "quota",
-      "quarantineUntil": ""
-    },
-    "heavy": {
-      "model": "opencode-go/glm-5.3",
       "ok": true,
       "failStreak": 0,
-      "lastOkAt": "2026-11-08T21:06:04Z",
-      "swappedAt": "2026-11-08T21:06:04Z",
-      "primaryModel": "opencode/gpt-6.1-sol",
-      "primaryVariant": "high",
-      "paidReason": "quota",
-      "quarantineUntil": ""
+      "lastOkAt": "2026-11-08T21:09:28Z",
+      "swappedAt": "2026-11-08T21:09:28Z",
+      "primaryModel": "opencode/glm-5.3-flash-free",
+      "primaryVariant": "",
+      "paidReason": "free_limit",
+      "quarantineUntil": "",
+      "paidUntil": 1794183114.9587553
+    },
+    "heavy": {
+      "model": "opencode-go/qwen3.8-max#xhigh",
+      "ok": true,
+      "failStreak": 0,
+      "lastOkAt": "2026-11-08T21:09:32Z",
+      "swappedAt": "2026-11-08T21:09:32Z",
+      "primaryModel": "opencode-go/glm-5.3",
+      "primaryVariant": "",
+      "paidReason": "free_limit",
+      "quarantineUntil": "",
+      "paidUntil": 1794183118.0381973
     }
   },
   "models": {
@@ -41,11 +46,9 @@
     },
     "opencode-go/glm-5.3-flash": {
       "model": "opencode-go/glm-5.3-flash",
-      "failStreak": 1,
+      "failStreak": 0,
       "quarantineUntil": "",
-      "lastOkAt": "2026-11-08T19:29:44Z",
-      "lastFailAt": "2026-11-08T21:06:01Z",
-      "lastFailureKind": "quota"
+      "lastOkAt": "2026-11-08T21:09:28Z"
     },
     "opencode-go/glm-5.3#max": {
       "model": "opencode-go/glm-5.3#max",
@@ -54,17 +57,17 @@
     },
     "opencode/deepseek-v4.1-flash-free": {
       "model": "opencode/deepseek-v4.1-flash-free",
-      "failStreak": 2,
+      "failStreak": 3,
       "quarantineUntil": "2026-11-09T01:29:33Z",
-      "lastFailAt": "2026-11-08T19:29:33Z",
-      "lastFailureKind": "outage"
+      "lastFailAt": "2026-11-08T21:09:22Z",
+      "lastFailureKind": "free_limit"
     },
     "opencode/glm-5.3-flash-free": {
       "model": "opencode/glm-5.3-flash-free",
-      "failStreak": 2,
+      "failStreak": 3,
       "quarantineUntil": "2026-11-09T01:29:39Z",
-      "lastFailAt": "2026-11-08T19:29:39Z",
-      "lastFailureKind": "outage"
+      "lastFailAt": "2026-11-08T21:09:25Z",
+      "lastFailureKind": "free_limit"
     },
     "opencode/gpt-6.1-sol#high": {
       "model": "opencode/gpt-6.1-sol#high",
@@ -75,17 +78,23 @@
     },
     "opencode-go/deepseek-v4.1-flash": {
       "model": "opencode-go/deepseek-v4.1-flash",
-      "failStreak": 1,
+      "failStreak": 0,
       "quarantineUntil": "",
-      "lastOkAt": "2026-11-08T19:29:39Z",
-      "lastFailAt": "2026-11-08T21:06:01Z",
-      "lastFailureKind": "quota"
+      "lastOkAt": "2026-11-08T21:09:25Z"
     },
     "opencode-go/glm-5.3": {
       "model": "opencode-go/glm-5.3",
+      "failStreak": 1,
+      "quarantineUntil": "",
+      "lastOkAt": "2026-11-08T21:06:04Z",
+      "lastFailAt": "2026-11-08T21:09:28Z",
+      "lastFailureKind": "free_limit"
+    },
+    "opencode-go/qwen3.8-max#xhigh": {
+      "model": "opencode-go/qwen3.8-max#xhigh",
       "failStreak": 0,
       "quarantineUntil": "",
-      "lastOkAt": "2026-11-08T21:06:04Z"
+      "lastOkAt": "2026-11-08T21:09:32Z"
     }
   }
 }
