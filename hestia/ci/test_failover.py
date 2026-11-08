@@ -220,13 +220,27 @@ FB_ALL = {"fast": {"model": "openai/gpt-5.1"},
           "medium": {"model": "openai/gpt-5.1-pro"},
           "heavy": {"model": "openai/gpt-5.1-max"}}
 
+# Ein free-limit kann nur von einem Gratis-Modell kommen, ein 402 nur vom
+# Zen-Konto (Provider opencode, kostenpflichtig) — der Event-Pfad filtert
+# entsprechend. Diese Presets bilden das je Fall ab.
+FREE_PRESET = {"presets": {"hestia": {
+    "fast": {"model": "opencode/deepseek-v4.1-flash-free"},
+    "medium": {"model": "opencode/glm-5.3-flash-free"},
+    "heavy": {"model": "opencode-go/glm-5.3", "variant": "max"},
+}}}
+ZEN_PRESET = {"presets": {"hestia": {
+    "fast": {"model": "opencode-go/deepseek-v4.1-flash"},
+    "medium": {"model": "opencode-go/glm-5.3-flash"},
+    "heavy": {"model": "opencode/gpt-6.1-sol", "variant": "high"},
+}}}
+
 print("\n[8] Event free-limit → sofortiger Swap (Schwelle 1) + Rückweg-Timer")
-fo = reset(probe_results=[], fallbacks=dict(FB_ALL))
+fo = reset(probe_results=[], preset=dict(FREE_PRESET), fallbacks=dict(FB_ALL))
 fo.STATE["autoFailover"] = True
 res = fo.handle_execution_failed(_failed_event("provider.free-limit", retry=28744000, status=429))
 check("Klassifikation free_limit", res["kind"] == "free_limit", str(res))
-check("Swaps sofort (alle Tiers mit Ausfall-Modell)",
-      res["swapped"] == ["fast", "medium", "heavy"], str(res["swaps"]))
+check("Swaps sofort (nur Gratis-Tiers, heavy bleibt bezahlt)",
+      res["swapped"] == ["fast", "medium"], str(res["swaps"]))
 check("keine Proben im Event-Pfad (request sparsam)",
       len(BEHAVIOUR["probe_results"]) == 0, str(BEHAVIOUR["probe_results"]))
 check("genau EIN sync-Rollout", CALLS["dispatch"] == ["sync.yml"], str(CALLS["dispatch"]))
@@ -234,9 +248,9 @@ check("Rückweg-Timer im STATE (freeLimitUntil)",
       (fo.STATE.get("freeLimitUntil") or 0) > fo._now(), str(fo.STATE.get("freeLimitUntil")))
 check("paidUntil + primaryModel im Gedächtnis",
       all(res["health"]["tiers"][t].get("paidUntil") and
-          res["health"]["tiers"][t].get("primaryModel") for t in fo.TIERS),
+          res["health"]["tiers"][t].get("primaryModel") for t in ("fast", "medium")),
       str({t: {"paidUntil": res["health"]["tiers"][t].get("paidUntil"),
-               "primaryModel": res["health"]["tiers"][t].get("primaryModel")} for t in fo.TIERS}))
+               "primaryModel": res["health"]["tiers"][t].get("primaryModel")} for t in ("fast", "medium")}))
 check("Event im Ringpuffer", len(fo.recent_events()) == 1, str(fo.recent_events()))
 dedup = fo.handle_execution_failed(_failed_event("provider.free-limit", retry=28744000, ses="ses_a"))
 check("identisches Event dedupliziert", dedup.get("deduped") is True, str(dedup))
@@ -246,15 +260,15 @@ check("status_extras liefert die Panel-Felder",
       str(fo.status_extras()))
 check("eventStream zählt als getrennt", fo.status_extras()["eventStream"]["connected"] is False)
 
-print("\n[9] Event quota → Swap ohne Rückweg-Timer")
-fo = reset(probe_results=[], fallbacks=dict(FB_ALL))
+print("\n[9] Event quota → Swap ohne Rückweg-Timer (nur Zen-Tiers)")
+fo = reset(probe_results=[], preset=dict(ZEN_PRESET), fallbacks=dict(FB_ALL))
 fo.STATE["autoFailover"] = True
 res = fo.handle_execution_failed(_failed_event("provider.quota", status=402))
-check("Swaps sofort", res["swapped"] == ["fast", "medium", "heavy"], str(res["swaps"]))
+check("Swaps sofort (nur das Zen-Tier)", res["swapped"] == ["heavy"], str(res["swaps"]))
 check("kein freeLimitUntil im STATE", fo.STATE.get("freeLimitUntil") is None,
       str(fo.STATE.get("freeLimitUntil")))
 check("kein paidUntil im Gedächtnis",
-      all(not res["health"]["tiers"][t].get("paidUntil") for t in fo.TIERS))
+      all(not res["health"]["tiers"][t].get("paidUntil") for t in ("heavy",)))
 
 print("\n[10] Event other → bestehende Schwelle (STATE['threshold'] wirkt)")
 fo = reset(probe_results=[], fallbacks=dict(FB_ALL))
@@ -268,7 +282,7 @@ check("Serie aus Datei + Schwelle 2 → Swap",
       r2["swapped"] == ["fast", "medium", "heavy"], str(r2["swaps"]))
 
 print("\n[11] Rückweg nach retryAfterMs (Fake-Clock, kein sleep)")
-fo = reset(probe_results=[], fallbacks=dict(FB_ALL))
+fo = reset(probe_results=[], preset=dict(FREE_PRESET), fallbacks=dict(FB_ALL))
 fo.STATE["autoFailover"] = True
 real = time.time()
 fo._now = lambda: real                          # eingefrorene Uhr vor dem Event
@@ -285,16 +299,15 @@ fo._now = lambda: real + 3.0
 r_back = fo.check_returns()
 ovr = [c for c in CALLS["put_files"] if OVERRIDES in c["paths"]]
 check("nach Ablauf Rückweg auf Primärmodelle",
-      r_back["returned"] == {"fast": "opencode-go/deepseek-v4.1-flash#low",
-                             "medium": "opencode-go/glm-5.3-flash",
-                             "heavy": "opencode-go/glm-5.3#max"}, str(r_back))
+      r_back["returned"] == {"fast": "opencode/deepseek-v4.1-flash-free",
+                             "medium": "opencode/glm-5.3-flash-free"}, str(r_back))
 check("Rückweg committet Overrides", len(ovr) >= 1, str([c["paths"] for c in CALLS["put_files"]]))
 check("Rückweg OHNE Probe (keine Proben verbraucht)",
       len(BEHAVIOUR["probe_results"]) == 0, str(BEHAVIOUR["probe_results"]))
 check("freeLimitUntil nach Rückweg leer", fo.STATE.get("freeLimitUntil") is None,
       str(fo.STATE.get("freeLimitUntil")))
 check("Gedächtnis nach Rückweg geräumt",
-      all(not fo.STATE["health"]["tiers"][t].get("paidUntil") for t in fo.TIERS))
+      all(not fo.STATE["health"]["tiers"][t].get("paidUntil") for t in ("fast", "medium")))
 
 print("\n[12] Persistierter failStreak überlebt einen Neustart (Modul-Reload)")
 fo = reset(probe_results=[], fallbacks=dict(FB_ALL))
@@ -313,12 +326,13 @@ check("Serie aus Datei abgelesen (streak 2) → Swap",
 check("und genau EIN Rollout", CALLS["dispatch"] == ["sync.yml"], str(CALLS["dispatch"]))
 
 print("\n[13] Fehlender Ausweichref → sichtbarer skipped-Eintrag")
-fo = reset(probe_results=[], fallbacks={"fast": {"model": "openai/gpt-5.1"}})
+fo = reset(probe_results=[], preset=dict(FREE_PRESET),
+           fallbacks={"fast": {"model": "openai/gpt-5.1"}})
 fo.STATE["autoFailover"] = True
 res = fo.handle_execution_failed(_failed_event("provider.free-limit", retry=3000, ses="ses_nf"))
 check("fast wechselt", res["swapped"] == ["fast"], str(res["swaps"]))
-check("medium/heavy sichtbar übersprungen",
-      all("skipped: no fallback" in str(res["swaps"].get(t) or "") for t in ("medium", "heavy")),
+check("medium sichtbar übersprungen",
+      "skipped: no fallback" in str(res["swaps"].get("medium") or ""),
       str(res["swaps"]))
 
 print("\n[14] STATE['timeout'] wirkt (Regression zum Konstanten-Bug) + restart-Modus")

@@ -10,6 +10,7 @@ import base64
 import hashlib
 import json
 import os
+import time
 import urllib.request
 import urllib.error
 from datetime import datetime
@@ -262,7 +263,23 @@ def put_files(files: dict, message: str) -> dict:
     Ohne diese Prüfung erzeugte jeder Aufruf einen Push — und damit einen
     Rollout mit Container-Neustarts, auch wenn sich nichts geändert hat
     (genau das war der Dauer-Restart des Ausfallschutzes).
+
+    Läuft der Branch zwischenzeitlich weiter (menschlicher Push, Hestia-Commit
+    aus einem anderen Thread), antwortet GitHub auf das Ref-Update mit 422.
+    Dann wird die ganze Sequenz EINMAL mit frisch gelesenem Basis-SHA
+    wiederholt — sonst ginge ein Wechsel in dieser Situation verloren.
     """
+    for attempt in (1, 2):
+        try:
+            return _put_files_once(files, message)
+        except ConfigError as e:
+            if attempt == 2 or "422" not in str(e):
+                raise
+            time.sleep(0.5)
+    raise ConfigError("Ref-Update fehlgeschlagen (422)")  # pragma: no cover
+
+
+def _put_files_once(files: dict, message: str) -> dict:
     st, refd = _req("GET", f"{GITHUB_API}/repos/{GITHUB_REPO}/git/ref/heads/{GITHUB_REF}")
     if st != 200:
         raise ConfigError(f"Ref nicht lesbar ({st}): {refd.get('message','')}")

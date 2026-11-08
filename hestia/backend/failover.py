@@ -404,6 +404,23 @@ def _paid_until(entry) -> float:
         return 0.0
 
 
+def _is_free_ref(ref: str) -> bool:
+    """Gratis-Modell? (Namens-Endung -free oder Preis 0 laut Katalog)
+
+    Bewusst defensiv: Tests injizieren ein schlankes Stub-Modul für `catalog`,
+    das `is_free` nicht zwingend mitbringt — der Suffix-Test genügt dort.
+    """
+    if str(ref or "").strip().lower().endswith("-free"):
+        return True
+    fn = getattr(catalog, "is_free", None)
+    if callable(fn):
+        try:
+            return bool(fn(ref))
+        except Exception:  # noqa: BLE001
+            return False
+    return False
+
+
 def handle_execution_failed(event: dict) -> dict:
     """Ein 'session.execution.failed'-Event klassifizieren und umsetzen.
 
@@ -450,6 +467,14 @@ def handle_execution_failed(event: dict) -> dict:
         if not ref:
             continue
         label_cur = ref + (f"#{var}" if var else "")
+        # Nur betroffene Tiers behandeln: ein free-limit kann ausschließlich von
+        # einem Gratis-Modell kommen, "Insufficient account funds" (402) nur vom
+        # Zen-Konto (Provider opencode, kostenpflichtig). Ohne diesen Filter kippt
+        # ein einziger Gratis-Fehler auch die bereits bezahlten Tiers.
+        if kind == "free_limit" and not _is_free_ref(ref):
+            continue
+        if kind == "quota" and not (ref.startswith("opencode/") and not _is_free_ref(ref)):
+            continue
         # Quelle der Wahrheit: persistierte Serie im Health-File (überlebt
         # Neustarts); STATE["fails"] bleibt nur RAM-Cache fürs Panel.
         streak = int(((health.get("models") or {}).get(label_cur) or {})
