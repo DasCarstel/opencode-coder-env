@@ -23,6 +23,7 @@ import importlib
 import json
 import os
 import sys
+import time
 import types
 
 BACKEND = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend")
@@ -138,8 +139,11 @@ def reset(probe_results, preset=None, fallbacks=None, health=None, quota_blocked
     sys.modules.pop("failover", None)
     mod = importlib.import_module("failover")
     # Im Test läuft genau EIN Prüflauf (real sammelt sich die Fehlschlagsserie
-    # über die stündlichen Läufe) — deshalb die Schwelle auf 1 setzen.
+    # über die stündlichen Läufe) — deshalb die Schwelle auf 1 setzen. Seit dem
+    # Umbauf liegt die Schwelle als Runtime-Wert an (SOT/STATE), nicht mehr als
+    # Modulkonstante → vollständig setzen.
     mod.THRESHOLD = 1
+    mod.STATE["threshold"] = 1
     return mod
 
 
@@ -175,7 +179,9 @@ fo = reset(probe_results=["failed:failed", "failed:failed", "succeeded", "succee
 res = fo.run_probes(apply_backup=True)
 ovr = [c for c in CALLS["put_files"] if OVERRIDES in c["paths"]]
 check("genau ein Commit", len(ovr) == 1, f"{len(ovr)} Commits")
-check("genau EIN Rollout", CALLS["dispatch"] == ["rollout.yml"], str(CALLS["dispatch"]))
+# Tier-Wechsel laufen über sync.yml (nur Overrides-Datei in die Container, kein
+# Neustart); rollout.yml bleibt für echte Deployments (mode="restart").
+check("genau EIN Rollout (sync)", CALLS["dispatch"] == ["sync.yml"], str(CALLS["dispatch"]))
 check("Primary-Agents mitgezogen", AGENTS_PATH in ovr[0]["paths"], str(ovr[0]["paths"]))
 check("Modell-Gedächtnis geschrieben",
       any(HEALTH_PATH in c["paths"] for c in CALLS["put_files"]),
@@ -199,6 +205,138 @@ ovr = [c for c in CALLS["put_files"] if OVERRIDES in c["paths"]]
 check("kein Overrides-Commit", not ovr, str([c["paths"] for c in CALLS["put_files"]]))
 check("kein Rollout", not CALLS["dispatch"])
 check("Fehlerserie zurückgesetzt", all(v == 0 for v in res["swaps"].values()) if res["swaps"] else True)
+
+# ── Ereignisgesteuerter Ausfallschutz (Plan S-1, kein Netz) ─────────────────
+def _failed_event(err_type, retry=None, status=None, ses="ses_a"):
+    """SSE-Event nach Schema: {type, data: {sessionID, error: {...}}}."""
+    err = {"type": err_type, "message": "Free usage limit reached." if retry else "boom"}
+    if status is not None:
+        err["status"] = status
+    if retry is not None:
+        err["retryAfterMs"] = retry
+    return {"type": "session.execution.failed", "data": {"sessionID": ses, "error": err}}
+
+FB_ALL = {"fast": {"model": "openai/gpt-5.1"},
+          "medium": {"model": "openai/gpt-5.1-pro"},
+          "heavy": {"model": "openai/gpt-5.1-max"}}
+
+print("\n[8] Event free-limit → sofortiger Swap (Schwelle 1) + Rückweg-Timer")
+fo = reset(probe_results=[], fallbacks=dict(FB_ALL))
+fo.STATE["autoFailover"] = True
+res = fo.handle_execution_failed(_failed_event("provider.free-limit", retry=28744000, status=429))
+check("Klassifikation free_limit", res["kind"] == "free_limit", str(res))
+check("Swaps sofort (alle Tiers mit Ausfall-Modell)",
+      res["swapped"] == ["fast", "medium", "heavy"], str(res["swaps"]))
+check("keine Proben im Event-Pfad (request sparsam)",
+      len(BEHAVIOUR["probe_results"]) == 0, str(BEHAVIOUR["probe_results"]))
+check("genau EIN sync-Rollout", CALLS["dispatch"] == ["sync.yml"], str(CALLS["dispatch"]))
+check("Rückweg-Timer im STATE (freeLimitUntil)",
+      (fo.STATE.get("freeLimitUntil") or 0) > fo._now(), str(fo.STATE.get("freeLimitUntil")))
+check("paidUntil + primaryModel im Gedächtnis",
+      all(res["health"]["tiers"][t].get("paidUntil") and
+          res["health"]["tiers"][t].get("primaryModel") for t in fo.TIERS),
+      str({t: {"paidUntil": res["health"]["tiers"][t].get("paidUntil"),
+               "primaryModel": res["health"]["tiers"][t].get("primaryModel")} for t in fo.TIERS}))
+check("Event im Ringpuffer", len(fo.recent_events()) == 1, str(fo.recent_events()))
+dedup = fo.handle_execution_failed(_failed_event("provider.free-limit", retry=28744000, ses="ses_a"))
+check("identisches Event dedupliziert", dedup.get("deduped") is True, str(dedup))
+check("kein zweiter Rollout", CALLS["dispatch"] == ["sync.yml"], str(CALLS["dispatch"]))
+check("status_extras liefert die Panel-Felder",
+      set(fo.status_extras()) >= {"eventStream", "freeLimitUntil", "lastEvent"},
+      str(fo.status_extras()))
+check("eventStream zählt als getrennt", fo.status_extras()["eventStream"]["connected"] is False)
+
+print("\n[9] Event quota → Swap ohne Rückweg-Timer")
+fo = reset(probe_results=[], fallbacks=dict(FB_ALL))
+fo.STATE["autoFailover"] = True
+res = fo.handle_execution_failed(_failed_event("provider.quota", status=402))
+check("Swaps sofort", res["swapped"] == ["fast", "medium", "heavy"], str(res["swaps"]))
+check("kein freeLimitUntil im STATE", fo.STATE.get("freeLimitUntil") is None,
+      str(fo.STATE.get("freeLimitUntil")))
+check("kein paidUntil im Gedächtnis",
+      all(not res["health"]["tiers"][t].get("paidUntil") for t in fo.TIERS))
+
+print("\n[10] Event other → bestehende Schwelle (STATE['threshold'] wirkt)")
+fo = reset(probe_results=[], fallbacks=dict(FB_ALL))
+fo.STATE["autoFailover"] = True
+fo.STATE["threshold"] = 42                      # bewusst absurd hoch
+r1 = fo.handle_execution_failed(_failed_event("provider.internal", status=500, ses="s1"))
+check("Schwelle nicht erreicht → kein Swap", r1["swapped"] == [], str(r1["swaps"]))
+fo.STATE["threshold"] = 2
+r2 = fo.handle_execution_failed(_failed_event("provider.internal", status=500, ses="s2"))
+check("Serie aus Datei + Schwelle 2 → Swap",
+      r2["swapped"] == ["fast", "medium", "heavy"], str(r2["swaps"]))
+
+print("\n[11] Rückweg nach retryAfterMs (Fake-Clock, kein sleep)")
+fo = reset(probe_results=[], fallbacks=dict(FB_ALL))
+fo.STATE["autoFailover"] = True
+real = time.time()
+fo._now = lambda: real                          # eingefrorene Uhr vor dem Event
+ev = fo.handle_execution_failed(_failed_event("provider.free-limit", retry=2000, ses="ses_r"))
+until = fo.STATE.get("freeLimitUntil")
+check("paidUntil = now + retryAfterMs", abs(until - (real + 2.0)) < 0.5, str(until))
+before_ovr = CALLS["put_files"][:]
+fo._now = lambda: real + 1.5
+r_early = fo.check_returns()
+after_early = CALLS["put_files"][:]
+check("vor Ablauf kein Rückweg (kein Commit)", r_early["returned"] == {} and len(after_early) == len(before_ovr),
+      str(r_early))
+fo._now = lambda: real + 3.0
+r_back = fo.check_returns()
+ovr = [c for c in CALLS["put_files"] if OVERRIDES in c["paths"]]
+check("nach Ablauf Rückweg auf Primärmodelle",
+      r_back["returned"] == {"fast": "opencode-go/deepseek-v4.1-flash#low",
+                             "medium": "opencode-go/glm-5.3-flash",
+                             "heavy": "opencode-go/glm-5.3#max"}, str(r_back))
+check("Rückweg committet Overrides", len(ovr) >= 1, str([c["paths"] for c in CALLS["put_files"]]))
+check("Rückweg OHNE Probe (keine Proben verbraucht)",
+      len(BEHAVIOUR["probe_results"]) == 0, str(BEHAVIOUR["probe_results"]))
+check("freeLimitUntil nach Rückweg leer", fo.STATE.get("freeLimitUntil") is None,
+      str(fo.STATE.get("freeLimitUntil")))
+check("Gedächtnis nach Rückweg geräumt",
+      all(not fo.STATE["health"]["tiers"][t].get("paidUntil") for t in fo.TIERS))
+
+print("\n[12] Persistierter failStreak überlebt einen Neustart (Modul-Reload)")
+fo = reset(probe_results=[], fallbacks=dict(FB_ALL))
+fo.STATE["autoFailover"] = True
+fo.STATE["threshold"] = 2                       # sonst fiele der erste Fehler schon unter Schwelle 1
+r1 = fo.handle_execution_failed(_failed_event("provider.internal", status=500, ses="s1"))
+check("erster Fehler zählt, aber kein Swap", r1["swapped"] == [] and
+      all(v == 1 for v in r1["streaks"].values()), str(r1["streaks"]))
+sys.modules.pop("failover", None)               # „Neustart" von Hestia
+fo2 = importlib.import_module("failover")
+fo2.STATE["threshold"] = 1
+fo2.STATE["autoFailover"] = True                # Auto-Umschaltung nach Neustart wieder an
+r2 = fo2.handle_execution_failed(_failed_event("provider.internal", status=500, ses="s2"))
+check("Serie aus Datei abgelesen (streak 2) → Swap",
+      r2["swapped"] == ["fast", "medium", "heavy"], str(r2["swaps"]))
+check("und genau EIN Rollout", CALLS["dispatch"] == ["sync.yml"], str(CALLS["dispatch"]))
+
+print("\n[13] Fehlender Ausweichref → sichtbarer skipped-Eintrag")
+fo = reset(probe_results=[], fallbacks={"fast": {"model": "openai/gpt-5.1"}})
+fo.STATE["autoFailover"] = True
+res = fo.handle_execution_failed(_failed_event("provider.free-limit", retry=3000, ses="ses_nf"))
+check("fast wechselt", res["swapped"] == ["fast"], str(res["swaps"]))
+check("medium/heavy sichtbar übersprungen",
+      all("skipped: no fallback" in str(res["swaps"].get(t) or "") for t in ("medium", "heavy")),
+      str(res["swaps"]))
+
+print("\n[14] STATE['timeout'] wirkt (Regression zum Konstanten-Bug) + restart-Modus")
+fo = reset(probe_results=["failed", "failed", "failed"], fallbacks=dict(FB_ALL))
+seen_timeouts = []
+sys.modules["suggest"]._event_watch = lambda sid, deadline=None, stall_timeout=None, \
+    on_progress=None: (seen_timeouts.append(stall_timeout),
+                       BEHAVIOUR["probe_results"].pop(0) if BEHAVIOUR["probe_results"]
+                       else "succeeded")[1]
+fo.STATE["timeout"] = 77
+res = fo.run_probes()
+check("alle Proben nutzten STATE['timeout']", seen_timeouts and all(t == 77 for t in seen_timeouts),
+      str(seen_timeouts))
+fo2 = reset(probe_results=[], fallbacks=None)   # frisches Modul ohne Vorgeschichte
+CALLS["dispatch"].clear()
+fo2._dispatch_rollout(["fast"], "restart")
+check("mode='restart' dispatcht rollout.yml", CALLS["dispatch"] == ["rollout.yml"],
+      str(CALLS["dispatch"]))
 
 print("\n[7] put_files schreibt nicht, wenn alle Blobs identisch sind")
 sys.modules.pop("github_api", None)          # echte Implementierung laden

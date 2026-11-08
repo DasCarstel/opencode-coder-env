@@ -420,22 +420,57 @@ Konfiguration, die ein einzelnes `oc-go` nachträglich divergieren könnte.
 
 ## Failover
 
+**Ereignisgesteuerter Ausfallschutz (2026-11-08):** Hestia betreibt einen
+Ereignis-Watcher, der den SSE-Strom des OpenCode-Servers
+(`GET {OC_SERVER_URL}/api/event`, Basic-Auth — Client bereits vorhanden)
+mitliest. Er filtert `session.execution.failed`-Events und klassifiziert den
+fehler nach seinem Typ — OpenCode meldet Fehler typisiert **inklusive exakter
+Reset-Zeit** (`Session.StructuredError`):
+
+| Fehlertyp | HTTP | Reaktion |
+|-----------|------|----------|
+| `provider.free-limit` — Gratis-Kontingent erschöpft | 429, mit `retryAfterMs` (rollierendes ~8-h-Fenster) | **Sofort-Swap** auf das Ausweichmodell (Schwelle 1, keine Probe); Rückweg per **Timer** = `now + retryAfterMs` |
+| `provider.quota` — Konto leer | 402 | Swap, **kein** Auto-Rückweg (dauerhaft) |
+| sonstige echte Ausfälle | — | bestehende Fehlerschwelle (2) wie bisher |
+
+Fällt der SSE-Strom aus oder fehlt `retryAfterMs`, greift als Sicherheitsnetz
+die **Watchdog-Probe — 1×/h** auf den aktiven Tier-Modellen (statt wie früher
+alle Tiers alle 3 h).
+
+**Propagation ohne Neustart:** Der Swap committet die Tier-Modelle nach
+`.opencode/opencode-model-router.overrides.jsonc`. `hestia/ci/sync.sh`
+(Workflow `sync.yml`, rein manuell) ersetzt dann **genau diese eine Datei** in
+den laufenden Coder-Containern —
+`git show FETCH_HEAD:.opencode/opencode-model-router.overrides.jsonc > …`,
+ohne `reset --hard` und ohne Container-Neustart (`rollout.yml` behält den
+Restart-Pfad für echte Deployments). Das Router-Plugin liest die Overrides
+live neu (Cache-Fingerprint über mtime/size) — der **nächste Prompt** fährt
+bereits das neue Modell; ein laufender Agent wird nicht gestört.
+
+> **Bewusste Grenze:** Hestia reagiert nur **zwischen** Ausführungen. Ein
+> Agent, der genau im Moment des Limits läuft, bricht ab; erst der nächste
+> Prompt läuft auf dem bezahlten Modell. Lückenloses Überleben mitten im Lauf
+> leistet nur ein Retry-Proxy — bewusst zurückgestellt.
+
 Wird ein Tier auf ein **Gratis-Modell** gesetzt (Kosten 0/0), hinterlegt Hestia
 automatisch das **bezahlte Gegenstück** als Ausfallmodell in
 `.opencode/hestia-fallbacks.json` (Model + Variant je Tier). Dieses Ausfallmodell
 lässt sich im **Tier-Editor** je Tier auch **manuell** wählen — oder bewusst auf
 „kein Ausfall-Modell" setzen; die Auswahl wird mit dem Tier-Update committet.
 
-| Tier | Modell | Ausfallmodell |
-|------|--------|---------------|
-| `fast` | `opencode/mimo-v2.6-flash-free` | `opencode-go/mimo-v2.6-flash` |
-| `medium` | `opencode/space-bunny-free#high` | `opencode-go/claude-haiku-5-5#medium` |
-| `heavy` | `opencode-go/gpt-6-luna#max` | — (schon bezahlt) |
+| Tier | Primär (gratis) | Ausweich (Abo) |
+|------|-----------------|----------------|
+| `fast` | `opencode/deepseek-v4.1-flash-free` | `opencode-go/deepseek-v4.1-flash` |
+| `medium` | `opencode/glm-5.3-flash-free` | `opencode-go/glm-5.3-flash` |
+| `heavy` | `opencode/gpt-6.1-sol#high` | **`opencode-go/glm-5.3`** |
 
-Bei wiederholtem Fehlschlag schaltet der Auto-Failover auf das bezahlte Modell:
+> `heavy` läuft primär auf `opencode/gpt-6.1-sol` (Zen) — das Zen-Guthaben ist
+> leer, deshalb ist der Ausweichref `opencode-go/glm-5.3` zwingend.
 
-Die Schalter und Schwellen stehen in `.opencode/hestia-failover.jsonc` und sind im
-Tier-Editor einstellbar (`POST /api/failover/settings`); die Env-Variablen dienen
+Bei erschöpftem Gratis-Kontingent schaltet der Auto-Failover auf das bezahlte
+Modell (sofort beim `free-limit`-Event, zurück per Timer — siehe oben). Die
+Schwellen und Prüfintervalle stehen in `.opencode/hestia-failover.jsonc` und
+sind im Tier-Editor einstellbar (`POST /api/failover/settings`); die Env-Variablen dienen
 nur noch als Startwerte, wenn die SOT fehlt:
 
 | Einstellung | Feld in der SOT | Startwert (Env) | Wirkung |

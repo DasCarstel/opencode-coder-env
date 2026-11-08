@@ -8,8 +8,17 @@ bezahlte Modell aus (Datei .opencode/hestia-fallbacks.json, vom Panel gepflegt):
      "medium": {"model": "opencode/<gratis>",   "variant": ""}}
 
 Ablauf:
-  - Probe: winzige Session je Tier-Modell ("Antworte nur mit OK") über den
-    OpenCode-Server; Erfolg = session.execution.succeeded innerhalb des Fensters.
+  - Ereignis-Watcher (SSE auf GET {OC_SERVER_URL}/api/event, Basic-Auth): OpenCode
+    meldet Modellfehler typisiert — "provider.free-limit" (429, mit retryAfterMs),
+    "provider.quota" (402) und sonstige. Klassifizierung:
+      free_limit → sofortiger Swap (Schwelle 1) + Rückweg-Timer = now + retryAfterMs
+      quota      → sofortiger Swap, ohne Rückweg-Timer (Konto leer = dauerhaft)
+      other      → bestehende Schwelle aus der SOT (Default 2), Watchdog-Muster
+  - Probe (Watchdog): winzige Session je Tier-Modell ("Antworte nur mit OK") über
+    den OpenCode-Server; Erfolg = session.execution.succeeded. Höchstens 1×/h und
+    primär als Netz, wenn der Ereignis-Stream getrennt ist.
+  - Rückweg: ohne Probe — sobald paidUntil (now + retryAfterMs) erreicht ist,
+    wechselt das Tier zurück aufs Primärmodell (Check alle ≤ 60 s, kein sleep).
   - Nach HESTIA_FAIL_THRESHOLD Fehlschlägen in Folge UND wenn ein Ausfall-Modell
     hinterlegt ist, wird dieses als Tier-Modell geschrieben (Commit + Rollout) —
     automatisch nur wenn HESTIA_AUTO_FAILOVER=1, sonst per Klick im Panel.
@@ -42,10 +51,13 @@ in der SOT .opencode/hestia-failover.jsonc und werden über
 POST /api/failover/settings vom Panel geschrieben; fehlt die Datei, gelten die
 HESTIA_*-Defaults. Die SOT hat Vorrang vor der Env-Variable HESTIA_AUTO_FAILOVER.
 """
+import base64
+import collections
 import json
 import os
 import threading
 import time
+import urllib.request
 
 import catalog
 import github_api
@@ -66,6 +78,22 @@ THRESHOLD = int(os.environ.get("HESTIA_FAIL_THRESHOLD", "2"))
 INTERVAL = int(os.environ.get("HESTIA_PROBE_INTERVAL", "900"))
 QUARANTINE_HOURS = int(os.environ.get("HESTIA_QUARANTINE_HOURS", "6"))
 AUTO = os.environ.get("HESTIA_AUTO_FAILOVER", "0") == "1"
+
+# Ereignisgesteuerter Ausfallschutz: OpenCode meldet Modellfehler strukturiert
+# ("provider.free-limit"/"provider.quota"/…) als SSE-Events auf /api/event.
+# Der Watchdog (Proben) ist nur noch das Netz für den Fall, dass der Stream
+# getrennt ist — höchstens 1×/h.
+EVENT_BACKOFF_MIN = int(os.environ.get("HESTIA_EVENT_BACKOFF", "5"))    # erster Reconnect (s)
+EVENT_BACKOFF_MAX = int(os.environ.get("HESTIA_EVENT_BACKOFF_MAX", "60"))
+EVENT_READ_TIMEOUT = int(os.environ.get("HESTIA_EVENT_READ_TIMEOUT", "90"))  # SSE-Lesefrist (s)
+EVENT_HISTORY = int(os.environ.get("HESTIA_EVENT_HISTORY", "50"))       # Ringpuffer fürs Panel
+RETURN_TICK = int(os.environ.get("HESTIA_RETURN_TICK", "60"))           # Rückweg-Check-Takt (s)
+WATCHDOG_MIN = int(os.environ.get("HESTIA_WATCHDOG_INTERVAL", "3600"))  # Proben höchstens 1×/h
+# Rollout-Modi: "sync" = sync.yml (nur Overrides-Datei in die Container schreiben,
+# kein Neustart — der Plugin-Cache invalidiert über den Fingerprint beim nächsten
+# Prompt); "restart" = klassisches rollout.yml für echte Deployments.
+ROLLOUT_WORKFLOW = os.environ.get("ROLLOUT_WORKFLOW", "rollout.yml")
+SYNC_WORKFLOW = os.environ.get("SYNC_WORKFLOW", "sync.yml")
 
 # Effort-Rang für die Ableitung der Primary-Agents (plan = höchste Variante).
 # Bewusst gespiegelt zu server.VARIANT_RANK — hier nur die für den Failover
@@ -107,8 +135,20 @@ STATE = {
     "health": {"tiers": {}, "models": {}},
     "quota": {},
     "events": [],
+    # Ereignis-Watcher-Verbindung: {"connected": bool, "lastConnect": float,
+    # "lastError": str|None, "lastChange": float} — für das Panel.
+    "eventStream": {"connected": False, "lastConnect": None, "lastError": None},
+    # Frühester Rückweg-Termin über alle Tiers ("bis wann läuft bezahlt?"),
+    # aus den paidUntil-Einträgen im Gedächtnis.
+    "freeLimitUntil": None,
 }
 LOCK = threading.Lock()
+
+# Ringpuffer der erkannten Ereignisse (für /api/failover/events) und Dedupe-Liste
+# (gleiche Session + gleicher Fehlertyp nur einmal) — beide im RAM; das
+# Entscheidungsgedächtnis selbst liegt im Health-File (Quelle der Wahrheit).
+EVENTS = collections.deque(maxlen=EVENT_HISTORY)
+_SEEN = collections.deque(maxlen=200)
 
 
 class SettingsError(Exception):
@@ -122,6 +162,11 @@ def _log(msg):
 def _now_iso(ts: float | None = None) -> str:
     """UTC-Zeitstempel (ISO-8601, sekundengenau) — Vergleichbarkeit per String."""
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() if ts is None else ts))
+
+
+def _now() -> float:
+    """Zeitquelle für Timer — bewusst injizierbar (Tests setzen eine Fake-Clock)."""
+    return time.time()
 
 
 def _clamp_int(value, lo: int, hi: int, fallback: int) -> int:
@@ -248,6 +293,313 @@ def read_fallbacks() -> dict:
     return {t: (data.get(t) or None) for t in TIERS}
 
 
+# ── Ereignis-Watcher: Modellfehler kommen live aus OpenCode selbst ───────────
+
+def classify_error(etype: str) -> str:
+    """OpenCode-Fehlertyp → Klasse: free_limit | quota | other."""
+    t = str(etype or "")
+    if "free-limit" in t:
+        return "free_limit"
+    if "quota" in t:
+        return "quota"
+    return "other"
+
+
+def _event_headers() -> dict:
+    """Header für den SSE-Stream (Basic-Auth für den OpenCode-Server).
+
+    Direkt gebaut aus OC_SERVER_USER/OC_SERVER_PASSWORD (vom bootstrap.py aus
+    OpenBao gesetzt): die SSE-Verbindung braucht ein eigenes Read-Timeout
+    an der URL /api/event — und das data:-Framing ist identisch zum
+    suggest._event_watch (dort Basic-Auth eingebaut).
+    """
+    user = str(getattr(suggest, "OC_SERVER_USER", "") or os.environ.get("OC_SERVER_USER", ""))
+    pw = str(getattr(suggest, "OC_SERVER_PASSWORD", "") or os.environ.get("OC_SERVER_PASSWORD", ""))
+    token = base64.b64encode(f"{user}:{pw}".encode()).decode()
+    return {"Authorization": f"Basic {token}",
+            "Accept": "text/event-stream",
+            "Cache-Control": "no-cache"}
+
+
+def _set_stream(connected: bool, error: str | None) -> None:
+    """Verbindungszustand des Ereignis-Streams im STATE aktualisieren."""
+    with LOCK:
+        st = STATE.setdefault("eventStream", {})
+        st["connected"] = bool(connected)
+        st["lastError"] = error or None
+        st["lastChange"] = time.time()
+        if connected:
+            st["lastConnect"] = time.time()
+
+
+def recent_events(limit: int = 20) -> list:
+    """Ringpuffer der erkannten Ereignisse (neueste zuerst) fürs Panel."""
+    try:
+        n = max(1, min(int(limit or 20), EVENT_HISTORY))
+    except (TypeError, ValueError):
+        n = 20
+    with LOCK:
+        evs = list(EVENTS)
+    return [dict(e) for e in reversed(evs[-n:])]
+
+
+def status_extras() -> dict:
+    """Panel-Zusatzfelder: Stream-Zustand, Rückweg-Timer, letztes Ereignis."""
+    with LOCK:
+        stream = dict(STATE.get("eventStream") or {})
+        free_until = STATE.get("freeLimitUntil")
+        last_event = dict(EVENTS[-1]) if EVENTS else None
+    return {"eventStream": stream, "freeLimitUntil": free_until, "lastEvent": last_event}
+
+
+def event_loop(stop_event: threading.Event):
+    """SSE-Watcher: verbindet {OC_SERVER_URL}/api/event und klassifiziert Fehler.
+
+    Reconnect mit Backoff (5 s → 60 s, Zurücksetzen bei jeder erfolgreichen
+    Verbindung). Nur data:-Zeilen mit JSON werden gezählt (Framing wie
+    suggest._event_watch); session.execution.failed-Events gehen an
+    handle_execution_failed(). Der Thread darf nie unbeobachtet sterben:
+    jede Iteration ist einzeln abgesichert, das Lesefenster über
+    EVENT_READ_TIMEOUT so dass tote Verbindungen bemerkt werden.
+    """
+    backoff = float(EVENT_BACKOFF_MIN)
+    while not stop_event.is_set():
+        try:
+            url = str(suggest.OC_SERVER_URL).rstrip("/") + "/api/event"
+            req = urllib.request.Request(url, headers=_event_headers())
+            _log(f"event-watcher: verbinde {url}")
+            with urllib.request.urlopen(req, timeout=EVENT_READ_TIMEOUT) as resp:
+                _set_stream(True, None)
+                backoff = float(EVENT_BACKOFF_MIN)
+                for raw in resp:
+                    if stop_event.is_set():
+                        break
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue   # SSE-Kommentar/Feldzeile — nur data: zählt
+                    try:
+                        ev = json.loads(line[5:].strip())
+                    except ValueError:
+                        continue
+                    if not isinstance(ev, dict) or ev.get("type") != "session.execution.failed":
+                        continue
+                    try:
+                        handle_execution_failed(ev)
+                    except Exception as e:  # noqa: BLE001
+                        _log(f"event-watcher: Event nicht verarbeitbar: {e}")
+        except Exception as e:  # noqa: BLE001
+            _set_stream(False, str(e))
+        if stop_event.is_set():
+            break
+        stop_event.wait(backoff)
+        backoff = min(EVENT_BACKOFF_MAX, backoff * 2)
+    _set_stream(False, None)
+
+
+def _paid_until(entry) -> float:
+    """paidUntil eines Tier-Eintrags als Zahl (0.0 = kein Rückweg-Timer)."""
+    try:
+        return float((entry or {}).get("paidUntil") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def handle_execution_failed(event: dict) -> dict:
+    """Ein 'session.execution.failed'-Event klassifizieren und umsetzen.
+
+    - free_limit → Schwelle 1: sofortiger Swap je Tier mit Ausfall-Modell,
+      Rückweg-Timer = now + retryAfterMs (persistiert als tiers[tier].paidUntil).
+    - quota      → Schwelle 1, Swap ohne Rückweg-Timer (Konto leer = dauerhaft).
+    - other      → Schwelle aus der SOT (Default 2) wie beim Watchdog.
+
+    Quelle der Wahrheit für die Fehlschlagserie ist die PERSISTIERTE Serie im
+    Health-File (health.models[label].failStreak); dedupliziert wird pro
+    (Session, Fehlertyp). Ohne Ausfall-Modell gibt es sichtbar einen Eintrag
+    "skipped: no fallback" (kein stiller Skip). Der Event-Pfad probiert das
+    Ausfall-Modell NICHT vorher (ein zusätzlicher Probe-Turn kostet einen
+    bezahlten Turn ohne Nutzen — der Swap ist idempotent und der Rückweg-Timer
+    korrigiert im Zweifel selbst). Rückgabe dient Tests und dem Panel-Feed.
+    """
+    data = dict(event.get("data") or {})
+    err = dict(data.get("error") or {})
+    etype = str(err.get("type") or "")
+    if not etype:
+        return {"ignored": True, "reason": "Event ohne Fehlertyp"}
+    kind = classify_error(etype)
+    session = str(data.get("sessionID") or "")
+    with LOCK:
+        if (session, etype) in _SEEN:
+            return {"deduped": True, "kind": kind}
+        _SEEN.append((session, etype))
+    rec = {"at": _now(), "iso": _now_iso(), "kind": kind, "type": etype,
+           "session": session,
+           "model": str(data.get("model") or err.get("model") or ""),
+           "status": err.get("status"), "retryAfterMs": err.get("retryAfterMs"),
+           "message": str(err.get("message") or "")[:200]}
+    cfg = github_api.get_overrides()["config"]
+    preset = (cfg.get("presets") or {}).get(os.environ.get("HESTIA_PRESET_PROVIDER", "hestia"), {})
+    fallbacks = read_fallbacks()
+    health = read_health()
+    old_sig = _health_sig(health)
+    apply = _auto_enabled()
+    swaps, streaks, swapped_tiers = {}, {}, []
+    for tier in TIERS:
+        entry = preset.get(tier) or {}
+        ref = (entry.get("model") or "").strip()
+        var = (entry.get("variant") or "").strip()
+        if not ref:
+            continue
+        label_cur = ref + (f"#{var}" if var else "")
+        # Quelle der Wahrheit: persistierte Serie im Health-File (überlebt
+        # Neustarts); STATE["fails"] bleibt nur RAM-Cache fürs Panel.
+        streak = int(((health.get("models") or {}).get(label_cur) or {})
+                     .get("failStreak") or 0) + 1
+        streaks[tier] = streak
+        tier_mem = dict(health["tiers"].get(tier) or {})
+        model_mem = dict(health["models"].get(label_cur) or {})
+        mem_kind = kind if kind in ("free_limit", "quota") else "outage"
+        model_mem.update({"model": label_cur, "failStreak": streak,
+                          "lastFailAt": _now_iso(), "lastFailureKind": mem_kind})
+        tier_mem.update({"model": label_cur, "ok": False, "failStreak": streak,
+                         "lastFailAt": model_mem["lastFailAt"],
+                         "lastFailureKind": mem_kind,
+                         "quarantineUntil": model_mem.get("quarantineUntil") or ""})
+        health["tiers"][tier] = tier_mem
+        health["models"][label_cur] = model_mem
+        threshold = 1 if kind in ("free_limit", "quota") else \
+            max(1, int(STATE.get("threshold") or THRESHOLD))
+        if streak < threshold:
+            continue
+        fb = fallbacks.get(tier) or {}
+        fb_ref = (fb.get("model") or "").strip()
+        fb_var = (fb.get("variant") or "").strip()
+        if not fb_ref:
+            swaps[tier] = "skipped: no fallback — kein Ausfall-Modell hinterlegt"
+            _log(f"{tier}: {kind}-Event erkannt, aber kein Ausfall-Modell hinterlegt")
+            continue
+        if not apply:
+            swaps[tier] = f"bereit ({kind} erkannt, Auto-Failover aus): {fb_ref}"
+            continue
+        fb_label = fb_ref + (f"#{fb_var}" if fb_var else "")
+        if fb_label == label_cur:
+            swaps[tier] = (f"übersprungen — {tier} läuft bereits auf {fb_label} "
+                           f"(kein weiterer Ausweichref)")
+            tier_mem["failStreak"] = 0       # Serie nicht endlos fortzählen
+            health["tiers"][tier] = tier_mem
+            continue
+        q_until = _quarantined_until(health, fb_label)
+        if q_until:
+            swaps[tier] = f"übersprungen — {fb_label} in Quarantäne bis {q_until}"
+            continue
+        try:
+            res_swap = _swap_tier(tier, fb)
+            if res_swap.get("unchanged"):
+                swaps[tier] = f"übersprungen — {fb_label} ist bereits gesetzt (kein Commit)"
+                tier_mem["failStreak"] = 0
+                health["tiers"][tier] = tier_mem
+                streaks[tier] = 0
+                continue
+            swaps[tier] = fb_label
+            swapped_tiers.append(tier)
+            streaks[tier] = 0
+            new_mem = {"model": fb_label, "ok": True, "failStreak": 0,
+                       "lastOkAt": _now_iso(), "swappedAt": _now_iso(),
+                       "primaryModel": ref, "primaryVariant": var,
+                       "paidReason": kind, "quarantineUntil": ""}
+            if kind == "free_limit":
+                ms = float(err.get("retryAfterMs") or 0)
+                if ms > 0:
+                    new_mem["paidUntil"] = _now() + ms / 1000.0
+            health["tiers"][tier] = new_mem
+            health["models"][fb_label] = {"model": fb_label, "failStreak": 0,
+                                          "quarantineUntil": "", "lastOkAt": _now_iso()}
+        except Exception as e:  # noqa: BLE001
+            swaps[tier] = f"FEHLER: {e}"
+
+    if swaps or streaks:
+        try:
+            write_health(health, old_sig)
+        except Exception as e:  # noqa: BLE001
+            _log(f"Gedächtnis (Event-Pfad) nicht schreibbar: {e}")
+    if swapped_tiers:
+        # EIN sync-Rollout für alle Wechsel dieses Events (nur Datei-Ersatz,
+        # kein Container-Neustart — siehe _dispatch_rollout).
+        _dispatch_rollout(swapped_tiers, "sync")
+    with LOCK:
+        STATE["fails"].update(streaks)
+        STATE["fallbacks"] = fallbacks
+        STATE["current"] = {t: (preset.get(t) or {}).get("model") for t in TIERS}
+        STATE["health"] = health
+        paid = [_paid_until(t) for t in health["tiers"].values() if _paid_until(t) > 0]
+        STATE["freeLimitUntil"] = min(paid) if paid else None
+        STATE["events"] = ([{"at": time.time(), "kind": kind,
+                             "session": session[:12], "swaps": swaps}]
+                           + STATE["events"])[:10]
+        EVENTS.append(rec)
+    if swaps:
+        _log(f"Event {etype} ({kind}, Session {session[:12] or '?'}): {swaps}")
+    return {"kind": kind, "applied": apply, "swaps": swaps, "swapped": swapped_tiers,
+            "streaks": streaks, "health": health}
+
+
+def check_returns() -> dict:
+    """Rückweg-Timer je Tier ausführen (vom Loop, max. alle RETURN_TICK s).
+
+    Läuft ein Tier auf dem bezahlten Ausweich-Modell (free_limit-Swap) und
+    tiers[tier].paidUntil (= now + retryAfterMs) ist erreicht, wechselt es
+    automatisch auf das Primärmodell zurück — bewusst OHNE Modell-Probe: nach
+    Ablauf von retryAfterMs ist das Gratis-Kontingent wieder offen, ein
+    Zusatz-Turn würde nur kosten. Quota-Swaps haben keinen paidUntil-Eintrag
+    und bleiben dauerhaft (kein Auto-Rückweg).
+    """
+    with LOCK:
+        health = json.loads(json.dumps(
+            STATE.get("health") or {"tiers": {}, "models": {}}))
+    old_sig = _health_sig(health)
+    returned, rolled = {}, []
+    for tier in TIERS:
+        tier_mem = dict((health.get("tiers") or {}).get(tier) or {})
+        until = _paid_until(tier_mem)
+        primary = str(tier_mem.get("primaryModel") or "").strip()
+        if not until or not primary or _now() < until:
+            continue
+        prim_var = str(tier_mem.get("primaryVariant") or "")
+        label = primary + (f"#{prim_var}" if prim_var else "")
+        try:
+            res_swap = _swap_tier(tier, {"model": primary, "variant": prim_var})
+        except Exception as e:  # noqa: BLE001
+            _log(f"{tier}: Rückweg auf {label} fehlgeschlagen: {e}")
+            continue
+        returned[tier] = label
+        health["tiers"][tier] = {"model": label, "ok": True, "failStreak": 0,
+                                 "lastOkAt": _now_iso(), "returnedAt": _now_iso()}
+        health["models"][label] = {"model": label, "failStreak": 0,
+                                   "quarantineUntil": "", "lastOkAt": _now_iso()}
+        if res_swap.get("unchanged"):
+            _log(f"{tier}: bereits auf {label} — kein Commit")
+        else:
+            rolled.append(tier)
+            _log(f"{tier}: Rückweg auf {label} (paidUntil erreicht)")
+    if returned:
+        try:
+            write_health(health, old_sig)
+        except Exception as e:  # noqa: BLE001
+            _log(f"Gedächtnis (Rückweg) nicht schreibbar: {e}")
+        if rolled:
+            _dispatch_rollout(rolled, "sync")
+    with LOCK:
+        paid = [_paid_until(t) for t in (health.get("tiers") or {}).values()
+                if _paid_until(t) > 0]
+        STATE["freeLimitUntil"] = min(paid) if paid else None
+        if returned:
+            STATE["health"] = health
+            for tier in returned:
+                STATE["fails"][tier] = 0
+            STATE["events"] = ([{"at": time.time(), "returned": returned}]
+                               + STATE["events"])[:10]
+    return {"returned": returned}
+
+
 # ── Modell-Gedächtnis (welches Modell macht gerade Probleme — und bis wann?) ───
 
 def read_health() -> dict:
@@ -319,8 +671,11 @@ def quota_state() -> dict:
     return {"blocked": False, "active": active_id, "reason": ""}
 
 
-def probe(model_ref: str, variant: str = "") -> dict:
-    """Winzige Test-Session auf dem Modell. Erfolg = execution.succeeded."""
+def probe(model_ref: str, variant: str = "", timeout: int = 0) -> dict:
+    """Winzige Test-Session auf dem Modell. Erfolg = execution.succeeded.
+
+    timeout=0 → das Timeout aus STATE ("timeoutSeconds" der SOT, sonst Env-Default).
+    """
     if not model_ref:
         return {"ok": False, "detail": "kein Modell konfiguriert"}
     ok, info = catalog.usable(model_ref)
@@ -340,10 +695,15 @@ def probe(model_ref: str, variant: str = "") -> dict:
         mst, _ = suggest._req("POST", f"{suggest.OC_SERVER_URL}/api/session/{sid}/model", {"model": body})
         if mst not in (200, 201, 204):
             return {"ok": False, "detail": f"Modell nicht verfügbar (switch {mst})"}
+        # Prompt bewusst klein ("Antworte nur mit OK"). Das Session-API kennt
+        # für /prompt (Stand heute) kein max_tokens-Feld — sobald die API eines
+        # anbietet, gehört hier die Begrenzung hin, um Probe-Turns zu deckeln.
         suggest._req("POST", f"{suggest.OC_SERVER_URL}/api/session/{sid}/prompt",
                      {"text": "Antworte nur mit OK"})
-        result = suggest._event_watch(sid, deadline=time.time() + PROBE_TIMEOUT,
-                                      stall_timeout=PROBE_TIMEOUT)
+        with LOCK:
+            t_out = int(timeout or STATE.get("timeout") or PROBE_TIMEOUT)
+        result = suggest._event_watch(sid, deadline=time.time() + t_out,
+                                      stall_timeout=t_out)
         ok = result == "succeeded"
         return {"ok": ok, "detail": result}
     finally:
@@ -351,7 +711,13 @@ def probe(model_ref: str, variant: str = "") -> dict:
 
 
 def run_probes(apply_backup: bool = False) -> dict:
-    """Alle Tier-Modelle prüfen; optional beim Ausfall auf das Backup wechseln."""
+    """Watchdog: alle Tier-Modelle prüfen; optional beim Ausfall auf das Backup.
+
+    Regulär erkennt der Ereignis-Watcher Ausfälle live — dieser Lauf ist nur
+    das Netz (höchstens 1×/h) bzw. der manuelle Panel-Check
+    (/api/failover/check). Schwelle und Timeout kommen aus der SOT/STATE,
+    die Fehlschlagserie aus dem persistierten Modell-Gedächtnis.
+    """
     cfg = github_api.get_overrides()["config"]
     preset = (cfg.get("presets") or {}).get(os.environ.get("HESTIA_PRESET_PROVIDER", "hestia"), {})
     fallbacks = read_fallbacks()
@@ -359,6 +725,8 @@ def run_probes(apply_backup: bool = False) -> dict:
     old_sig = _health_sig(health)
     with LOCK:
         quarantine_h = int(STATE.get("quarantineHours") or QUARANTINE_HOURS)
+        threshold = int(STATE.get("threshold") or THRESHOLD)
+        ptimeout = int(STATE.get("timeout") or PROBE_TIMEOUT)
     quota = quota_state()
     results, swaps, state_updates, swapped_tiers = {}, {}, {}, []
     for tier in TIERS:
@@ -367,25 +735,36 @@ def run_probes(apply_backup: bool = False) -> dict:
         var = (entry.get("variant") or "").strip()
         if not ref:
             continue
-        res = probe(ref, var)
+        res = probe(ref, var, timeout=ptimeout)
         label_cur = ref + (f"#{var}" if var else "")
         results[tier] = {"model": label_cur, **res}
-        fails = 0 if res["ok"] else (STATE["fails"].get(tier, 0) + 1)
+        # Quelle der Wahrheit: persistierte Serie im Health-File (überlebt
+        # Neustarts) — STATE["fails"] dient nur als RAM-Cache fürs Panel.
+        fails = 0 if res["ok"] else (
+            int((health["models"].get(label_cur) or {}).get("failStreak") or 0) + 1)
         state_updates[tier] = fails
 
         # ── Gedächtnis pflegen ────────────────────────────────────────────
         tier_mem = dict(health["tiers"].get(tier) or {})
         model_mem = dict(health["models"].get(label_cur) or {})
+        # Swap-Arrangement (paidUntil/primaryModel/…) im Watchdog-Lauf bewahren:
+        # eine erfolgreiche Probe auf dem ausgefallenen Modell löscht sonst den
+        # Rückweg-Timer, und der Rückweg fände nie statt.
+        swap_extras = {k: tier_mem[k] for k in
+                       ("paidUntil", "primaryModel", "primaryVariant", "paidReason",
+                        "swappedAt") if k in tier_mem}
         if res["ok"]:
             if (model_mem.get("failStreak") or model_mem.get("quarantineUntil")
                     or tier_mem.get("failStreak") or tier_mem.get("lastFailureKind")):
                 tier_mem = {"model": label_cur, "ok": True, "failStreak": 0,
-                            "lastOkAt": _now_iso()}
+                            "lastOkAt": _now_iso(), **swap_extras}
                 model_mem = {"model": label_cur, "failStreak": 0,
                              "quarantineUntil": "", "lastOkAt": _now_iso()}
             else:
                 # gesund und ohne Vorgeschichte: nichts zu schreiben
                 tier_mem = {"model": label_cur, "ok": True, "failStreak": 0}
+                if swap_extras:
+                    tier_mem.update(swap_extras)
                 model_mem = {"model": label_cur, "failStreak": 0, "quarantineUntil": ""}
         else:
             kind = "quota" if quota["blocked"] else "outage"
@@ -393,11 +772,13 @@ def run_probes(apply_backup: bool = False) -> dict:
             model_mem = dict(model_mem)
             model_mem.update({"model": label_cur, "failStreak": streak,
                               "lastFailAt": _now_iso(), "lastFailureKind": kind})
-            if kind == "outage" and streak >= THRESHOLD and quarantine_h > 0:
+            if kind == "outage" and streak >= threshold and quarantine_h > 0:
                 model_mem["quarantineUntil"] = _now_iso(time.time() + quarantine_h * 3600)
             tier_mem = {"model": label_cur, "ok": False, "failStreak": streak,
                         "lastFailAt": model_mem["lastFailAt"], "lastFailureKind": kind,
                         "quarantineUntil": model_mem.get("quarantineUntil") or ""}
+            if swap_extras:
+                tier_mem.update(swap_extras)
         health["tiers"][tier] = tier_mem
         health["models"][label_cur] = model_mem
 
@@ -406,7 +787,12 @@ def run_probes(apply_backup: bool = False) -> dict:
         fb_ref = (fb.get("model") or "").strip()
         fb_var = (fb.get("variant") or "").strip()
         fb_label = fb_ref + (f"#{fb_var}" if fb_var else "")
-        if res["ok"] or not fb_ref or fails < THRESHOLD:
+        if res["ok"] or fails < threshold:
+            continue
+        if not fb_ref:
+            # Kein stiller Skip: der Ausfall muss im Panel sichtbar bleiben.
+            swaps[tier] = "skipped: no fallback — kein Ausfall-Modell hinterlegt"
+            _log(f"{tier}: Ausfall erkannt, aber kein Ausfall-Modell hinterlegt")
             continue
         if not (apply_backup or _auto_enabled()):
             swaps[tier] = f"bereit (Ausfall erkannt, Auto-Failover aus): {fb_label}"
@@ -423,7 +809,7 @@ def run_probes(apply_backup: bool = False) -> dict:
         if q_until:
             swaps[tier] = f"übersprungen — {fb_label} in Quarantäne bis {q_until}"
             continue
-        fb_res = probe(fb_ref, fb_var)
+        fb_res = probe(fb_ref, fb_var, timeout=ptimeout)
         if not fb_res["ok"]:
             swaps[tier] = (f"übersprungen — Ausweich-Modell {fb_label} antwortet ebenfalls "
                            f"nicht ({fb_res['detail']})")
@@ -451,7 +837,7 @@ def run_probes(apply_backup: bool = False) -> dict:
     if swapped_tiers:
         # EIN Rollout für alle Wechsel dieses Laufs (vorher: ein Dispatch je Tier
         # → zwei parallele Rollouts mit doppelten Container-Neustarts).
-        _dispatch_rollout(swapped_tiers)
+        _dispatch_rollout(swapped_tiers, "sync")
     with LOCK:
         STATE["fails"].update(state_updates)
         STATE["fallbacks"] = fallbacks
@@ -467,15 +853,23 @@ def run_probes(apply_backup: bool = False) -> dict:
             "healthCommitted": health_committed, "rolledOut": swapped_tiers}
 
 
-def _dispatch_rollout(tiers: list) -> bool:
+def _dispatch_rollout(tiers: list, mode: str = "sync") -> bool:
     """Rollout genau einmal anstoßen (Push auf die Overrides feuert ihn nicht,
-    weil der Commit idempotent-geschützt ggf. gar keine Änderung enthält)."""
+    weil der Commit idempotent-geschützt ggf. gar keine Änderung enthält).
+
+    mode="sync": sync.sh/sync.yml — schreibt NUR die Overrides-Datei in die
+    Container (kein Neustart; der Plugin-Fingerprint lädt sie beim nächsten
+    Prompt neu) → Standard für Tier-Wechsel.
+    mode="restart": klassisches rollout.yml (Container-Restart) — für echte
+    Deployments, nicht für einen reinen Modellwechsel.
+    """
+    workflow = SYNC_WORKFLOW if mode == "sync" else ROLLOUT_WORKFLOW
     try:
-        github_api.dispatch_workflow(os.environ.get("ROLLOUT_WORKFLOW", "rollout.yml"))
-        _log(f"Rollout ausgelöst ({', '.join(tiers)})")
+        github_api.dispatch_workflow(workflow)
+        _log(f"Rollout ({mode}, {workflow}) ausgelöst ({', '.join(tiers)})")
         return True
     except Exception as e:  # noqa: BLE001
-        _log(f"Rollout-Dispatch fehlgeschlagen: {e}")
+        _log(f"Rollout-Dispatch fehlgeschlagen ({workflow}): {e}")
         return False
 
 
@@ -575,6 +969,8 @@ def _swap_tier(tier: str, backup: dict):
 # Probe-Thread-Verwaltung: Live-Start/-Stopp bei Settings-Änderung.
 _LOOP_THREAD = None
 _STOP = threading.Event()
+_EVENT_THREAD = None          # Ereignis-Watcher (SSE), startet einmalig in start()
+_EVENT_STOP = threading.Event()
 
 
 def _auto_enabled() -> bool:
@@ -597,24 +993,48 @@ def _apply_loop_state(enabled: bool):
 
 
 def loop(stop_event: threading.Event):
+    """Haupt-Thread der Automatik.
+
+    Der Ereignis-Watcher erkennt Ausfälle live; dieser Thread hält nur noch
+    den Rückweg-Timer (check_returns, max. alle RETURN_TICK s) und den
+    Watchdog als Netz: Proben laufen höchstens 1×/h — sofort beim Übergang auf
+    "Ereignis-Stream getrennt", ansonsten im Intervall-Takt der SOT (kleinere
+    Intervalle als 1 h werden für den Watchdog auf 1 h hochgesetzt).
+    """
     with LOCK:
         _log(f"Auto-Ausfallschutz aktiv (Intervall {STATE['interval']}s, "
              f"Schwelle {STATE['threshold']}, Timeout {STATE['timeout']}s, "
-             f"Quarantäne {STATE['quarantineHours']}h)")
+             f"Quarantäne {STATE['quarantineHours']}h, Watchdog max {WATCHDOG_MIN // 3600}×/h)")
+    last_dog = 0.0
+    was_connected = None
     while not stop_event.is_set():
-        if _auto_enabled():
+        with LOCK:
+            interval = max(int(STATE["interval"]), RETURN_TICK)
+            connected = bool((STATE.get("eventStream") or {}).get("connected"))
+        # Rückweg-Timer zuerst (reiner Config-Wechsel, keine Proben).
+        try:
+            check_returns()
+        except Exception as e:  # noqa: BLE001
+            _log(f"Rückweg-Check fehlgeschlagen: {e}")
+        dog_period = max(WATCHDOG_MIN, interval)
+        # Netzfunktion: geht der Ereignis-Stream gerade verloren, sofort proben
+        # (nicht erst nach Ablauf der laufenden Stunde) — danach wieder im Takt.
+        if was_connected and not connected:
+            last_dog = 0.0
+        was_connected = connected
+        if _auto_enabled() and _now() - last_dog >= dog_period:
             try:
                 run_probes()
             except Exception as e:  # noqa: BLE001
-                _log(f"Probe fehlgeschlagen: {e}")
-        # Intervall je Iteration neu lesen → Panel-Änderung wirkt ohne Neustart.
-        with LOCK:
-            wait = int(STATE["interval"])
-        stop_event.wait(wait)
+                _log(f"Watchdog fehlgeschlagen: {e}")
+            last_dog = _now()
+        # Intervall/Takt je Iteration neu lesen → Panel-Änderung wirkt ohne Neustart.
+        stop_event.wait(min(RETURN_TICK, max(5, interval)))
     _log("Auto-Ausfallschutz deaktiviert — Probe-Thread beendet")
 
 
 def start():
+    global _EVENT_THREAD, _EVENT_STOP
     try:
         settings = read_settings()
         with LOCK:
@@ -629,8 +1049,23 @@ def start():
     try:
         with LOCK:
             STATE["health"] = read_health()
+            # paidUntil liegt als epoch-Zeitstempel im Health-File — der
+            # Rückweg-Timer überlebt damit auch einen Hestia-Neustart.
+            paid = [_paid_until(t) for t in STATE["health"].get("tiers", {}).values()
+                    if _paid_until(t) > 0]
+            STATE["freeLimitUntil"] = min(paid) if paid else None
     except Exception:
         pass
+    # Ereignis-Watcher läuft unabhängig von der Auto-Umschaltung, weil der
+    # Verbindungszustand (eventStream) immer fürs Panel sichtbar sein soll;
+    # Swaps nimmt er aber nur bei enabled=True vor (handle_execution_failed).
+    if _EVENT_THREAD and _EVENT_THREAD.is_alive():
+        _log("Event-Watcher läuft bereits — kein zweiter Thread")
+    else:
+        _EVENT_STOP = threading.Event()
+        _EVENT_THREAD = threading.Thread(target=event_loop, args=(_EVENT_STOP,),
+                                         daemon=True, name="hestia-event-watcher")
+        _EVENT_THREAD.start()
     if _auto_enabled():
         _apply_loop_state(True)
     else:

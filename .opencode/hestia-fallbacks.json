@@ -6,5 +6,9 @@
   "medium": {
     "model": "opencode-go/glm-5.3-flash",
     "variant": ""
+  },
+  "heavy": {
+    "model": "opencode-go/glm-5.3",
+    "variant": ""
   }
 }

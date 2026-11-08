@@ -1,0 +1,36 @@
+name: sync
+
+# Sync der Tier-Overrides in die laufenden OpenCode-Coder-Workspaces — OHNE
+# Neustart: hestia/ci/sync.sh ersetzt pro Container nur die Overrides-Datei
+# (git show > Datei). Das Router-Plugin liest sie beim nächsten Prompt neu.
+# Nur manuell auslösbar (Hestia-Panel bzw. Workflow-Dispatch) — der Push-Trigger
+# mit Container-Restart bleibt rollout.yml vorbehalten (echte Deployments).
+# Kein Coder-API-Token nötig: läuft per SSH-Deploy-Key vom Self-hosted Runner
+# auf den Coder-Host (Setup: hestia/ci/setup/README.md).
+on:
+  workflow_dispatch:
+
+# Kein Push-Trigger → parallele Läufe nur bei doppeltem Dispatch. Läuft schon
+# einer, ersetzt ihn der neue.
+concurrency:
+  group: sync-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: [self-hosted, docker-host]
+    env:
+      CODER_DEPLOY_KEY: ${{ secrets.CODER_DEPLOY_KEY }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Tier-Konfiguration validieren
+        run: python3 hestia/ci/validate.py
+      - name: Deploy-Key hinterlegen
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.CODER_DEPLOY_KEY }}" > ~/.ssh/id_ed25519_coderdeploy
+          sed -i 's/\r$//' ~/.ssh/id_ed25519_coderdeploy
+          chmod 600 ~/.ssh/id_ed25519_coderdeploy
+          ssh-keyscan -H 10.0.10.17 >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Overrides in laufende Container synchronisieren (ohne Neustart)
+        run: bash hestia/ci/sync.sh

@@ -19,9 +19,10 @@ let useFree = $state({ fast: false, medium: false })
 let fallbacks = $state({
   fast: { model: '', variant: '(keine)', disabled: true },
   medium: { model: '', variant: '(keine)', disabled: true },
+  heavy: { model: '', variant: '(keine)', disabled: true },
 })
 // true = vom Nutzer manuell gesetzt → Auto-Vorschlag (paidCounterpart) überschreibt nicht mehr
-let fbManual = $state({ fast: false, medium: false })
+let fbManual = $state({ fast: false, medium: false, heavy: false })
 let foStatus = $state(null)
 let foBusy = $state(false)
 // DCP-Schwellenwerte (Kontext-Kompaktierung)
@@ -746,6 +747,7 @@ async function runApply() {
       fallbacks: {
         fast: fallbackNorm('fast'),
         medium: fallbackNorm('medium'),
+        heavy: fallbackNorm('heavy'),
       },
     }
     applyResult = await api('/api/apply', { body })
@@ -2223,11 +2225,12 @@ setInterval(loadSuggestStatus, 60000)
       </span>
     {/if}
   </div>
-  {#if foStatus?.fallbacks && (foStatus.fallbacks.fast || foStatus.fallbacks.medium)}
+  {#if foStatus?.fallbacks && (foStatus.fallbacks.fast || foStatus.fallbacks.medium || foStatus.fallbacks.heavy)}
     <p class="muted" style="margin-top:4px">
       Ausfall-Modelle:
       {#if foStatus.fallbacks.fast}fast → <span class="mono">{foStatus.fallbacks.fast.model}{foStatus.fallbacks.fast.variant ? '#' + foStatus.fallbacks.fast.variant : ''}</span>{/if}
       {#if foStatus.fallbacks.medium} · medium → <span class="mono">{foStatus.fallbacks.medium.model}{foStatus.fallbacks.medium.variant ? '#' + foStatus.fallbacks.medium.variant : ''}</span>{/if}
+      {#if foStatus.fallbacks.heavy} · heavy → <span class="mono">{foStatus.fallbacks.heavy.model}{foStatus.fallbacks.heavy.variant ? '#' + foStatus.fallbacks.heavy.variant : ''}</span>{/if}
     </p>
   {/if}
   {#if foStatus?.lastResults}

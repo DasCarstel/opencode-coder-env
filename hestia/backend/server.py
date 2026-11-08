@@ -23,7 +23,8 @@ Endpoints (alle unter Basic Auth):
   GET  /api/model-health      Modell-Wächter: echter Hermes-Log-Verkehr (p50/p95, Stalls, Sperrliste, Dry-Run)
   POST /api/hermes/speed/run  Speed-Lauf starten (discovery|monitoring|probe, im Hintergrund)
   POST /api/hermes/speed/apply Speed-Empfehlung als Hermes-Primary anwenden (SOT via hermes.apply)
-  GET  /api/failover/status   Ausfallschutz-Zustand (autoFailover/interval/threshold/timeout/…)
+  GET  /api/failover/status   Ausfallschutz-Zustand (… sowie eventStream, freeLimitUntil, lastEvent)
+  GET  /api/failover/events   Ereignis-Ringpuffer des Ausfallschutzes (read-only)
   POST /api/failover/settings Ausfallschutz-Einstellungen (SOT-Commit + STATE-Update)
   GET  /api/suggest/status    Live-Zustand + auto (Einstellungen/Fingerprint/Zeiten) + proposal
   POST /api/suggest/settings  Automatik-Einstellungen (SOT-Commit + STATE-Update)
@@ -191,9 +192,11 @@ def agents_from_overrides() -> dict:
 def saved_fallbacks() -> dict:
     """Persistierte Ausfall-Modelle aus dem Repo lesen.
 
-    Liefert immer {"fast": {...}|None, "medium": {...}|None}; leere oder
-    defekte Dateien (und GitHub-Fehler) werden stillschweigend als {} gelesen,
-    damit /api/config nicht an einem Fallback-Problem scheitert.
+    Liefert immer einen Eintrag je Tier ({"fast","medium","heavy"}; heavy kann
+    leer sein — z. B. solange kein bezahltes Ausweich-Modell hinterlegt
+    wurde). Leere oder defekte Dateien (und GitHub-Fehler) werden
+    stillschweigend als {} gelesen, damit /api/config nicht an einem
+    Fallback-Problem scheitert.
     """
     data = {}
     try:
@@ -203,7 +206,7 @@ def saved_fallbacks() -> dict:
         data = {}
     if not isinstance(data, dict):
         data = {}
-    return {t: (data.get(t) or None) for t in ("fast", "medium")}
+    return {t: (data.get(t) or None) for t in TIER_DEFS}
 
 
 def effective_agents(preset: dict, overrides: dict) -> dict:
@@ -405,7 +408,24 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/failover/status":
             with failover_mod.LOCK:
                 st = dict(failover_mod.STATE)
+            try:
+                # eventStream (verbunden/aus), freeLimitUntil, lastEvent.
+                st.update(failover_mod.status_extras())
+            except Exception as e:  # noqa: BLE001 — Status darf nie ausfallen
+                _log(f"failover status extras error: {e}")
             return self._json(st)
+        if path == "/api/failover/events":
+            # Ringpuffer der erkannten Ereignisse (read-only, gleiche Auth).
+            try:
+                qs = parse_qs(urlparse(self.path).query)
+                try:
+                    limit = int((qs.get("limit") or [20])[0])
+                except (TypeError, ValueError):
+                    limit = 20
+                return self._json(failover_mod.recent_events(limit))
+            except Exception as e:  # noqa: BLE001 — Status darf nie ausfallen
+                _log(f"failover events error: {e}")
+                return self._json([], 200)
         if path == "/api/suggest/status":
             with SUGGEST_LOCK:
                 state = dict(SUGGEST_STATE)
@@ -542,10 +562,12 @@ class Handler(BaseHTTPRequestHandler):
                 eff = effective_agents(preset, overrides)
                 agents_json = json.dumps(agents_to_display(eff), indent=2, ensure_ascii=False) + "\n"
 
-                # Ausfall-Modelle (bezahlte Alternative je Tier, optional)
+                # Ausfall-Modelle (bezahlte Alternative je Tier, optional):
+                # jetzt für alle TIER_DEFS — heavy braucht (Zen-Konto leer) einen
+                # Ausweichref zwingend, deshalb kein fast/medium-Ausschluss mehr.
                 fb_in = payload.get("fallbacks") or {}
                 fb_out = {}
-                for tier in ("fast", "medium"):
+                for tier in TIER_DEFS:
                     fb = fb_in.get(tier) or {}
                     if not isinstance(fb, dict):
                         fb = {}

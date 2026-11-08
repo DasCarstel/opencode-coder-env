@@ -37,7 +37,6 @@ ACCOUNTS_PATH = os.environ.get("HESTIA_ACCOUNTS_PATH", ".opencode/hestia-account
 CACHE_TTL = int(os.environ.get("HESTIA_ACCOUNTS_CACHE", "60"))   # Sekunden für die Usage-Cache
 CONFIG_TTL = 300                                                 # Sekunden für die Config (SOT)
 HTTP_TIMEOUT = 10
-PROBE_MODEL = os.environ.get("HESTIA_PROBE_MODEL", "mimo-v2.6-flash")
 # Workflow, der den eigentlichen Konto-Wechsel ausführt (OpenBao + Container).
 SWITCH_WORKFLOW = os.environ.get("HESTIA_SWITCH_WORKFLOW", "switch-account.yml")
 DEFAULT_COOLDOWN = int(os.environ.get("HESTIA_SWITCH_COOLDOWN") or 1800)   # Sekunden
@@ -54,7 +53,7 @@ _STATE_CACHE = {"at": 0.0}
 STATE = {
     "ok": True,
     "mode": "auto",
-    "interval": 300,
+    "interval": 900,        # Default = checkIntervalSeconds-Fallback (15 min)
     "active": None,
     "accounts": [],
     "lastRun": None,
@@ -174,46 +173,6 @@ def _avg_used(account: dict, windows) -> float:
         if w:
             vals.append(float(w.get("used") or 0))
     return sum(vals) / len(vals) if vals else 0.0
-
-
-def _probe(key: str, provider: dict) -> tuple:
-    """Mini-Modellaufruf, um ein Konto ohne Guthaben zu erkennen.
-
-    Der Usage-Endpoint antwortet auch bei leerem Guthaben mit 200 — der Fehler
-    ('Insufficient account funds') kommt erst beim eigentlichen Modell-Aufruf.
-    Rückgabe: (ok, detail).
-    """
-    base = (provider.get("url") or "").rstrip("/")
-    if not base or not key:
-        return False, "kein Key/URL"
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        # Cloudflare blockt 'Hestia/...' mit Fehler 1010 → Browser-UA nötig
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
-        "x-opencode-session": "hestia-probe",
-    }
-    if (provider.get("auth") or "bearer").lower() == "bearer":
-        headers["Authorization"] = f"Bearer {key}"
-    body = json.dumps({"model": PROBE_MODEL,
-                       "messages": [{"role": "user", "content": "hi"}],
-                       "max_tokens": 1}).encode()
-    req = urllib.request.Request(base + "/chat/completions", data=body, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-            resp.read()
-        return True, ""
-    except urllib.error.HTTPError as e:
-        text = ""
-        try:
-            text = e.read().decode(errors="replace")[:200]
-        except Exception:  # noqa: BLE001
-            pass
-        if e.code in (401, 403) and "Insufficient" in text:
-            return False, "keine Guthaben"
-        return False, f"HTTP {e.code}: {text}".strip()
-    except Exception as e:  # noqa: BLE001
-        return False, str(e)
 
 
 def _exhausted(account: dict) -> bool:
@@ -369,20 +328,21 @@ def refresh(force: bool = False) -> dict:
         provider = providers.get(acc.get("provider")) or {}
         key = _key((acc.get("keyRef") or {}).get("field") or acc.get("id") or "")
         res = _fetch(acc, provider)
-        probe_ok, probe_detail = _probe(key, provider)
         results.append({
             "id": acc.get("id"),
             "label": acc.get("label") or acc.get("id"),
             "provider": acc.get("provider"),
             "priority": acc.get("priority"),
-            # 'ok' = Usage-Endpoint. Die Mini-Probe ist NUR informativ: Cloudflare
-            # blockt Python-urllib per TLS-Fingerprint (curl im CI-Check klappt), sie
-            # darf den Kontowechsel daher nicht verhindern.
+            # 'ok' = Usage-Endpoint erreichbar (GET, gratis). Ehemalige
+            # Mini-Modellaufrufe (_probe) sind entfernt: 864 wirkungslose
+            # POSTs/Tag, und der URL-Bau war falsch (provider.url = Usage-URL
+            # + "/chat/completions" → 404). Ob ein Konto wirklich limitiert
+            # ist, meldet inzwischen OpenCode selbst — der Ereignis-Watcher
+            # des Ausfallschutzes klassifiziert free-limit/quota-Events.
             "isActive": acc.get("id") == active_id,
             "hasKey": bool(key),
             "ok": bool(res.get("ok")),
             "error": res.get("error"),
-            "probe": {"ok": probe_ok, "detail": probe_detail or None},
             "windows": res.get("windows") or {},
         })
     results.sort(key=lambda a: (a.get("priority") is None, a.get("priority") or 0, a.get("id") or ""))
@@ -402,7 +362,9 @@ def refresh(force: bool = False) -> dict:
     with LOCK:
         STATE["ok"] = not cfg.get("_error") and all(a["ok"] for a in results) if results else False
         STATE["mode"] = policy.get("mode") or "auto"
-        STATE["interval"] = int(cfg.get("checkIntervalSeconds") or 300)
+        STATE["interval"] = int(cfg.get("checkIntervalSeconds") or 900)
+        # Default 900 s (15 min) statt 300 s: die Mini-Proben sind entfallen,
+        # der Plan S-1 senkt die Abfragefrequenz auf ~192 GETs/Tag pro Konto.
         STATE["active"] = active_id or None
         STATE["accounts"] = results
         STATE["lastRun"] = time.time()
@@ -808,10 +770,10 @@ def _apply_policy() -> None:
 def loop():
     while True:
         try:
-            interval = int(refresh(force=True).get("interval") or 300)
+            interval = int(refresh(force=True).get("interval") or 900)
         except Exception as e:  # noqa: BLE001
             _log(f"Konten-Abfrage fehlgeschlagen: {e}")
-            interval = 300
+            interval = 900
         # Policy erst NACH dem frischen Refresh — die Empfehlung muss aktuell sein.
         try:
             _apply_policy()
