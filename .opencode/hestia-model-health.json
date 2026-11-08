@@ -1,27 +1,36 @@
 {
-  "updatedAt": "2026-11-08T19:29:44Z",
+  "updatedAt": "2026-11-08T21:06:04Z",
   "tiers": {
     "fast": {
       "model": "opencode-go/deepseek-v4.1-flash",
-      "ok": true,
+      "ok": false,
       "failStreak": 0,
       "lastOkAt": "2026-11-08T19:29:39Z",
-      "swappedAt": "2026-11-08T19:29:39Z"
+      "swappedAt": "2026-11-08T19:29:39Z",
+      "lastFailAt": "2026-11-08T21:06:01Z",
+      "lastFailureKind": "quota",
+      "quarantineUntil": ""
     },
     "medium": {
       "model": "opencode-go/glm-5.3-flash",
-      "ok": true,
+      "ok": false,
       "failStreak": 0,
       "lastOkAt": "2026-11-08T19:29:44Z",
-      "swappedAt": "2026-11-08T19:29:44Z"
+      "swappedAt": "2026-11-08T19:29:44Z",
+      "lastFailAt": "2026-11-08T21:06:01Z",
+      "lastFailureKind": "quota",
+      "quarantineUntil": ""
     },
     "heavy": {
-      "model": "opencode/gpt-6.1-sol#high",
-      "ok": false,
-      "failStreak": 44,
-      "lastFailAt": "2026-11-08T19:29:44Z",
-      "lastFailureKind": "outage",
-      "quarantineUntil": "2026-11-09T01:29:44Z"
+      "model": "opencode-go/glm-5.3",
+      "ok": true,
+      "failStreak": 0,
+      "lastOkAt": "2026-11-08T21:06:04Z",
+      "swappedAt": "2026-11-08T21:06:04Z",
+      "primaryModel": "opencode/gpt-6.1-sol",
+      "primaryVariant": "high",
+      "paidReason": "quota",
+      "quarantineUntil": ""
     }
   },
   "models": {
@@ -32,9 +41,11 @@
     },
     "opencode-go/glm-5.3-flash": {
       "model": "opencode-go/glm-5.3-flash",
-      "failStreak": 0,
+      "failStreak": 1,
       "quarantineUntil": "",
-      "lastOkAt": "2026-11-08T19:29:44Z"
+      "lastOkAt": "2026-11-08T19:29:44Z",
+      "lastFailAt": "2026-11-08T21:06:01Z",
+      "lastFailureKind": "quota"
     },
     "opencode-go/glm-5.3#max": {
       "model": "opencode-go/glm-5.3#max",
@@ -57,16 +68,24 @@
     },
     "opencode/gpt-6.1-sol#high": {
       "model": "opencode/gpt-6.1-sol#high",
-      "failStreak": 44,
-      "lastFailAt": "2026-11-08T19:29:44Z",
-      "lastFailureKind": "outage",
+      "failStreak": 45,
+      "lastFailAt": "2026-11-08T21:06:01Z",
+      "lastFailureKind": "quota",
       "quarantineUntil": "2026-11-09T01:29:44Z"
     },
     "opencode-go/deepseek-v4.1-flash": {
       "model": "opencode-go/deepseek-v4.1-flash",
+      "failStreak": 1,
+      "quarantineUntil": "",
+      "lastOkAt": "2026-11-08T19:29:39Z",
+      "lastFailAt": "2026-11-08T21:06:01Z",
+      "lastFailureKind": "quota"
+    },
+    "opencode-go/glm-5.3": {
+      "model": "opencode-go/glm-5.3",
       "failStreak": 0,
       "quarantineUntil": "",
-      "lastOkAt": "2026-11-08T19:29:39Z"
+      "lastOkAt": "2026-11-08T21:06:04Z"
     }
   }
 }
