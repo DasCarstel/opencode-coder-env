@@ -230,6 +230,8 @@ Eigene Patches gegenüber Upstream:
 | Patch | Zweck |
 |-------|-------|
 | `feat(saved-meals)` | Tools `list_saved_meals`, `log_saved_meal`, `save_meal` — benannte Mahlzeiten aus `saved-meals.json` in einem Aufruf buchen |
+| `feat(user-meals)` | Tools `list_user_meals`, `log_user_meal` — die in YAZIO angelegten Mahlzeiten (`/user/meals`) nativ buchen |
+| `feat(compact)` | `search_products`/`get_diary` kompakt per Default (kleinere Tool-Ergebnisse, weniger Kontext) |
 
 **API-Basis ist `/v19`.** Verifiziert am 2026-11-08: Login per Password-Grant,
 Produktsuche (DE/`de_DE`), Tagebuch und der komplette Schreibzyklus
@@ -255,10 +257,16 @@ rendert daraus zwei Dateien ins Volume:
 > liest den OpenBao-Wert direkt und quotet ihn mit `shlex.quote` — hier wird
 > nichts unescaped.
 
-**Gespeicherte Mahlzeiten.** YAZIO selbst liefert für diesen Account **keine**
-Rezepte (`GET /user/recipes` → `[]`), und `recipe_portions` beim Schreiben ist
-bei keinem Client verifiziert. Deshalb eigene Templates:
-`/opt/data/yazio/saved-meals.json`
+**Gespeicherte Mahlzeiten.** Zwei Ebenen:
+
+1. **YAZIO-eigene Mahlzeiten** (`GET /user/meals`) — die im App-Konto
+   angelegten Vorlagen (aktuell 10: Butter Chicken, Drink, Teriyaki,
+   Putenhack Burger, Epische Haferflocken …). Tools: `list_user_meals` und
+   `log_user_meal` — bucht die Produkte der Mahlzeit über `add_meal_batch`,
+   `daytime` ist Pflicht, `amount_factor` skaliert alle Mengen.
+2. **Lokale Templates** (`saved-meals.json`) als Fallback für Kombinationen,
+   die es in YAZIO nicht gibt: `save_meal`, `list_saved_meals`,
+   `log_saved_meal`. `/opt/data/yazio/saved-meals.json`:
 
 ```json
 { "meals": [ { "name": "Chicken Teriyaki", "aliases": ["teriyaki"],
@@ -267,8 +275,12 @@ bei keinem Client verifiziert. Deshalb eigene Templates:
                "serving_quantity": null } ] } ] }
 ```
 
-Anlegen per `save_meal` (validiert die `product_id` gegen die API), buchen per
-`log_saved_meal` — `dry_run` ist default `true` wie bei allen Schreib-Tools.
+**Kompakte Antworten (Default an).** `search_products` liefert per Default
+`limit: 5` und `compact: true` (`product_id`, `name`, `brand`, `serving`,
+`per_100g`), `get_diary` per Default `compact: true` (kein Nährwert pro
+Eintrag, Tages-Totals bleiben). Grund: gemessen am 2026-11-08 lieferte eine
+Suche 7,7 kB pro Aufruf und eine Tagebuch-Range 82 kB, die Hermes auf Platte
+auslagern musste. `compact: false` liefert weiterhin das volle Format.
 
 **Aktivierung.** `mcp-yazio` in `toolsets.enabled` **und** in
 `platform_toolsets.api_server` ergänzen, danach `docker restart hermes`.

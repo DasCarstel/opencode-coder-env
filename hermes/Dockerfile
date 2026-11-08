@@ -75,7 +75,7 @@ RUN ln -sfn /opt/data/spotify/spotify-config.json /opt/spotify-mcp/spotify-confi
 # /opt/data/yazio/.env und setzt sie nur fuer diesen Prozess. Damit stehen in
 # der config.yaml keine YAZIO-Zugangsdaten.
 # Node >= 20 ist erfuellt; gebaut wird mit /opt/node (siehe Spotify oben).
-ARG YAZIO_MCP_COMMIT=52a53eb9f772fe6c55c9a286ae3beee0794e34a4
+ARG YAZIO_MCP_COMMIT=d326b1bc70ce2e214be3f412f9a887277fc73ef4
 RUN set -eux; \
     curl -fsSL -o /tmp/yazio-mcp.tar.gz "https://github.com/DasCarstel/yazio-mcp/archive/${YAZIO_MCP_COMMIT}.tar.gz"; \
     tar -xzf /tmp/yazio-mcp.tar.gz -C /tmp; \
