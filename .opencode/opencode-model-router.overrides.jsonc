@@ -38,8 +38,8 @@
         ]
       },
       "heavy": {
-        "model": "opencode-go/qwen3.8-max",
-        "variant": "xhigh",
+        "model": "opencode-go/glm-5.3",
+        "variant": "high",
         "costRatio": 12,
         "description": "GLM 5.3 für Architektur, komplexes Debugging und Security",
         "steps": 120,

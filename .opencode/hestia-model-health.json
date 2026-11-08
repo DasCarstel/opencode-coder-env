@@ -22,7 +22,7 @@
       "swappedAt": "2026-11-08T21:09:28Z"
     },
     "heavy": {
-      "model": "opencode-go/qwen3.8-max#xhigh",
+      "model": "opencode-go/glm-5.3#high",
       "ok": true,
       "failStreak": 0,
       "swappedAt": "2026-11-08T21:26:01Z"
