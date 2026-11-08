@@ -39,7 +39,7 @@ HERMES_TOOLSETS = {
     # api_server (HA-Assist UND Open WebUI).
     "mcp-homeassistant", "mcp-notion", "mcp-ocis-private",
     "mcp-ocis-muellerconnect", "mcp-super-productivity", "mcp-spotify",
-    "mcp-google-calendar",
+    "mcp-google-calendar", "mcp-yazio",
 }
 HERMES_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
