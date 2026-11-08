@@ -20,6 +20,11 @@ CODER_SSH_KEY="${CODER_SSH_KEY:-$HOME/.ssh/id_ed25519_coderdeploy}"
 HESTIA_TARGETS="${HESTIA_TARGETS:-infrastructure|general|muellerconnect}"
 
 OVERRIDES='.opencode/opencode-model-router.overrides.jsonc'
+FILES=(
+  '.opencode/opencode-model-router.overrides.jsonc'
+  '.opencode/hestia-fallbacks.json'
+  '.opencode/hestia-primary-agents.json'
+)
 REPO='/home/carstenmueller2002/opencode-coder-env'
 
 SSH=(ssh -i "$CODER_SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "root@${CODER_SSH_HOST}")
@@ -34,13 +39,19 @@ echo "→ Ziele:"
 echo "$NAMES" | sed 's/^/   - /'
 
 FAILURES=0
+# Nur die drei Router-Dateien ersetzen (kein reset --hard, kein pull):
+# Overrides steuern die Tier-Modelle, die anderen beiden sind der Zustand,
+# den Hestia beim nächsten Start/direkt wieder liest.
+COPY_CMD="cd $REPO && git fetch --depth 1 origin master"
+for f in "${FILES[@]}"; do
+  COPY_CMD="$COPY_CMD && git show FETCH_HEAD:$f > $f.tmp && mv $f.tmp $f"
+done
 for c in $NAMES; do
   echo "→ sync $c"
-  # Pro Container NUR die eine Overrides-Datei ersetzen (git show > file).
   # Fehlt der Container-Eintrag oder das Repo, meldet der einzelne Lauf klar
   # und der Loop läuft mit den restlichen Zielen weiter.
-  if OUT=$("${SSH[@]}" "docker exec '$c' sh -c 'cd $REPO && git fetch --depth 1 origin master && git show FETCH_HEAD:$OVERRIDES > $OVERRIDES.tmp && mv $OVERRIDES.tmp $OVERRIDES'" 2>&1); then
-    echo "   ✓ Overrides ersetzt (Plugin lädt beim nächsten Prompt neu)"
+  if OUT=$("${SSH[@]}" "docker exec '$c' sh -c '${COPY_CMD}'" 2>&1); then
+    echo "   ✓ Router-Dateien ersetzt (Plugin lädt beim nächsten Prompt neu)"
     [ -n "$OUT" ] && echo "$OUT" | sed 's/^/   /'
   else
     echo "   ✗ FEHLER bei $c:"
@@ -54,4 +65,4 @@ if [ "$FAILURES" -gt 0 ]; then
   exit 1
 fi
 
-echo "SYNC OK — Overrides in allen Containern ersetzt (kein Neustart, kein reset --hard)."
+echo "SYNC OK — Router-Dateien in allen Containern ersetzt (kein Neustart, kein reset --hard)."

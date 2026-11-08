@@ -12,9 +12,15 @@ on:
     paths:
       - ".opencode/opencode-model-router.overrides.jsonc"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "sync = nur die Overrides-Datei ersetzen (kein Neustart) · restart = Container neu starten"
+        type: choice
+        default: sync
+        options: [sync, restart]
 
-# Doppelter Trigger (Push UND Dispatch) würde zwei parallele Rollouts starten und
-# die Workspaces zweimal neu starten. Läuft schon einer, ersetzt ihn der neue.
+# Doppelter Trigger (Push UND Dispatch) würde zwei parallele Rollouts starten.
+# Läuft schon einer, ersetzt ihn der neue.
 concurrency:
   group: rollout-${{ github.ref }}
   cancel-in-progress: true
@@ -35,5 +41,5 @@ jobs:
           sed -i 's/\r$//' ~/.ssh/id_ed25519_coderdeploy
           chmod 600 ~/.ssh/id_ed25519_coderdeploy
           ssh-keyscan -H 10.0.10.17 >> ~/.ssh/known_hosts 2>/dev/null
-      - name: Coder-Container neu starten (Repo-Pull beim Entrypoint)
-        run: bash hestia/ci/rollout.sh
+      - name: Overrides ausrollen (sync = Datei-Ersatz ohne Neustart, restart = Container neu starten)
+        run: bash "hestia/ci/${{ inputs.mode || 'sync' }}.sh"
