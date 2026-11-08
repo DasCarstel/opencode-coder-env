@@ -17,12 +17,8 @@
       "model": "glm-5.3-flash"
     },
     {
-      "provider": "opencode-go",
+      "provider": "opencode",
       "model": "deepseek-v4.1-flash-free"
-    },
-    {
-      "provider": "opencode-go",
-      "model": "longcat-2.5-preview-free"
     }
   ],
   "pool": {

@@ -157,6 +157,11 @@ Zwei Ebenen, bewusst getrennt:
 
 Ein Rollout der SOT-Änderungen (Hestia → Container) läuft über
 `.github/workflows/rollout.yml`; der Container-Start zieht ohnehin frisch nach.
+ Standard ist der **sync**-Modus (`hestia/ci/sync.sh`): Er ersetzt in den
+laufenden Containern nur die drei Router-Dateien per `git show` — kein
+`reset --hard`, kein Neustart. Der Neustart-Pfad bleibt als `mode: restart`
+erhalten und ist nur für Änderungen nötig, die den Container-Start selbst
+betreffen.
 
 ## SSH: interaktiv vs. ssh-mcp
 

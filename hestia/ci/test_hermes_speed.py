@@ -1023,7 +1023,7 @@ def main():
             return 201, {"data": {"id": f"rsid-{creates['n']}"}}
         if method == "GET" and "/message" in url:
             return 200, {"data": [{"type": "assistant", "content": [
-                {"type": "text", "text": '{"ok": true}'}]}]}
+                {"type": "text", "text": '{"reasoning": "Test", "fast": {"paid": {"model": "opencode-go/deepseek-v4.1-flash", "variant": "", "reason": "t"}}, "medium": {"paid": {"model": "opencode-go/glm-5.3-flash", "variant": "", "reason": "t"}}, "heavy": {"paid": {"model": "opencode-go/glm-5.3", "variant": "high", "reason": "t"}}}'}]}]}
         return 200, {}
 
     def _r_watch(sid, deadline, stall_timeout, on_progress=None, on_first_delta=None):
@@ -1076,13 +1076,19 @@ def main():
     real.analysis_candidates = lambda *a, **k: [
         (None, {"source": "session-default", "label": "Session-Default"})]
     real.OC_SERVER_PASSWORD = "x"      # Gate umgehen (Env ist im Test leer)
+    # Die Katalog-Validierung der Antwort (_validate_decision) ist hier nicht der
+    # Prüfgegenstand (das deckt test_suggest.py ab) — sie würde die Fake-Antwort
+    # '{"ok": true}' verwerfen. Für diesen Abschnitt neutralisieren.
+    saved_validate = real._validate_decision
+    real._validate_decision = lambda d: d
     R_CALLS["req"].clear()
     R_CALLS["deleted"].clear()
     creates["n"] = 0
     res = real.suggest(silent=True)
+    real._validate_decision = saved_validate
     creates_list = [r for r in R_CALLS["req"] if r["url"].endswith("/api/session")]
     check("suggest(silent=True): Entscheidung kommt, Eltern+Kind angelegt",
-          res.get("decision") == {"ok": True} and len(creates_list) == 2
+          bool((res.get("decision") or {}).get("fast")) and len(creates_list) == 2
           and (creates_list[1]["body"] or {}).get("parentID") == "rsid-1",
           str(res.get("decision")))
     R_CALLS["req"].clear()
