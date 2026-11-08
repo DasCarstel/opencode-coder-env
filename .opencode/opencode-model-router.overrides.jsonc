@@ -38,7 +38,7 @@
         ]
       },
       "heavy": {
-        "model": "opencode/gpt-6.1-sol",
+        "model": "opencode-go/glm-5.3",
         "costRatio": 12,
         "description": "GPT-6.1 Sol für Architektur, komplexes Debugging und Security",
         "steps": 120,
@@ -47,8 +47,7 @@
           "Komplexes Debugging (nach 2+ Fehlschlägen)",
           "Security-Review",
           "Performance-Optimierung"
-        ],
-        "variant": "high"
+        ]
       }
     }
   }
