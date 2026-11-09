@@ -102,7 +102,7 @@ case "$WARDROBE_TEXT_MODEL" in
       echo "→ Wardrobe-Shim: GO_MODELS=$GO_MODELS_GO ($SHIM_ENV)"
       upsert_env_var "$SHIM_ENV" GO_MODELS "$GO_MODELS_GO"
       chmod 600 "$SHIM_ENV"
-      if docker compose -f /opt/docker-compose/ai-shim/docker-compose.yml up -d ai-shim >/dev/null 2>&1; then
+      if docker compose -f /opt/docker-compose/ai-shim/docker-compose.yml up -d --force-recreate ai-shim >/dev/null 2>&1; then
         echo "   ✓ Shim neu erstellt (Go-Modell läuft über das Go-Abo)"
       else
         echo "   ⚠ Shim-Restart fehlgeschlagen — GO_MODELS steht in $SHIM_ENV" >&2
