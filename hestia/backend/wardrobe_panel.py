@@ -57,16 +57,22 @@ IMAGE_SIZES = ("1K", "2K", "4K")
 #   image_out — Bild-Output-Tokens (die eigentlichen Render-Kosten)
 #   tokens   — gemessene/gemeldete Output-Token-Zahl je Bildgröße
 #              (Schätzbasis für `per_image`)
+# display-name: die echte Modell-Identität (aus der Live-Gemini-API
+# ListModels, displayName je Kanon-Id): "#Gemini 3.1 Flash Image" etc. sind
+# Marketing-Aliase — hinter "gemini-3.1-flash-image" steckt z. B. "Nano
+# Banana 2", hinter "gemini-3-pro-image" "Nano Banana Pro". Die -preview/
+# Legacy-Aliase sind bewusst NICHT in der Liste — die Ids hier sind die
+# finalen GA-Kanon-Namen.
 IMAGE_MODELS = [
-    {"id": "gemini-nano-banana-2.1", "text_in": 1.50, "text_out": 7.50, "image_out": 30.0,
+    {"id": "gemini-nano-banana-2.1", "name": "Nano Banana 2.1", "text_in": 1.50, "text_out": 7.50, "image_out": 30.0,
      "tokens": {"1K": 1120, "2K": 1680, "4K": 3780}},
-    {"id": "gemini-3.1-flash-image", "text_in": 0.50, "text_out": 3.0, "image_out": 60.0,
+    {"id": "gemini-3.1-flash-image", "name": "Nano Banana 2 (= Gemini 3.1 Flash Image)", "text_in": 0.50, "text_out": 3.0, "image_out": 60.0,
      "tokens": {"0.5K": 747, "1K": 1120, "2K": 1680}},
-    {"id": "gemini-3.1-flash-lite-image", "text_in": 0.25, "text_out": 1.5, "image_out": 30.0,
+    {"id": "gemini-3.1-flash-lite-image", "name": "Nano Banana 2 Lite (= 3.1 Flash-Lite Image)", "text_in": 0.25, "text_out": 1.5, "image_out": 30.0,
      "tokens": {"1K": 1120}},
-    {"id": "gemini-3-pro-image", "text_in": 2.00, "text_out": None, "image_out": 120.0,
+    {"id": "gemini-3-pro-image", "name": "Nano Banana Pro (= Gemini 3 Pro Image)", "text_in": 2.00, "text_out": None, "image_out": 120.0,
      "tokens": {"0.5K": 1120, "1K": 1120, "2K": 1120, "4K": 2000}},
-    {"id": "gemini-2.5-flash-image", "text_in": 0.30, "text_out": None, "image_out": 30.0,
+    {"id": "gemini-2.5-flash-image", "name": "Nano Banana 1 (= Gemini 2.5 Flash Image)", "text_in": 0.30, "text_out": None, "image_out": 30.0,
      "tokens": {"1K": 1290}},
 ]
 
@@ -148,6 +154,7 @@ def image_models_payload(active: str | None = None) -> list:
     for spec in IMAGE_MODELS:
         out.append({
             "id": spec["id"],
+            "name": spec.get("name"),
             "text_in": spec["text_in"],
             "text_out": spec["text_out"],
             "image_out": spec["image_out"],

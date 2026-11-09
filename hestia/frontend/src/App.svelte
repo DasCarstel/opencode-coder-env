@@ -2851,7 +2851,7 @@ setInterval(loadSuggestStatus, 60000)
         <select id="wpImageModel" value={wpForm.image_model} onchange={(e) => wpSetImageModel(e.target.value)}>
           {#each wardrobePanel?.image_models || [] as m (m.id)}
             <option value={m.id}>
-              {m.id} — ≈ {wpPerImage(m, wpForm.image_size) == null ? 'n/a' : '$' + wpPerImage(m, wpForm.image_size).toFixed(4)} /Bild · {wpForm.image_size}{m.active ? ' · aktiv' : ''}
+              {m.name || m.id} — {m.id} · ≈ {wpPerImage(m, wpForm.image_size) == null ? 'n/a' : '$' + wpPerImage(m, wpForm.image_size).toFixed(4)} /Bild · {wpForm.image_size}{m.active ? ' · aktiv' : ''}
             </option>
           {/each}
         </select>
