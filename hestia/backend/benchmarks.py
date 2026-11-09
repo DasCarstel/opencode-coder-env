@@ -614,13 +614,13 @@ def _fetch_aa(timeout: int = FETCH_TIMEOUT) -> list:
     if not aa_enabled():
         raise RuntimeError("AA_API_KEY nicht gesetzt — Artificial Analysis übersprungen")
     parts = urllib.parse.urlsplit(AA_MODELS_URL)
-    base = urllib.parse.urlunsplit(parts[:3] + ("", "", ""))
+    base = f"{parts.scheme}://{parts.netloc}{parts.path}"
     fixed_query = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
     rows: list = []
     page = 1
     while True:
         query = list(fixed_query) + [("page", str(page))]
-        url = urllib.parse.urlunsplit(parts[:3] + (urllib.parse.urlencode(query), "", ""))
+        url = f"{base}?{urllib.parse.urlencode(query)}"
         req = urllib.request.Request(
             url,
             headers={
