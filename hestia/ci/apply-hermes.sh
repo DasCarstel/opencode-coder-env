@@ -87,7 +87,7 @@ fi
 # IFS=Tabulator, weil die JSON-Werte Leerzeichen enthalten.
 IFS=$'\t' read -r PRIMARY_PROVIDER PRIMARY_MODEL FALLBACKS_JSON POOL_FOLLOW RESTART ENABLED PROFILES_JSON \
   API_ENABLED API_PORT API_HOST AGENT_JSON PROVIDERS_JSON TOOLSETS_JSON PLATFORMS_JSON \
-  SKILLS_JSON < <(
+  SKILLS_JSON VISION_JSON < <(
   python3 - "$SOT_PATH" <<'PY'
 import json, sys
 try:
@@ -111,6 +111,9 @@ except (TypeError, ValueError):
 if not 1 <= api_port <= 65535:
     api_port = 8642
 api_host = str(api.get("host") or "0.0.0.0").strip() or "0.0.0.0"
+# auxiliary.vision (Bildrouten) — {} = kein Vision-Modell gesetzt.
+aux = cfg.get("auxiliary") if isinstance(cfg.get("auxiliary"), dict) else {}
+vision = aux.get("vision") if isinstance(aux.get("vision"), dict) else {}
 
 
 def norm_fb(raw):
@@ -172,6 +175,7 @@ print("\t".join([
                separators=(",", ":")),
     json.dumps(cfg.get("skills") if isinstance(cfg.get("skills"), dict) else {},
                separators=(",", ":")),
+    json.dumps(vision, separators=(",", ":")),
 ]))
 PY
 )
@@ -644,46 +648,23 @@ PY
 # bricht das Skript ab (set -e) und die .env bleibt unveraendert.
 write_api_server "$ENV_IN_CONTAINER" "default"
 
-# --- 4c) Erweiterte Sektionen (Hermes Voice) in die config.yaml mergen --------
-# agent / providers / platform_toolsets / platforms / skills kommen aus der SOT
-# und werden per Deep-Merge in /opt/data/config.yaml geschrieben. Bewusst NUR
-# diese fünf Sektionen: mcp_servers, toolsets.enabled (deprecated), tools und
-# model.base_url bleiben unangetastet, ebenso alle nicht genannten Keys
-# (z. B. platforms.ntfy). Dicts werden rekursiv verschmolzen, Listen und
-# Skalare ERSETZT (nie konkateniert — skills.disabled ist also immer exakt die
-# SOT-Liste); Kommentare/Reihenfolge bleiben wo moeglich erhalten
-# (ruamel.yaml Round-Trip im Container).
-ADV_PATCH="$(python3 - "$AGENT_JSON" "$PROVIDERS_JSON" "$TOOLSETS_JSON" "$PLATFORMS_JSON" "$SKILLS_JSON" <<'PY'
-import json, sys
-names = ("agent", "providers", "platform_toolsets", "platforms", "skills")
-patch = {}
-for name, raw in zip(names, sys.argv[1:]):
-    try:
-        value = json.loads(raw) if raw else None
-    except Exception:
-        value = None
-    if isinstance(value, dict) and value:
-        patch[name] = value
-print(json.dumps(patch, separators=(",", ":")))
-PY
-)"
-
-ADV_BACKUP=""
-if [[ "$ADV_PATCH" != "{}" ]]; then
-  # Gewidmetes Backup VOR diesem Merge — stellt der fehlgeschlagene
-  # "hermes config check" unten automatisch wieder her (das allgemeine Backup
-  # aus Schritt 2 ist aelter als model/fallback-Schritte).
-  ADV_BACKUP="${CONFIG_IN_CONTAINER}.bak-adv-$(date +%s)"
-  "${SSH[@]}" "docker exec '$HERMES_CONTAINER' sh -lc 'cp -a $CONFIG_IN_CONTAINER $ADV_BACKUP'"
-  echo "→ Backup für erweiterte Sektionen: $ADV_BACKUP"
-
-  cat >"$WORK/adv-merge.py" <<'PY'
+# --- 4c) Erweiterte Sektionen (Hermes Voice + Vision) in die config.yaml -----
+# agent / providers / platform_toolsets / platforms / skills / auxiliary kommen
+# aus der SOT und werden per Deep-Merge in /opt/data/config.yaml geschrieben.
+# Bewusst NUR diese sechs Sektionen: mcp_servers, toolsets.enabled (deprecated),
+# tools und model.base_url bleiben unangetastet, ebenso alle nicht genannten
+# Keys (z. B. platforms.ntfy). auxiliary.vision gilt global und wird unten
+# zusätzlich in JEDE Profil-config.yaml gemerged. Dicts werden rekursiv
+# verschmolzen, Listen und Skalare ERSETZT (nie konkateniert — skills.disabled
+# ist also immer exakt die SOT-Liste); Kommentare/Reihenfolge bleiben wo
+# moeglich erhalten (ruamel.yaml Round-Trip im Container).
+cat >"$WORK/adv-merge.py" <<'PY'
 """Deep-Mergt die erweiterten Hestia-Sektionen in die Hermes-config.yaml.
 
 Aufruf: adv-merge.py <patch.json> < config.yaml   (Ausgabe auf stdout)
 
 argv[1] ist eine JSON-Datei
-{agent?, providers?, platform_toolsets?, platforms?, skills?}.
+{agent?, providers?, platform_toolsets?, platforms?, skills?, auxiliary?}.
 Dicts werden rekursiv verschmolzen, Listen und Skalare ersetzt (nie
 konkateniert — skills.disabled ist also exakt die SOT-Liste). Alle anderen
 Keys (mcp_servers, tools, model, …), Kommentare und die Reihenfolge bleiben
@@ -717,24 +698,62 @@ cfg = yaml.load(sys.stdin.read()) or {}
 merge(cfg, patch)
 yaml.dump(cfg, sys.stdout)
 PY
-  printf '%s' "$ADV_PATCH" >"$WORK/adv-patch.json"
+
+# Ruamel-Round-Trip-Merge für EINE config.yaml im Container (dasselbe Skript
+# wie Schritt 4c; Profile bedient die Funktion unten ebenfalls).
+# $1 = Pfad der config.yaml im Container, $2 = Label, $3 = Patch-JSON (lokal).
+# Logs gehen auf stderr, der Backup-Pfad wird auf stdout zurückgegeben.
+ADV_SEQ=0
+adv_merge_into() {
+  local target="$1" label="$2" patch_file="$3"
+  local backup="${target}.bak-adv-$(date +%s)"
+  ADV_SEQ=$((ADV_SEQ + 1))
+  local out="$WORK/adv-merge.$ADV_SEQ.yaml"
+  echo "→ [$label] Backup für erweiterte Sektionen: $backup" >&2
+  "${SSH[@]}" "docker exec '$HERMES_CONTAINER' sh -lc 'cp -a $target $backup'"
   "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > /tmp/hestia-adv-merge.py'" <"$WORK/adv-merge.py"
-  "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > /tmp/hestia-adv-patch.json'" <"$WORK/adv-patch.json"
+  "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > /tmp/hestia-adv-patch.json'" <"$patch_file"
+  local merged
   # Merge IM Container ausführen. Bewusst nicht "python3" aus dem Login-PATH:
   # sh -lc setzt PATH auf /usr/local/bin (ohne ruamel); die Hermes-venv hat es.
-  if ! "${SSH[@]}" "docker exec '$HERMES_CONTAINER' sh -lc '$HERMES_PYTHON /tmp/hestia-adv-merge.py /tmp/hestia-adv-patch.json < $CONFIG_IN_CONTAINER'" >"$WORK/config.adv.new" \
-     || [[ ! -s "$WORK/config.adv.new" ]]; then
+  merged="$("${SSH[@]}" "docker exec '$HERMES_CONTAINER' sh -lc '$HERMES_PYTHON /tmp/hestia-adv-merge.py /tmp/hestia-adv-patch.json < $target'" >"$out" && echo ok || true)"
+  if [[ "$merged" != "ok" || ! -s "$out" ]]; then
     "${SSH[@]}" "docker exec '$HERMES_CONTAINER' rm -f /tmp/hestia-adv-merge.py /tmp/hestia-adv-patch.json" >/dev/null 2>&1 || true
-    echo "✗ Merge der erweiterten Sektionen fehlgeschlagen — config.yaml unverändert (Backup: $ADV_BACKUP)" >&2
-    exit 1
+    echo "✗ Merge der erweiterten Sektionen in $target fehlgeschlagen — Datei unverändert (Backup: $backup)" >&2
+    return 1
   fi
   # In-place zurückschreiben (ein mv auf /opt/data scheitert im Volume).
-  "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > $CONFIG_IN_CONTAINER'" <"$WORK/config.adv.new"
-  "${SSH[@]}" "docker exec -u 0 '$HERMES_CONTAINER' sh -lc 'chown hermes:hermes $CONFIG_IN_CONTAINER && chmod 600 $CONFIG_IN_CONTAINER'"
+  "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > $target'" <"$out"
+  "${SSH[@]}" "docker exec -u 0 '$HERMES_CONTAINER' sh -lc 'chown hermes:hermes $target && chmod 600 $target'"
   "${SSH[@]}" "docker exec '$HERMES_CONTAINER' rm -f /tmp/hestia-adv-merge.py /tmp/hestia-adv-patch.json"
-  echo "✓ Erweiterte Sektionen gemerged: $(printf '%s' "$ADV_PATCH" | python3 -c 'import json,sys; print(", ".join(sorted(json.load(sys.stdin))))')"
+  echo "✓ [$label] Erweiterte Sektionen gemerged: $(python3 -c 'import json,sys; print(", ".join(sorted(json.load(sys.stdin))))' <"$patch_file")" >&2
+  echo "$backup"
+}
+
+ADV_PATCH="$(python3 - "$AGENT_JSON" "$PROVIDERS_JSON" "$TOOLSETS_JSON" "$PLATFORMS_JSON" "$SKILLS_JSON" "$VISION_JSON" <<'PY'
+import json, sys
+names = ("agent", "providers", "platform_toolsets", "platforms", "skills", "auxiliary")
+patch = {}
+for name, raw in zip(names, sys.argv[1:]):
+    try:
+        value = json.loads(raw) if raw else None
+    except Exception:
+        value = None
+    if isinstance(value, dict) and value:
+        patch[name] = value
+print(json.dumps(patch, separators=(",", ":")))
+PY
+)"
+
+ADV_BACKUP=""
+if [[ "$ADV_PATCH" != "{}" ]]; then
+  # Gewidmetes Backup VOR diesem Merge — stellt der fehlgeschlagene
+  # "hermes config check" unten automatisch wieder her (das allgemeine Backup
+  # aus Schritt 2 ist aelter als model/fallback-Schritte).
+  printf '%s' "$ADV_PATCH" >"$WORK/adv-patch.json"
+  ADV_BACKUP="$(adv_merge_into "$CONFIG_IN_CONTAINER" "default" "$WORK/adv-patch.json")"
 else
-  echo "→ Keine erweiterten Sektionen (agent/providers/platform_toolsets/platforms/skills) in der SOT — config.yaml hier unverändert"
+  echo "→ Keine erweiterten Sektionen (agent/providers/platform_toolsets/platforms/skills/auxiliary) in der SOT — config.yaml hier unverändert"
 fi
 
 # --- 5) Abo-Pool aus OpenBao -------------------------------------------------
@@ -963,53 +982,107 @@ main()
 PY
 
 PROFILES_APPLIED=0
-if [[ "$PROFILES_JSON" != "[]" ]]; then
-  while IFS=$'\t' read -r P_NAME P_PRIMARY_PROVIDER P_PRIMARY_MODEL P_FB_JSON P_POOL_FOLLOW P_POOL_ONLY; do
-    [[ -z "$P_NAME" ]] && continue
-    P_CONFIG="/opt/data/profiles/$P_NAME/config.yaml"
-    P_ENV="/opt/data/profiles/$P_NAME/.env"
-    # Profil-Dateien müssen existieren, sonst nichts anfassen.
-    if ! "${SSH[@]}" "docker exec '$HERMES_CONTAINER' test -f '$P_CONFIG'" 2>/dev/null; then
-      echo "⚠ Profil '$P_NAME' übersprungen: $P_CONFIG nicht gefunden"
-      continue
-    fi
-    echo "→ Profil '$P_NAME': $P_PRIMARY_PROVIDER/$P_PRIMARY_MODEL · Fallbacks: $P_FB_JSON"
-    "${SSH[@]}" "docker exec '$HERMES_CONTAINER' sh -lc 'cp -a $P_CONFIG $P_CONFIG.bak-hestia-\$(date +%s)'"
-    echo "  → [$P_NAME] Backup: $("${SSH[@]}" "docker exec '$HERMES_CONTAINER' sh -lc 'ls -1 $P_CONFIG.bak-hestia-* 2>/dev/null | tail -1'")"
 
-    # Primary + Fallback in einem Durchgang: erst model.provider/model.default,
-    # dann der fallback_providers-Block (liest die bereits korrigierte Datei).
-    "${SSH[@]}" "docker exec '$HERMES_CONTAINER' cat $P_CONFIG" \
-      | python3 "$WORK/model.py" "$P_PRIMARY_PROVIDER" "$P_PRIMARY_MODEL" > "$WORK/p.$P_NAME.model.yaml"
-    "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > $P_CONFIG'" < "$WORK/p.$P_NAME.model.yaml"
-    echo "  → [$P_NAME] model.provider=$P_PRIMARY_PROVIDER · model.default=$P_PRIMARY_MODEL"
-    write_fallbacks "$P_CONFIG" "$P_FB_JSON" "$P_NAME"
-    validate_yaml "$P_CONFIG" "$P_NAME"
-
-    # Pool: nur wenn für dieses Profil followActive gilt.
-    P_SINGLE="$SINGLE"
-    if [[ "$P_POOL_ONLY" == "true" ]]; then
-      P_SINGLE="true"
-    fi
-    if [[ "$P_POOL_FOLLOW" == "true" ]]; then
-      apply_pool "$P_ENV" "$P_NAME" "$P_SINGLE"
-    else
-      echo "  → [$P_NAME] Pool bleibt unverändert (pool.followActive=false)"
-    fi
-    PROFILES_APPLIED=$((PROFILES_APPLIED + 1))
-  done < <(python3 - "$PROFILES_JSON" <<'PY'
+# auxiliary (Vision) gilt global für den Multiplexer: der Block aus der SOT
+# wird in JEDE Profil-config.yaml (/opt/data/profiles/*/config.yaml) tiefge-
+# merged — mit demselben ruamel Helper wie Schritt 4c. model/fallback/pool
+# gelten weiterhin nur für Profile, die die SOT auch definiert.
+VISION_PATCH="$(python3 - "$VISION_JSON" <<'PY'
 import json, sys
-# profiles_json enthält fertige, geerbte Objekte → nur noch in Zeilen zerlegen.
-for p in json.loads(sys.argv[1]):
+try:
+    value = json.loads(sys.argv[1]) if sys.argv[1] else None
+except Exception:
+    value = None
+patch = {}
+if isinstance(value, dict) and value:
+    patch["auxiliary"] = value
+print(json.dumps(patch, separators=(",", ":")))
+PY
+)"
+
+# SOT-Zeile (Name + geerbte Felder) für einen Profilnamen; leer, wenn die SOT
+# das Profil nicht (mehr) definiert.
+sot_profile_row() {
+  python3 - "$PROFILES_JSON" "$1" <<'PYOPT'
+import json, sys
+try:
+    rows = {p["name"]: p for p in json.loads(sys.argv[1])}
+except Exception:
+    sys.exit(0)
+p = rows.get(sys.argv[2])
+if p:
     print("\t".join([
         p["name"], p["provider"], p["model"], p["fallback"],
         p["pool_follow"], p["pool_only_active"],
     ]))
-PY
+PYOPT
+}
+
+# Alle bekannten Profilnamen vereinen: Container-Profile + SOT-Profile.
+KNOWN="$("${SSH[@]}" "docker exec '$HERMES_CONTAINER' sh -lc 'ls -1 /opt/data/profiles 2>/dev/null'" || true)"
+if [[ "$PROFILES_JSON" != "[]" ]]; then
+  while IFS=$'\t' read -r P_NAME _; do
+    [[ -z "$P_NAME" ]] && continue
+    case "$(printf '%s\n' "$KNOWN")" in *"$P_NAME"*) ;; *) KNOWN="$(printf '%s\n%s' "$KNOWN" "$P_NAME")" ;; esac
+  done < <(python3 - "$PROFILES_JSON" <<'PYNAMES'
+import json, sys
+for p in json.loads(sys.argv[1]):
+    print("\t".join([p["name"], "-"]))
+PYNAMES
 )
-  if [[ "$PROFILES_APPLIED" -gt 0 ]]; then
-    echo "✓ $PROFILES_APPLIED Profil(e) angewendet (von $(python3 -c 'import json,sys;print(len(json.loads(sys.argv[1])))' "$PROFILES_JSON") in der SOT)"
+fi
+
+printf '%s' "$VISION_PATCH" >"$WORK/aux-patch.json"
+
+# Profilnamen kommen ohne Leerzeichen vor — die Zeilenliste kann direkt
+# word-gesplittet werden.
+for P_NAME in $KNOWN; do
+  [[ -z "$P_NAME" ]] && continue
+  P_CONFIG="/opt/data/profiles/$P_NAME/config.yaml"
+  P_ENV="/opt/data/profiles/$P_NAME/.env"
+  # Profil-Dateien müssen existieren, sonst nichts anfassen.
+  if ! "${SSH[@]}" "docker exec '$HERMES_CONTAINER' test -f '$P_CONFIG'" 2>/dev/null; then
+    echo "⚠ Profil '$P_NAME' übersprungen: $P_CONFIG nicht gefunden"
+    continue
   fi
+
+  # auxiliary (Vision) — in jedes Profil, unabhängig von der SOT.
+  if [[ "$VISION_PATCH" != "{}" ]]; then
+    adv_merge_into "$P_CONFIG" "$P_NAME" "$WORK/aux-patch.json" >/dev/null || true
+  fi
+
+  read -r P_NAME P_PRIMARY_PROVIDER P_PRIMARY_MODEL P_FB_JSON P_POOL_FOLLOW P_POOL_ONLY \
+    <<<"$(sot_profile_row "$P_NAME")"
+  if [[ -z "$P_PRIMARY_PROVIDER$P_PRIMARY_MODEL$P_FB_JSON$P_POOL_FOLLOW$P_POOL_ONLY" ]]; then
+    continue                                    # kein SOT-Profil → nur Vision-Merge
+  fi
+  echo "→ Profil '$P_NAME': $P_PRIMARY_PROVIDER/$P_PRIMARY_MODEL · Fallbacks: $P_FB_JSON"
+  "${SSH[@]}" "docker exec '$HERMES_CONTAINER' sh -lc 'cp -a $P_CONFIG $P_CONFIG.bak-hestia-\$(date +%s)'"
+  echo "  → [$P_NAME] Backup: $("${SSH[@]}" "docker exec '$HERMES_CONTAINER' sh -lc 'ls -1 $P_CONFIG.bak-hestia-* 2>/dev/null | tail -1'")"
+
+  # Primary + Fallback in einem Durchgang: erst model.provider/model.default,
+  # dann der fallback_providers-Block (liest die bereits korrigierte Datei).
+  "${SSH[@]}" "docker exec '$HERMES_CONTAINER' cat $P_CONFIG" \
+    | python3 "$WORK/model.py" "$P_PRIMARY_PROVIDER" "$P_PRIMARY_MODEL" > "$WORK/p.$P_NAME.model.yaml"
+  "${SSH[@]}" "docker exec -i '$HERMES_CONTAINER' sh -lc 'cat > $P_CONFIG'" < "$WORK/p.$P_NAME.model.yaml"
+  echo "  → [$P_NAME] model.provider=$P_PRIMARY_PROVIDER · model.default=$P_PRIMARY_MODEL"
+  write_fallbacks "$P_CONFIG" "$P_FB_JSON" "$P_NAME"
+  validate_yaml "$P_CONFIG" "$P_NAME"
+
+  # Pool: nur wenn für dieses Profil followActive gilt.
+  P_SINGLE="$SINGLE"
+  if [[ "$P_POOL_ONLY" == "true" ]]; then
+    P_SINGLE="true"
+  fi
+  if [[ "$P_POOL_FOLLOW" == "true" ]]; then
+    apply_pool "$P_ENV" "$P_NAME" "$P_SINGLE"
+  else
+    echo "  → [$P_NAME] Pool bleibt unverändert (pool.followActive=false)"
+  fi
+  PROFILES_APPLIED=$((PROFILES_APPLIED + 1))
+done
+if [[ "$PROFILES_APPLIED" -gt 0 ]]; then
+  echo "✓ $PROFILES_APPLIED Profil(e) angewendet (von $(python3 -c 'import json,sys;print(len(json.loads(sys.argv[1])))' "$PROFILES_JSON") in der SOT; auxiliary.vision in alle Profil-config.yaml gemerged)"
 fi
 
 # --- 5c) Fastpath-Skripte + Skills und Service-Passwort (Datei-Only) ----------
@@ -1081,5 +1154,5 @@ if [[ "$PROFILES_JSON" != "[]" ]]; then
   echo "✓ Profile angewendet: $PROFILES_APPLIED · $PROFILES_JSON"
 fi
 if [[ -n "$ADV_BACKUP" ]]; then
-  echo "✓ Erweiterte Sektionen (agent/providers/platform_toolsets/platforms/skills) gemerged — Backup: $ADV_BACKUP"
+  echo "✓ Erweiterte Sektionen (agent/providers/platform_toolsets/platforms/skills/auxiliary) gemerged — Backup: $ADV_BACKUP"
 fi

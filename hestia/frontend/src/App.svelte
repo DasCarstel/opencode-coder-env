@@ -79,6 +79,8 @@ let hermesPool = $state(false)
 let hermesApiEnabled = $state(true)
 let hermesApiPort = $state(8642)
 let hermesApiHost = $state('0.0.0.0')
+// auxiliary.vision: globales Vision-Modell ("provider/model"), '' = "— keiner —"
+let hermesVision = $state('')
 // Hermes Voice/Speed (Phase 2): Kandidaten-Benchmark + O19-Telemetrie
 let speed = $state(null)
 let speedError = $state('')
@@ -473,6 +475,8 @@ const TIER_INFO = {
 
 const allowed = $derived(catalog.providers || ['opencode-go'])
 const goModels = $derived(catalog.models.filter(m => allowed.includes(m.providerID) && m.status === 'active'))
+// Nur vision-fähige Modelle (catalog.capabilities.input mit "image") für auxiliary.vision
+const visionModels = $derived(goModels.filter(m => m.vision))
 const tableModels = $derived(catFilterOpenGoOnly ? goModels : catalog.models.filter(m => m.status === 'active'))
 function isFree(ref) { const m = modelOf(ref); return !!m && !m.cost.input && !m.cost.output }
 
@@ -1069,6 +1073,7 @@ async function loadHermes() {
     hermesApiEnabled = apiCfg.enabled !== false
     hermesApiPort = Number(apiCfg.port) || 8642
     hermesApiHost = apiCfg.host || '0.0.0.0'
+    hermesVision = hermesRef(cfg?.auxiliary?.vision) || ''
     hermesError = ''
   } catch (e) {
     // Nicht schlucken: ein Fehler beim Panel-eigenen Aufruf ist etwas anderes als
@@ -1099,6 +1104,7 @@ async function runHermesApply() {
         fallback,
         pool: { followActive: hermesPool },
         api_server: { enabled: hermesApiEnabled, port: apiPort, host: String(hermesApiHost).trim() },
+        auxiliary: { vision: hermesVision ? toEntry(hermesVision) : null },
       },
     })
     hermesStatus = { ...(hermesStatus || {}), config: res.config || hermesStatus?.config }
@@ -1546,6 +1552,17 @@ setInterval(loadSuggestStatus, 60000)
         {/each}
       </select>
     </label>
+  </div>
+  <div class="row">
+    <label title="auxiliary.vision">Bilder ansehen&nbsp;
+      <select bind:value={hermesVision} disabled={hermesBusy}>
+        <option value="">— keiner —</option>
+        {#each visionModels as m}
+          <option value={m.ref}>{m.providerID} · {m.name} · {m.modelID}</option>
+        {/each}
+      </select>
+    </label>
+    <span class="muted">Hilfsmodell für Fotos — das Hauptmodell muss selbst keine Bilder können</span>
   </div>
   <div class="row">
     <label>

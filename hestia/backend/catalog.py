@@ -43,9 +43,29 @@ CACHE_TTL = 60.0  # s
 TRAINING_SUFFIX = "-contributor"
 
 
+def _has_image_input(entry: dict) -> bool:
+    """True, wenn das Modell Bildeingaben akzeptiert.
+
+    Der OpenCode-Server (GET /api/model) führt das unter capabilities.input,
+    z. B. ["text", "image", "video"]. Manche Quellen nutzen stattdessen
+    modalities.input — beides wird gelesen. Alles andere (nur "text", leer,
+    fehlendes Feld) gilt als nicht vision-fähig.
+    """
+    def as_list(value):
+        return value if isinstance(value, list) else []
+
+    caps = entry.get("capabilities") if isinstance(entry.get("capabilities"), dict) else {}
+    modalities = entry.get("modalities") if isinstance(entry.get("modalities"), dict) else {}
+    inputs = as_list(caps.get("input")) + as_list(modalities.get("input"))
+    return any(
+        isinstance(v, str) and (v == "image" or v.startswith("image/"))
+        for v in inputs
+    )
+
+
 def fetch_models(force: bool = False) -> list:
     """Normalisierter Katalog: [{providerID, modelID, name, released, status,
-    enabled, variants[], cost{input,output,cacheRead,cacheWrite}, limit{context,output},
+    enabled, variants[], vision, cost{input,output,cacheRead,cacheWrite}, limit{context,output},
     costTiers[], costEffective}]
 
     `cost` bleibt der GRUNDTARIF (Preis unterhalb der ersten Kontextstufe) — so
@@ -95,6 +115,7 @@ def fetch_models(force: bool = False) -> list:
             "status": m.get("status"),
             "enabled": bool(m.get("enabled", True)),
             "variants": [v.get("id") for v in (m.get("variants") or [])],
+            "vision": _has_image_input(m),
             "cost": {
                 "input": cost.get("input"),
                 "output": cost.get("output"),
@@ -139,6 +160,12 @@ def usable(model_ref: str) -> tuple:
             f"(Suffix '{TRAINING_SUFFIX}') und wird vom Provider abgewiesen"
         )
     return True, m
+
+
+def supports_vision(provider: str, model: str) -> bool:
+    """True, wenn das Modell vision-fähig ist (Bildeingabe im Katalog)."""
+    m = find_model(f"{provider}/{model}")
+    return bool(m and m.get("vision"))
 
 
 def is_free(model_ref: str) -> bool:

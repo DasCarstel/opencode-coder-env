@@ -30,6 +30,12 @@
     "port": 8642,
     "host": "0.0.0.0"
   },
+  "auxiliary": {
+    "vision": {
+      "provider": "opencode-go",
+      "model": "glm-5.3-flash"
+    }
+  },
   "restart": true,
   "profiles": {
     "kleve": {

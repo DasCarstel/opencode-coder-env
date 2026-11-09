@@ -194,6 +194,26 @@ def validate_hermes(path):
     print("✓ Hermes-SOT strukturell valide "
           "(agent/providers/platform_toolsets/platforms/skills)")
 
+    # auxiliary (Vision): optional; ist er gesetzt, braucht er provider+model
+    auxiliary = cfg.get("auxiliary")
+    if auxiliary is None:
+        auxiliary = {}
+    if not isinstance(auxiliary, dict):
+        fail("Hermes auxiliary muss ein Objekt sein")
+    vision = auxiliary.get("vision")
+    if vision is None:
+        vision = {}
+    if not isinstance(vision, dict):
+        fail("Hermes auxiliary.vision muss ein Objekt sein")
+    if vision:
+        if not str(vision.get("provider") or "").strip() or not str(vision.get("model") or "").strip():
+            fail("Hermes auxiliary.vision.provider/.model fehlen oder sind leer")
+        if vision["provider"] not in HERMES_PROVIDERS:
+            fail(f"Hermes auxiliary.vision.provider '{vision['provider']}' nicht erlaubt "
+                 f"({', '.join(sorted(HERMES_PROVIDERS))})")
+    print("✓ Hermes auxiliary.vision strukturell valide "
+          f"({vision.get('provider', '')}/{vision.get('model', '') or 'kein Vision-Modell'})")
+
 
 def main():
     path = os.path.abspath(OVERRIDES_PATH)

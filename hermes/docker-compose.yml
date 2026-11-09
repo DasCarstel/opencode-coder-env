@@ -27,6 +27,10 @@ services:
       # Deploy-Verzeichnis; der Datei-Mount legt sie ueber den Ordner-Mount,
       # damit /etc/docker/hermes/data unangetastet bleibt. Muster wie .env.
       - /opt/docker-compose/hermes/SOUL.md:/opt/data/SOUL.md
+      # Persona des Kleve-Profils, ebenfalls aus dem Repo. Liegt der Ordner-
+      # Mount /etc/docker/hermes/data im Weg, legt dieser Datei-Mount die
+      # versionierte Fassung darueber (Muster wie die Root-SOUL oben).
+      - /opt/docker-compose/hermes/profiles/kleve/SOUL.md:/opt/data/profiles/kleve/SOUL.md
     environment:
       HERMES_DASHBOARD: "1"
     command: ["hermes"]

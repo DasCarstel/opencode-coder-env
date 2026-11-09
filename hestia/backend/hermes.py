@@ -43,6 +43,7 @@ BUILTIN_TOOLSETS = frozenset({
     # api_server: HA-Assist UND Open WebUI, inkl. Spotify).
     "mcp-homeassistant", "mcp-notion", "mcp-ocis-private",
     "mcp-ocis-muellerconnect", "mcp-super-productivity", "mcp-spotify",
+    "mcp-google-calendar", "mcp-yazio",
 })
 # Alias-Regel für platforms.<plattform>.extra.model_routes.
 MODEL_ROUTE_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -63,6 +64,9 @@ def _default_config() -> dict:
         # API-Server von Hermes (ENV-Variablen in /opt/data/.env). API_SERVER_KEY
         # ist ein Secret und wird bewusst NICHT hier gepflegt.
         "api_server": {"enabled": True, "port": 8642, "host": "0.0.0.0"},
+        # Bildrouten (Hermes auxiliary.vision): gilt global für ALLE Profile —
+        # apply-hermes.sh mergt die Sektion in jede config.yaml.
+        "auxiliary": {"vision": {"provider": "", "model": ""}},
         "restart": True,
         # Weitere Hermes-Profile des Multiplexers (je eigene config.yaml/.env
         # unter /opt/data/profiles/<name>/). Leeres Dict = nur das Default-Profil.
@@ -108,6 +112,7 @@ def _public(cfg: dict) -> dict:
                  "onlyActiveWhenExpiring": bool(
                      (cfg.get("pool") or {}).get("onlyActiveWhenExpiring"))},
         "api_server": _api_server_public(cfg.get("api_server")),
+        "auxiliary": {"vision": _vision_public(cfg)},
         "restart": bool(cfg.get("restart", True)),
         "profiles": _profiles_public(cfg.get("profiles") or {}, cfg),
         # Erweiterte Sektionen (Hermes Voice): normalisierte Tiefkopien, damit
@@ -138,6 +143,46 @@ def _api_server_public(section) -> dict:
     return {"enabled": bool(src.get("enabled", d["enabled"])),
             "port": port,
             "host": host or d["host"]}
+
+
+def _vision_public(cfg: dict) -> dict:
+    """auxiliary.vision normalisieren (Panel + Apply-Vergleich).
+
+    Form ist immer {"provider": str, "model": str}; fehlt die Sektion, sind
+    beide leer ("kein Vision-Modell"). Aeltere SOT-Dateien ohne "auxiliary"
+    bleiben so abwaertskompatibel.
+    """
+    aux = cfg.get("auxiliary") if isinstance(cfg, dict) else None
+    vis = aux.get("vision") if isinstance(aux, dict) else None
+    src = vis if isinstance(vis, dict) else {}
+    return {"provider": str(src.get("provider") or "").strip(),
+            "model": str(src.get("model") or "").strip()}
+
+
+def _validate_vision(section) -> dict:
+    """auxiliary.vision aus dem Panel validieren (kein Apply bei Unsinn).
+
+    None oder beides leer = "kein Vision-Modell" (leere Normform). Sonst:
+    Provider-Allowlist + Katalog (via _validate) UND das Modell muss im
+    Live-Katalog als vision-fähig geführt sein (modalities.input mit Bild-MIME).
+    """
+    if section is None:
+        return {"provider": "", "model": ""}
+    if not isinstance(section, dict):
+        raise ApplyError("auxiliary.vision: muss ein Objekt sein (provider/model)")
+    provider = str(section.get("provider") or "").strip()
+    model = str(section.get("model") or "").strip()
+    if not provider and not model:
+        return {"provider": "", "model": ""}
+    if not provider or not model:
+        raise ApplyError("auxiliary.vision: provider und model sind Pflicht")
+    normalized = _validate({"provider": provider, "model": model}, "auxiliary.vision")
+    import catalog
+    if not catalog.supports_vision(provider, model):
+        raise ApplyError(
+            f"auxiliary.vision: {provider}/{model} ist nicht vision-fähig "
+            f"(keine Bild-Eingabe im Katalog)")
+    return {"provider": normalized["provider"], "model": normalized["model"]}
 
 
 def _validate_api_server(section) -> dict:
@@ -589,6 +634,19 @@ def apply(payload: dict) -> dict:
     # den API-Server-Block loeschen bzw. auf den Default zuruecksetzen.
     api_in = _validate_api_server(payload.get("api_server"))
     api_server = _api_server_public({**_api_server_public(current.get("api_server")), **api_in})
+
+    # auxiliary.vision: aus dem Payload, sonst aus der aktuellen SOT (das Panel
+    # schickt es evtl. noch nicht mit) — sonst wuerde ein apply() den Block
+    # loeschen. "— keiner —" (beides leer) entfernt ihn bewusst aus der SOT.
+    aux_in = payload.get("auxiliary")
+    if isinstance(aux_in, dict) and "vision" in aux_in:
+        vision = _validate_vision(aux_in["vision"])
+    else:
+        vision = _vision_public(current)
+    auxiliary = {}
+    if vision["provider"] or vision["model"]:
+        auxiliary["vision"] = vision
+
     new_cfg = {
         "enabled": bool(payload.get("enabled", True)),
         "primary": primary,
@@ -600,6 +658,7 @@ def apply(payload: dict) -> dict:
                      "onlyActiveWhenExpiring",
                      (current_pool or {}).get("onlyActiveWhenExpiring")))},
         "api_server": api_server,
+        "auxiliary": auxiliary,
         "restart": bool(payload.get("restart", True)),
         "profiles": profiles_out,
         "agent": advanced["agent"],
