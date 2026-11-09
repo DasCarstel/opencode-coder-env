@@ -57,6 +57,7 @@ import model_watch as model_watch_mod  # noqa: E402
 import benchmarks as benchmarks_mod  # noqa: E402
 import dcp as dcp_mod  # noqa: E402
 import rollout as rollout_mod  # noqa: E402
+import wardrobe_costs as wardrobe_mod  # noqa: E402
 
 STATIC_DIR = os.environ.get(
     "HESTIA_STATIC", os.path.join(os.path.dirname(BASE_DIR), "frontend", "dist")
@@ -495,6 +496,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 _log(f"dcp status error: {e}")
                 return self._json({"error": str(e)}, 500)
+        if path == "/api/wardrobe/costs":
+            # Wardrobe-Tab: Tokenpreise (live models.dev) + Go-Monatslimits
+            # (manuell gepflegt: hestia-benchmarks.jsonc `budgets`). Fehler
+            # dürfen den Aufruf nie kippen — Panel zeigt dann „—"/null.
+            try:
+                return self._json(wardrobe_mod.payload())
+            except Exception as e:  # noqa: BLE001
+                _log(f"wardrobe costs error: {e}")
+                return self._json({"error": str(e)}, 502)
         if path in ("/api/apply", "/api/suggest", "/api/rollout",
                     "/api/accounts/check", "/api/accounts/switch",
                     "/api/hermes/apply", "/api/hermes/speed/run", "/api/hermes/speed/apply",

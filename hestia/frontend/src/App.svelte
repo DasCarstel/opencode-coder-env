@@ -36,10 +36,14 @@ let foSaveBusy = $state(false)
 let foSaveResult = $state(null)
 let accStatus = $state(null)
 let accBusy = $state(false)
+// Wardrobe-Tab (GET /api/wardrobe/costs): Tokenpreise + Go-Monatslimits
+let wardrobeCosts = $state(null)
+let wardrobeError = $state(null)
 
-// Tab-Schaltung OpenCode ↔ Hermes (Auswahl persistiert in localStorage, Default: opencode)
+// Tab-Schaltung OpenCode ↔ Hermes ↔ Wardrobe (Auswahl persistiert in localStorage, Default: opencode)
 const LS_TAB = 'hestia.tab'
-let tab = $state(localStorage.getItem(LS_TAB) === 'hermes' ? 'hermes' : 'opencode')
+let tab = $state(['hermes', 'wardrobe'].includes(localStorage.getItem(LS_TAB))
+  ? localStorage.getItem(LS_TAB) : 'opencode')
 function setTab(t) {
   tab = t
   try { localStorage.setItem(LS_TAB, t) } catch { /* ignore */ }
@@ -612,6 +616,15 @@ function priceText(ref) {
   return (m.price?.peak ? `${p} ⚡` : p) + (e?.from ? ` (ab ${fmtCount(e.from)})` : '')
 }
 
+// Wardrobe-Tab: Preis-/Limit-Anzeige (—" bei fehlenden Daten)
+function wcPrice(v) {
+  return v == null ? '—' : `$${v}`
+}
+function wcLimit(v) {
+  if (v == null) return '—'
+  return v === 'unlimited' ? 'unbegrenzt' : `$${v}/Mon.`  /* Go-Abo-Monatslimit */
+}
+
 // Budget je Modell (Go-Abo, Monatslimit); '—' heißt: nicht im Budget-Block der SOT.
 function budgetText(m) {
   const b = m?.budget
@@ -970,6 +983,15 @@ async function loadAccounts() {
   } catch { /* ignore */ }
 }
 
+async function loadWardrobe() {
+  try {
+    wardrobeCosts = await api('/api/wardrobe/costs')
+    wardrobeError = null
+  } catch (e) {
+    wardrobeError = e.message || String(e)
+  }
+}
+
 async function runAccountsCheck() {
   accBusy = true
   error = null
@@ -1325,6 +1347,7 @@ loadSpeed()
 loadSuggestStatus()
 loadDcp()
 loadModelHealth()
+loadWardrobe()
 setInterval(loadAccounts, 60000)
 setInterval(loadHermes, 60000)
 setInterval(loadSpeed, 60000)
@@ -1402,6 +1425,8 @@ setInterval(loadSuggestStatus, 60000)
     aria-selected={tab === 'opencode'} onclick={() => setTab('opencode')}>OpenCode</button>
   <button class="tab tabHermes" class:tabOpen={tab === 'hermes'} role="tab"
     aria-selected={tab === 'hermes'} onclick={() => setTab('hermes')}>Hermes</button>
+  <button class="tab tabWardrobe" class:tabOpen={tab === 'wardrobe'} role="tab"
+    aria-selected={tab === 'wardrobe'} onclick={() => setTab('wardrobe')}>Wardrobe</button>
 </div>
 
 <!-- gemeinsame Vorschlags-Darstellung (manueller Lauf + gespeicherter Automatik-Vorschlag) -->
@@ -2669,6 +2694,58 @@ setInterval(loadSuggestStatus, 60000)
   </p>
 </div>
 
+{#if tab === 'wardrobe'}
+<div class="tabWrap wardrobe">
+  <div class="card">
+    <h2>Wardrobe — Modell &amp; Kosten</h2>
+    {#if wardrobeError}
+      <p class="muted" style="color:var(--err)">⚠ {wardrobeError}</p>
+    {/if}
+    {#if !wardrobeCosts && !wardrobeError}
+      <p class="muted">Lade Kostendaten…</p>
+    {/if}
+    <table>
+      <thead>
+        <tr>
+          <th>Modell</th>
+          <th class="num">Input $/1M</th>
+          <th class="num">Output $/1M</th>
+          <th class="num">Cache</th>
+          <th class="num">Monatslimit</th>
+        </tr>
+      </thead>
+      <tbody>
+        {#each wardrobeCosts?.models || [] as m (m.id)}
+          <tr class={m.badge === 'aktiv' ? 'rowActive' : ''}>
+            <td class="mono">
+              {m.id}
+              {#if m.badge === 'aktiv'}<span class="badge active">aktiv</span>{/if}
+              {#if m.note}<span class="muted wcNote">{m.note}</span>{/if}
+            </td>
+            <td class="num">{wcPrice(m.prices?.input)}</td>
+            <td class="num">{wcPrice(m.prices?.output)}</td>
+            <td class="num">{wcPrice(m.prices?.cache_read)}</td>
+            <td class="num">{wcLimit(m.limit)}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+    <div class="wcInfo">
+      <h3>Wardrobe-Architektur</h3>
+      <dl>
+        <dt>Aktiv</dt><dd>{wardrobeCosts?.wardrobe?.active || '—'}</dd>
+        <dt>Fallback</dt><dd>{wardrobeCosts?.wardrobe?.fallback || '—'}</dd>
+        <dt>Bild-Render</dt><dd>{wardrobeCosts?.wardrobe?.image_render || '—'}</dd>
+        <dt>Gemessen</dt><dd>{wardrobeCosts?.wardrobe?.measured || '—'}</dd>
+      </dl>
+      <p class="muted wcFootnote">
+        Limits: manuell gepflegt aus Go-Doku (checked {wardrobeCosts?.meta?.limits_checked || '—'}), Tokenpreise: live von models.dev
+      </p>
+    </div>
+  </div>
+</div>
+{/if}
+
 <style>
   header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
   .brand { display: flex; gap: 12px; align-items: center; }
@@ -2853,4 +2930,17 @@ setInterval(loadSuggestStatus, 60000)
   .eventFeed ul { margin: 8px 0 0; padding-left: 18px; }
   .eventFeed li { margin-bottom: 5px; }
   .eventFeed li .badge { margin: 0 6px; }
+
+  /* ── Wardrobe-Tab ── */
+  .tabWrap.wardrobe .card { border-left: 3px solid var(--fire); }
+  .wcNote { margin-left: 8px; font-size: .78rem; }
+  .wcInfo { margin-top: 14px; }
+  .wcInfo h3 { margin: 0 0 6px; font-size: .9rem; color: var(--fire-soft); }
+  .wcInfo dl {
+    display: grid; grid-template-columns: 110px 1fr; gap: 4px 12px;
+    margin: 0; font-size: .85rem;
+  }
+  .wcInfo dt { color: var(--muted); font-weight: 600; }
+  .wcInfo dd { margin: 0; }
+  .wcFootnote { margin: 12px 0 0; font-size: .78rem; }
 </style>
