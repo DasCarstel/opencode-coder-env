@@ -12,12 +12,32 @@ Frage lautete: welches Modell soll welcher Agent sein? Daraus entstanden die
 Modell-Katalog-Anzeige, der Apply-Durchstich in CI und später das Budget-/Konto-
 System über die OpenCode-Go-Abos.
 
-Heute macht Hestia vier Dinge:
+Heute macht Hestia fünf Dinge:
 
 1. **Tier-Zuordnung** verwalten (Modell, Variant/Effort, Kostenratio, Stufenlimits je Tier)
 2. **Budget überwachen** — Restbudget je OpenCode-Go-Abo, mit automatischen Kontowechsel
 3. **Ausfallsicherheit** — bezahltes Gegenmodell hinter jedem Gratis-Tier, Auto-Failover
 4. **Hermes steuern** — Modell, Fallback-Kette und Abo-Pool für den Hermes-Agenten
+5. **Wardrobe versorgen** — das AI-Wardrobe (Tagging + Outfit-Text) läuft über dasselbe Go-Abo und zieht bei jedem Kontowechsel das neue Key automatisch nach
+
+## Wardrobe (AI-Wardrobe-Integration über das Go-Abo)
+
+*(2026-11-09, ergänzt)* Das AI-Wardrobe auf dem Docker-Host (10.0.10.10,
+`/opt/docker-compose/wardrobe/`, Projekt PRO-347) erzeugt seine Text-KI-Ergebnisse —
+Item-Tagging der Kleidungsfotos und Outfit-Vorschläge — seit 2026-11-09 über das
+**OpenCode-Go-Abo** statt wie bisher über die Gemini-API. Die Bildgenerierung
+(Nano Banana) bleibt bei Gemini.
+
+| Aspekt | Stand |
+|---|---|
+| Modelle | `glm-5.3-flash` für beides (`AI_VISION_MODEL` + `AI_TEXT_MODEL`), gewählt nach Modell-Eval: 3/4 Tag-Exaktheit, schnellster (≈2 s), kürzeste Outputs; Gemini-Modelle als Fallback |
+| Weg | Wardrobe → **wardrobe-shim** (Docker-Host, `/opt/docker-compose/ai-shim/`) → `opencode.ai/inference/go` |
+| Routing | Shim mappt bei `model=glm-5.3-flash` den Pfad `/v1beta/openai/*` → `/openai/v1/*`, setzt `Authorization: Bearer $GO_API_KEY` aus `/opt/docker-compose/ai-shim/.env` (600) und schickt die Go-Rep-Header (`user-agent: my-coding-agent/1.0`, `x-opencode-session: wardrobe-shim-1`) |
+| Fallback | Bei Go-HTTP ≥ 400 oder Netzfehler wiederholt der Shim den Request automatisch gegen den Gemini-Upstream (modell=`gemini-flash-latest`) mit dem Caller-Key aus der Wardrobe-`.env` — Wardrobe merkt nichts |
+| Records | OpenBao `secret/data/wardrobe/ai` → `OPENCODE_API_KEY` (Key-Kopie, dokumentiert; **Laufzeit-Quelle** ist die Shim-`.env`) |
+| Kontobindung | Der Shim-Key wird nicht per Hand gepflegt: `switch-account.sh` schreibt bei jedem Kontowechsel den Key des Zielkontos direkt in die Shim-`.env` und erstellt den Container neu (Schritt 3b) — Wardrobe fährt damit immer auf dem gerade aktiven Abo |
+| Kosten | Wardrobe-Volumen ist sub-cent pro Vorschlag/Tagging-Item; Limit `glm-5.3-flash` $60/mo — unbedeutend gegenüber dem Agent-/Hermes-Verbrauch, erscheint aber im Budget-Balken des abonierten Kontos |
+| Wartung | Nach wardrowbe/shim-Updates: Shim-Änderungen sind baked (Dockerfile `COPY app.py`), Änderung = Datei editieren + `docker compose -f /opt/docker-compose/ai-shim/docker-compose.yml up -d --build ai-shim` |
 
 ## Erreichbarkeit
 

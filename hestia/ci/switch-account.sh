@@ -121,6 +121,27 @@ for c in $NAMES; do
 done
 
 echo "✓ Konto $ACCOUNT aktiv (SOT + $COUNT Container)"
+
+# --- 3b) Wardrobe-Shim auf dem Docker-Host nachziehen --------------------------
+# Das AI-Wardrobe (Tagging + Outfit-Text) laeuft ebenfalls ueber das Go-Abo
+# (Shim wardrobe-shim, /opt/docker-compose/ai-shim, routet glm-5.3-flash auf
+# opencode.ai/inference/go). Der Runner läuft selbst auf dem Docker-Host — der
+# Key wird hier direkt lokal in die Shim-Env geschrieben und der Container neu
+# erstellt (env-only, kein Rebuild). Siehe docs/hestia.md, Kapitel "Wardrobe".
+SHIM_ENV="/opt/docker-compose/ai-shim/.env"
+if [[ -f "$SHIM_ENV" ]]; then
+  echo "→ Wardrobe-Shim ($SHIM_ENV)"
+  printf 'GO_API_KEY=%s\n' "$KEY" > "$SHIM_ENV"   # Key ist bereits in der CI-Var, nie im Log
+  chmod 600 "$SHIM_ENV"
+  if docker compose -f /opt/docker-compose/ai-shim/docker-compose.yml up -d ai-shim >/dev/null 2>&1; then
+    echo "   ✓ Shim-Env aktualisiert + Container neu erstellt"
+  else
+    echo "   ⚠ Shim-Container konnte nicht neu erstellt werden — GO_API_KEY steht in $SHIM_ENV, Restart pruefen" >&2
+  fi
+else
+  echo "⚠ Wardrobe-Shim .env nicht gefunden ($SHIM_ENV) — Wardrobe laeuft weiter auf dem alten Konto (Gemini-Fallback greift)"
+fi
+
 # --- 4) Verifikation: greift der Wechsel in OpenCode wirklich? ---------------
 # Ein in opencode.db GESPEICHERTER 'OpenCode Go'-Account überstimmt die
 # ENV-Variable OPENCODE_API_KEY — dann wirkt dieser Wechsel nicht (Fehler vom
