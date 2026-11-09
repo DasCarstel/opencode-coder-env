@@ -62,6 +62,7 @@ aktiv, ab `compress.maxContextLimit` verstärkt; zusätzlich räumen die Strateg
 | `ssh-mcp` | local (stdio) | `ssh-mcp` v2.18.0, eigener Container-Pfad | statischer ed25519-Key aus OpenBao | server-management, homeassistant, svelte (**config-full**), cleve (**config-cleve**), general (**config-general**, nur Carsten-PC) |
 | `super-productivity` | remote | `https://mcp-superproductivity.mueller-nas.de/mcp` — `ghcr.io/samuelb/superproductivity-sync-mcp:0.2.0` auf CT 100 (liest/schreibt die WebDAV-Sync-Datei) | `Authorization: Bearer {env:SP_MCP_TOKEN}` (OpenBao `secret/data/mcp/super-productivity`) | general, Hermes (manuell in `config.yaml`) |
 | `spotify` | local (stdio) | `marcelmarais/spotify-mcp-server`, gebaut aus gepinntem Commit im Hermes-Dockerfile (`/opt/spotify-mcp/build/index.js`, Node 26.12.1 unter `/opt/node`) | Client-ID/Secret in OpenBao `secret/data/mcp/spotify` → gerendert nach `/opt/data/spotify/spotify-config.json` (`hestia/scripts/spotify_config.py`); OAuth-Refresh-Token hält der Server (der Server liest bewusst keine Env-Vars) | Hermes (manuell in `config.yaml`) |
+| `picnic` | local (stdio) | `ivo-toby/mcp-picnic` v1.15.1, global im Hermes-Image; gestartet über `/opt/data/picnic/run.sh` | `PICNIC_USERNAME`/`PICNIC_PASSWORD` aus OpenBao `secret/data/mcp/picnic` → gerendert nach `/opt/data/picnic/.env` (`hestia/scripts/picnic_env.py`); Session-/Device-Datei im selben Volume | Hermes, **nur Default-Profil** (manuell in `config.yaml`) — nicht Profil `kleve` |
 
 ### `ocis` (OpenCloud)
 

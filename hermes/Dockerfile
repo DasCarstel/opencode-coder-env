@@ -5,6 +5,17 @@ USER root
 # OpenCode-MCP installieren
 RUN npm install -g opencode-mcp@3.0.0
 
+# --- Picnic-MCP (ivo-toby/mcp-picnic) ----------------------------------------
+# Supermarkt-Bestellungen ueber die Picnic-API (DE/NL/FR). Laeuft per stdio wie
+# spotify/yazio; gestartet wird ueber /opt/data/picnic/run.sh, das die
+# Zugangsdaten aus OpenBao (secret/data/mcp/picnic) laedt.
+# Achtung: das npm-Bin heisst irrtuemlich "mcp-server-template" (Template-Rest
+# des Upstreams) — deshalb spricht run.sh den echten Entrypoint
+# bin/mcp-server.js direkt an, statt sich auf den Bin-Namen zu verlassen.
+# Solo-gepflegtes Projekt: fester Pin, kein Auto-Update.
+ARG PICNIC_MCP_VERSION=1.15.1
+RUN npm install -g "mcp-picnic@${PICNIC_MCP_VERSION}"
+
 # --- Google-Calendar-MCP (self-hosted, @cocal/google-calendar-mcp) -----------
 # Ersatz fuer den offiziellen Google-Calendar-MCP-Server
 # (https://calendarmcp.googleapis.com/mcp/v1): der verlangt eine Enrollment im

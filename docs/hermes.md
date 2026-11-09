@@ -285,6 +285,51 @@ auslagern musste. `compact: false` liefert weiterhin das volle Format.
 **Aktivierung.** `mcp-yazio` in `toolsets.enabled` **und** in
 `platform_toolsets.api_server` ergänzen, danach `docker restart hermes`.
 
+## Picnic
+
+Der Picnic-MCP-Server ([`ivo-toby/mcp-picnic`](https://github.com/ivo-toby/mcp-picnic),
+MIT) macht den Picnic-Online-Supermarkt für den Agenten bedienbar: Produktsuche,
+Wochenangebote, Rezepte, Warenkorb, Liefer-Slots, Lieferverfolgung und Wallet —
+rund 40 Tools. Upstream ist ein Solo-Projekt, deshalb derselbe Umgang wie bei
+YAZIO: fester Pin (`ARG PICNIC_MCP_VERSION`), kein Auto-Update.
+
+**Nur im Default-Profil.** Das Profil `kleve` bleibt bei genau einem
+MCP-Server (`homeassistant-kleve`) — Picnic gehört dort nicht hin.
+
+**Build im Image.** `npm install -g mcp-picnic@${PICNIC_MCP_VERSION}` im
+[Dockerfile](../hermes/Dockerfile). Node ≥ 18 ist erfüllt (Basis-Image 26.7.0),
+`/opt/node` wird nicht gebraucht. Das npm-`bin` heißt irrtümlich
+`mcp-server-template` (Template-Rest des Upstreams); der Wrapper spricht deshalb
+`bin/mcp-server.js` direkt an und hängt nicht am Bin-Namen.
+
+**Zugangsdaten.** OpenBao `secret/data/mcp/picnic` (`username`, `password`,
+optional `country_code`, Default `DE`) ist die Quelle.
+[`hestia/scripts/picnic_env.py`](../hestia/scripts/picnic_env.py) rendert daraus
+zwei Dateien ins Volume:
+
+| Host-Pfad | Inhalt |
+|-----------|--------|
+| `/etc/docker/hermes/data/picnic/.env` | Umgebungsvariablen, **0600** |
+| `/etc/docker/hermes/data/picnic/run.sh` | Wrapper, **0700** |
+
+`config.yaml` enthält damit **keine** Picnic-Secrets, nur
+`command: /opt/data/picnic/run.sh`.
+
+**Session und 2FA.** `PICNIC_SESSION_FILE` und `PICNIC_DEVICE_FILE` zeigen nach
+`/opt/data/picnic/`. Beide Dateien überleben Deploy und Rebuild — ohne sie wäre
+nach jedem Neustart eine neue 2FA fällig. Das Skript fasst sie nicht an. 2FA
+läuft über die Tools `picnic_generate_2fa_code` und `picnic_verify_2fa_code`:
+Code anfordern, SMS-Code im Chat nennen, verifizieren. Während einer offenen
+2FA bleibt der Server oben, damit der Client den Code nachreichen kann.
+
+**Schreib-Tools.** Warenkorb ändern, Liefer-Slot buchen, Lieferung stornieren,
+Rechnung per Mail senden — das kostet Geld. Die Verhaltensregel steht in
+[`SOUL.md`](../hermes/SOUL.md) und in `MEMORY.md`: bestellen, buchen und
+stornieren nur nach ausdrücklicher Bestätigung im selben Turn.
+
+**Aktivierung.** `mcp-picnic` in `toolsets.enabled` (config.yaml) **und** in
+`platform_toolsets.api_server` der SOT ergänzen, danach `docker restart hermes`.
+
 
 
 ```text

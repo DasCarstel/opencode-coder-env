@@ -46,6 +46,7 @@ ausschließlich in `/etc/opencode.env` (Mode 0600) ab.
 | `secret/data/mcp/github` | GitHub-PAT (via `scripts/setup-git-credentials.sh`) |
 | `secret/data/mcp/hermes-opencode-service` | `OPENCODE_SERVER_PASSWORD` |
 | `secret/data/mcp/super-productivity` | `token` — Bearer-Token des Super-Productivity-MCP (`SP_MCP_TOKEN`), gelesen vom General-Workspace |
+| `secret/data/mcp/picnic` | `username`, `password`, optional `country_code` (Default `DE`) — Picnic-MCP im Hermes-Container; `hestia/scripts/picnic_env.py` rendert daraus `/opt/data/picnic/.env` |
 | `secret/data/mcp/artificialanalysis` | `AA_API_KEY` (Artificial Analysis, **optional** — ohne Key laufen die Benchmarks nur über OpenRouter) |
 | `secret/data/mcp/notify` | `NTFY_TOKEN` (`opencode_token`), `url` — Zugang zum ntfy-Hub, siehe [`notifications.md`](notifications.md). **Noch nicht angelegt** (Stand: ntfy ist live, Token liegt in `/etc/docker/ntfy/credentials.env`); bis dahin bleibt das OpenCode-Plugin still |
 | `secret/data/uni/fernuni-ocis` | `user`, `token`, `password`, `space_id`, `url` – oCIS App-Token des Service-Accounts `fernuni-obsidian` für den Space „FernUni" (FernUni/Obsidian-Second-Brain) |

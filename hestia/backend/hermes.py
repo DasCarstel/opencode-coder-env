@@ -43,7 +43,7 @@ BUILTIN_TOOLSETS = frozenset({
     # api_server: HA-Assist UND Open WebUI, inkl. Spotify).
     "mcp-homeassistant", "mcp-notion", "mcp-ocis-private",
     "mcp-ocis-muellerconnect", "mcp-super-productivity", "mcp-spotify",
-    "mcp-google-calendar", "mcp-yazio",
+    "mcp-google-calendar", "mcp-yazio", "mcp-picnic",
 })
 # Alias-Regel für platforms.<plattform>.extra.model_routes.
 MODEL_ROUTE_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
