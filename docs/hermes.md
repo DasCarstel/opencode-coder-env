@@ -659,7 +659,7 @@ Seit 2026-11-09 räumt ein Timer auf dem Coder-Host auf:
 |---|---|
 | Skript | `hermes/scripts/prune-sessions.sh` → `/opt/docker-compose/hermes/scripts/` |
 | Units | `hermes/systemd/hermes-session-prune.{service,timer}` |
-| Zeitplan | täglich 04:30 (±5 min), `Persistent=true` (holt verpasste Läufe nach) |
+| Zeitplan | täglich 04:30 UTC (05:30/06:30 Ortszeit), ±5 min, `Persistent=true` (holt verpasste Läufe nach) |
 | Umfang | Profil `kleve`, Sessions älter als **30 Tage** |
 
 Das Skript nutzt ausschließlich das eingebaute `hermes sessions prune`
