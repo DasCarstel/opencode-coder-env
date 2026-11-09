@@ -31,6 +31,10 @@ services:
       # Mount /etc/docker/hermes/data im Weg, legt dieser Datei-Mount die
       # versionierte Fassung darueber (Muster wie die Root-SOUL oben).
       - /opt/docker-compose/hermes/profiles/kleve/SOUL.md:/opt/data/profiles/kleve/SOUL.md
+      # Skill "picnic-gewohnheiten" aus dem Repo: Stammartikel aus der
+      # Kaufhistorie. Muster wie SOUL.md - die versionierte Fassung legt sich
+      # ueber den Ordner-Mount /etc/docker/hermes/data.
+      - /opt/docker-compose/hermes/skills/picnic-gewohnheiten:/opt/data/skills/shopping/picnic-gewohnheiten
     environment:
       HERMES_DASHBOARD: "1"
     command: ["hermes"]
