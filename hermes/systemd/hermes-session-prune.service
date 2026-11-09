@@ -1,0 +1,12 @@
+[Unit]
+Description=Hermes: alte Kleve-Sessions löschen
+Documentation=https://github.com/DasCarstel/opencode-coder-env/blob/master/hermes/scripts/prune-sessions.sh
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/docker-compose/hermes/scripts/prune-sessions.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

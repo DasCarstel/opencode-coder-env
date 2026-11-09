@@ -50,6 +50,22 @@ jobs:
           ssh -i ~/.ssh/id_ed25519_coderdeploy -o IdentitiesOnly=yes root@10.0.10.17 \
             "cd /opt/docker-compose/hermes && docker compose build && docker compose up -d"
 
+      - name: Session-Prune-Timer installieren
+        # Räumt täglich die Kleve-Sessions auf, die älter als 30 Tage sind
+        # (Logik: hermes/scripts/prune-sessions.sh, Einstellungen dort bzw. in
+        # /etc/default/hermes-session-prune). Idempotent: Units werden bei jedem
+        # Deploy aktualisiert, `enable --now` ist bei aktivem Timer ein No-op.
+        run: |
+          ssh -i ~/.ssh/id_ed25519_coderdeploy -o IdentitiesOnly=yes root@10.0.10.17 '
+            set -e
+            chmod 0755 /opt/docker-compose/hermes/scripts/prune-sessions.sh
+            install -m 0644 /opt/docker-compose/hermes/systemd/hermes-session-prune.service /etc/systemd/system/hermes-session-prune.service
+            install -m 0644 /opt/docker-compose/hermes/systemd/hermes-session-prune.timer /etc/systemd/system/hermes-session-prune.timer
+            systemctl daemon-reload
+            systemctl enable --now hermes-session-prune.timer
+            systemctl list-timers hermes-session-prune.timer --no-pager | sed -n 2p
+          '
+
       - name: Healthcheck
         # Kurz-Retry: `up -d` kehrt zurück, bevor der Container voll hoch ist.
         run: |
