@@ -1,0 +1,31 @@
+name: wardrobe-model
+
+# Text-Modell des AI-Wardrobe umschalten (gesteuert vom Hestia-Panel:
+# POST /api/wardrobe/settings dispatcht diesen Workflow per workflow_dispatch,
+# sobald panel_settings text_model wechselt). Läuft auf dem Runner auf dem
+# Docker-Host — dort leben die Wardrobe- und Shim-Container.
+# Kein Secret im Log: das Skript schreibt nur Nicht-Secret-Env-Vars in .env
+# (AI_TEXT_MODEL / AI_VISION_MODEL / GO_MODELS), Keys kommen separat via
+# switch-account.
+on:
+  workflow_dispatch:
+    inputs:
+      wardrobe_model:
+        description: "Text-Modell (glm-5.3-flash, gpt-6-luna, gemini-flash-latest, gemini-4-argon)"
+        required: true
+        type: string
+      reason:
+        description: "Begründung (nur fürs Log)"
+        required: false
+        type: string
+
+jobs:
+  model:
+    runs-on: [self-hosted, docker-host]
+    env:
+      WARDROBE_TEXT_MODEL: ${{ inputs.wardrobe_model }}
+      REASON: ${{ inputs.reason }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Wardrobe-Text-Modell umschalten (env-upsert + Restart wenn geändert)
+        run: bash hestia/ci/update-wardrobe-model.sh

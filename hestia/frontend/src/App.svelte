@@ -992,6 +992,125 @@ async function loadWardrobe() {
   }
 }
 
+// ── Wardrobe Panel (GET /api/wardrobe/panel, POST /api/wardrobe/settings) ──
+let wardrobePanel = $state(null)
+let wardrobePanelError = $state(null)
+let wpLoadedOnce = $state(false)
+let wpSaveBusy = $state(false)
+let wpSaveResult = $state(null)
+let wpRestartNote = $state(false)
+let wpOriginal = $state(null)
+let wpForm = $state({ image_model: '', image_size: '', budget_monthly: 0, text_model: '' })
+
+function applyWpSettings(s) {
+  if (!s) return
+  wpForm = {
+    image_model: s.image_model || '',
+    image_size: s.image_size || '',
+    budget_monthly: s.budget_monthly ?? 0,
+    text_model: s.text_model || '',
+  }
+  wpOriginal = { ...wpForm }
+}
+
+async function loadPanel() {
+  try {
+    const p = await api('/api/wardrobe/panel')
+    wardrobePanel = p
+    wardrobePanelError = null
+    wpLoadedOnce = true
+    applyWpSettings(p?.settings)
+  } catch (e) {
+    wardrobePanelError = e.message || String(e)
+  }
+}
+
+// Beim Tab-Öffnen (Wechsel auf 'wardrobe') Panel frisch laden — kein Polling.
+$effect(() => {
+  if (tab === 'wardrobe') loadPanel()
+})
+
+function wpSetImageModel(id) {
+  wpForm.image_model = id
+  const m = (wardrobePanel?.image_models || []).find((x) => x.id === id)
+  if (m?.per_image && !(wpForm.image_size in m.per_image)) {
+    wpForm.image_size = Object.keys(m.per_image)[0] || ''
+  }
+}
+
+async function wpSave() {
+  if (wpSaveBusy) return
+  wpSaveBusy = true
+  wpSaveResult = null
+  try {
+    const prev = wpOriginal || {}
+    const body = {}
+    if (wpForm.image_model && wpForm.image_model !== prev.image_model) body.image_model = wpForm.image_model
+    if (wpForm.image_size && wpForm.image_size !== prev.image_size) body.image_size = wpForm.image_size
+    const b = Number(wpForm.budget_monthly)
+    if (Number.isFinite(b) && b !== Number(prev.budget_monthly)) body.budget_monthly = b
+    if (wpForm.text_model && wpForm.text_model !== prev.text_model) body.text_model = wpForm.text_model
+    if (Object.keys(body).length === 0) {
+      wpSaveResult = { ok: true, note: 'Keine Änderungen zum Speichern' }
+      return
+    }
+    const res = await api('/api/wardrobe/settings', { body, method: 'POST' })
+    const st = res?.settings || res
+    if (st && typeof st === 'object' && !Array.isArray(st)) {
+      wardrobePanel = {
+        ...(wardrobePanel || {}),
+        ...(res?.settings ? res : {}),
+        settings: { ...(wardrobePanel?.settings || {}), ...st },
+      }
+    }
+    applyWpSettings(wardrobePanel?.settings)
+    wpSaveResult = { ok: true, textChanged: 'text_model' in body }
+    if (wpSaveResult.textChanged) wpRestartNote = true
+  } catch (e) {
+    wpSaveResult = { ok: false, error: e?.message || String(e) }
+  } finally {
+    wpSaveBusy = false
+  }
+}
+
+function wpSizeList() {
+  const m = (wardrobePanel?.image_models || []).find((x) => x.id === wpForm.image_model)
+  return m?.per_image ? Object.keys(m.per_image) : ['1K', '2K', '4K']
+}
+
+function wpPerImage(m, size) {
+  const p = m?.per_image?.[size]
+  return p == null ? null : Number(p)
+}
+
+function wpPct() {
+  const s = wardrobePanel?.usage
+  const b = wardrobePanel?.settings?.budget_monthly
+  if (!s || !b || b <= 0) return 0
+  return Math.min(100, Math.max(2, Math.round((Number(s.month_spent) / Number(b)) * 100)))
+}
+
+function wpAmpelClass(a) {
+  if (a === 'warn' || a === 'gelb') return 'warn'
+  if (a === 'critical' || a === 'blocked' || a === 'rot') return 'blocked'
+  return ''
+}
+
+function wpMoney(v, digits = 2) {
+  return v == null ? '—' : '$' + Number(v).toFixed(digits)
+}
+
+function wpDate(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return String(iso)
+  const p2 = (n) => String(n).padStart(2, '0')
+  return `${p2(d.getDate())}.${p2(d.getMonth() + 1)}. ${p2(d.getHours())}:${p2(d.getMinutes())}`
+}
+
+const wpImageModel = $derived((wardrobePanel?.image_models || []).find((m) => m.id === wpForm.image_model))
+const wpTextModel = $derived((wardrobePanel?.text_models || []).find((t) => t.id === wpForm.text_model))
+
 async function runAccountsCheck() {
   accBusy = true
   error = null
@@ -1348,7 +1467,6 @@ loadSuggestStatus()
 loadDcp()
 loadModelHealth()
 loadWardrobe()
-setInterval(loadAccounts, 60000)
 setInterval(loadHermes, 60000)
 setInterval(loadSpeed, 60000)
 setInterval(loadModelHealth, 60000)
@@ -2696,6 +2814,164 @@ setInterval(loadSuggestStatus, 60000)
 
 {#if tab === 'wardrobe'}
 <div class="tabWrap wardrobe">
+  {#if wardrobePanelError}
+    <p class="muted" style="color:var(--err)">⚠ {wardrobePanelError}</p>
+  {/if}
+
+  <!-- Karte 1: Konfiguration -->
+  <div class="card">
+    <h2>Wardrobe — Konfiguration</h2>
+    {#if wardrobePanel?.db?.ok === false}
+      <p class="muted" style="color:var(--err)">⚠ Datenbank nicht erreichbar — Einstellungen können momentan nicht geladen/gespeichert werden.</p>
+    {:else if !wardrobePanel && !wardrobePanelError}
+      <p class="muted">Lade Panel…</p>
+    {/if}
+    {#if wardrobePanel?.settings}
+      <div class="wpField">
+        <label for="wpImageModel">Bildmodell</label>
+        <select id="wpImageModel" value={wpForm.image_model} onchange={(e) => wpSetImageModel(e.target.value)}>
+          {#each wardrobePanel?.image_models || [] as m (m.id)}
+            <option value={m.id}>
+              {m.id} — ≈ {wpPerImage(m, wpForm.image_size) == null ? 'n/a' : '$' + wpPerImage(m, wpForm.image_size).toFixed(4)} /Bild · {wpForm.image_size}{m.active ? ' · aktiv' : ''}
+            </option>
+          {/each}
+        </select>
+        <div class="wpSizes">
+          {#each wpSizeList() as s (s)}
+            <button
+              class="chip"
+              class:chipActive={wpForm.image_size === s}
+              disabled={wpImageModel?.per_image && !(s in wpImageModel.per_image)}
+              onclick={() => (wpForm.image_size = s)}
+            >{s}</button>
+          {/each}
+          <span class="muted">Bildgröße (nur verfügbare Größen wählbar)</span>
+        </div>
+      </div>
+
+      <div class="wpField">
+        <label for="wpBudget">Budget ($/Monat)</label>
+        <input
+          id="wpBudget"
+          type="number"
+          min="0"
+          step="0.5"
+          bind:value={wpForm.budget_monthly}
+          style="max-width:180px"
+        />
+      </div>
+
+      <div class="wpField">
+        <label for="wpTextModel">Text-KI (Routing-Modell der OpenCode-Services)</label>
+        <select id="wpTextModel" value={wpForm.text_model} onchange={(e) => (wpForm.text_model = e.target.value)}>
+          {#each wardrobePanel?.text_models || [] as t (t.id)}
+            <option value={t.id}>{t.id}{t.note ? ' — ' + t.note : ''}{t.active ? ' · aktiv' : ''}</option>
+          {/each}
+        </select>
+        {#if wpTextModel}
+          <span class="muted">
+            {wpTextModel.billing === 'go' ? '💰 Go-Flat: Kosten im $10-Abo (keine Token-Gebühren)' : ' billing: ' + (wpTextModel.billing || 'gemini') + ' (Token-Gebühren)'}
+          </span>
+        {/if}
+      </div>
+
+      <div class="row">
+        <button onclick={wpSave} disabled={wpSaveBusy || wardrobePanel?.db?.ok === false}>
+          {wpSaveBusy ? 'Speichere…' : '💾 Speichern'}
+        </button>
+        {#if wpSaveResult?.ok}
+          <span class="muted" style="color:var(--ok)">✅ {wpSaveResult?.note || 'Gespeichert'}</span>
+        {:else if wpSaveResult?.ok === false}
+          <span class="muted" style="color:var(--err)">⚠ {wpSaveResult.error}</span>
+        {/if}
+      </div>
+      {#if wpRestartNote}
+        <p class="wpRestartNote">♻ Neustart der Wardrobe-Services durch Workflow ausgelöst — dauert Sekunden bis Minuten.</p>
+      {/if}
+    {/if}
+  </div>
+
+  <!-- Karte 2: Verbrauch & Budget -->
+  <div class="card">
+    <div class="wpHeadRow">
+      <h2>Wardrobe — Verbrauch &amp; Budget</h2>
+      <button class="mini" onclick={loadPanel} disabled={!wpLoadedOnce}>↻ Refresh</button>
+    </div>
+    {#if wardrobePanel?.usage}
+      <div class="wpSummary">
+        <span>
+          Ausgaben diesen Monat: <b>{wpMoney(wardrobePanel.usage.month_spent)}</b>
+          von <b>{wpMoney(wardrobePanel.settings?.budget_monthly)}</b>
+        </span>
+        <div class="ampel {wpAmpelClass(wardrobePanel.usage.ampel)} wpAmpelBar">
+          <span class="ampelBar"><span class="ampelFill" style={'width:' + wpPct() + '%'}></span></span>
+        </div>
+        <span>Rest <b>{wpMoney(wardrobePanel.usage.remaining)}</b></span>
+        <span class="muted">ø {wpMoney(wardrobePanel.usage.avg_cost, 4)}/Anfrage</span>
+        <span class="muted">{wardrobePanel.usage.month_renders} Renders ({wardrobePanel.usage.month})</span>
+      </div>
+      <p class="muted" style="margin:0 0 10px">
+        Lifetime: {wpMoney(wardrobePanel.usage.lifetime_spent)} · {wardrobePanel.usage.lifetime_renders} Renders insgesamt
+      </p>
+
+      {#if wardrobePanel.usage.by_model?.length}
+        <table>
+          <thead>
+            <tr>
+              <th>Modell</th>
+              <th class="num">Renders</th>
+              <th class="num">Ausgaben</th>
+              <th class="num">ø</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each wardrobePanel.usage.by_model as row (row.model)}
+              <tr>
+                <td class="mono">{row.model}</td>
+                <td class="num">{row.count}</td>
+                <td class="num">{wpMoney(row.spent)}</td>
+                <td class="num">{wpMoney(row.avg, 4)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+
+      <h3 style="margin:14px 0 6px;font-size:.9rem;color:var(--fire-soft)">Letzte Renders</h3>
+      {#if (wardrobePanel.usage.recent || []).length}
+        <table>
+          <thead>
+            <tr>
+              <th>Datum</th>
+              <th>Modell</th>
+              <th>Größe</th>
+              <th class="num">Tokens B/T/P</th>
+              <th class="num">Kosten</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each wardrobePanel.usage.recent as r (r.created_at + r.outfit_id)}
+              <tr>
+                <td class="num">{wpDate(r.created_at)}</td>
+                <td class="mono">{r.model}</td>
+                <td>{r.image_size}</td>
+                <td class="num">{r.image_tokens} / {r.text_output_tokens} / {r.prompt_tokens}</td>
+                <td class="num">{wpMoney(r.cost, 4)}</td>
+                <td><span class="badge {r.status === 'ok' ? 'active' : 'err'}">{r.status}</span></td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {:else}
+        <p class="muted wpEmpty">Noch keine Wardrobe-Renders in diesem Monat.</p>
+      {/if}
+    {:else if !wardrobePanelError}
+      <p class="muted">Lade Verbrauchsdaten…</p>
+    {/if}
+  </div>
+
+  <!-- Karte 3: Modell & Kosten (Katalog) -->
   <div class="card">
     <h2>Wardrobe — Modell &amp; Kosten</h2>
     {#if wardrobeError}
@@ -2720,6 +2996,7 @@ setInterval(loadSuggestStatus, 60000)
             <td class="mono">
               {m.id}
               {#if m.badge === 'aktiv'}<span class="badge active">aktiv</span>{/if}
+              {#if wardrobePanel?.settings?.image_model === m.id}<span class="badge active">aktiv</span>{/if}
               {#if m.note}<span class="muted wcNote">{m.note}</span>{/if}
             </td>
             <td class="num">{wcPrice(m.prices?.input)}</td>
@@ -2943,4 +3220,24 @@ setInterval(loadSuggestStatus, 60000)
   .wcInfo dt { color: var(--muted); font-weight: 600; }
   .wcInfo dd { margin: 0; }
   .wcFootnote { margin: 12px 0 0; font-size: .78rem; }
+
+  /* ── Wardrobe Panel: Konfiguration + Verbrauch ── */
+  .wpField { display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; }
+  .wpField label { font-size: .8rem; color: var(--muted); font-weight: 600; }
+  .wpField select { max-width: 460px; }
+  .wpSizes { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .wpSizes .chip { padding: 2px 10px; font-size: .7rem; }
+  .wpSizes .chip:disabled { opacity: .35; cursor: not-allowed; }
+  .wpSizes .muted { font-size: .75rem; }
+  .wpHeadRow { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .wpSummary {
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    margin: 4px 0 10px; font-size: .9rem;
+  }
+  .wpAmpelBar { flex: 0 1 150px; }
+  .wpRestartNote {
+    margin: 10px 0 0; padding: 8px 12px; font-size: .82rem;
+    border: 1px dashed var(--warn); border-radius: 8px; background: var(--panel-2); color: var(--warn);
+  }
+  .wpEmpty { margin: 6px 0; }
 </style>

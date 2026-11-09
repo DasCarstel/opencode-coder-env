@@ -131,8 +131,19 @@ echo "✓ Konto $ACCOUNT aktiv (SOT + $COUNT Container)"
 SHIM_ENV="/opt/docker-compose/ai-shim/.env"
 if [[ -f "$SHIM_ENV" ]]; then
   echo "→ Wardrobe-Shim ($SHIM_ENV)"
-  printf 'GO_API_KEY=%s\n' "$KEY" > "$SHIM_ENV"   # Key ist bereits in der CI-Var, nie im Log
-  chmod 600 "$SHIM_ENV"
+  # Upsert statt Truncate: GO_API_KEY deduplizieren (awk-Siebeh) und genau
+  # eine Zeile anhängen — weitere Vars in der .env (z. B. GO_MODELS vom
+  # wardrobe-model-Wechsel, hestia/ci/update-wardrobe-model.sh) bleiben
+  # erhalten. Key steht nur in der Shell-Variable, nie im argv.
+  if awk '!/^GO_API_KEY=/' "$SHIM_ENV" > "$SHIM_ENV.tmp" \
+     && printf 'GO_API_KEY=%s\n' "$KEY" >> "$SHIM_ENV.tmp"; then
+    chmod 600 "$SHIM_ENV.tmp"
+    mv "$SHIM_ENV.tmp" "$SHIM_ENV"
+    chmod 600 "$SHIM_ENV"
+  else
+    rm -f "$SHIM_ENV.tmp"
+    echo "   ⚠ Shim-.env konnte nicht aktualisiert werden — GO_API_KEY bleibt auf dem alten Stand" >&2
+  fi
   if docker compose -f /opt/docker-compose/ai-shim/docker-compose.yml up -d ai-shim >/dev/null 2>&1; then
     echo "   ✓ Shim-Env aktualisiert + Container neu erstellt"
   else

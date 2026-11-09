@@ -13,6 +13,11 @@ Secrets (AppRole-Policy muss covered paths freigeben):
                                            Fehlt der Pfad oder das Feld (403/404),
                                            ist das kein Fehler: Benchmarks laufen
                                            dann mit OpenRouter allein weiter.
+  secret/data/wardrobe/db                   → WARDROBE_DSN (dsn) [optional]
+                                           Wie beim AA-Key: Fehlt der Pfad (403/404),
+                                           wird nur geloggt — wardrobe_panel.py
+                                           liefert dann einen Payload mit Fehler-
+                                           Hinweis, statt zu crashen.
   secret/data/mcp/opencode-go               → OC_GO_DEFAULT1..4 (je ein Feld)
                                           ('active' wird NICHT mehr geladen — die
                                            SOT .opencode/hestia-accounts.jsonc
@@ -51,6 +56,13 @@ GO_FIELDS = [("default1", "OC_GO_DEFAULT1"),
 AA_SECRET_PATH = "secret/data/mcp/artificialanalysis"
 AA_SECRET_KEY = "api_key"
 AA_ENVNAME = "AA_API_KEY"
+
+# Wardrobe-DB (Postgres, Rendering-Verbrauch + Panel-Einstellungen optional).
+# Die DSN landet als WARDROBE_DSN im Container-Env — wardrobe_panel.py liest
+# sie erst bei Bedarf (lazy). Gleiche Optionals-Bauweise wie der AA-Key.
+WARDROBE_SECRET_PATH = "secret/data/wardrobe/db"
+WARDROBE_SECRET_KEY = "dsn"
+WARDROBE_ENVNAME = "WARDROBE_DSN"
 
 
 def log(msg):
@@ -104,6 +116,22 @@ def _load_aa(token):
         log(f"  ⚠ {AA_ENVNAME}: Key '{AA_SECRET_KEY}' leer in {AA_SECRET_PATH}")
 
 
+def _load_wardrobe(token):
+    """Wardrobe-DB-DSN laden — optional, Fehler werden nur geloggt."""
+    try:
+        data = bao_request(WARDROBE_SECRET_PATH, token=token)["data"]["data"]
+    except Exception as e:
+        log(f"  ⚠ {WARDROBE_ENVNAME}: {WARDROBE_SECRET_PATH} nicht lesbar ({e}) — "
+            f"Wardrobe-Panel läuft ohne DB-Zugriff (Einstellungen auf Defaults)")
+        return
+    value = (data or {}).get(WARDROBE_SECRET_KEY, "")
+    if value:
+        os.environ[WARDROBE_ENVNAME] = value
+        log(f"  ✓ {WARDROBE_ENVNAME} geladen ({WARDROBE_SECRET_PATH})")
+    else:
+        log(f"  ⚠ {WARDROBE_ENVNAME}: Key '{WARDROBE_SECRET_KEY}' leer in {WARDROBE_SECRET_PATH}")
+
+
 def main():
     if OPENBAO_ROLE_ID and OPENBAO_SECRET_ID:
         try:
@@ -123,6 +151,7 @@ def main():
                     log(f"  ⚠ {envname}: {path} nicht lesbar ({e})")
             _load_go_accounts(token)
             _load_aa(token)
+            _load_wardrobe(token)
             os.environ["BAO_TOKEN"] = token
         except Exception as e:
             log(f"⚠ OpenBao-Login fehlgeschlagen ({e}) — fahre mit Container-Env fort")

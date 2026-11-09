@@ -12,13 +12,14 @@ Frage lautete: welches Modell soll welcher Agent sein? Daraus entstanden die
 Modell-Katalog-Anzeige, der Apply-Durchstich in CI und später das Budget-/Konto-
 System über die OpenCode-Go-Abos.
 
-Heute macht Hestia fünf Dinge:
+Heute macht Hestia sechs Dinge:
 
 1. **Tier-Zuordnung** verwalten (Modell, Variant/Effort, Kostenratio, Stufenlimits je Tier)
 2. **Budget überwachen** — Restbudget je OpenCode-Go-Abo, mit automatischen Kontowechsel
 3. **Ausfallsicherheit** — bezahltes Gegenmodell hinter jedem Gratis-Tier, Auto-Failover
 4. **Hermes steuern** — Modell, Fallback-Kette und Abo-Pool für den Hermes-Agenten
 5. **Wardrobe versorgen** — das AI-Wardrobe (Tagging + Outfit-Text) läuft über dasselbe Go-Abo und zieht bei jedem Kontowechsel das neue Key automatisch nach
+6. **Wardrobe-Panel** — Bild-Modell + Verbrauch/Budget der Outfit-Bilder verwalten (siehe „Wardrobe-Panel" unten), Benchmark-Quelle „Artificial Analysis" migrated auf den Free-Endpoint von Nov 2026
 
 ## Wardrobe (AI-Wardrobe-Integration über das Go-Abo)
 
@@ -38,6 +39,24 @@ Item-Tagging der Kleidungsfotos und Outfit-Vorschläge — seit 2026-11-09 über
 | Kontobindung | Der Shim-Key wird nicht per Hand gepflegt: `switch-account.sh` schreibt bei jedem Kontowechsel den Key des Zielkontos direkt in die Shim-`.env` und erstellt den Container neu (Schritt 3b) — Wardrobe fährt damit immer auf dem gerade aktiven Abo |
 | Kosten | Wardrobe-Volumen ist sub-cent pro Vorschlag/Tagging-Item; Limit `glm-5.3-flash` $60/mo — unbedeutend gegenüber dem Agent-/Hermes-Verbrauch, erscheint aber im Budget-Balken des abonierten Kontos |
 | Wartung | Nach wardrowbe/shim-Updates: Shim-Änderungen sind baked (Dockerfile `COPY app.py`), Änderung = Datei editieren + `docker compose -f /opt/docker-compose/ai-shim/docker-compose.yml up -d --build ai-shim` |
+
+## Wardrobe-Panel (Bildmodell, Verbrauch & Budget)
+
+*(2026-11-09, ergänzt)* Der Wardrobe-Tab hat drei Karten: **Konfiguration** (Bild-Modell
+wahl, Bildgröße, Monats-Budget, Text-KI-Modellwahl), **Verbrauch & Budget** (Monats-/
+Lifetime-Ausgaben, Ampel, letzte Renders mit Kosten je Anfrage) und unten den
+bekannten **Modellkatalog** (`/api/wardrobe/costs`, unverändert).
+
+Mechanik:
+
+| Aspekt | Stand |
+|---|---|
+| Datenquelle | Wardrobe-DB (Postgres auf 10.0.10.10, jetzt published auf `10.0.10.10:5433`). Der Render-Dienst (`outfits-render`) legt bei Start `panel_settings` (key/value) + `render_usage` (eine Zeile pro Bildanfrage: Token-Split prompt/text/image, Modell, Größe, Dauer, Status) an und liest `image_model`/`image_size` **pro Request** aus `panel_settings` — Umschalten wirkt sofort ohne Restart |
+| Backend | `hestia/backend/wardrobe_panel.py`: Preistabelle der Gemini-Bildmodelle (USD/1M Tokens, Stand Nov 2026) → Kosten je Render = prompt×text_in + text_out×text_out + image×image_out; `GET /api/wardrobe/panel` (payload mit settings/usage/image_models/text_models), `POST /api/wardrobe/settings` (validatede Upserts; text_model-Wechsel triggert den Workflow `wardrobe-model.yml`) |
+| Auth DB | DB-Rolle **`hestia`** (Minimalrechte: SELECT auf render_usage; SELECT/INSERT/UPDATE auf panel_settings) — DSN in OpenBao `secret/data/wardrobe/db` Feld `dsn`, gelesen von `bootstrap.py` → env `WARDROBE_DSN` (optional; ohne DSN liefert das Panel einen Fehler-Payload statt Crash) |
+| Text-KI-Modell | Umschaltbar über `ci/update-wardrobe-model.sh` (eigener Workflow `wardrobe-model.yml`, self-hosted Runner auf dem Docker-Host): setzt `AI_TEXT_MODEL`+`AI_VISION_MODEL` in der Wardrobe-`.env` und recreated backend/worker nur bei echter Änderung; bei Go-Modellen ergänzt er `GO_MODELS` in der Shim-`.env` (glm-5.3-flash, gpt-6-luna), bei Gemini-Modellen bleibt der Shim unangetastet (nicht in GO_MODELS → direkt Gemini) |
+| Kosten je Bild | ≈ $0.05–0.10 je nach Modell/Größe (Nano-Banana-2.1 2K ≈ $0.054). Messung läuft NICHT über eine Gemini-Billing-API (die existiert pro API-Key nicht, nur projektweites Cloud-Billing >24 h verzögert), sondern über eigenes Token-Tracking `render_usage` × Preistabelle |
+| AA-Fix | Artificial Analysis hat die Legacy-Endpunkte `/api/v2/data/*` am 04.11.2026 retiriert (HTTP 410) → `benchmarks.py` ist jetzt migriert auf `GET /api/v2/language/models/free` (`x-api-key`, paginiert); Pro-Endpoint braucht Pro-Subscription |
 
 ## Erreichbarkeit
 

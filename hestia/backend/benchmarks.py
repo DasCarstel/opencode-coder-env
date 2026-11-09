@@ -2,9 +2,12 @@
 """benchmarks.py — Modell-Benchmarks aus zwei Quellen: Artificial Analysis (AA)
 als PRIMÄRquelle, OpenRouter (OR) als Fallback/Ergänzung.
 
-  AA (primär): GET https://artificialanalysis.ai/api/v2/data/llms/models
+  AA (primär): GET https://artificialanalysis.ai/api/v2/language/models/free
                Header `x-api-key: $AA_API_KEY` (Opt-in; ohne Key wird AA
-               übersprungen). Rate-Limit 1.000 Requests/Tag.
+               übersprungen). Legacy-/api/v2/data/* lieferte ab 04.11.2026 HTTP
+               410 Gone → neuer Free-Endpoint, paginiert (Pro-Endpoint braucht
+               Pro-Subscription).
+               Rate-Limit 1.000 Requests/Tag.
   OR (Fallback): GET https://openrouter.ai/api/v1/models (kein Key, kein Limit).
                Liefert zusätzlich `agentic_index` (AA kennt ihn nicht) und die
                design_arena-Werte `code_elo`/`code_rank` (codecategories).
@@ -64,6 +67,7 @@ import os
 import re
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 import catalog
@@ -80,8 +84,10 @@ SOURCE_URL = os.environ.get(
     "HESTIA_BENCHMARKS_URL", "https://openrouter.ai/api/v1/models"
 )
 # Artificial Analysis (Primärquelle) — braucht AA_API_KEY (bootstrap.py).
+# Legacy-/api/v2/data/* wurde am 04.11.2026 retired (HTTP 410) → Free-Nachfolger.
 AA_MODELS_URL = os.environ.get(
-    "AA_MODELS_URL", "https://artificialanalysis.ai/api/v2/data/llms/models"
+    "AA_MODELS_URL",
+    "https://artificialanalysis.ai/api/v2/language/models/free",
 )
 AA_API_KEY = os.environ.get("AA_API_KEY", "").strip()
 SOURCE = "openrouter"
@@ -492,7 +498,12 @@ def _aa_entry(row: dict) -> dict | None:
     }
     for field, chain in AA_SCALE_100.items():
         out[field] = _first_pct(ev, chain)
-    out["speed"] = _num1(row.get("median_output_tokens_per_second"))
+    perf = row.get("performance")
+    perf = perf if isinstance(perf, dict) else {}
+    speed = perf.get("median_output_tokens_per_second")
+    if speed is None:  # Legacy-Schema (wo noch ein flaches Feld) robust halten
+        speed = row.get("median_output_tokens_per_second")
+    out["speed"] = _num1(speed)
     # agentic_index / code_elo / code_rank kennt AA nicht.
     out["agentic_index"] = None
     out["code_elo"] = None
@@ -593,21 +604,43 @@ _fetch = _fetch_or
 
 
 def _fetch_aa(timeout: int = FETCH_TIMEOUT) -> list:
-    """GET gegen Artificial Analysis (read-only, Key im Header `x-api-key`)."""
+    """GET gegen Artificial Analysis (read-only, Key im Header `x-api-key`).
+
+    Legacy-`/api/v2/data/*` liefert seit dem 04.11.2026 HTTP 410 Gone; die
+    Nachfolge-Endpoint `/api/v2/language/models/free` ist paginiert (200
+    Zeilen pro Seite, `pagination.total_pages`/`has_more`) — alle Seiten
+    werden eingesammelt.
+    """
     if not aa_enabled():
         raise RuntimeError("AA_API_KEY nicht gesetzt — Artificial Analysis übersprungen")
-    req = urllib.request.Request(
-        AA_MODELS_URL,
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "hestia-benchmarks/1.1",
-            "x-api-key": AA_API_KEY,
-        },
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        payload = json.loads(resp.read().decode())
-    rows = payload.get("data") if isinstance(payload, dict) else payload
-    return rows or []
+    parts = urllib.parse.urlsplit(AA_MODELS_URL)
+    base = urllib.parse.urlunsplit(parts[:3] + ("", "", ""))
+    fixed_query = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+    rows: list = []
+    page = 1
+    while True:
+        query = list(fixed_query) + [("page", str(page))]
+        url = urllib.parse.urlunsplit(parts[:3] + (urllib.parse.urlencode(query), "", ""))
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "hestia-benchmarks/1.1",
+                "x-api-key": AA_API_KEY,
+            },
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+        batch = payload.get("data") if isinstance(payload, dict) else payload
+        rows.extend(batch or [])
+        pagination = (payload or {}).get("pagination") if isinstance(payload, dict) else None
+        more = bool((pagination or {}).get("has_more"))
+        if not more:
+            break
+        page += 1
+        if page > 50:  # Hardgrenze — damit der Endpunkt nicht endlos rotiert
+            break
+    return rows
 
 
 def catalog_models() -> list:

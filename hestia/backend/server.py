@@ -15,6 +15,9 @@ Endpoints (alle unter Basic Auth):
   POST /api/suggest           KI-Analyse → 3-Tier-Vorschlag (JSON)
   POST /api/rollout           Force-Rollout (Workflow-Dispatch)
   GET  /api/accounts          Budget-Status aller Provider-Konten (inkl. Empfehlung)
+  GET  /api/wardrobe/costs    Wardrobe-Tab: Tokenpreise + Go-Monatslimits
+  GET  /api/wardrobe/panel    Wardrobe-Panel: Bildmodelle, Verbrauch, Einstellungen
+  POST /api/wardrobe/settings Wardrobe-Einstellungen anwenden (UPSERT panel_settings; text_model-Wechsel → workflow_dispatch)
   POST /api/accounts/check    Konten sofort neu abfragen (kein Wechsel)
   POST /api/accounts/switch   Konto-Wechsel anstoßen (id optional = Empfehlung)
   GET  /api/hermes            Hermes-Zustand (SOT + Health + Workflow)
@@ -58,6 +61,7 @@ import benchmarks as benchmarks_mod  # noqa: E402
 import dcp as dcp_mod  # noqa: E402
 import rollout as rollout_mod  # noqa: E402
 import wardrobe_costs as wardrobe_mod  # noqa: E402
+import wardrobe_panel as wardrobe_panel_mod  # noqa: E402
 
 STATIC_DIR = os.environ.get(
     "HESTIA_STATIC", os.path.join(os.path.dirname(BASE_DIR), "frontend", "dist")
@@ -505,10 +509,19 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 _log(f"wardrobe costs error: {e}")
                 return self._json({"error": str(e)}, 502)
+        if path == "/api/wardrobe/panel":
+            # Wardrobe-Panel: Bildmodell-Verwaltung + Verbrauchs-/Budget-
+            # Tracking (Wardrobe-DB, read-only). Fehler dürfen den Aufruf
+            # nie kippen — panel_state() wirft ohnehin nie (db.ok=false).
+            try:
+                return self._json(wardrobe_panel_mod.payload())
+            except Exception as e:  # noqa: BLE001
+                _log(f"wardrobe panel error: {e}")
+                return self._json({"error": str(e)}, 500)
         if path in ("/api/apply", "/api/suggest", "/api/rollout",
                     "/api/accounts/check", "/api/accounts/switch",
                     "/api/hermes/apply", "/api/hermes/speed/run", "/api/hermes/speed/apply",
-                    "/api/failover/settings",
+                    "/api/failover/settings", "/api/wardrobe/settings",
                     "/api/failover/check", "/api/suggest/settings",
                     "/api/benchmarks/refresh", "/api/dcp/settings"):
             return self._json(
@@ -858,6 +871,44 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 _log(f"dcp settings error: {e}")
                 return self._json({"error": str(e)}, 500)
+
+        if path == "/api/wardrobe/settings":
+            # Wardrobe-Einstellungen anwenden (UPSERT panel_settings) + Panel-
+            # Payload als Antwort. Bei text_model-Wechsel zusätzlich den
+            # Workflow-Dispatch anstoßen (Muster accounts.switch_account:
+            # github_api.dispatch_workflow mit Inputs). Der Dispatch-Fehler
+            # kippt den bereits gespeicherten Apply nie — die Antwort meldet
+            # text_model_applied True/False (None = kein Wechsel).
+            try:
+                res = wardrobe_panel_mod.apply_settings(self._body())
+            except wardrobe_panel_mod.SettingsError as e:
+                return self._json({"error": str(e)}, 400)
+            except Exception as e:
+                _log(f"wardrobe settings error: {e}")
+                return self._json({"error": str(e)}, 500)
+            res["text_model_applied"] = None
+            if res.get("settings"):
+                try:
+                    res["panel"] = wardrobe_panel_mod.payload()
+                except Exception as e:  # noqa: BLE001 — Apply bleibt Erfolg
+                    _log(f"wardrobe settings payload error: {e}")
+                    res["panel"] = None
+            if res.get("text_model_changed") and (res.get("settings") or {}).get("text_model"):
+                try:
+                    github_api.dispatch_workflow(
+                        wardrobe_panel_mod.WARDROBE_MODEL_WORKFLOW,
+                        inputs={
+                            "wardrobe_model": res["settings"]["text_model"],
+                            "reason": "hestia panel settings (text_model)",
+                        },
+                    )
+                    res["text_model_applied"] = True
+                    _log(f"wardrobe text_model Dispatch ausgelöst: {res['settings']['text_model']}")
+                except Exception as e:  # noqa: BLE001 — Settings bleiben gespeichert
+                    res["text_model_applied"] = False
+                    res["text_model_dispatch_error"] = str(e)
+                    _log(f"wardrobe model dispatch error: {e}")
+            return self._json(res)
 
         if path == "/api/rollout":
             # Force-Rollout über rollout.py: Dispatch + Live-Verifikation
