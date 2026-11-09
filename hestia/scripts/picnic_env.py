@@ -62,7 +62,15 @@ set -eu
 set -a
 . /opt/data/picnic/.env
 set +a
-exec /usr/local/bin/node /usr/local/lib/node_modules/mcp-picnic/bin/mcp-server.js
+# npm -g installiert in den von Hermes verwalteten Node-Baum
+# (/opt/hermes/tools/node-<version>/...). Der Pfad wird deshalb per Glob
+# aufgeloest statt versioniert zu werden.
+PICNIC_ENTRY="$(ls -d /opt/hermes/tools/node-*/lib/node_modules/mcp-picnic/bin/mcp-server.js 2>/dev/null | head -1)"
+if [ -z "$PICNIC_ENTRY" ]; then
+  echo "picnic: mcp-picnic nicht im Node-Baum gefunden" >&2
+  exit 1
+fi
+exec /usr/local/bin/node "$PICNIC_ENTRY"
 """
 
 
