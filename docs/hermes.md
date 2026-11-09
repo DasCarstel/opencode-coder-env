@@ -646,6 +646,48 @@ alle anderen Keys wie `mcp_servers`, `toolsets.enabled`, `tools` und
 Backup; schlägt das anschließende `hermes config check` fehl, wird es
 automatisch wiederhergestellt und der Lauf endet mit Fehler.
 
+## Session-Bereinigung
+
+Hermes legt jede Unterhaltung als Session in `state.db` ab — je Profil eine
+eigene Datei (`/opt/data/state.db`, `/opt/data/profiles/<name>/state.db`).
+Ohne Aufräumen wächst der Verlauf unbegrenzt (Stand 2026-11-09: 298 Sessions /
+19,8 MB im Default-Profil, 76 Sessions / 4,9 MB in Kleve).
+
+Seit 2026-11-09 räumt ein Timer auf dem Coder-Host auf:
+
+| Baustein | Pfad |
+|---|---|
+| Skript | `hermes/scripts/prune-sessions.sh` → `/opt/docker-compose/hermes/scripts/` |
+| Units | `hermes/systemd/hermes-session-prune.{service,timer}` |
+| Zeitplan | täglich 04:30 (±5 min), `Persistent=true` (holt verpasste Läufe nach) |
+| Umfang | Profil `kleve`, Sessions älter als **30 Tage** |
+
+Das Skript nutzt ausschließlich das eingebaute `hermes sessions prune`
+(plus `sessions optimize` für VACUUM/FTS), keine eigenen SQL-Eingriffe.
+Archivierte und angepinnte Sessions bleiben erhalten (`--include-archived`
+und `--include-pinned` werden bewusst nicht gesetzt).
+
+Einstellungen überschreiben — die Datei ist nicht versioniert und überlebt
+Deploys:
+
+```bash
+# /etc/default/hermes-session-prune
+HERMES_PRUNE_AGE=30d
+HERMES_PRUNE_PROFILE=kleve
+```
+
+Prüfen und manuell laufen lassen:
+
+```bash
+docker exec hermes sh -lc \
+  'HOME=/opt/data /opt/hermes/bin/hermes --profile kleve sessions prune --older-than 30d --dry-run'
+systemctl start hermes-session-prune.service
+journalctl -u hermes-session-prune.service -n 20
+```
+
+Das Default-Profil (Krefeld) wird **nicht** aufgeräumt — ein `prune` ohne
+`--profile` würde dessen Verlauf löschen.
+
 ## Pflege des Laufzeit-Zustands
 
 ```
