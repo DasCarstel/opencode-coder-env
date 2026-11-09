@@ -17,6 +17,7 @@ Endpoints (alle unter Basic Auth):
   GET  /api/accounts          Budget-Status aller Provider-Konten (inkl. Empfehlung)
   GET  /api/wardrobe/costs    Wardrobe-Tab: Tokenpreise + Go-Monatslimits
   GET  /api/wardrobe/panel    Wardrobe-Panel: Bildmodelle, Verbrauch, Einstellungen
+  GET  /api/wardrobe/billing  Wardrobe-Tab: Google-Billing-Abgleich (BigQuery-Export)
   POST /api/wardrobe/settings Wardrobe-Einstellungen anwenden (UPSERT panel_settings; text_model-Wechsel → workflow_dispatch)
   POST /api/accounts/check    Konten sofort neu abfragen (kein Wechsel)
   POST /api/accounts/switch   Konto-Wechsel anstoßen (id optional = Empfehlung)
@@ -62,6 +63,7 @@ import dcp as dcp_mod  # noqa: E402
 import rollout as rollout_mod  # noqa: E402
 import wardrobe_costs as wardrobe_mod  # noqa: E402
 import wardrobe_panel as wardrobe_panel_mod  # noqa: E402
+import wardrobe_billing as wardrobe_billing_mod  # noqa: E402
 
 STATIC_DIR = os.environ.get(
     "HESTIA_STATIC", os.path.join(os.path.dirname(BASE_DIR), "frontend", "dist")
@@ -517,6 +519,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(wardrobe_panel_mod.payload())
             except Exception as e:  # noqa: BLE001
                 _log(f"wardrobe panel error: {e}")
+                return self._json({"error": str(e)}, 500)
+        if path == "/api/wardrobe/billing":
+            # Wardrobe-Tab: Google-Billing-Abgleich (BigQuery-Export, offi-
+            # zielle Gemini-Kosten, 30-Min-Cache). Fehlendes OpenBao-Secret →
+            # disabled-Payload (enabled False); billing_state() wirft ohnehin
+            # nie — dieser try/except ist reine Rückwand.
+            try:
+                return self._json(wardrobe_billing_mod.billing_state())
+            except Exception as e:  # noqa: BLE001
+                _log(f"wardrobe billing error: {e}")
                 return self._json({"error": str(e)}, 500)
         if path in ("/api/apply", "/api/suggest", "/api/rollout",
                     "/api/accounts/check", "/api/accounts/switch",

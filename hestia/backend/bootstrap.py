@@ -18,11 +18,22 @@ Secrets (AppRole-Policy muss covered paths freigeben):
                                            wird nur geloggt — wardrobe_panel.py
                                            liefert dann einen Payload mit Fehler-
                                            Hinweis, statt zu crashen.
+  secret/data/wardrobe/gcp                  → Google-Billing-Abgleich [optional]
+                                            sa_json (base64-Service-Account-Key)
+                                            → /tmp/gcp-sa.json (0600) + Env
+                                            GOOGLE_APPLICATION_CREDENTIALS;
+                                            dataset → WARDROBE_GCP_DATASET;
+                                            project_id [optional] →
+                                            WARDROBE_GCP_PROJECT. Fehlt der Pfad
+                                            oder ein Feld: nur loggen - der
+                                            Abgleich (wardrobe_billing.py)
+                                            bleibt deaktiviert.
   secret/data/mcp/opencode-go               → OC_GO_DEFAULT1..4 (je ein Feld)
                                           ('active' wird NICHT mehr geladen — die
                                            SOT .opencode/hestia-accounts.jsonc
                                            bestimmt den aktiven Account)
 """
+import base64
 import json
 import os
 import sys
@@ -63,6 +74,12 @@ AA_ENVNAME = "AA_API_KEY"
 WARDROBE_SECRET_PATH = "secret/data/wardrobe/db"
 WARDROBE_SECRET_KEY = "dsn"
 WARDROBE_ENVNAME = "WARDROBE_DSN"
+
+# Google-Billing-Abgleich (wardrobe_billing.py) — OPTIONAL, gleiches Optionals-
+# Muster wie WARDROBE_DSN. sa_json kommt base64-codiert (kein Artefakt-Risiko
+# im Secret-Backend) und landet als /tmp/gcp-sa.json (0600).
+WARDROBE_GCP_SECRET_PATH = "secret/data/wardrobe/gcp"
+WARDROBE_GCP_SA_PATH = "/tmp/gcp-sa.json"
 
 
 def log(msg):
@@ -132,6 +149,60 @@ def _load_wardrobe(token):
         log(f"  ⚠ {WARDROBE_ENVNAME}: Key '{WARDROBE_SECRET_KEY}' leer in {WARDROBE_SECRET_PATH}")
 
 
+def _load_wardrobe_gcp(token):
+    """Google-Billing-Abgleich: SA-Key + Dataset — optional, Fehler nur loggen.
+
+    sa_json (base64 codierter Service-Account-Key) → /tmp/gcp-sa.json (0600),
+    dann GOOGLE_APPLICATION_CREDENTIALS + WARDROBE_GCP_DATASET setzen (und
+    ggf. WARDROBE_GCP_PROJECT). Fehlt irgendetwas: nur loggen —
+    wardrobe_billing.py liefert dann einen disabled-Payload, der Start darf
+    daran nie scheitern.
+    """
+    try:
+        data = bao_request(WARDROBE_GCP_SECRET_PATH, token=token)["data"]["data"]
+    except Exception as e:  # noqa: BLE001
+        log(f"  ⚠ wardrobe/gcp: {WARDROBE_GCP_SECRET_PATH} nicht lesbar ({e}) — "
+            f"Google-Billing-Abgleich bleibt deaktiviert")
+        return
+    data = data or {}
+    sa_b64 = str(data.get("sa_json", ""))
+    if not sa_b64:
+        log("  ⚠ wardrobe/gcp: Feld 'sa_json' leer — "
+            "Google-Billing-Abgleich bleibt deaktiviert")
+        return
+    try:
+        raw = base64.b64decode(sa_b64, validate=False)
+        sa = json.loads(raw.decode())
+        if not isinstance(sa, dict) or "project_id" not in sa:
+            raise ValueError("nicht plausibel (project_id fehlt)")
+    except Exception as e:  # noqa: BLE001
+        log(f"  ⚠ wardrobe/gcp: sa_json kein brauchbarer Service-Account-Key ({e}) — "
+            f"Google-Billing-Abgleich bleibt deaktiviert")
+        return
+    try:
+        os.makedirs(os.path.dirname(WARDROBE_GCP_SA_PATH), exist_ok=True)
+        with open(WARDROBE_GCP_SA_PATH, "wb") as f:
+            f.write(raw)
+        os.chmod(WARDROBE_GCP_SA_PATH, 0o600)
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = WARDROBE_GCP_SA_PATH
+        log(f"  ✓ Service-Account-Key geschrieben ({WARDROBE_GCP_SA_PATH}, 0600)")
+    except Exception as e:  # noqa: BLE001
+        log(f"  ⚠ wardrobe/gcp: Key-Datei nicht schreibbar ({e}) — "
+            f"Google-Billing-Abgleich bleibt deaktiviert")
+        return
+    dataset = str(data.get("dataset", "") or "")
+    os.environ["WARDROBE_GCP_DATASET"] = dataset
+    project = str(data.get("project_id", "") or "")
+    if project:
+        os.environ["WARDROBE_GCP_PROJECT"] = project
+    if dataset:
+        log(f"  ✓ Google-Billing: WARDROBE_GCP_DATASET='{dataset}' geladen "
+            f"(Projekt: {project})")
+    else:
+        log("  ⚠ wardrobe/gcp: Feld 'dataset' leer — "
+            "Google-Billing-Abgleich bleibt deaktiviert")
+
+
 def main():
     if OPENBAO_ROLE_ID and OPENBAO_SECRET_ID:
         try:
@@ -152,6 +223,7 @@ def main():
             _load_go_accounts(token)
             _load_aa(token)
             _load_wardrobe(token)
+            _load_wardrobe_gcp(token)
             os.environ["BAO_TOKEN"] = token
         except Exception as e:
             log(f"⚠ OpenBao-Login fehlgeschlagen ({e}) — fahre mit Container-Env fort")

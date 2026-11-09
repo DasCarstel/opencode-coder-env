@@ -995,6 +995,10 @@ async function loadWardrobe() {
 // ── Wardrobe Panel (GET /api/wardrobe/panel, POST /api/wardrobe/settings) ──
 let wardrobePanel = $state(null)
 let wardrobePanelError = $state(null)
+// Google-Billing-Abgleich (GET /api/wardrobe/billing) — optional, neben dem
+// internen Tracking. Fehler brechen das Panel nie (eigener State-Strang).
+let wardrobeBilling = $state(null)
+let wardrobeBillingError = $state(null)
 let wpLoadedOnce = $state(false)
 let wpSaveBusy = $state(false)
 let wpSaveResult = $state(null)
@@ -1025,9 +1029,22 @@ async function loadPanel() {
   }
 }
 
-// Beim Tab-Öffnen (Wechsel auf 'wardrobe') Panel frisch laden — kein Polling.
+async function loadBilling() {
+  try {
+    wardrobeBilling = await api('/api/wardrobe/billing')
+    wardrobeBillingError = null
+  } catch (e) {
+    wardrobeBillingError = e.message || String(e)
+  }
+}
+
+// Beim Tab-Öffnen (Wechsel auf 'wardrobe') Panel + Billing frisch laden —
+// beide absichtlich PARALLEL gestartet (kein Polling wie überall im Tab).
 $effect(() => {
-  if (tab === 'wardrobe') loadPanel()
+  if (tab === 'wardrobe') {
+    loadPanel()
+    loadBilling()
+  }
 })
 
 function wpSetImageModel(id) {
@@ -2970,6 +2987,44 @@ setInterval(loadSuggestStatus, 60000)
       {/if}
     {:else if !wardrobePanelError}
       <p class="muted">Lade Verbrauchsdaten…</p>
+    {/if}
+
+    <h3 style="margin:14px 0 6px;font-size:.9rem;color:var(--fire-soft)">Google-Abgleich (offiziell, bis zu 24&nbsp;h Nachlauf)</h3>
+    {#if wardrobeBillingError}
+      <p class="muted" style="color:var(--err)">⚠ {wardrobeBillingError}</p>
+    {:else if !wardrobeBilling}
+      <p class="muted">Lade Google-Billing…</p>
+    {:else if !wardrobeBilling.enabled}
+      <p class="muted">Nicht konfiguriert — Billing-Export einrichten (OpenBao secret/data/wardrobe/gcp)</p>
+    {:else if !wardrobeBilling.ok}
+      <p class="muted" style="color:var(--err)">⚠ {wardrobeBilling.error || 'BigQuery-Abfrage fehlgeschlagen'}</p>
+    {:else}
+      <p style="margin:0 0 8px">
+        Google verzeichnet: <b>{wpMoney(wardrobeBilling.total_month)}</b> dieses Monat
+        <span class="muted">· {(wardrobeBilling.by_day || []).length} Tage exportiert</span>
+        <span class="badge">Export: {wardrobeBilling.last_date || '—'}</span>
+      </p>
+      {#if (wardrobeBilling.by_sku || []).length}
+        <table>
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th class="num">Kosten (Monat)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each (wardrobeBilling.by_sku || []).slice(0, 5) as row (row.sku)}
+              <tr>
+                <td class="mono">{row.sku}</td>
+                <td class="num">{wpMoney(row.cost_month, 4)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+        {#if (wardrobeBilling.by_sku || []).length > 5}
+          <p class="muted">… weitere {(wardrobeBilling.by_sku || []).length - 5} SKUs</p>
+        {/if}
+      {/if}
     {/if}
   </div>
 
