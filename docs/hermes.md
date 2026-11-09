@@ -667,6 +667,13 @@ Das Skript nutzt ausschließlich das eingebaute `hermes sessions prune`
 Archivierte und angepinnte Sessions bleiben erhalten (`--include-archived`
 und `--include-pinned` werden bewusst nicht gesetzt).
 
+Hermes verweigert `prune`, solange sein Gateway-Prozess die Session-DB offen
+hält. Deshalb stoppt der Timer den Container kurz, führt Prune + Optimize in
+einem Einmal-Container auf demselben Volume aus und startet ihn wieder
+(Ausfallzeit wenige Sekunden, 04:30). Das betrifft **alle** Profile im
+Container — Krefeld ist in dem Moment ebenfalls kurz weg, sein Verlauf wird
+aber nicht angefasst.
+
 Einstellungen überschreiben — die Datei ist nicht versioniert und überlebt
 Deploys:
 
