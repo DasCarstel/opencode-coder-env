@@ -259,10 +259,15 @@ def recent_view(rows: list) -> list:
         outfit = str(r.get("outfit_id") or "")
         out.append({
             "created_at": created,
+            "outfit_id": str(r.get("outfit_id") or "") or None,
             "outfit": outfit[:8] if outfit else None,
             "model": r.get("model"),
             "image_size": r.get("image_size"),
+            "prompt_tokens": r.get("prompt_tokens"),
+            "text_output_tokens": r.get("text_output_tokens"),
+            "image_tokens": r.get("image_tokens"),
             "tokens": r.get("total_tokens"),
+            "total_tokens": r.get("total_tokens"),
             "cost": round(c, 6) if c is not None else None,
             "status": r.get("status"),
             "error": r.get("error"),
@@ -393,9 +398,11 @@ def _sum_rows(conn, since_epoch):
 def _recent_rows(conn):
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT created_at, outfit_id, model, image_size, total_tokens, status, error "
+            "SELECT created_at, outfit_id, model, image_size, prompt_tokens, "
+            "text_output_tokens, image_tokens, total_tokens, status, error "
             f"FROM render_usage ORDER BY created_at DESC LIMIT {int(RECENT_LIMIT)}")
-        cols = ("created_at", "outfit_id", "model", "image_size", "total_tokens", "status", "error")
+        cols = ("created_at", "outfit_id", "model", "image_size", "prompt_tokens",
+                "text_output_tokens", "image_tokens", "total_tokens", "status", "error")
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
@@ -486,6 +493,35 @@ def panel_state(force: bool = False) -> dict:
     return out
 
 
+def usage_flat(state: dict) -> dict:
+    """usage-Block in der Frontend-Kontrakt-Form:
+
+    {month_spent, month_renders, avg_cost, lifetime_spent, lifetime_renders,
+     remaining, ampel ('ok'|'warn'|'err'), ampel_pct, by_model, recent}.
+    Die verschachtelte Innenstruktur (usage.month/lifetime) bleibt zusätzlich
+    drin, alte Leser brechen nicht.
+    """
+    u = state.get("usage") or {}
+    month = dict(u.get("month") or {})
+    life = u.get("lifetime") or {}
+    amp = month  # ampel-Werte (pct/state/remaining) sind flach gespreaded
+    flat = {
+        "month_spent": month.get("spent"),
+        "month_renders": month.get("renders"),
+        "avg_cost": month.get("avg"),
+        "lifetime_spent": life.get("spent"),
+        "lifetime_renders": life.get("renders"),
+        "remaining": amp.get("remaining"),
+        "ampel": amp.get("state"),
+        "ampel_pct": amp.get("pct"),
+        "budget": amp.get("budget"),
+        "by_model": month.get("by_model") or [],
+    }
+    out = {**u, **flat}
+    out["recent"] = state.get("recent") or []
+    return out
+
+
 def payload(force: bool = False) -> dict:
     """API-Nutzlast für GET /api/wardrobe/panel (best effort, wirft nie an).
 
@@ -494,7 +530,7 @@ def payload(force: bool = False) -> dict:
     state = panel_state(force=force)
     return {
         "settings": state["settings"],
-        "usage": state["usage"],
+        "usage": usage_flat(state),
         "recent": state["recent"],
         "image_models": image_models_payload(state["settings"]["image_model"]),
         "text_models": text_models_payload(state["settings"]["text_model"]),
