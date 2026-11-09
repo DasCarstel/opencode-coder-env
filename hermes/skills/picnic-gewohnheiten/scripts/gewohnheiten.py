@@ -6,7 +6,7 @@ Lieferungen und gibt pro Artikel eine Zeile aus. Es wird nichts gespeichert
 und nichts bestellt.
 
 Aufruf:
-    python3 gewohnheiten.py [--lieferungen 10] [--limit 20]
+    python3 gewohnheiten.py [--lieferungen 30] [--limit 25]
 """
 
 from __future__ import annotations
@@ -212,8 +212,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Picnic-Stammartikel aus der Kaufhistorie verdichten"
     )
-    parser.add_argument("--lieferungen", type=int, default=10)
-    parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--lieferungen", type=int, default=30)
+    parser.add_argument("--limit", type=int, default=25)
     args = parser.parse_args()
 
     try:
