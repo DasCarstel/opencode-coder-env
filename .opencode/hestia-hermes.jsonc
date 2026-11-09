@@ -103,7 +103,10 @@
       "mcp-spotify",
       "mcp-google-calendar",
       "mcp-yazio",
-      "memory"
+      "memory",
+      "skills",
+      "terminal",
+      "vision"
     ]
   },
   // Voice-Route "hermes-voice" (opencode-go/glm-5.3-flash) wird hier in der
