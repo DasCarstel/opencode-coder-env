@@ -2630,6 +2630,7 @@ setInterval(loadSuggestStatus, 60000)
 {/if}
 
 
+{#if tab === 'opencode'}
 <div class="card">
   <h2>
     Preisübersicht
@@ -2811,6 +2812,7 @@ setInterval(loadSuggestStatus, 60000)
     {/if}
   </p>
 </div>
+{/if}
 
 {#if tab === 'wardrobe'}
 <div class="tabWrap wardrobe">
