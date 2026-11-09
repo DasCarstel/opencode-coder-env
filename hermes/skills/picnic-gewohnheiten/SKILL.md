@@ -25,7 +25,7 @@ besser als eine freie Suche.
    ```
 
    Ausgabe: eine Zeile je Artikel im Format
-   `Produkt-ID | Name | Kaeufe | letzter Preis | zuletzt gekauft`.
+   `Produkt-ID | Name | Einheit | Kaeufe | letzter Preis | zuletzt gekauft`.
 
 2. **Passenden Artikel waehlen**
    - Oberbegriff ("Wasser", "Milch", "Eier"): nimm den haeufigsten Treffer aus der

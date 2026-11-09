@@ -143,6 +143,7 @@ def collect(deliveries, client):
                         product_id,
                         {
                             "name": article.get("name") or product_id,
+                            "unit": article.get("unit_quantity") or "",
                             "count": 0,
                             "price": None,
                             "seen": "",
@@ -152,6 +153,7 @@ def collect(deliveries, client):
                     entry["name"] = article.get("name") or entry["name"]
                     if seen >= entry["seen"]:
                         entry["seen"] = seen
+                        entry["unit"] = article.get("unit_quantity") or entry["unit"]
                         if line_price is not None:
                             entry["price"] = line_price
     return stats
@@ -185,13 +187,14 @@ def run(args) -> int:
         f"# Picnic-Stammartikel aus {len(deliveries)} Lieferungen "
         f"({len(stats)} verschiedene Artikel)"
     )
-    print("# Produkt-ID | Name | Kaeufe | letzter Preis | zuletzt gekauft")
+    print("# Produkt-ID | Name | Einheit | Kaeufe | letzter Preis | zuletzt gekauft")
     for product_id, entry in ordered[: args.limit]:
         print(
             " | ".join(
                 [
                     product_id,
                     entry["name"],
+                    entry["unit"] or "-",
                     f"{entry['count']}x",
                     format_price(entry["price"]),
                     entry["seen"][:10],
