@@ -364,6 +364,25 @@ extra_hosts:
 Ohne diesen Eintrag liefe der Aufruf über die öffentliche DNS-Auflösung; die
 Quell-IP käme dann nicht aus den erlaubten Ranges und der Filter greift nicht.
 
+### Bilder (Vision)
+
+Die Hauptmodelle (z. B. `opencode-go/beam-free`) sind text-only. Hermes routet
+Bild-Anhänge deshalb über ein Hilfsmodell:
+
+```yaml
+auxiliary:
+  vision:
+    provider: opencode-go
+    model: glm-5.3-flash        # chat_completions, Abrechnung über das Go-Abo
+    timeout: 120
+    download_timeout: 30
+```
+
+- Der Block muss in **jeder** Profil-Config stehen (`config.yaml` und `profiles/*/config.yaml`) — Profile erben `auxiliary` nicht vom Root.
+- Das Toolset `vision` muss aktiv sein, sonst fehlt das Werkzeug `vision_analyze`.
+- In Open WebUI braucht der Modelleintrag `meta.capabilities.vision = true`, sonst blendet die Oberfläche den Bild-Anhang aus.
+- Gepflegt wird der Wert im Hestia-Panel (Hermes-Tab → „Bilder ansehen"); die SOT-Felder stehen in `.opencode/hestia-hermes.jsonc`.
+
 ### Sicherheit
 
 Der Endpoint vergibt **Shell- und Dateizugriff auf den Coder-Host inklusive der
