@@ -1,15 +1,29 @@
 {
-  "updatedAt": "2026-11-09T00:53:30Z",
+  "updatedAt": "2026-11-09T14:03:25Z",
   "tiers": {
     "fast": {
-      "model": "opencode/deepseek-v4.1-flash-free",
+      "model": "opencode-go/deepseek-v4.1-flash",
       "ok": true,
-      "failStreak": 0
+      "failStreak": 0,
+      "lastOkAt": "2026-11-09T14:03:21Z",
+      "swappedAt": "2026-11-09T14:03:21Z",
+      "primaryModel": "opencode/deepseek-v4.1-flash-free",
+      "primaryVariant": "",
+      "paidReason": "free_limit",
+      "quarantineUntil": "",
+      "paidUntil": 1794269512.480032
     },
     "medium": {
-      "model": "opencode/glm-5.3-flash-free",
+      "model": "opencode-go/glm-5.3-flash",
       "ok": true,
-      "failStreak": 0
+      "failStreak": 0,
+      "lastOkAt": "2026-11-09T14:03:25Z",
+      "swappedAt": "2026-11-09T14:03:25Z",
+      "primaryModel": "opencode/glm-5.3-flash-free",
+      "primaryVariant": "",
+      "paidReason": "free_limit",
+      "quarantineUntil": "",
+      "paidUntil": 1794269516.5011468
     },
     "heavy": {
       "model": "opencode-go/glm-5.3#high",
@@ -27,7 +41,8 @@
     "opencode-go/glm-5.3-flash": {
       "model": "opencode-go/glm-5.3-flash",
       "failStreak": 0,
-      "quarantineUntil": ""
+      "quarantineUntil": "",
+      "lastOkAt": "2026-11-09T14:03:25Z"
     },
     "opencode-go/glm-5.3#max": {
       "model": "opencode-go/glm-5.3#max",
@@ -36,13 +51,17 @@
     },
     "opencode/deepseek-v4.1-flash-free": {
       "model": "opencode/deepseek-v4.1-flash-free",
-      "failStreak": 0,
-      "quarantineUntil": ""
+      "failStreak": 1,
+      "quarantineUntil": "",
+      "lastFailAt": "2026-11-09T14:03:17Z",
+      "lastFailureKind": "free_limit"
     },
     "opencode/glm-5.3-flash-free": {
       "model": "opencode/glm-5.3-flash-free",
-      "failStreak": 0,
-      "quarantineUntil": ""
+      "failStreak": 1,
+      "quarantineUntil": "",
+      "lastFailAt": "2026-11-09T14:03:21Z",
+      "lastFailureKind": "free_limit"
     },
     "opencode/gpt-6.1-sol#high": {
       "model": "opencode/gpt-6.1-sol#high",
@@ -54,7 +73,8 @@
     "opencode-go/deepseek-v4.1-flash": {
       "model": "opencode-go/deepseek-v4.1-flash",
       "failStreak": 0,
-      "quarantineUntil": ""
+      "quarantineUntil": "",
+      "lastOkAt": "2026-11-09T14:03:21Z"
     },
     "opencode-go/glm-5.3": {
       "model": "opencode-go/glm-5.3",
