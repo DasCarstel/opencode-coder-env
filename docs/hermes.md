@@ -519,7 +519,11 @@ Historie: `12` (bis 2026-11-06, zu knapp für Hintergrund-Recherchen), `60` (kur
 Zwischenstufe), dann `null`.
 
 Diese Einstellung gilt **nur fürs Default-Profil**. Das Profil `kleve` hat einen
-eigenen, davon unabhängigen Stand — siehe [Profile](#profile).
+eigenen Stand: seit 2026-11-10 **`max_turns: 40`** (versioniert in der SOT,
+`profiles.kleve.agent.max_turns`). Vorher galt dort der Hermes-Default `16` —
+der riss am 2026-11-10 zwei laufende Kleve-Turns ab („Reached maximum
+iterations (16)"), weil der Agent seine HA-Werkzeuge nicht fand und im
+Dateisystem suchte. Siehe [Profile](#profile).
 
 ## Profile
 
@@ -539,26 +543,64 @@ Containers.
 [`hermes/SOUL.md`](../hermes/SOUL.md) fürs Default-Profil — nirgends im Repo
 gespiegelt. Deploy und Apply stellen sie nicht wieder her.
 
-### Keine Vererbung des `agent`-Blocks
+### Vererbung des `agent`-Blocks (seit 2026-11-10)
 
-Ein Profil erbt den `agent`-Block des Default-Profils **nicht**. Nachweis
-(2026-11-07): `hermes --profile kleve config get agent.reasoning_effort` →
-`Config key not set`, obwohl das Default-Profil `low` setzt;
-`agent.api_max_retries` liefert `3` (Hermes-Default) statt `2`.
+Bis 2026-11-09 galt: Ein Profil erbt den `agent`-Block des Default-Profils
+**nicht** (Nachweis 2026-11-07: `hermes --profile kleve config get
+agent.reasoning_effort` → `Config key not set`), und die Apply-Kette fasste
+einen `agent`-Block im Profil nicht an.
 
-Für `agent.max_turns` gilt im Profil damit der **Hermes-Default `None`** —
-unbegrenzt. Die `12`, die bis 2026-11-06 im Default-Profil stand, hat dort nie
-gewirkt. Das ist bewusst so geblieben: das Profil hat zwar keinen
-Async-Wrapper vor sich, aber auch nur zwei Toolsets, und ein Limit würde
-lediglich Antworten abschneiden.
+Seit 2026-11-10 gilt: Ein Profil kann in der SOT einen **eigenen** `agent`-Block
+bekommen (`profiles.<name>.agent`). `apply-hermes.sh` merged diesen Block in die
+Profil-`config.yaml` — aber **nur** für Profile, die in der SOT einen eigenen
+Block definieren. Profile ohne eigenen Block bleiben unverändert, und das
+Top-Level-`agent` des Default-Profils wird nicht in Profile hineingemischt.
 
 ### Was die Apply-Kette für Profile tut
 
-`apply-hermes.sh` schreibt je Profil ausschließlich `model.provider`,
-`model.default`, `fallback_providers` und den `.env`-Pool. Ein `agent`-Block im
-Profil wird **nicht** angefasst: er überlebt einen Apply, bleibt aber
-unversioniert. Sollen Profile eigene Agent-Grenzen bekommen, muss das erst in
-der SOT und im Skript ergänzt werden.
+`apply-hermes.sh` schreibt je Profil `model.provider`, `model.default`,
+`fallback_providers`, den `.env`-Pool, `auxiliary` (Vision) und — seit
+2026-11-10 — einen in der SOT definierten Profil-`agent`-Block. Alles andere im
+Profil bleibt unangetastet: ein handgesetzter Wert überlebt einen Apply, ist
+aber **nicht versioniert**. Die Profil-Dateien liegen im Volume und werden bei
+Volume-Verlust nicht wieder hergestellt.
+
+## Vorfall 2026-11-10: Open WebUI bekam keine Antwort
+
+**Symptom:** Open WebUI (Profil `kleve`) zeigte eine Zusage, danach kam nie eine
+Antwort. Zwei Kleve-Anfragen (15:54 „Heizung auf 25 Grad", 16:02 „Fensterkontakt
+entfernen") endeten mit **leerer Assistant-Nachricht** in der `state.db`.
+
+**Ursachenkette (vier Defekte):**
+
+1. **Namenskollision** `skills/space-matrix` + `skills/space-matrix.rollback-broken`
+   (Letzteres gehörte `root:root`). Der Skill-Loader verweigert bei Mehrdeutigkeit
+   („Ambiguous skill name"), damit war der Facharbeiter-Pfad (OpenCode-Delegation) tot.
+2. **Rechte:** `skill_manage`/`patch` lief als uid 0 ohne `CAP_DAC_OVERRIDE` →
+   `EACCES` auf `10000:10000`-Verzeichnissen. Jede Selbst-Reparatur scheiterte und
+   fraß Iterationen.
+3. **`agent.max_turns` war im Kleve-Profil nicht gesetzt** → Hermes-Default `16`.
+   Beide betroffenen Turns starben mit „Reached maximum iterations (16)".
+4. **`profiles/kleve/SOUL.md` versprach „Der Facharbeiter meldet sich von allein
+   wieder"** — für API-Clients unerfüllbar: Open WebUI hält nur den einen
+   Request offen, es gibt keinen Push-Kanal. Nur der Assist-Pfad hat über
+   `hermes_async.py` (im HA) eine 8-s-Quittung und ein `max_runtime` von 1800 s.
+
+**Behoben (Commit `d7c7ac8`):** Kollision ausgeschieden, Rechte auf
+`10000:10000`, `max_turns: 40` fürs Kleve-Profil (versioniert), falsche Zusage in
+beiden SOUL-Dateien ersetzt durch „im Gespräch dranbleiben und am Ende liefern".
+
+**Nicht geändert:** `providers.opencode-go`-Timeouts (15 s/12 s). Die
+Broken-pipe-Abbrüche im Log sind Upstream-Abbrüche (HTTP 200, Stream floss
+97 s, kein `finish_reason`) und keine Timeout-Treffer; die engen Thresholds sind
+bewusst für Voice getunt (SOT-Kommentar 2026-10-21/23).
+
+**Verifiziert 2026-11-10 (per API, wie Open WebUI es sendet):** Direkte
+HA-Frage, Delegation an OpenCode, Rückfrage von OpenCode (kommt als normale
+Chat-Nachricht mit Optionen, Turn endet sauber mit `finish_reason: stop`) und
+die Antwort des Nutzers zurück an OpenCode — alles funktional. Beachte: Die
+Kleve-MCP-Verbindung exponiert **keine** Automation-Entities, Hermes kann also
+weder Automationen lesen noch anlegen.
 
 ## Persistentes Gedächtnis (Memory-Slots)
 
