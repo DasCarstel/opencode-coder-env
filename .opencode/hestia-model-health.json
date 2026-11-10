@@ -1,11 +1,10 @@
 {
-  "updatedAt": "2026-11-10T20:34:55Z",
+  "updatedAt": "2026-11-10T23:35:34Z",
   "tiers": {
     "fast": {
       "model": "opencode-go/deepseek-v4.1-flash",
       "ok": true,
       "failStreak": 0,
-      "lastOkAt": "2026-11-10T20:34:19Z",
       "paidUntil": 1794355912.4205961,
       "primaryModel": "opencode/deepseek-v4.1-flash-free",
       "primaryVariant": "",
@@ -16,7 +15,6 @@
       "model": "opencode-go/glm-5.3-flash",
       "ok": true,
       "failStreak": 0,
-      "lastOkAt": "2026-11-10T20:34:20Z",
       "paidUntil": 1794355920.2076976,
       "primaryModel": "opencode/glm-5.3-flash-free",
       "primaryVariant": "",
@@ -25,11 +23,9 @@
     },
     "heavy": {
       "model": "opencode-go/qwen3.8-max#xhigh",
-      "ok": false,
-      "failStreak": 5,
-      "lastFailAt": "2026-11-10T20:34:55Z",
-      "lastFailureKind": "outage",
-      "quarantineUntil": "2026-11-11T02:34:55Z",
+      "ok": true,
+      "failStreak": 0,
+      "lastOkAt": "2026-11-10T23:35:34Z",
       "primaryModel": "opencode-go/glm-5.3",
       "primaryVariant": "high",
       "paidReason": "other",
@@ -45,8 +41,7 @@
     "opencode-go/glm-5.3-flash": {
       "model": "opencode-go/glm-5.3-flash",
       "failStreak": 0,
-      "quarantineUntil": "",
-      "lastOkAt": "2026-11-10T20:34:20Z"
+      "quarantineUntil": ""
     },
     "opencode-go/glm-5.3#max": {
       "model": "opencode-go/glm-5.3#max",
@@ -77,8 +72,7 @@
     "opencode-go/deepseek-v4.1-flash": {
       "model": "opencode-go/deepseek-v4.1-flash",
       "failStreak": 0,
-      "quarantineUntil": "",
-      "lastOkAt": "2026-11-10T20:34:19Z"
+      "quarantineUntil": ""
     },
     "opencode-go/glm-5.3": {
       "model": "opencode-go/glm-5.3",
@@ -90,10 +84,9 @@
     },
     "opencode-go/qwen3.8-max#xhigh": {
       "model": "opencode-go/qwen3.8-max#xhigh",
-      "failStreak": 5,
-      "quarantineUntil": "2026-11-11T02:34:55Z",
-      "lastFailAt": "2026-11-10T20:34:55Z",
-      "lastFailureKind": "outage"
+      "failStreak": 0,
+      "quarantineUntil": "",
+      "lastOkAt": "2026-11-10T23:35:34Z"
     },
     "opencode-go/glm-5.3#xhigh": {
       "model": "opencode-go/glm-5.3#xhigh",
