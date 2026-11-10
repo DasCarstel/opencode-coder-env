@@ -57,6 +57,12 @@
       "pool": {
         "followActive": true,
         "onlyActiveWhenExpiring": false
+      },
+      // 2026-11-10: Hermes-Default 16 Turns riss laufende Facharbeiter-Turns ab
+      // (Log 15:57/16:12 "Reached maximum iterations (16)"), Open WebUI bekam
+      // keine Antwort. Profilblock wird von apply-hermes.sh je Profil gemerged.
+      "agent": {
+        "max_turns": 40
       }
     }
   },

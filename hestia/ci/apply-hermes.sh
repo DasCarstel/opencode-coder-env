@@ -151,6 +151,9 @@ for name, prof in (cfg.get("profiles") or {}).items():
             pool_p.get("onlyActiveWhenExpiring") if "onlyActiveWhenExpiring" in pool_p
             else pool_top.get("onlyActiveWhenExpiring")
         ) else "false",
+        # Profil-eigener agent-Block (z. B. max_turns) — nur Profile mit
+        # eigenem Block bekommen einen Merge, das Top-Level-agent bleibt unangetastet.
+        "agent": prof["agent"] if isinstance(prof.get("agent"), dict) and prof.get("agent") else {},
     })
 
 print("\t".join([
@@ -1000,6 +1003,21 @@ print(json.dumps(patch, separators=(",", ":")))
 PY
 )"
 
+# agent-Block je Profil aus der SOT (z. B. profiles.kleve.agent.max_turns).
+# Wird nur in Profile gemerged, die in der SOT einen eigenen agent-Block
+# haben — das Top-Level-agent (Default-Profil) bleibt unangetastet.
+PROFILE_AGENT_MAP="$(python3 - "$PROFILES_JSON" <<'PY'
+import json, sys
+try:
+    rows = json.loads(sys.argv[1])
+except Exception:
+    rows = []
+out = {p["name"]: p.get("agent") for p in rows
+       if isinstance(p, dict) and isinstance(p.get("agent"), dict) and p.get("agent")}
+print(json.dumps(out, separators=(",", ":")))
+PY
+)"
+
 # SOT-Zeile (Name + geerbte Felder) für einen Profilnamen; leer, wenn die SOT
 # das Profil nicht (mehr) definiert.
 sot_profile_row() {
@@ -1049,6 +1067,24 @@ for P_NAME in $KNOWN; do
   # auxiliary (Vision) — in jedes Profil, unabhängig von der SOT.
   if [[ "$VISION_PATCH" != "{}" ]]; then
     adv_merge_into "$P_CONFIG" "$P_NAME" "$WORK/aux-patch.json" >/dev/null || true
+  fi
+
+  # agent (z. B. max_turns) — nur wenn die SOT für DIESES Profil einen Block hat.
+  P_AGENT_PATCH="$(python3 - "$PROFILE_AGENT_MAP" "$P_NAME" <<'PY'
+import json, sys
+try:
+    m = json.loads(sys.argv[1])
+    a = m.get(sys.argv[2])
+except Exception:
+    a = None
+print(json.dumps({"agent": a}, separators=(",", ":"))
+      if isinstance(a, dict) and a else "{}")
+PY
+)"
+  if [[ "$P_AGENT_PATCH" != "{}" ]]; then
+    printf '%s' "$P_AGENT_PATCH" >"$WORK/agent-patch.$P_NAME.json"
+    adv_merge_into "$P_CONFIG" "$P_NAME" "$WORK/agent-patch.$P_NAME.json" >/dev/null || true
+    echo "  → [$P_NAME] agent aus SOT gemerged"
   fi
 
   read -r P_NAME P_PRIMARY_PROVIDER P_PRIMARY_MODEL P_FB_JSON P_POOL_FOLLOW P_POOL_ONLY \
