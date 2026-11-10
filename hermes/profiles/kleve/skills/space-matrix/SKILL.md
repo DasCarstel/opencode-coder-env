@@ -64,7 +64,9 @@ Kommt die Antwort als **neue Nachricht** (naechster Turn, z. B. in Open WebUI): 
    curl -s -u "opencode:$P" "$OC/api/session/<sid>/form"
    Die Session mit offenem Formular (frm_...) und passendem Thema ist die richtige.
 2) Formular-Reply dorthin (Kommando oben), weiter bei 2 des Musters 1.
-3) Nur wenn es KEINE Session mit offenem Formular gibt: $DISPATCH mit demselben Auftrag wortgetreu erneut aufrufen - und den Titel Zeichen fuer Zeichen wie beim ersten Mal bauen (STATUS=reused/adopted liefert die bestehende SID). Ein anderer Kurz-Titel erzeugt eine zweite Session, und die Antwort geht verloren.
+3) Nur wenn es KEINE Session mit offenem Formular gibt: **Fortsetzen mit `--sid` — und NUR die Antwort senden, niemals den ganzen Auftrag wiederholen:**
+   `$DISPATCH --sid <sid> --title "<exakt derselbe Titel wie beim ersten Mal>" --text "Antwort des Vaters auf deine Rueckfrage: <nur die Antwort, ohne den Auftrag zu wiederholen>"`
+   `--sid` setzt STATUS=explicit und trifft dieselbe Session; ihr Verlauf (Auftrag + Rueckfrage) bleibt voll erhalten. Den Auftrag wortgetreu erneut zu feuern erzeugt dagegen ein Duplikat in der Session und sieht fuer den Vater wie eine neue Session aus - verboten. Ein anderer Kurz-Titel oder `--sid` zu vergessen erzeugt eine zweite Session, und die Antwort geht verloren.
 
 **Muster 3 — Status („Was läuft?")**
 
