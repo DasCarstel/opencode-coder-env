@@ -602,6 +602,34 @@ die Antwort des Nutzers zurück an OpenCode — alles funktional. Beachte: Die
 Kleve-MCP-Verbindung exponiert **keine** Automation-Entities, Hermes kann also
 weder Automationen lesen noch anlegen.
 
+### Nachtrag: Session-Bruch bei der Antwort auf eine Rückfrage
+
+Beim Selbsttest über Open WebUI zeigte sich ein zweiter, unabhängiger Defekt:
+Antwortete der Nutzer auf eine Facharbeiter-Rückfrage, legte der Dispatch eine
+**neue** OpenCode-Session an statt die bestehende fortzuführen (im Log
+`STATUS=new` statt `adopted`; Titel „H: Abendlicht-Automation 20261110-1718"
+vs. „H: Kueche Licht aus 22:30 20261110-1719"). Der Nutzer sah damit zwei
+getrennte Gespräche und keine Fortsetzung.
+
+**Wurzel:** `oc-dispatch.py` dedupliziert über `task_key(directory, Auftrags-Text)`
+und `adopt_existing` per Titelvergleich. Beide Schlüssel stammen aus dem
+Auftragstext, den der Agent im Antwort-Turn paraphrasiert — der Vergleich griff
+daher nicht.
+
+**Behoben (deterministisch, nicht prompt-basiert), 2026-11-10:**
+`oc-dispatch.py` prüft vor dem Anlegen einer neuen Session, ob im selben
+Verzeichnis genau eine Session ein **offenes Formular** hat
+(`GET /api/session/<sid>/form`) und übernimmt genau diese. Bei null oder
+mehreren Kandidaten wird bewusst nichts adoptiert. Zusätzlich verschärft:
+`profiles/kleve/skills/space-matrix/SKILL.md` verbietet das Anlegen einer neuen
+Session bei einer Antwort als neue Nachricht. **Beide Dateien liegen im Volume
+und sind nicht versioniert** — bei Volume-Verlust erneut einzuspielen
+(Backup: `oc-dispatch.py.bak-formfix-20261110-172202`).
+
+**Verifiziert:** Turn 1 (Rückfrage kommt an, `finish_reason: stop`) → Turn 2
+(Antwort des Nutzers) läuft in **derselben** Session, es entsteht keine neue;
+OpenCode führt echte HA-Lesezugriffe durch und legt nichts an.
+
 ### Nachschub 2026-11-10 (abends): Antwort startete neue OpenCode-Session
 
 Selbsttest des Nutzers zeigte eine zweite Schwäche: Die Rückfrage des
