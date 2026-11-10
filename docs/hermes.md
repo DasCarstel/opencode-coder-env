@@ -630,6 +630,15 @@ und sind nicht versioniert** — bei Volume-Verlust erneut einzuspielen
 (Antwort des Nutzers) läuft in **derselben** Session, es entsteht keine neue;
 OpenCode führt echte HA-Lesezugriffe durch und legt nichts an.
 
+**Versionierung (2026-11-10):** Beide Volume-Dateien sind jetzt im Repo
+gespiegelt — `hermes/bin/oc-dispatch.py` und
+`hermes/profiles/kleve/skills/space-matrix/SKILL.md`. Nach einem
+Volume-Verlust oder einem frischen Volume stellt
+`hermes/restore-volume-overrides.sh` sie wieder her (Aufruf auf dem
+Coder-Host, inkl. `chown 10000:10000`, Modus und `py_compile`-Prüfung).
+Die Spiegel sind Momentaufnahmen: ändert sich die Volume-Fassung, muss der
+Spiegel neu eingesammelt werden.
+
 ### Nachschub 2026-11-10 (abends): Antwort startete neue OpenCode-Session
 
 Selbsttest des Nutzers zeigte eine zweite Schwäche: Die Rückfrage des
