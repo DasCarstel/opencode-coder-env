@@ -602,6 +602,29 @@ die Antwort des Nutzers zurück an OpenCode — alles funktional. Beachte: Die
 Kleve-MCP-Verbindung exponiert **keine** Automation-Entities, Hermes kann also
 weder Automationen lesen noch anlegen.
 
+### Nachschub 2026-11-10 (abends): Antwort startete neue OpenCode-Session
+
+Selbsttest des Nutzers zeigte eine zweite Schwäche: Die Rückfrage des
+Facharbeiters kam im Open WebUI-Chat an, aber die **Antwort des Nutzers** legte
+eine **neue OpenCode-Session** an statt die offene fortzuführen. Auf
+Hermes-Ebene war alles korrekt — beide Nachrichten lagen in derselben
+Session. Der `oc-dispatch`-Log sagte jedoch „Session … **angelegt**", nicht
+`reused`/`adopted`.
+
+Grund: Das Dedup von `oc-dispatch.py` läuft über den Session-**Titel**
+(`titles_match`, Zeitstempel wird zwar normalisiert, der Kurz-Titel muss aber
+zeichengetreu passen). Beim zweiten Feuern baute der Agent einen leicht
+anderen Kurz-Titel → keine Adoption → zweite Session, die Antwort ging ins
+Leere.
+
+**Behoben:** `profiles/kleve/skills/space-matrix/SKILL.md`, Muster 2 verschärft
+(Backup `SKILL.md.bak-formfix-*`): Bei einer Antwort als neue Nachricht
+**niemals** eine neue Session anlegen — zuerst `/api/session/active` und
+`…/<sid>/form` auf das offene Formular prüfen und dorthin replien; erst wenn
+keine Session mit offenem Formular existiert, `$DISPATCH` mit demselben Auftrag
+wortgetreu und mit zeichengetreuem Titel erneut feuern. Der Skill liegt im
+Volume und ist **nicht versioniert** (siehe [Profile](#profile)).
+
 ## Persistentes Gedächtnis (Memory-Slots)
 
 Hermes hat ein eingebautes Gedächtnis, das **nicht** in einer Notiz liegt,
