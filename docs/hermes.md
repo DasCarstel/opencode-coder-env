@@ -630,6 +630,19 @@ und sind nicht versioniert** — bei Volume-Verlust erneut einzuspielen
 (Antwort des Nutzers) läuft in **derselben** Session, es entsteht keine neue;
 OpenCode führt echte HA-Lesezugriffe durch und legt nichts an.
 
+**Verfeinert (2026-11-10):** Der erste Ansatz feuerte im Antwort-Turn den Auftrag
+wortgetreu erneut — der Session-Verlauf blieb zwar erhalten (dieselbe Session,
+volle Historie), aber der Auftragstext stand doppelt in der Session und sah für
+den Nutzer wie „gelöscht und neu angelegt" aus. Muster 2, Schritt 3, schreibt
+jetzt vor: Fortsetzung über `--sid` (STATUS=explicit) und **nur die Antwort**
+senden, klar als „Antwort des Vaters auf deine Rückfrage" markiert — nie der
+Auftrag nochmal.
+
+Zum Form-Reply-Endpunkt (`POST …/form/<formID>/reply`): Er greift nur, solange
+OpenCode auf die Antwort blockiert. Hat der Run die Frage bereits als Ausgabe
+beendet, liefert `GET …/form` ein leeres Array — dann bleibt nur der Weg über
+`--sid`. Beide Fälle sind abgedeckt.
+
 **Versionierung (2026-11-10):** Beide Volume-Dateien sind jetzt im Repo
 gespiegelt — `hermes/bin/oc-dispatch.py` und
 `hermes/profiles/kleve/skills/space-matrix/SKILL.md`. Nach einem
