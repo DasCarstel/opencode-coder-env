@@ -1,29 +1,25 @@
 {
-  "updatedAt": "2026-11-11T07:45:51Z",
+  "updatedAt": "2026-11-11T08:36:58Z",
   "tiers": {
     "fast": {
       "model": "opencode-go/deepseek-v4.1-flash",
       "ok": true,
       "failStreak": 0,
-      "lastOkAt": "2026-11-11T07:45:51Z",
-      "swappedAt": "2026-11-11T07:45:51Z",
+      "paidUntil": 1794442311.8959777,
       "primaryModel": "opencode/deepseek-v4.1-flash-free",
       "primaryVariant": "",
       "paidReason": "free_limit",
-      "quarantineUntil": "",
-      "paidUntil": 1794442311.8959777
+      "swappedAt": "2026-11-11T07:45:51Z"
     },
     "medium": {
       "model": "opencode-go/glm-5.3-flash",
       "ok": true,
       "failStreak": 0,
-      "lastOkAt": "2026-11-11T07:45:02Z",
-      "swappedAt": "2026-11-11T07:45:02Z",
+      "paidUntil": 1794442318.7010653,
       "primaryModel": "opencode/glm-5.3-flash-free",
       "primaryVariant": "",
       "paidReason": "free_limit",
-      "quarantineUntil": "",
-      "paidUntil": 1794442318.7010653
+      "swappedAt": "2026-11-11T07:45:02Z"
     },
     "heavy": {
       "model": "opencode-go/qwen3.8-max#xhigh",
@@ -44,8 +40,7 @@
     "opencode-go/glm-5.3-flash": {
       "model": "opencode-go/glm-5.3-flash",
       "failStreak": 0,
-      "quarantineUntil": "",
-      "lastOkAt": "2026-11-11T07:45:02Z"
+      "quarantineUntil": ""
     },
     "opencode-go/glm-5.3#max": {
       "model": "opencode-go/glm-5.3#max",
@@ -76,8 +71,7 @@
     "opencode-go/deepseek-v4.1-flash": {
       "model": "opencode-go/deepseek-v4.1-flash",
       "failStreak": 0,
-      "quarantineUntil": "",
-      "lastOkAt": "2026-11-11T07:45:51Z"
+      "quarantineUntil": ""
     },
     "opencode-go/glm-5.3": {
       "model": "opencode-go/glm-5.3",
