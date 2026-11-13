@@ -1,19 +1,15 @@
 {
-  "updatedAt": "2026-11-13T00:12:35Z",
+  "updatedAt": "2026-11-13T01:24:49Z",
   "tiers": {
     "fast": {
       "model": "opencode/deepseek-v4.1-flash-free",
       "ok": true,
-      "failStreak": 0,
-      "lastOkAt": "2026-11-13T00:12:32Z",
-      "returnedAt": "2026-11-13T00:12:32Z"
+      "failStreak": 0
     },
     "medium": {
       "model": "opencode/glm-5.3-flash-free",
       "ok": true,
-      "failStreak": 0,
-      "lastOkAt": "2026-11-13T00:12:35Z",
-      "returnedAt": "2026-11-13T00:12:35Z"
+      "failStreak": 0
     },
     "heavy": {
       "model": "opencode-go/qwen3.8-max#xhigh",
@@ -44,14 +40,12 @@
     "opencode/deepseek-v4.1-flash-free": {
       "model": "opencode/deepseek-v4.1-flash-free",
       "failStreak": 0,
-      "quarantineUntil": "",
-      "lastOkAt": "2026-11-13T00:12:32Z"
+      "quarantineUntil": ""
     },
     "opencode/glm-5.3-flash-free": {
       "model": "opencode/glm-5.3-flash-free",
       "failStreak": 0,
-      "quarantineUntil": "",
-      "lastOkAt": "2026-11-13T00:12:35Z"
+      "quarantineUntil": ""
     },
     "opencode/gpt-6.1-sol#high": {
       "model": "opencode/gpt-6.1-sol#high",
