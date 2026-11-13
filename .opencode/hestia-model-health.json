@@ -1,24 +1,33 @@
 {
-  "updatedAt": "2026-11-13T01:24:49Z",
+  "updatedAt": "2026-11-13T18:53:52Z",
   "tiers": {
     "fast": {
       "model": "opencode/deepseek-v4.1-flash-free",
-      "ok": true,
-      "failStreak": 0
+      "ok": false,
+      "failStreak": 1,
+      "lastFailAt": "2026-11-13T18:53:52Z",
+      "lastFailureKind": "outage",
+      "quarantineUntil": ""
     },
     "medium": {
       "model": "opencode/glm-5.3-flash-free",
-      "ok": true,
-      "failStreak": 0
+      "ok": false,
+      "failStreak": 1,
+      "lastFailAt": "2026-11-13T18:53:52Z",
+      "lastFailureKind": "outage",
+      "quarantineUntil": ""
     },
     "heavy": {
       "model": "opencode-go/qwen3.8-max#xhigh",
-      "ok": true,
-      "failStreak": 0,
+      "ok": false,
+      "failStreak": 1,
       "primaryModel": "opencode-go/glm-5.3",
       "primaryVariant": "high",
       "paidReason": "other",
-      "swappedAt": "2026-11-09T18:51:03Z"
+      "swappedAt": "2026-11-09T18:51:03Z",
+      "lastFailAt": "2026-11-13T18:53:52Z",
+      "lastFailureKind": "outage",
+      "quarantineUntil": ""
     }
   },
   "models": {
@@ -39,13 +48,17 @@
     },
     "opencode/deepseek-v4.1-flash-free": {
       "model": "opencode/deepseek-v4.1-flash-free",
-      "failStreak": 0,
-      "quarantineUntil": ""
+      "failStreak": 1,
+      "quarantineUntil": "",
+      "lastFailAt": "2026-11-13T18:53:52Z",
+      "lastFailureKind": "outage"
     },
     "opencode/glm-5.3-flash-free": {
       "model": "opencode/glm-5.3-flash-free",
-      "failStreak": 0,
-      "quarantineUntil": ""
+      "failStreak": 1,
+      "quarantineUntil": "",
+      "lastFailAt": "2026-11-13T18:53:52Z",
+      "lastFailureKind": "outage"
     },
     "opencode/gpt-6.1-sol#high": {
       "model": "opencode/gpt-6.1-sol#high",
@@ -69,8 +82,10 @@
     },
     "opencode-go/qwen3.8-max#xhigh": {
       "model": "opencode-go/qwen3.8-max#xhigh",
-      "failStreak": 0,
-      "quarantineUntil": ""
+      "failStreak": 1,
+      "quarantineUntil": "",
+      "lastFailAt": "2026-11-13T18:53:52Z",
+      "lastFailureKind": "outage"
     },
     "opencode-go/glm-5.3#xhigh": {
       "model": "opencode-go/glm-5.3#xhigh",
