@@ -25,7 +25,7 @@
         ]
       },
       "medium": {
-        "model": "opencode/glm-5.3-flash-free",
+        "model": "opencode-go/glm-5.3-flash",
         "costRatio": 5,
         "description": "GLM 5.3 Flash für Implementation, Refactoring und Tests",
         "steps": 50,
