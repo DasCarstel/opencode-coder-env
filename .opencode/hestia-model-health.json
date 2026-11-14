@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-11-13T22:27:15Z",
+  "updatedAt": "2026-11-14T16:29:39Z",
   "tiers": {
     "fast": {
       "model": "opencode-go/deepseek-v4.1-flash",
@@ -21,8 +21,11 @@
     },
     "heavy": {
       "model": "opencode-go/qwen3.8-max#xhigh",
-      "ok": true,
-      "failStreak": 0,
+      "ok": false,
+      "failStreak": 1,
+      "lastFailAt": "2026-11-14T16:29:39Z",
+      "lastFailureKind": "outage",
+      "quarantineUntil": "",
       "primaryModel": "opencode-go/glm-5.3",
       "primaryVariant": "high",
       "paidReason": "other",
@@ -81,8 +84,10 @@
     },
     "opencode-go/qwen3.8-max#xhigh": {
       "model": "opencode-go/qwen3.8-max#xhigh",
-      "failStreak": 0,
-      "quarantineUntil": ""
+      "failStreak": 1,
+      "quarantineUntil": "",
+      "lastFailAt": "2026-11-14T16:29:39Z",
+      "lastFailureKind": "outage"
     },
     "opencode-go/glm-5.3#xhigh": {
       "model": "opencode-go/glm-5.3#xhigh",
