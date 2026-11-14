@@ -1,37 +1,31 @@
 {
-  "updatedAt": "2026-11-14T18:54:19Z",
+  "updatedAt": "2026-11-14T19:30:00Z",
   "tiers": {
     "fast": {
       "model": "opencode-go/deepseek-v4.1-flash",
-      "ok": false,
+      "ok": true,
       "failStreak": 0,
+      "lastOkAt": "2026-11-14T19:29:52Z",
       "primaryModel": "opencode/deepseek-v4.1-flash-free",
       "primaryVariant": "",
       "paidReason": "other",
-      "swappedAt": "2026-11-13T18:53:59Z",
-      "lastFailAt": "2026-11-14T18:54:19Z",
-      "lastFailureKind": "outage",
-      "quarantineUntil": ""
+      "swappedAt": "2026-11-13T18:53:59Z"
     },
     "medium": {
       "model": "opencode-go/glm-5.3-flash",
-      "ok": false,
+      "ok": true,
       "failStreak": 0,
+      "lastOkAt": "2026-11-14T19:29:54Z",
       "primaryModel": "opencode/glm-5.3-flash-free",
       "primaryVariant": "",
       "paidReason": "other",
-      "swappedAt": "2026-11-13T18:54:02Z",
-      "lastFailAt": "2026-11-14T18:54:19Z",
-      "lastFailureKind": "outage",
-      "quarantineUntil": ""
+      "swappedAt": "2026-11-13T18:54:02Z"
     },
     "heavy": {
       "model": "opencode-go/qwen3.8-max#xhigh",
-      "ok": false,
+      "ok": true,
       "failStreak": 0,
-      "lastFailAt": "2026-11-14T18:54:19Z",
-      "lastFailureKind": "outage",
-      "quarantineUntil": "",
+      "lastOkAt": "2026-11-14T19:30:00Z",
       "primaryModel": "opencode-go/glm-5.3",
       "primaryVariant": "high",
       "paidReason": "other",
@@ -46,10 +40,9 @@
     },
     "opencode-go/glm-5.3-flash": {
       "model": "opencode-go/glm-5.3-flash",
-      "failStreak": 4,
+      "failStreak": 0,
       "quarantineUntil": "",
-      "lastFailAt": "2026-11-14T18:54:19Z",
-      "lastFailureKind": "outage"
+      "lastOkAt": "2026-11-14T19:29:54Z"
     },
     "opencode-go/glm-5.3#max": {
       "model": "opencode-go/glm-5.3#max",
@@ -79,10 +72,9 @@
     },
     "opencode-go/deepseek-v4.1-flash": {
       "model": "opencode-go/deepseek-v4.1-flash",
-      "failStreak": 4,
+      "failStreak": 0,
       "quarantineUntil": "",
-      "lastFailAt": "2026-11-14T18:54:19Z",
-      "lastFailureKind": "outage"
+      "lastOkAt": "2026-11-14T19:29:52Z"
     },
     "opencode-go/glm-5.3": {
       "model": "opencode-go/glm-5.3",
@@ -94,10 +86,9 @@
     },
     "opencode-go/qwen3.8-max#xhigh": {
       "model": "opencode-go/qwen3.8-max#xhigh",
-      "failStreak": 5,
+      "failStreak": 0,
       "quarantineUntil": "",
-      "lastFailAt": "2026-11-14T18:54:19Z",
-      "lastFailureKind": "outage"
+      "lastOkAt": "2026-11-14T19:30:00Z"
     },
     "opencode-go/glm-5.3#xhigh": {
       "model": "opencode-go/glm-5.3#xhigh",
