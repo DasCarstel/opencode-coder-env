@@ -203,6 +203,27 @@ path \"secret/metadata/mcp/super-productivity\" { capabilities = [\"list\",\"rea
     ;;
 esac
 
+# Nachtrag: openGym-MCP. Idempotent wie der super-productivity-Nachtrag oben.
+_cur_policy=$(curl -sS -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+  "${OPENBAO_ADDR}/v1/sys/policies/acl/mcp-server-general" 2>/dev/null | \
+  python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('policy',''))" 2>/dev/null || echo "")
+case "$_cur_policy" in
+  *mcp/opengym*) ;;
+  "")
+    echo "  ⚠ Policy mcp-server-general nicht lesbar – openGym-Nachtrag übersprungen"
+    ;;
+  *)
+    _new_policy="${_cur_policy}
+path \"secret/data/mcp/opengym\" { capabilities = [\"read\"] }
+path \"secret/metadata/mcp/opengym\" { capabilities = [\"list\",\"read\"] }"
+    python3 -c 'import json,sys; print(json.dumps({"policy": sys.stdin.read()}))' <<< "$_new_policy" | \
+      curl -sS -X PUT -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+        -H "Content-Type: application/json" --data-binary @- \
+        "${OPENBAO_ADDR}/v1/sys/policies/acl/mcp-server-general" >/dev/null 2>&1
+    echo "  ✓ Policy mcp-server-general um opengym ergänzt"
+    ;;
+esac
+
 # ─── Policy: mcp-server-uni (Least Privilege für den uni-Space) ─────────────
 
 echo ""

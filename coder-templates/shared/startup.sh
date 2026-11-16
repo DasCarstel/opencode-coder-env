@@ -406,6 +406,8 @@ case "$PROFILE" in
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_private_token" "OCIS_PRIVATE_TOKEN"
     # Super-Productivity-MCP (Remote-HTTP, Bearer-Token)
     read_secret "secret/data/mcp/super-productivity" "token" "SP_MCP_TOKEN"
+    # openGym-MCP (Remote-HTTP, Bearer-Token, https://gym.mueller-nas.de/mcp)
+    read_secret "secret/data/mcp/opengym" "API_TOKEN" "OPENGYM_MCP_TOKEN"
     ;;
   muellerconnect)
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_muellerconnect_user"  "OCIS_MUELLERCONNECT_USER"
