@@ -121,6 +121,22 @@ npm_chain() {
     npm uninstall -g @opencode-ai/opencode 2>/dev/null || true
     rm -f /usr/bin/opencode
     npm install -g @opencode/cli 2>&1 | tail -3
+    # Fallback (General-Vorfall 2026-11-17): Ohne laufende npm-Postinstall-Scripts
+    # bleibt bin/opencode.exe ein 229-Byte-Stub. Dann das Plattform-Paket direkt
+    # installieren und das echte ELF an die erwartete Stelle kopieren.
+    if ! opencode --version >/dev/null 2>&1; then
+      echo "  → OpenCode-Binary fehlt (npm-Postinstall ohne Wirkung) → @opencode/cli-linux-x64 direkt installieren ..."
+      npm install -g @opencode/cli-linux-x64 2>&1 | tail -1 || true
+      p=/usr/lib/node_modules/@opencode/cli-linux-x64/bin/opencode
+      if [ -f "$p" ] && [ "$(stat -c %s "$p" 2>/dev/null || echo 0)" -gt 1000000 ]; then
+        cp -f "$p" /usr/lib/node_modules/@opencode/cli/bin/opencode.exe
+        ln -sf ../lib/node_modules/@opencode/cli/bin/opencode.exe /usr/bin/opencode
+        chmod +x /usr/bin/opencode
+        echo "  → echtes Binary wiederhergestellt ($(stat -c %s "$p") bytes)"
+      else
+        echo "  ⚠ auch das Plattform-Paket lieferte kein Binary"
+      fi
+    fi
     got=$(opencode --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
     if [ -n "$got" ]; then
       echo "  ✓ OpenCode: $(opencode --version 2>&1)"
