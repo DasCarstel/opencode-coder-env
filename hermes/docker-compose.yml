@@ -35,6 +35,10 @@ services:
       # Kaufhistorie. Muster wie SOUL.md - die versionierte Fassung legt sich
       # ueber den Ordner-Mount /etc/docker/hermes/data.
       - /opt/docker-compose/hermes/skills/picnic-gewohnheiten:/opt/data/skills/shopping/picnic-gewohnheiten
+      # Skill "bons" aus dem Repo: Kassenbon-Workflow. Muster wie
+      # picnic-gewohnheiten - die versionierte Fassung legt sich ueber den
+      # Ordner-Mount /etc/docker/hermes/data.
+      - /opt/docker-compose/hermes/skills/bons:/opt/data/skills/bons
     environment:
       HERMES_DASHBOARD: "1"
     command: ["hermes"]

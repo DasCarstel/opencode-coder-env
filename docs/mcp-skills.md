@@ -63,6 +63,7 @@ aktiv, ab `compress.maxContextLimit` verstärkt; zusätzlich räumen die Strateg
 | `super-productivity` | remote | `https://mcp-superproductivity.mueller-nas.de/mcp` — `ghcr.io/samuelb/superproductivity-sync-mcp:0.2.0` auf CT 100 (liest/schreibt die WebDAV-Sync-Datei) | `Authorization: Bearer {env:SP_MCP_TOKEN}` (OpenBao `secret/data/mcp/super-productivity`) | general, Hermes (manuell in `config.yaml`) |
 | `spotify` | local (stdio) | `marcelmarais/spotify-mcp-server`, gebaut aus gepinntem Commit im Hermes-Dockerfile (`/opt/spotify-mcp/build/index.js`, Node 26.12.1 unter `/opt/node`) | Client-ID/Secret in OpenBao `secret/data/mcp/spotify` → gerendert nach `/opt/data/spotify/spotify-config.json` (`hestia/scripts/spotify_config.py`); OAuth-Refresh-Token hält der Server (der Server liest bewusst keine Env-Vars) | Hermes (manuell in `config.yaml`) |
 | `picnic` | local (stdio) | `ivo-toby/mcp-picnic` v1.15.1, global im Hermes-Image; gestartet über `/opt/data/picnic/run.sh` | `PICNIC_USERNAME`/`PICNIC_PASSWORD` aus OpenBao `secret/data/mcp/picnic` → gerendert nach `/opt/data/picnic/.env` (`hestia/scripts/picnic_env.py`); Session-/Device-Datei im selben Volume | Hermes, **nur Default-Profil** (manuell in `config.yaml`) — nicht Profil `kleve` |
+| `bons` | remote | `https://mcp-bons.mueller-nas.de/mcp` — eigener Container `receipt-wrangler-mcp:0.1.2` auf CT 100 (kuratierter Wrapper um die Receipt-Wrangler-API, 7 Tools) | `Authorization: Bearer {env:BONS_MCP_TOKEN}` (OpenBao `secret/data/mcp/bons`) | Hermes (manuell in `config.yaml`) |
 
 ### `ocis` (OpenCloud)
 
@@ -118,6 +119,68 @@ Der Server läuft **bewusst ohne** `--disable-*`-Flags (Vollzugriff inkl.
 Schreib-Tools: Dashboards, Alert-Rules, Contact-Points, Silences). Schreibaktionen
 nur nach Rückfrage/explizitem Auftrag — Konvention steht in der `AGENTS.md` des
 Grafana-Spaces.
+
+### `receipt-wrangler-mcp` (Kassenbons)
+
+Kuratierter MCP-Wrapper um die API von **Receipt Wrangler** (`https://bons.mueller-nas.de`,
+Kassenbons/Belege). Für Receipt Wrangler existiert **kein** fertiger MCP-Server; ein
+generischer OpenAPI-Konverter würde aus `api/swagger.yml` über 100 Tools erzeugen,
+deshalb bewusst eine kleine, lesbare Oberfläche.
+
+- **Quellcode (nicht committet):** `workspaces/infrastructure/server-management/receipt-wrangler-mcp/`
+  — `src/bons_mcp/{config,client,auth,server}.py`, Tests gegen `httpx.MockTransport`
+- **Image/Stack:** `receipt-wrangler-mcp:0.1.2` unter `/opt/docker-compose/receipt-wrangler-mcp/`
+  auf CT 100; FastMCP (`json_response=True`, `stateless_http=True`) unter `/mcp`,
+  Bearer-Middleware, `/healthz` offen, **fail-closed** ohne `RW_API_TOKEN`/`BONS_MCP_TOKEN`.
+  `allowed_hosts` enthält `mcp-bons.mueller-nas.de`, sonst antwortet der Server hinter
+  Traefik mit `421`.
+- **Traefik:** Routing über Docker-Labels im Stack (kein Rule-File) und **ohne**
+  `authentik@docker` — Agenten können kein SSO; die Authentifizierung macht der Server
+  selbst über den Bearer-Token.
+- **Tools:** `list_groups`, `list_receipts`, `get_receipt`, `search_receipts`,
+  `get_receipt_image` (liefert das Bonbild als Image-Content → Vision), `get_categories_and_tags`
+  und `set_receipt_status` — die **einzige** Schreiboperation (max. 50 IDs, Status
+  `OPEN`/`NEEDS_ATTENTION`/`RESOLVED`/`DRAFT`/`DECLINED`). Beträge, Daten und Kategorien
+  lassen sich bewusst nicht ändern, dafür bleibt die Weboberfläche zuständig.
+
+**Auth-Stolperfalle:** Die Receipt-Wrangler-API erwartet den API-Key **roh** im
+`Authorization`-Header — mit `Bearer` davor antwortet sie `403 {"errorMsg":"Unauthorized"}`.
+Der Wrapper setzt das intern; nach außen gilt `Authorization: Bearer <MCP-Token>`.
+
+**Antwortform von `set_receipt_status`:** `POST /api/receipt/bulkStatusUpdate` liefert in
+v7.3 nur Stub-Receipts (`name: ""`, `amount: "0"`). Bei ≤ 10 IDs lädt der Wrapper die
+Bons deshalb per `GET /api/receipt/{id}` nach; bei mehr IDs kommt nur `{id, status}`
+plus Hinweis auf `get_receipt` zurück.
+
+**Deploy (manuell):** `/opt/docker-compose` ist kein Git-Repo — Dateien per
+`sftp-upload` nach `/root/`, dann `docker build -t receipt-wrangler-mcp:<version>` und
+`docker compose up -d` im Stack-Verzeichnis; anschließend `hermes` neu starten.
+
+**Hermes-Anbindung** (Default-Profil, `/etc/docker/hermes/data/config.yaml`):
+
+```yaml
+mcp_servers:
+  bons:
+    type: http
+    url: https://mcp-bons.mueller-nas.de/mcp
+    headers:
+      Accept: application/json
+      Authorization: Bearer <token aus secret/data/mcp/bons>
+```
+
+Zusätzlich je eine Zeile `- mcp-bons` in `toolsets.enabled` **und**
+`platform_toolsets.api_server`. Das Profil `kleve` erbt beides nicht.
+
+**Skill `bons`:** `hermes/skills/bons/SKILL.md`, per Bind-Mount im Container
+(`/opt/data/skills/bons`). Er erzwingt die Reihenfolge `NEEDS_ATTENTION` → `OPEN` → Rest
+bei „schau dir meine Bons an" und dass ein abgearbeiteter Bon (z. B. als Schuld in der
+Notion-Schuldenliste erfasst) auf `RESOLVED` gesetzt wird.
+
+Er ist bewusst die **Prozess-Schicht** und dupliziert keine Fachlichkeit: Aufteilung
+Carsten/Goerkem, dm-Eigenmarken, PDF-Bons und die Abgrenzung „Bon-Status ≠
+Notion-Status" stehen im zweiten, älteren Skill `bons-kassenbon`
+(`/etc/docker/hermes/data/skills/research/bons-kassenbon/`, **nicht** repo-versioniert).
+Bei inhaltlichem Konflikt gilt `bons-kassenbon`.
 
 ## `ssh-mcp`
 

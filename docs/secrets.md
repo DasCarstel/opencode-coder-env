@@ -46,6 +46,8 @@ ausschließlich in `/etc/opencode.env` (Mode 0600) ab.
 | `secret/data/mcp/github` | GitHub-PAT (via `scripts/setup-git-credentials.sh`) |
 | `secret/data/mcp/hermes-opencode-service` | `OPENCODE_SERVER_PASSWORD` |
 | `secret/data/mcp/super-productivity` | `token` — Bearer-Token des Super-Productivity-MCP (`SP_MCP_TOKEN`), gelesen vom General-Workspace |
+| `secret/data/mcp/receipt-wrangler` | `api_key` — API-Key der Receipt-Wrangler-API (Scope Read **und** Write); der MCP-Server sendet ihn als **Rohwert** im `Authorization`-Header (ohne `Bearer`) an `https://bons.mueller-nas.de/api` |
+| `secret/data/mcp/bons` | `token` — eingehender Bearer-Token des MCP-Servers `https://mcp-bons.mueller-nas.de/mcp`, den Hermes als `Authorization: Bearer …` sendet (liegt in der Hermes-`config.yaml`, nicht im Repo) |
 | `secret/data/mcp/picnic` | `username`, `password`, optional `country_code` (Default `DE`) — Picnic-MCP im Hermes-Container; `hestia/scripts/picnic_env.py` rendert daraus `/opt/data/picnic/.env` |
 | `secret/data/mcp/artificialanalysis` | `AA_API_KEY` (Artificial Analysis, **optional** — ohne Key laufen die Benchmarks nur über OpenRouter) |
 | `secret/data/mcp/notify` | `NTFY_TOKEN` (`opencode_token`), `url` — Zugang zum ntfy-Hub, siehe [`notifications.md`](notifications.md). **Noch nicht angelegt** (Stand: ntfy ist live, Token liegt in `/etc/docker/ntfy/credentials.env`); bis dahin bleibt das OpenCode-Plugin still |
