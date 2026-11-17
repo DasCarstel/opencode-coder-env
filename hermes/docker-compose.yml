@@ -39,6 +39,11 @@ services:
       # picnic-gewohnheiten - die versionierte Fassung legt sich ueber den
       # Ordner-Mount /etc/docker/hermes/data.
       - /opt/docker-compose/hermes/skills/bons:/opt/data/skills/bons
+      # Skill "bons-kassenbon" (Fachlichkeit: Aufteilung, dm-Eigenmarken,
+      # PDF-Bons). Zielpfad MUSS der Volume-Pfad research/bons-kassenbon sein --
+      # sonst laedt der Loader zwei Skills mit gleichem Namen und verweigert
+      # beide ("Ambiguous skill name").
+      - /opt/docker-compose/hermes/skills/bons-kassenbon:/opt/data/skills/research/bons-kassenbon
     environment:
       HERMES_DASHBOARD: "1"
     command: ["hermes"]
