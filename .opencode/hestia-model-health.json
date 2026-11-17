@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-11-17T13:00:07Z",
+  "updatedAt": "2026-11-17T16:00:29Z",
   "tiers": {
     "fast": {
       "model": "opencode-go/deepseek-v4.1-flash",
@@ -23,7 +23,6 @@
       "model": "opencode-go/qwen3.8-max#xhigh",
       "ok": true,
       "failStreak": 0,
-      "lastOkAt": "2026-11-17T13:00:07Z",
       "primaryModel": "opencode-go/glm-5.3",
       "primaryVariant": "high",
       "paidReason": "other",
@@ -83,8 +82,7 @@
     "opencode-go/qwen3.8-max#xhigh": {
       "model": "opencode-go/qwen3.8-max#xhigh",
       "failStreak": 0,
-      "quarantineUntil": "",
-      "lastOkAt": "2026-11-17T13:00:07Z"
+      "quarantineUntil": ""
     },
     "opencode-go/glm-5.3#xhigh": {
       "model": "opencode-go/glm-5.3#xhigh",
