@@ -4,11 +4,14 @@
 Health-Space innerhalb des general-Profils (eigener Herdr-Workspace
 `workspaces/general/health`, Agent `opencode-health`, Netz `coder-gen`, kein
 ssh-mcp). Hier läuft das Training- und Ernährungs-Management: **Training via
-openGym-MCP** (aus der globalen Config `workspaces/general/workspace-global.json`
-geerbt), **Ernährung via yazio-MCP**, **Picnic-Einkäufe via picnic-MCP**. ocis
-und pdf kommen ebenfalls aus der globalen Config.
+openGym-MCP** (session-lokal in `opencode.json`), **Ernährung via yazio-MCP**,
+**Picnic-Einkäufe via picnic-MCP**. ocis
+und pdf kommen aus der globalen Config. **super-productivity ist bewusst NICHT
+im Health-Space verfügbar** — es bleibt auf den General-Space beschränkt.
 
 ## MCP-Server (session-lokal)
+- **opengym** (remote) – `https://gym.mueller-nas.de/mcp`, Bearer-Token aus
+  OpenBao `secret/data/mcp/opengym` (Feld `API_TOKEN`)
 - **yazio** (lokal) – `node /opt/yazio-mcp/dist/index.js` (Fork-Build; im
   general-Image gebacken oder per startup.sh nachinstalliert – Stempel
   `.yazio-mcp-version`)
@@ -25,8 +28,6 @@ und pdf kommen ebenfalls aus der globalen Config.
     `/root/.picnic/picnic-device.json` (bleiben im Container erhalten)
 
 ## MCP-Server (geerbt aus workspace-global.json des general-Profils)
-- **opengym** (remote) – `https://gym.mueller-nas.de/mcp`, Bearer-Token aus
-  OpenBao `secret/data/mcp/opengym` (Feld `API_TOKEN`)
 - **ocis** (lokal) – privater Obsidian-Vault (`OCIS_PRIVATE_USER`/`_TOKEN`)
 - **pdf** (lokal) – `npx @sylphx/anymd@8.5.1`
 

@@ -1,5 +1,17 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "super-productivity": {
+        "type": "remote",
+        "url": "https://mcp-superproductivity.mueller-nas.de/mcp",
+        "headers": {
+          "Authorization": "Bearer {env:SP_MCP_TOKEN}",
+          "Accept": "application/json"
+        }
+      }
+    }
+  },
   "permission": {
     "edit": "allow",
     "bash": "allow",

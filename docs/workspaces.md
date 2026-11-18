@@ -68,17 +68,20 @@ Der Schlüssel ist exklusiv (`secret/data/mcp/ssh-mcp-pc`), und der Workspace l�
 minimal berechtigten AppRole `mcp-general` (Policy `mcp-server-general`) statt der
 gemeinsamen `mcp-server`. Krefeld- und Kleve-Hosts bleiben unerreichbar: deren Profile
 existieren in dieser Config nicht und das Krefelder/Kleve-VLAN ist nicht angebunden. Verfügbar
-sind außerdem OpenCloud (privater Space) und ein PDF-MCP.
+sind außerdem OpenCloud (privater Space), ein PDF-MCP und **super-productivity**
+(Todolisten, session-lokal in `opencode.json`, nicht im Health-Space).
 
 Innerhalb des General-Profils läuft zusätzlich der **Herdr-Space „Health"**
 (`workspaces/general/health/`, Agent `opencode-health`): Training über den
-**openGym-MCP** (aus der globalen Config geerbt), Ernährung über den **yazio-MCP**
+**openGym-MCP**, Ernährung über den **yazio-MCP**
 (Fork-Build `/opt/yazio-mcp` im general-Image, Token-Cache `/root/.yazio`) und
 Einkäufe über den **picnic-MCP** (npm `mcp-picnic@1.15.1`, direkter Dateipfad
 `/usr/lib/node_modules/mcp-picnic/bin/mcp-server.js` statt npm-Bin; Session-/Device-Files
-unter `/root/.picnic`). Seine Session-Config `opencode.json` definiert nur picnic
-und yazio — opengym, ocis und pdf kommen aus der globalen Config. Die Zugangsdaten
-liegen in OpenBao (`secret/data/mcp/picnic|yazio`) und sind Teil der
+unter `/root/.picnic`). Seine Session-Config `opencode.json` definiert opengym,
+picnic und yazio session-lokal; ocis und pdf kommen aus der globalen Config.
+**super-productivity ist bewusst nicht im Health-Space verfügbar** (nur
+General-Space). Die Zugangsdaten
+liegen in OpenBao (`secret/data/mcp/opengym|picnic|yazio`) und sind Teil der
 `mcp-server-general`-Policy.
 
 ### 7. minijob (MuellerConnect)

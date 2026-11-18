@@ -16,6 +16,14 @@
           "PICNIC_DEVICE_FILE": "/root/.picnic/picnic-device.json"
         }
       },
+      "opengym": {
+        "type": "remote",
+        "url": "https://gym.mueller-nas.de/mcp",
+        "headers": {
+          "Authorization": "Bearer {env:OPENGYM_MCP_TOKEN}",
+          "Accept": "application/json"
+        }
+      },
       "yazio": {
         "type": "local",
         "command": [

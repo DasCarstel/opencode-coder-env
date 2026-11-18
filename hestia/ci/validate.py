@@ -40,6 +40,8 @@ HERMES_TOOLSETS = {
     "mcp-homeassistant", "mcp-notion", "mcp-ocis-private",
     "mcp-ocis-muellerconnect", "mcp-super-productivity", "mcp-spotify",
     "mcp-google-calendar", "mcp-yazio", "mcp-picnic",
+    # bons (Receipt-Wrangler) und opengym (Training) — Stand 2026-11-18
+    "mcp-bons", "mcp-opengym",
 }
 HERMES_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 

@@ -37,22 +37,6 @@
           "ssh-mcp",
           "--config=/root/.config/ssh-mcp/config-general.toml"
         ]
-      },
-      "super-productivity": {
-        "type": "remote",
-        "url": "https://mcp-superproductivity.mueller-nas.de/mcp",
-        "headers": {
-          "Authorization": "Bearer {env:SP_MCP_TOKEN}",
-          "Accept": "application/json"
-        }
-      },
-      "opengym": {
-        "type": "remote",
-        "url": "https://gym.mueller-nas.de/mcp",
-        "headers": {
-          "Authorization": "Bearer {env:OPENGYM_MCP_TOKEN}",
-          "Accept": "application/json"
-        }
       }
     }
   }
