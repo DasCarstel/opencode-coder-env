@@ -101,6 +101,10 @@ case "$PROFILE" in infrastructure|general) WANT_SSH_MCP=1 ;; *) WANT_SSH_MCP=0 ;
 # mcp-grafana wird nur vom infrastructure-Profil gebraucht (Grafana-Space).
 case "$PROFILE" in infrastructure) WANT_GRAFANA_MCP=1 ;; *) WANT_GRAFANA_MCP=0 ;; esac
 
+# Health-MCPs (picnic, yazio) werden nur vom general-Profil gebraucht
+# (Health-Herdr-Space workspaces/general/health).
+case "$PROFILE" in general) WANT_HEALTH_MCPS=1 ;; *) WANT_HEALTH_MCPS=0 ;; esac
+
 # OpenCode-CLI + ssh-mcp + DCP. OpenCode bleibt bewusst ungepinnt (npm-latest,
 # Bake-Baseline siehe versions.env/Dockerfile); ssh-mcp und DCP sind gepinnt
 # und werden über Stempel-Dateien in /root/.local/bin geprüft – genau die
@@ -250,6 +254,72 @@ install_mcp_grafana() {
     fi
   else
     echo "  ✓ mcp-grafana bereits auf Pin (v${GRAFANA_MCP_VERSION})"
+  fi
+}
+
+# Health-MCPs (picnic, yazio) – nur general-Profil (Health-Herdr-Space).
+# Runtime-Nachinstallation per Stempel-Datei, Muster wie ssh-mcp/DCP: kein
+# Template-Push nötig, ein Restart nimmt die Repo-Änderung mit – derselbe
+# Mechanismus wie bei allen Repo-Änderungen. Die Dockerfile-Bake-Abschnitte
+# (general/Dockerfile 5+6) bleiben als Optimierung unverändert gebacken;
+# installiert wird hier nur, wenn der Stempel fehlt/veraltet ist.
+install_health_mcps() {
+  # picnic-MCP: npm-Paket mcp-picnic@1.15.1. Der npm-Bin-Eintrag heißt
+  # irreführend "mcp-server-template", deshalb verifizieren wir den direkten
+  # Dateipfad der Session-Config (workspaces/general/health/opencode.json).
+  local picnic_stamp="/root/.local/bin/.mcp-picnic-version"
+  local picnic_bin="/usr/lib/node_modules/mcp-picnic/bin/mcp-server.js"
+  if [ "$(cat "$picnic_stamp" 2>/dev/null)" = "1.15.1" ] && [ -f "$picnic_bin" ]; then
+    echo "  ✓ picnic-MCP bereits installiert (1.15.1)"
+  else
+    echo "  → picnic-MCP 1.15.1 installieren..."
+    if npm install -g "mcp-picnic@1.15.1" >/tmp/npm-picnic.log 2>&1; then
+      tail -2 /tmp/npm-picnic.log
+      if [ -f "$picnic_bin" ]; then
+        echo "1.15.1" > "$picnic_stamp"
+        echo "  ✓ picnic-MCP 1.15.1 installiert"
+      else
+        # npm root -g von der Config-Erwartung abweichend? Stempel nur bei
+        # passendem Pfad schreiben, sonst würde der Skip-Check dauerhaft greifen.
+        echo "  ⚠ picnic-MCP installiert, aber $picnic_bin fehlt (npm root -g: $(npm root -g 2>/dev/null)) – kein Stempel"
+      fi
+    else
+      tail -3 /tmp/npm-picnic.log
+      echo "  ⚠ picnic-MCP konnte nicht installiert werden – Health-Space startet trotzdem"
+    fi
+  fi
+
+  # yazio-MCP: Fork-Build aus GitHub-Tarball nach /opt/yazio-mcp. Der Build
+  # dauert 30-90s und läuft bewusst NICHT parallelisiert (einmalig, danach
+  # gestempelt wie picnic/ssh-mcp/DCP).
+  local yazio_stamp="/root/.local/bin/.yazio-mcp-version"
+  local yazio_rev="d326b1bc70ce2e214be3f412f9a887277fc73ef4"
+  if [ "$(cat "$yazio_stamp" 2>/dev/null)" = "$yazio_rev" ] && [ -f /opt/yazio-mcp/dist/index.js ]; then
+    echo "  ✓ yazio-MCP bereits installiert (${yazio_rev:0:7})"
+  else
+    echo "  → yazio-MCP wird gebaut (1x, danach gestempelt)..."
+    local ok=0
+    rm -rf /tmp/yazio-mcp.tar.gz /tmp/yazio-mcp-*
+    if curl -fsSL --max-time 120 -o /tmp/yazio-mcp.tar.gz \
+        "https://github.com/DasCarstel/yazio-mcp/archive/${yazio_rev}.tar.gz" \
+       && rm -rf /opt/yazio-mcp && mkdir -p /opt/yazio-mcp \
+       && tar -xzf /tmp/yazio-mcp.tar.gz -C /tmp \
+       && cp -a /tmp/yazio-mcp-*/. /opt/yazio-mcp/ \
+       && ( cd /opt/yazio-mcp \
+            && npm ci >/tmp/yazio-mcp-build.log 2>&1 \
+            && npm run build >>/tmp/yazio-mcp-build.log 2>&1 \
+            && npm prune --omit=dev >>/tmp/yazio-mcp-build.log 2>&1 ); then
+      ok=1
+    fi
+    rm -rf /tmp/yazio-mcp.tar.gz /tmp/yazio-mcp-*
+    if [ "$ok" = "1" ] && [ -f /opt/yazio-mcp/dist/index.js ]; then
+      rm -rf /opt/yazio-mcp/src /opt/yazio-mcp/tests /opt/yazio-mcp/scripts /opt/yazio-mcp/.github
+      echo "$yazio_rev" > "$yazio_stamp"
+      echo "  ✓ yazio-MCP gebaut und installiert (${yazio_rev:0:7})"
+    else
+      tail -5 /tmp/yazio-mcp-build.log 2>/dev/null
+      echo "  ⚠ yazio-MCP konnte nicht gebaut werden – Health-Space startet trotzdem"
+    fi
   fi
 }
 
@@ -488,6 +558,7 @@ bg "OpenCode/ssh-mcp/DCP" /tmp/bg-npm.log npm_chain
 bg "uv/uvx"               /tmp/bg-uv.log install_uv
 bg "ocis-mcp-server"      /tmp/bg-ocis-mcp.log install_ocis_mcp
 [ "$WANT_GRAFANA_MCP" = "1" ] && bg "mcp-grafana" /tmp/bg-mcp-grafana.log install_mcp_grafana
+[ "$WANT_HEALTH_MCPS" = "1" ] && bg "picnic/yazio-MCP" /tmp/bg-health-mcps.log install_health_mcps
 bg "Herdr"                /tmp/bg-herdr.log install_herdr
 
 # Tailscale (nur infrastructure): bewusst NICHT getrackt – nichts im Setup

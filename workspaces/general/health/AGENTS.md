@@ -9,14 +9,16 @@ geerbt), **Ernährung via yazio-MCP**, **Picnic-Einkäufe via picnic-MCP**. ocis
 und pdf kommen ebenfalls aus der globalen Config.
 
 ## MCP-Server (session-lokal)
-- **yazio** (lokal) – `node /opt/yazio-mcp/dist/index.js` (Fork-Build, im
-  general-Image gebacken)
+- **yazio** (lokal) – `node /opt/yazio-mcp/dist/index.js` (Fork-Build; im
+  general-Image gebacken oder per startup.sh nachinstalliert – Stempel
+  `.yazio-mcp-version`)
   - Env: `YAZIO_USERNAME` / `YAZIO_PASSWORD` / `YAZIO_CLIENT_ID` /
     `YAZIO_CLIENT_SECRET` (aus OpenBao `secret/data/mcp/yazio`)
   - Token-Cache: `/root/.yazio/token.json`
 - **picnic** (lokal) – `node /usr/lib/node_modules/mcp-picnic/bin/mcp-server.js`
-  (npm-Paket `mcp-picnic@1.15.1`; der npm-Bin-Eintrag heißt irreführend
-  `mcp-server-template`, deshalb direkter Dateipfad)
+  (npm-Paket `mcp-picnic@1.15.1`; im general-Image gebacken oder per startup.sh
+  nachinstalliert – Stempel `.mcp-picnic-version`; der npm-Bin-Eintrag heißt
+  irreführend `mcp-server-template`, deshalb direkter Dateipfad)
   - Env: `PICNIC_USERNAME` / `PICNIC_PASSWORD` / `PICNIC_COUNTRY_CODE`
     (aus OpenBao `secret/data/mcp/picnic`)
   - 2FA/Session-Files: `/root/.picnic/picnic-session.json` und
