@@ -44,8 +44,8 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 | tail -2 \
 # Die Stempel-Dateien .dcp-version / .ssh-mcp-version sind genau die, die
 # startup.sh prüft – ohne sie würde es trotz Bake erneut installieren.
 # Der npm-Cache wird NICHT ins Image geschrieben, sondern per BuildKit-Cache-
-# Mount gehalten: er liegt einmal im Build-Cache des Hosts (von allen vier
-# Templates geteilt) statt 4× à ~1 GB im Image. Zur Laufzeit bindet main.tf
+# Mount gehalten: er liegt einmal im Build-Cache des Hosts (von allen fünf
+# Templates geteilt) statt 5× à ~1 GB im Image. Zur Laufzeit bindet main.tf
 # denselben Cache als Host-Ordner /etc/npm-cache nach /root/.npm ein — so bleibt
 # die Nachinstallation bei veraltetem Bake schnell, ohne das Image zu vergrößern.
 RUN --mount=type=cache,target=/root/.npm,sharing=shared \
@@ -64,7 +64,32 @@ RUN curl -fsSL -o /tmp/ocis-mcp.tar.gz \
  && echo "${OCIS_MCP_VERSION}" > /root/.local/bin/.ocis-mcp-server-version \
  && rm -f /tmp/ocis-mcp.tar.gz /tmp/ocis-mcp-server
 
-# ── 5. Cache-Buster für das Image (erzwingt Rebuild beim Template-Push) ─────
+# ── 5. picnic MCP (npm, Pin wie Hermes: 1.15.1) ────────────────────────────
+# Der npm-Bin-Eintrag heißt irreführend "mcp-server-template" — der echte
+# MCP-Einstiegspunkt ist der direkte Dateipfad <npm-global>/mcp-picnic/bin/
+# mcp-server.js (npm-global-Root im NodeSource-Image: /usr/lib/node_modules,
+# siehe workspaces/general/health/opencode.json — Herdr-Space "Health").
+RUN --mount=type=cache,target=/root/.npm,sharing=shared \
+    npm install -g mcp-picnic@1.15.1
+
+# ── 6. yazio MCP (Build aus Fork, Pin wie Hermes) ───────────────────────────
+# Pattern wie hermes/Dockerfile (dort mit /opt/node) — hier reicht das
+# NodeSource-Systemnode (node/npm liegen auf dem PATH).
+ARG YAZIO_MCP_COMMIT=d326b1bc70ce2e214be3f412f9a887277fc73ef4
+RUN set -eux; \
+    curl -fsSL -o /tmp/yazio-mcp.tar.gz "https://github.com/DasCarstel/yazio-mcp/archive/${YAZIO_MCP_COMMIT}.tar.gz"; \
+    tar -xzf /tmp/yazio-mcp.tar.gz -C /tmp; \
+    mkdir -p /opt/yazio-mcp; \
+    cp -a "/tmp/yazio-mcp-${YAZIO_MCP_COMMIT}/." /opt/yazio-mcp/; \
+    rm -rf /tmp/yazio-mcp.tar.gz "/tmp/yazio-mcp-${YAZIO_MCP_COMMIT}"; \
+    cd /opt/yazio-mcp; \
+    npm ci; \
+    npm run build; \
+    npm prune --omit=dev; \
+    rm -rf src tests scripts .github
+# Einstiegspunkt: node /opt/yazio-mcp/dist/index.js (Token-Cache: /root/.yazio)
+
+# ── 7. Cache-Buster für das Image (erzwingt Rebuild beim Template-Push) ─────
 # ⚠️ MUSS am Dateiende stehen (siehe oben): nur so bleiben die Install-Layers
 # über Apply/Neustarts hinweg im Docker-Layer-Cache.
 ARG CACHE_DATE=1

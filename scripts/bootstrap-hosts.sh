@@ -224,6 +224,30 @@ path \"secret/metadata/mcp/opengym\" { capabilities = [\"list\",\"read\"] }"
     ;;
 esac
 
+# Nachtrag: picnic + yazio (Health-Space). Idempotent wie die Nachträge oben —
+# die Grunddefinition der Policy enthält diese Pfade nicht.
+_cur_policy=$(curl -sS -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+  "${OPENBAO_ADDR}/v1/sys/policies/acl/mcp-server-general" 2>/dev/null | \
+  python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('policy',''))" 2>/dev/null || echo "")
+case "$_cur_policy" in
+  *mcp/picnic**mcp/yazio*) ;;
+  "")
+    echo "  ⚠ Policy mcp-server-general nicht lesbar – picnic/yazio-Nachtrag übersprungen"
+    ;;
+  *)
+    _new_policy="${_cur_policy}
+path \"secret/data/mcp/picnic\" { capabilities = [\"read\"] }
+path \"secret/metadata/mcp/picnic\" { capabilities = [\"list\",\"read\"] }
+path \"secret/data/mcp/yazio\" { capabilities = [\"read\"] }
+path \"secret/metadata/mcp/yazio\" { capabilities = [\"list\",\"read\"] }"
+    python3 -c 'import json,sys; print(json.dumps({"policy": sys.stdin.read()}))' <<< "$_new_policy" | \
+      curl -sS -X PUT -H "X-Vault-Token: $OPENBAO_ROOT_TOKEN" \
+        -H "Content-Type: application/json" --data-binary @- \
+        "${OPENBAO_ADDR}/v1/sys/policies/acl/mcp-server-general" >/dev/null 2>&1
+    echo "  ✓ Policy mcp-server-general um picnic/yazio ergänzt"
+    ;;
+esac
+
 # ─── Policy: mcp-server-uni (Least Privilege für den uni-Space) ─────────────
 
 echo ""

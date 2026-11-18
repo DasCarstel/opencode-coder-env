@@ -424,6 +424,15 @@ case "$PROFILE" in
     read_secret "secret/data/mcp/super-productivity" "token" "SP_MCP_TOKEN"
     # openGym-MCP (Remote-HTTP, Bearer-Token, https://gym.mueller-nas.de/mcp)
     read_secret "secret/data/mcp/opengym" "API_TOKEN" "OPENGYM_MCP_TOKEN"
+    # picnic-MCP (Herdr-Space Health; Session-/Device-Files unter /root/.picnic)
+    read_secret "secret/data/mcp/picnic" "username"     "PICNIC_USERNAME"
+    read_secret "secret/data/mcp/picnic" "password"     "PICNIC_PASSWORD"
+    read_secret "secret/data/mcp/picnic" "country_code" "PICNIC_COUNTRY_CODE"
+    # yazio-MCP (Herdr-Space Health; Fork-Build /opt/yazio-mcp, Token-Cache /root/.yazio)
+    read_secret "secret/data/mcp/yazio" "username"      "YAZIO_USERNAME"
+    read_secret "secret/data/mcp/yazio" "password"      "YAZIO_PASSWORD"
+    read_secret "secret/data/mcp/yazio" "client_id"     "YAZIO_CLIENT_ID"
+    read_secret "secret/data/mcp/yazio" "client_secret" "YAZIO_CLIENT_SECRET"
     ;;
   muellerconnect)
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_muellerconnect_user"  "OCIS_MUELLERCONNECT_USER"
@@ -1920,7 +1929,7 @@ if [ -x "$HERDR_BIN" ]; then
       ;;
     general)
       WS_BASE="$REPO_DIR/workspaces/general"
-      WS_LIST=("General:.:opencode-general")
+      WS_LIST=("General:.:opencode-general" "Health:health:opencode-health")
       ;;
     muellerconnect)
       WS_BASE="$REPO_DIR/workspaces/minijob"

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "picnic": {
+        "type": "local",
+        "command": [
+          "node",
+          "/usr/lib/node_modules/mcp-picnic/bin/mcp-server.js"
+        ],
+        "environment": {
+          "PICNIC_USERNAME": "{env:PICNIC_USERNAME}",
+          "PICNIC_PASSWORD": "{env:PICNIC_PASSWORD}",
+          "PICNIC_COUNTRY_CODE": "{env:PICNIC_COUNTRY_CODE}",
+          "PICNIC_SESSION_FILE": "/root/.picnic/picnic-session.json",
+          "PICNIC_DEVICE_FILE": "/root/.picnic/picnic-device.json"
+        }
+      },
+      "yazio": {
+        "type": "local",
+        "command": [
+          "node",
+          "/opt/yazio-mcp/dist/index.js"
+        ],
+        "environment": {
+          "YAZIO_USERNAME": "{env:YAZIO_USERNAME}",
+          "YAZIO_PASSWORD": "{env:YAZIO_PASSWORD}",
+          "YAZIO_CLIENT_ID": "{env:YAZIO_CLIENT_ID}",
+          "YAZIO_CLIENT_SECRET": "{env:YAZIO_CLIENT_SECRET}",
+          "YAZIO_TOKEN_CACHE_PATH": "/root/.yazio/token.json"
+        }
+      }
+    }
+  },
+  "permission": {
+    "edit": "allow",
+    "bash": "allow",
+    "webfetch": "allow"
+  }
+}

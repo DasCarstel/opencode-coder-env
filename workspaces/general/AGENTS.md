@@ -18,6 +18,11 @@ Obsidian-Vault (oCIS) und lokales PDF-Lesen.
   - Env: `OCIS_PRIVATE_USER` / `OCIS_PRIVATE_TOKEN` (aus OpenBao)
 - **pdf** (lokal) – `npx @sylphx/anymd@8.5.1`
   - lokales Lesen von PDFs und URLs, kein API-Key
+- **opengym** (remote) – `https://gym.mueller-nas.de/mcp`
+  - Auth: `Authorization: Bearer {env:OPENGYM_MCP_TOKEN}` (aus OpenBao
+    `secret/data/mcp/opengym`, Feld `API_TOKEN`)
+  - Training/Workouts; wird von allen Herdr-Spaces des general-Profils geerbt
+    (u. a. Health-Space `workspaces/general/health`)
 - **super-productivity** (remote) – `https://mcp-superproductivity.mueller-nas.de/mcp`
   - Auth: `Authorization: Bearer {env:SP_MCP_TOKEN}` (aus OpenBao
     `secret/data/mcp/super-productivity`, Feld `token`)

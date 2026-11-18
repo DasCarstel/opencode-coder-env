@@ -70,6 +70,17 @@ gemeinsamen `mcp-server`. Krefeld- und Kleve-Hosts bleiben unerreichbar: deren P
 existieren in dieser Config nicht und das Krefelder/Kleve-VLAN ist nicht angebunden. Verfügbar
 sind außerdem OpenCloud (privater Space) und ein PDF-MCP.
 
+Innerhalb des General-Profils läuft zusätzlich der **Herdr-Space „Health"**
+(`workspaces/general/health/`, Agent `opencode-health`): Training über den
+**openGym-MCP** (aus der globalen Config geerbt), Ernährung über den **yazio-MCP**
+(Fork-Build `/opt/yazio-mcp` im general-Image, Token-Cache `/root/.yazio`) und
+Einkäufe über den **picnic-MCP** (npm `mcp-picnic@1.15.1`, direkter Dateipfad
+`/usr/lib/node_modules/mcp-picnic/bin/mcp-server.js` statt npm-Bin; Session-/Device-Files
+unter `/root/.picnic`). Seine Session-Config `opencode.json` definiert nur picnic
+und yazio — opengym, ocis und pdf kommen aus der globalen Config. Die Zugangsdaten
+liegen in OpenBao (`secret/data/mcp/picnic|yazio`) und sind Teil der
+`mcp-server-general`-Policy.
+
 ### 7. minijob (MuellerConnect)
 Der Workspace des externen Kunden-Spaces. Vollständig abgeschnitten: kein SSH-Zugang
 (anders als General, das den Carsten-PC erreicht), kein internes Netz. Zusätzlich zum privaten oCIS-Zugriff hat er den **MuellerConnect-
@@ -148,4 +159,5 @@ Workspace.
 - **Rückfragen an den Nutzer werden immer über das native Tool `question` gestellt**
   (klickbare Optionen), **nie** als Freitext — festgelegt im Root-`AGENTS.md`.
 - Workspace-`AGENTS.md`: Server Management, Home Assistant, Svelte, Cleve, Grafana,
-  General, minijob (die letzten beiden seit 2026-10-13).
+  General, minijob (die letzten beiden seit 2026-10-13) — plus der Herdr-Space
+  Health (`workspaces/general/health/AGENTS.md`).
