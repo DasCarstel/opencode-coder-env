@@ -59,6 +59,7 @@ else
   SSH_MCP_VERSION=""
   OCIS_MCP_VERSION=""
   GRAFANA_MCP_VERSION=""
+  UNIFI_MCP_VERSION=""
   HERDR_VERSION=""
 fi
 # ── Hintergrund-Setup (Kaltstart-Verkürzung) ────────────────────────────────
@@ -100,6 +101,9 @@ case "$PROFILE" in infrastructure|general) WANT_SSH_MCP=1 ;; *) WANT_SSH_MCP=0 ;
 
 # mcp-grafana wird nur vom infrastructure-Profil gebraucht (Grafana-Space).
 case "$PROFILE" in infrastructure) WANT_GRAFANA_MCP=1 ;; *) WANT_GRAFANA_MCP=0 ;; esac
+
+# unifi-network-mcp wird nur vom infrastructure-Profil gebraucht (UniFi-Gateway).
+case "$PROFILE" in infrastructure) WANT_UNIFI_MCP=1 ;; *) WANT_UNIFI_MCP=0 ;; esac
 
 # Health-MCPs (picnic, yazio) werden nur vom general-Profil gebraucht
 # (Health-Herdr-Space workspaces/general/health).
@@ -254,6 +258,36 @@ install_mcp_grafana() {
     fi
   else
     echo "  ✓ mcp-grafana bereits auf Pin (v${GRAFANA_MCP_VERSION})"
+  fi
+}
+
+# UniFi MCP Server (unifi-network-mcp), PyPI-Paket via uv, gepinnt.
+# requires-python >= 3.13 – uv lädt bei Bedarf selbst einen verwalteten
+# CPython; bewusst KEIN stiller Fallback auf ältere Python-Versionen.
+install_unifi_mcp() {
+  local bin="/root/.local/bin/unifi-network-mcp"
+  local stamp="/root/.local/bin/.unifi-network-mcp-version"
+  if [ -z "${UNIFI_MCP_VERSION}" ]; then
+    echo "  ⚠ UNIFI_MCP_VERSION nicht gesetzt – unifi-network-mcp läuft weiter in aktueller Version"
+  elif [ ! -x "$bin" ] || [ "$(cat "$stamp" 2>/dev/null)" != "${UNIFI_MCP_VERSION}" ]; then
+    if ! command -v uv >/dev/null 2>&1; then
+      echo "  ⚠ uv nicht gefunden – unifi-network-mcp kann nicht installiert werden"
+    else
+      echo "  → installiere unifi-network-mcp v${UNIFI_MCP_VERSION} (Python 3.13)..."
+      if uv tool install --reinstall --python 3.13 "unifi-network-mcp==${UNIFI_MCP_VERSION}" \
+         && echo "${UNIFI_MCP_VERSION}" > "$stamp"; then
+        echo "  ✓ unifi-network-mcp installiert (v${UNIFI_MCP_VERSION})"
+      else
+        echo "  ⚠ unifi-network-mcp konnte nicht auf v${UNIFI_MCP_VERSION} gebracht werden – alte Version (falls vorhanden) bleibt"
+      fi
+    fi
+  else
+    echo "  ✓ unifi-network-mcp bereits auf Pin (v${UNIFI_MCP_VERSION})"
+  fi
+  if [ -x "$bin" ]; then
+    echo "  ✓ unifi-network-mcp bereit: $bin"
+  else
+    echo "  ⚠ unifi-network-mcp nicht unter $bin gefunden – Server 'unifi' startet nicht"
   fi
 }
 
@@ -486,6 +520,20 @@ case "$PROFILE" in
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_private_user"  "OCIS_PRIVATE_USER"
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_private_token" "OCIS_PRIVATE_TOKEN"
     read_secret "secret/data/mcp/tailscale"      "auth_key"  "TS_AUTHKEY"
+    read_secret "secret/data/mcp/unifi"          "password"  "UNIFI_PASSWORD"
+    # unifi-network-mcp: Passwort nur als Datei (UNIFI_PASSWORD_FILE) – bewusst
+    # NICHT per `opencode service set env`, damit das Secret nicht in der
+    # Prozessumgebung des OpenCode-Service und aller Kindprozesse steht.
+    if [ -n "${UNIFI_PASSWORD:-}" ]; then
+      mkdir -p /root/.config/unifi-mcp
+      chmod 700 /root/.config/unifi-mcp
+      printf '%s' "$UNIFI_PASSWORD" > /root/.config/unifi-mcp/password
+      chmod 600 /root/.config/unifi-mcp/password
+      echo "  ✓ UNIFI_PASSWORD → /root/.config/unifi-mcp/password (0600)"
+      unset UNIFI_PASSWORD
+    else
+      echo "  ⚠ UNIFI_PASSWORD: nicht gefunden (secret/data/mcp/unifi)"
+    fi
     ;;
   general)
     read_secret "secret/data/mcp/opencloud-ocis" "obsidian_private_user"  "OCIS_PRIVATE_USER"
@@ -558,6 +606,7 @@ bg "OpenCode/ssh-mcp/DCP" /tmp/bg-npm.log npm_chain
 bg "uv/uvx"               /tmp/bg-uv.log install_uv
 bg "ocis-mcp-server"      /tmp/bg-ocis-mcp.log install_ocis_mcp
 [ "$WANT_GRAFANA_MCP" = "1" ] && bg "mcp-grafana" /tmp/bg-mcp-grafana.log install_mcp_grafana
+[ "$WANT_UNIFI_MCP" = "1" ] && bg "unifi-network-mcp" /tmp/bg-unifi-mcp.log install_unifi_mcp
 [ "$WANT_HEALTH_MCPS" = "1" ] && bg "picnic/yazio-MCP" /tmp/bg-health-mcps.log install_health_mcps
 bg "Herdr"                /tmp/bg-herdr.log install_herdr
 

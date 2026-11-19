@@ -43,6 +43,7 @@ ausschließlich in `/etc/opencode.env` (Mode 0600) ab.
 | `secret/data/mcp/ssh-mcp` | statischer ed25519-Key → `/root/.ssh/id_ed25519_mcp` |
 | `secret/data/mcp/ssh-mcp-pc` | exklusiver ed25519-Key für den Carsten-PC (Windows) → `/root/.ssh/id_ed25519_mcp_pc` (Profile `general` + `infrastructure`; **nicht** der gemeinsame Key) |
 | `secret/data/mcp/tailscale` | `TS_AUTHKEY` |
+| `secret/data/mcp/unifi` | `password` — lokaler Admin `mcp-svc` am UCG-Ultra (Local Access Only, ohne MFA); wird beim Start als Datei `/root/.config/unifi-mcp/password` (0600) abgelegt und vom `unifi-network-mcp` per `UNIFI_PASSWORD_FILE` gelesen (**nicht** im OpenCode-Service-Env) |
 | `secret/data/mcp/github` | GitHub-PAT (via `scripts/setup-git-credentials.sh`) |
 | `secret/data/mcp/hermes-opencode-service` | `OPENCODE_SERVER_PASSWORD` |
 | `secret/data/mcp/super-productivity` | `token` — Bearer-Token des Super-Productivity-MCP (`SP_MCP_TOKEN`), gelesen vom General-Workspace |

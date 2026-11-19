@@ -5,7 +5,7 @@ Verzeichnis, eine eigene Konfigurationsdatei und damit eine eigene MCP-/Skill-Si
 
 | # | Workspace | Konfig | Zweck | Netzwerk | MCP-Server | Skills |
 |---|-----------|--------|-------|----------|------------|--------|
-| 1 | `infrastructure/server-management` | `workspaces/infrastructure/server-management/opencode.json` | Infrastruktur-Host-Verwaltung (Docker, Proxmox, TrueNAS, PBS, Coder, UniFi), Authentik, Obsidian-Vault | internes VLAN `10.0.10.x` (+ `10.0.0.1`), SSH-Key | `ssh-mcp` (config-full), `authentik`, `ocis` | `shared`, `server`, `obsidian` |
+| 1 | `infrastructure/server-management` | `workspaces/infrastructure/server-management/opencode.json` | Infrastruktur-Host-Verwaltung (Docker, Proxmox, TrueNAS, PBS, Coder, UniFi), Authentik, Obsidian-Vault | internes VLAN `10.0.10.x` (+ `10.0.0.1`), SSH-Key | `ssh-mcp` (config-full), `authentik`, `unifi`, `ocis` | `shared`, `server`, `obsidian` |
 | 2 | `infrastructure/homeassistant` | `workspaces/infrastructure/homeassistant/opencode.json` | Home Assistant Krefeld + Obsidian | internes VLAN, SSH-Key | `ssh-mcp` (config-full), `homeassistant`, `ocis` | `homeassistant`, `server`, `shared`, `obsidian` |
 | 3 | `infrastructure/svelte` | `workspaces/infrastructure/svelte/opencode.json` | Svelte/SvelteKit-Entwicklung + denselben Infra-Kontext | internes VLAN, SSH-Key | `ssh-mcp` (config-full), `authentik`, `ocis`, `svelte` | `shared`, `server`, `obsidian` |
 | 4 | `infrastructure/cleve` | `workspaces/infrastructure/cleve/opencode.json` | Zweite Site Kleve (eigener Proxmox, TrueNAS, Docker-Host) | Kleve-Subnetz `192.168.178.x` (Tailscale-Tunnel/Subnet-Route) | `ssh-mcp` (**config-cleve**), `homeassistant-kleve` | `shared`, `cleve` |

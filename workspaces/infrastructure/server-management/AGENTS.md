@@ -15,6 +15,14 @@ Authentik über den Community-MCP (`authentik-mcp`).
 - **authentik** (lokal, `uvx`) – `nikitatsym/authentik-mcp`
   - Token: OpenBao `secret/data/mcp/authentik` → `AUTHENTIK_API_KEY`
 - **homarr** (remote) – `https://homarr.mueller-nas.de/api/mcp`, Auth per Header `ApiKey` aus `{env:HOMARR_API_KEY}` (OpenBao `secret/data/mcp/homarr`)
+- **unifi** (lokal, `unifi-network-mcp`) – Netzwerk/Firewall-MCP für das UniFi-Gateway
+  - Version gepinnt über `UNIFI_MCP_VERSION` in `coder-templates/versions.env`
+  - Auth: lokaler Admin `mcp-svc` (Local Access Only, **kein** Ubiquiti-SSO, kein MFA);
+    Passwort aus OpenBao `secret/data/mcp/unifi` → Datei `/root/.config/unifi-mcp/password`
+    (0600), gelesen per `UNIFI_PASSWORD_FILE` — bewusst **nicht** im OpenCode-Service-Env
+  - `UNIFI_HOST=10.0.0.1`, `UNIFI_VERIFY_SSL=false` (selbstsigniertes Gateway-Zertifikat)
+  - Lazy Mode: zuerst die Meta-Tools (`*_tool_index`, `*_execute`, `*_batch`), Domänen-Tools
+    werden bei Bedarf nachgeladen — das hält den Kontext klein
 
 ## Host-Profile (`~/.config/ssh-mcp/config.toml`)
 
@@ -35,6 +43,18 @@ Authentik über den Community-MCP (`authentik-mcp`).
 
 > **Kleve-Hosts** (`cleve-proxmox` .50, `cleve-truenas` .51, `cleve-docker` .52)
 > sind angeschlossen, gehören aber zum **cleve**-Workspace mit eigenen Skills.
+
+## UniFi (UCG-Ultra)
+
+Netzwerk, Firewall/Zonen, Port-Forwardings, VLANs/WLANs, Clients und Traffic-Flows
+laufen über den MCP-Server `unifi`. Der SSH-Zugang (`profile: unifi`) bleibt für Fälle,
+die die API nicht abdeckt (Konsole, Restore, Custom-Configs).
+
+- **Änderungen nur nach Rücksprache:** Firewall-Policies, Port-Forwardings, WLAN-, VLAN-
+  und DHCP-Änderungen erst als Preview/Dry-run zeigen und auf Freigabe warten.
+- Vor Firewall-/Zonen-Änderungen den Ist-Stand sichern (Policy-Liste exportieren).
+- Adressen und Namen aus dem MCP lesen, nicht raten.
+- Änderungen immer über die API — nicht per SSH die Konfiguration von Hand patchen.
 
 ## Richtlinien
 - **NIEMALS raw SSH via bash** (`ssh Docker '...'`, `bash("ssh ...")`) – ausschließlich `ssh-mcp`-Tools

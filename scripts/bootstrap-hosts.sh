@@ -152,11 +152,27 @@ if "secret/data/uni/" in policy:
 else:
     zusatz = ('path "secret/data/uni/*" { capabilities = ["read", "list"] }\n'
               'path "secret/metadata/uni/*" { capabilities = ["read", "list"] }')
-    body = json.dumps({"policy": policy.rstrip("\n") + "\n" + zusatz + "\n"}).encode()
+    # Wichtig: policy mitziehen, sonst überschreibt der nächste Nachtrag
+    # diese Ergänzung mit dem ursprünglichen Stand.
+    policy = policy.rstrip("\n") + "\n" + zusatz + "\n"
+    body = json.dumps({"policy": policy}).encode()
     req = urllib.request.Request(addr + "/v1/sys/policies/acl/mcp-server",
                                  data=body, method="PUT", headers=hdrs)
     urllib.request.urlopen(req, timeout=15).read()
     print("  ✓ Policy additiv um die uni-Regeln erweitert")
+
+# Nachtrag unifi-network-mcp (Server-Management-Space): Passwort des lokalen
+# UniFi-Admins 'mcp-svc' lesen. Additiv wie oben – bestehende Regeln bleiben.
+if "secret/data/mcp/unifi" in policy:
+    print("  ✓ Policy enthält unifi bereits")
+else:
+    zusatz = 'path "secret/data/mcp/unifi" { capabilities = ["read", "list"] }'
+    policy = policy.rstrip("\n") + "\n" + zusatz + "\n"
+    body = json.dumps({"policy": policy}).encode()
+    req = urllib.request.Request(addr + "/v1/sys/policies/acl/mcp-server",
+                                 data=body, method="PUT", headers=hdrs)
+    urllib.request.urlopen(req, timeout=15).read()
+    print("  ✓ Policy additiv um secret/data/mcp/unifi erweitert")
 PY
 fi
 

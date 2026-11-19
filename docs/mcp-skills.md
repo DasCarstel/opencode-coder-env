@@ -245,6 +245,10 @@ Kleve-Variante später abweichen, ohne die Infra-Workspaces anzufassen.
 | `media` | `10.0.10.25` | Media (CT 115) |
 | `test` | `10.0.10.40` | Test (CT 105) |
 
+> Das UCG-Ultra ist zusätzlich per MCP angebunden: Server `unifi` im Space
+> Server Management (`unifi-network-mcp`, lazy Mode, Firewall/Ports/VLANs).
+> Credential: `secret/data/mcp/unifi`, siehe [secrets.md](secrets.md).
+
 **Kleve** (Gruppe `kleve`) — **nur** in `config-cleve.toml`:
 
 | Profil | Host | Zweck |

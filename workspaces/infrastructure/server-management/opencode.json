@@ -45,6 +45,18 @@
           "ssh-mcp",
           "--config=/root/.config/ssh-mcp/config-full.toml"
         ]
+      },
+      "unifi": {
+        "type": "local",
+        "command": [
+          "/root/.local/bin/unifi-network-mcp"
+        ],
+        "environment": {
+          "UNIFI_HOST": "10.0.0.1",
+          "UNIFI_USERNAME": "mcp-svc",
+          "UNIFI_PASSWORD_FILE": "/root/.config/unifi-mcp/password",
+          "UNIFI_VERIFY_SSL": "false"
+        }
       }
     }
   },
