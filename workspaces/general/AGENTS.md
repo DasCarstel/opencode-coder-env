@@ -23,11 +23,21 @@ Obsidian-Vault (oCIS) und lokales PDF-Lesen.
     `secret/data/mcp/super-productivity`, Feld `token`)
   - Todolisten lesen/anlegen; Datenquelle ist die WebDAV-Sync-Datei auf CT 100.
     Siehe Skill `super-productivity` (Backup-/Restore-Regeln!).
+- **notion** (remote, session-lokal in `opencode.json`) – `https://mcp.notion.com/mcp`
+  - Notions gehosteter MCP (HTTP + **OAuth**), derselbe Server wie in Hermes — 65 Tools
+  - Einmalig pro Workspace: `opencode mcp auth notion` (Browser-Flow), Credentials
+    landen im persistenten OpenCode-Store (`/root/.local/share/opencode`) und
+    überleben Restarts. Abmelden: `opencode mcp logout notion`
+  - **Kein** OpenBao-Secret: Auth läuft ausschließlich über OAuth, nicht über einen
+    Integration-Token. Die AppRole `mcp-general` bleibt unverändert.
+  - Seiten müssen in Notion mit der Integration/Verbindung geteilt sein, sonst
+    liefert der Server leere Suchergebnisse
 
 ## OpenBao
 Eigene, minimal berechtigte AppRole `mcp-general` (Policy `mcp-server-general`) —
 liest nur `secret/data/mcp/{github,opencloud-ocis,opencode-go,hermes-opencode-service,ssh-mcp-pc,super-productivity}`.
-Nicht die gemeinsame `mcp-server`.
+Nicht die gemeinsame `mcp-server`. Notion wird bewusst nicht über OpenBao
+versorgt — der gehostete MCP authentifiziert per OAuth (siehe oben).
 
 ## Richtlinien
 - ssh-mcp nur mit Profil `carsten-pc`; andere Hosts gibt es hier nicht

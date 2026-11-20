@@ -69,7 +69,8 @@ minimal berechtigten AppRole `mcp-general` (Policy `mcp-server-general`) statt d
 gemeinsamen `mcp-server`. Krefeld- und Kleve-Hosts bleiben unerreichbar: deren Profile
 existieren in dieser Config nicht und das Krefelder/Kleve-VLAN ist nicht angebunden. Verfügbar
 sind außerdem OpenCloud (privater Space), ein PDF-MCP und **super-productivity**
-(Todolisten, session-lokal in `opencode.json`, nicht im Health-Space).
+(Todolisten, session-lokal in `opencode.json`, nicht im Health-Space). Dazu
+**notion** (Notions gehosteter MCP, OAuth, ebenfalls session-lokal).
 
 Innerhalb des General-Profils läuft zusätzlich der **Herdr-Space „Health"**
 (`workspaces/general/health/`, Agent `opencode-health`): Training über den
