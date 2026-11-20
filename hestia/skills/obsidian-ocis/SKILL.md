@@ -84,9 +84,15 @@ Der Skill (bzw. die Doku), der beschreibt, ...
 - The link is `[[YYYY-MM-DD]]` with the **current** date. Take it from the
   system date, never guess or copy the date of an older entry.
 - The date belongs on its own line below the heading, **not** inside the
-  heading text.
+  heading text — never a `*(Eintrag vom …)*` or any other prose timestamp.
 - `~~…~~` is the user's own marker for "done". Preserve strikethrough exactly as
   it is — including a struck-through date line — and never strip or "fix" it.
+
+Dictated entries are voice-transcribed and come in run-on prose: restructure
+them into a short `## <Topic>` section with a line for the done part and a line
+for the idea part (see the LED-Abdunkeln entry for the shape), keep the user's
+own wording for the substance, and verify the result by re-downloading the
+file after upload.
 
 ## Rules
 
