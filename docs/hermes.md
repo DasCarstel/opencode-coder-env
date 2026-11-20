@@ -735,6 +735,24 @@ erweitert**: ganze Datei lesen, neuen Abschnitt anhängen, kompletten Text
 zurückschreiben. Die Regel steht in `MEMORY.md` und in der Skill, damit sie in
 jedem neuen Chat gilt.
 
+Jeder Eintrag besteht aus der Überschrift `## <Titel>` und direkt darunter —
+ohne Leerzeile — dem Datum als Obsidian-Daily-Note-Link:
+
+```markdown
+## Skill-Doku: Datum bei Ideeneinträgen
+[[2026-11-19]]
+
+Der Skill (bzw. die Doku), der beschreibt, ...
+```
+
+- Datumslink immer `[[JJJJ-MM-TT]]` mit dem **aktuellen** Datum (Systemdatum,
+  nicht raten, nicht vom vorherigen Eintrag übernehmen).
+- Das Datum gehört auf eine eigene Zeile unter die Überschrift, **nicht** in
+  den Überschriftentext.
+- `~~…~~` ist der eigene Marker des Nutzers für „erledigt“. Durchstreichungen
+  unverändert übernehmen — auch eine durchgestrichene Datumszeile — und nie
+  entfernen oder „korrigieren“.
+
 ## Erweiterte Sektionen (Hermes Voice)
 
 Neben `primary`/`fallback`/`pool`/`api_server`/`profiles` kennt die SOT fünf

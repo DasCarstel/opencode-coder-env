@@ -71,6 +71,23 @@ hinzu" / "add … to the ideas": read the **whole** file, append the new section
 at the end, upload the complete result. Never replace the existing content with
 only the new part.
 
+Every entry is an `## <Titel>` heading immediately followed by the date as an
+Obsidian daily-note link — no blank line in between:
+
+```markdown
+## Skill-Doku: Datum bei Ideeneinträgen
+[[2026-11-19]]
+
+Der Skill (bzw. die Doku), der beschreibt, ...
+```
+
+- The link is `[[YYYY-MM-DD]]` with the **current** date. Take it from the
+  system date, never guess or copy the date of an older entry.
+- The date belongs on its own line below the heading, **not** inside the
+  heading text.
+- `~~…~~` is the user's own marker for "done". Preserve strikethrough exactly as
+  it is — including a struck-through date line — and never strip or "fix" it.
+
 ## Rules
 
 - Read a file before overwriting it; check `truncated` first.
