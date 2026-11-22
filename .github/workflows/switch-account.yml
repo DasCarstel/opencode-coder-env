@@ -7,8 +7,9 @@ name: switch-account
 # Coder-Host mit dem neuen Key neu.
 # Der Key wird nie im Log ausgegeben: er kommt aus dem periodischen Token in
 # /opt/docker-compose/github-runner/openbao-switch.token und wandert per
-# stdin auf den Host — OpenBao-Policy "hestia-switch" (read+update auf
-# secret/data/mcp/opencode-go).
+# stdin auf den Host — OpenBao-Policy "runner" (read auf
+# secret/data/mcp/opencode-go + auth/token/renew-self; der Token wird von
+# hestia/ci/renew-openbao-token.sh täglich erneuert).
 on:
   workflow_dispatch:
     inputs:

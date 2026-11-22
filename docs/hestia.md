@@ -328,13 +328,46 @@ Mini-Modellaufruf am Ende von `switch-account.sh` (inklusive `--fix`-Selbstheilu
 gegen gespeicherte opencode.db-Credentials). Erst nach erfolgreicher CI-Verifikation
 setzt das Panel `active`/`lastSwitch` und schreibt die SOT; bei Fehlschlag bleibt der
 bisherige Account aktiv (Event `switch-error` mit Run-Link), und der Fehlversuch löst
-**keinen** Cooldown aus. Der `cooldownSeconds`-Cooldown gilt für alle Wechsel; das
+**keinen** Cooldown aus — manuelle Wechsel dürfen sofort wiederholt werden. Nur die
+**Automatik** (`mode=auto`) backt nach aufeinanderfolgenden Fehlern exponentiell ab
+(`HESTIA_SWITCH_BACKOFF_BASE`, Default 900 s, verdopplend bis zu einem Cap von 6 h
+via `HESTIA_SWITCH_BACKOFF_MAX`) und setzt den Backoff bei Erfolg zurück — so kann
+ein hartnäckiger CI-Fehler nicht alle `checkIntervalSeconds` erneut dispatchen und
+GitHub-Mails fluten. Der `cooldownSeconds`-Cooldown gilt für alle Wechsel; das
 Panel bietet bei 409 „Cooldown aktiv" einen bewussten Force-Retry (`force: true`) an.
 
 Das Key-Lesen in `switch-account.sh` lief seit 2026-10-30 mit `python3 -I` über
 stdin statt als Heredoc-Datei in /tmp — eine Fremd-/Schad-Datei `/tmp/<modul>.py`
 kann sonst ein Stdlib-Modul verdrängen (damaliger Ausfall: „Exit 1 nach 50 ms" bei
-jedem Switch-Run).
+jedem Switch-Run). Seit 2026-11 prüft das Skript zusätzlich den HTTP-Status:
+403 (ungültiger Token / Policy fehlt), 404 (Secret fehlt) und andere Codes
+bekommen eigene, eindeutige Fehlermeldungen statt des irreführenden
+„Kein Key für Konto".
+
+### Runner-Token (OpenBao, Policy runner)
+
+Der CI-Job liest den Key mit einem **periodischen OpenBao-Token** aus
+`/opt/docker-compose/github-runner/openbao-switch.token` (0600). Der Token hat
+die Policy **`runner`** (read auf `secret/data/mcp/opencode-go` +
+`auth/token/renew-self`) und eine Period von **720 h** — periodische Token
+laufen ab, wenn sie nicht erneuert werden.
+
+- **Erneuerung:** `hestia/ci/renew-openbao-token.sh` (`POST auth/token/renew-self`,
+  Increment 720 h) liegt auf dem Docker-Host unter
+  `/opt/docker-compose/github-runner/renew-openbao-token.sh` und wird vom
+  bestehenden Runner-Watchdog (`/opt/docker-compose/github-runner/watchdog.sh`,
+  systemd-Timer `runner-watchdog.timer`, Takt 5 min) **höchstens 1× pro Tag**
+  aufgerufen — Stamp `/var/lib/openbao-token-renew.stamp`, Wiederholung also
+  auch nach einem Host-Neustart. Es ist jederzeit gefahrlos lauffähig und gibt
+  den Token nie aus.
+- **Anlegen** (einmalig, mit Root-Token):
+  `bao token create -policy=runner -period=720h -display-name=github-runner-switch`
+  → Client-Token in die Datei oben, `chmod 600`.
+- **Symptom, wenn der Token stirbt:** der CI-Job schlägt in unter einer Sekunde
+  fehl (OpenBao antwortet HTTP 403) — früher mit der irreführenden Meldung
+  „Kein Key für Konto"; `switch-account.sh` meldet das jetzt explizit
+  („OpenBao verweigert (HTTP 403): Token … ungültig oder Policy 'runner' fehlt").
+
 
 `coder-templates/shared/startup.sh` legt bei jedem Container-Start
 **`/etc/opencode-go.env`** an (umask 077, chmod 600, root, idempotent überschrieben):

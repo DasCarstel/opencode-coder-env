@@ -12,9 +12,14 @@ secret/data/mcp/opencode-go wird im CI in die OpenCode-Container gesetzt).
 Die Bestätigung ist bewusst ASYNCHRON: der Verifikations-Thread
 (_verify_switch) sucht den dispatched Run, pollt seinen Status und schreibt
 erst bei conclusion "success" das Feld "active" in die SOT (diese Datei)
-zurück — bei CI-Fehlern bleibt die SOT unangetastet, der aktive Account
-bleibt der alte und es gibt keinen Cooldown (lastSwitch wird nur bei Erfolg
-gesetzt). Früher wurde die SOT VOR dem Dispatch geschrieben und der Erfolg
+zurück — bei CI-Fehlern bleibt die SOT unangetastet und der aktive Account
+bleibt der alte (lastSwitch/Cooldown starten nur bei Erfolg). Ein Cooldown
+nach Fehlern gibt es bewusst trotzdem nicht für MANUELLE Wechsel — sie dürfen
+sofort wiederholt werden. Nur die AUTOMATIK (mode=auto) backt nach
+aufeinanderfolgenden Fehlern exponentiell ab (SWITCH_BACKOFF_BASE → Cap
+SWITCH_BACKOFF_MAX, Reset bei Erfolg), damit ein hartnäckiger CI-Fehler nicht
+alle paar Minuten erneut dispatcht und die GitHub-Mails flutet. Früher wurde
+die SOT VOR dem Dispatch geschrieben und der Erfolg
 gemeldet, bevor CI überhaupt gelaufen war (Panel zeigte den falschen Account,
 real passiert am 2026-10 bei einem CI-Fehler). Hestia ist damit weiterhin die
 EINZIGE Stelle, die den aktiven Account bestimmt — das gleichnamige Feld
@@ -40,6 +45,12 @@ HTTP_TIMEOUT = 10
 # Workflow, der den eigentlichen Konto-Wechsel ausführt (OpenBao + Container).
 SWITCH_WORKFLOW = os.environ.get("HESTIA_SWITCH_WORKFLOW", "switch-account.yml")
 DEFAULT_COOLDOWN = int(os.environ.get("HESTIA_SWITCH_COOLDOWN") or 1800)   # Sekunden
+# --- Auto-Wechsel-Backoff (Circuit Breaker, NUR für die Automatik) ---
+# Nach aufeinanderfolgenden CI-Fehlern pausiert der automatische Wechsel
+# exponentiell (900 s → 30 min → 1 h → 2 h → 4 h → 6 h-Cap); Erfolg setzt
+# alles zurück. Manuelle/Panel-Wechsel sind davon NICHT betroffen.
+SWITCH_BACKOFF_BASE = int(os.environ.get("HESTIA_SWITCH_BACKOFF_BASE") or 900)      # s nach dem 1. Fehlversuch
+SWITCH_BACKOFF_MAX = int(os.environ.get("HESTIA_SWITCH_BACKOFF_MAX") or 6 * 3600)   # s Obergrenze (6 h)
 # --- Wechsel-Verifikation (SOT-Commit erst nach CI-Erfolg) ---
 VERIFY_FIND_TIMEOUT = int(os.environ.get("HESTIA_VERIFY_FIND_TIMEOUT") or 90)    # s bis der dispatched Run auftaucht
 VERIFY_POLL_INTERVAL = int(os.environ.get("HESTIA_VERIFY_POLL_INTERVAL") or 15)  # s zwischen Status-Polls
@@ -49,6 +60,9 @@ PENDING_RETENTION = 120                                     # s: abgeschlossenes
 LOCK = threading.Lock()
 _CONFIG_CACHE = {"at": 0.0, "cfg": None}
 _STATE_CACHE = {"at": 0.0}
+# Drossel fürs Backoff-Log: zuletzt geloggte Restminute (sonst loggt der Loop
+# jeden Tick dieselbe Meldung).
+_backoff_logged_minute = -1
 
 STATE = {
     "ok": True,
@@ -68,6 +82,10 @@ STATE = {
     "switchPending": None,  # Live-Status eines laufenden/abgeschlossenen Wechsels
                             # (nur im Prozess, kein Redis): siehe switch_account()
     "switchWorkflow": SWITCH_WORKFLOW,
+    # --- Backoff/Circuit Breaker für AUTOMATISCHE Wechsel (manuell nie blockiert) ---
+    "switchFailCount": 0,       # aufeinanderfolgende Fehlversuche (Erfolg setzt auf 0)
+    "switchBackoffUntil": None, # Unix-Ts: Auto-Wechsel pausiert bis hier (siehe _finish_failed)
+    "lastSwitchError": None,    # letzter Fehler des Wechsels (Panel-Anzeige)
 }
 
 
@@ -589,14 +607,24 @@ def _notify_error(pending: dict, err: str) -> None:
 def _finish_failed(pending: dict, err: str) -> None:
     """Wechsel als fehlgeschlagen markieren.
 
-    KEIN SOT-Commit, `active` bleibt beim vorherigen Account und KEIN Cooldown
-    (lastSwitch bleibt unangetastet — der nächste Versuch darf sofort laufen,
-    siehe switch_account: abgeschlossenes pending blockt nicht mehr).
+    KEIN SOT-Commit und `active` bleibt beim vorherigen Account; lastSwitch
+    (Cooldown) bleibt unangetastet — der nächste MANUELLE Versuch darf sofort
+    laufen (siehe switch_account: abgeschlossenes pending blockt nicht mehr).
+    Für die Automatik wird dafür der Backoff weitergedreht: switchFailCount
+    hochzählen und switchBackoffUntil exponentiell setzen (cap
+    SWITCH_BACKOFF_MAX) — Erfolg setzt beide Werte in _verify_switch zurück.
     """
     with LOCK:
         pending["phase"] = "failed"
         pending["error"] = err
         pending["elapsed"] = round(time.time() - float(pending.get("startedAt") or time.time()), 1)
+        # --- Backoff für den automatischen Wechsel (manuell nie blockiert) ---
+        fails = int(STATE.get("switchFailCount") or 0) + 1
+        backoff = min(SWITCH_BACKOFF_BASE * 2 ** (fails - 1), SWITCH_BACKOFF_MAX)
+        STATE["switchFailCount"] = fails
+        STATE["lastSwitchError"] = err
+        STATE["switchBackoffUntil"] = time.time() + backoff
+    _log(f"Auto-Wechsel pausiert nach {fails} Fehlversuchen ({backoff // 60} min)")
     _event(type="switch-error", target=pending.get("target") or "", reason=err)
     _log(f"Wechsel NICHT bestätigt: {pending.get('target')} — {err}")
     try:
@@ -684,6 +712,10 @@ def _verify_switch(pending: dict) -> None:
         with LOCK:
             STATE["active"] = target
             STATE["lastSwitch"] = time.time()      # Cooldown startet erst JETZT (nach Erfolg)
+            # Backoff/Circuit Breaker nach Erfolg zurücksetzen.
+            STATE["switchFailCount"] = 0
+            STATE["switchBackoffUntil"] = None
+            STATE["lastSwitchError"] = None
             _CONFIG_CACHE["at"] = 0.0              # nächster _config() liest die neue SOT
             pending["phase"] = "done"
             pending["elapsed"] = round(time.time() - float(pending.get("startedAt") or time.time()), 1)
@@ -757,6 +789,21 @@ def _apply_policy() -> None:
         return
     target, reason = rec["target"], rec.get("reason") or ""
     if mode == "auto":
+        # Backoff/Circuit Breaker: nach aufeinanderfolgenden CI-Fehlern die
+        # Automatik pausieren (exponentiell, cap SWITCH_BACKOFF_MAX). NUR die
+        # Automatik — manuelle/Panel-Wechsel rufen switch_account direkt auf
+        # und sind davon nicht betroffen.
+        global _backoff_logged_minute
+        until = STATE.get("switchBackoffUntil")
+        if until:
+            remaining = float(until) - time.time()
+            if remaining > 0:
+                mins = max(1, int(remaining // 60))
+                if mins != _backoff_logged_minute:   # Drossel: nur pro neuer Minute loggen
+                    _backoff_logged_minute = mins
+                    _log(f"automatischer Wechsel pausiert ({STATE.get('switchFailCount')} "
+                         f"Fehlversuche, noch {mins} min)")
+                return
         # Cooldown in switch_account verhindert Ping-Pong zwischen zwei Konten.
         res = switch_account(target, reason, force=False, by="auto")
         if not res.get("switched"):

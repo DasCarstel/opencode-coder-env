@@ -4,6 +4,9 @@
 # hestia/backend/accounts.py via workflow_dispatch).
 #
 # 1. Key des Zielkontos aus OpenBao secret/data/mcp/opencode-go lesen
+#    (Zugriff per periodischem Token aus $OPENBAO_TOKEN_FILE — OpenBao-Policy
+#    "runner": read auf secret/data/mcp/opencode-go + auth/token/renew-self.
+#    Der Token wird von hestia/ci/renew-openbao-token.sh täglich erneuert.)
 # 2. Key pro Container übertragen und OPENCODE_API_KEY neu setzen
 #    (.bashrc: deduppen — genau eine Zeile —, Service-Env setzen, Neustart)
 #
@@ -58,8 +61,27 @@ echo "→ Konto: $ACCOUNT (Grund: $REASON)"
 # `types` → sofortiger Abbruch (Exit 1 nach 50 ms) bei JEDEM Lauf.
 # Fix: Code über stdin-Pipe an `python3 -I -c` — -I (isolated mode) ignoriert
 # PYTHON*-Env und User-Site, und bei -c ist sys.path[0] "" (cwd),	NICHT /tmp.
-KEY="$(curl -sS -H "X-Vault-Token: $VAULT_TOKEN" "$OPENBAO_ADDR/v1/$SECRET_PATH" \
-  | python3 -I -c 'import sys, json
+# HTTP-Status beachten (CI-Ausfall 2026-11-22: abgelaufener Token → HTTP 403 →
+# leerer Key → irreführendes "Kein Key für Konto"). Body + Status in EINEM
+# curl-Aufruf lesen, am Ende den __HTTP__-Marker abtrennen.
+HTTP_BODY="$(curl -sS -w $'\n__HTTP__%{http_code}' \
+  -H "X-Vault-Token: $VAULT_TOKEN" "$OPENBAO_ADDR/v1/$SECRET_PATH")" || {
+  echo "✗ OpenBao nicht erreichbar ($OPENBAO_ADDR)" >&2
+  exit 1
+}
+HTTP_CODE="${HTTP_BODY##*$'\n'__HTTP__}"
+BODY="${HTTP_BODY%$'\n'__HTTP__*}"
+case "$HTTP_CODE" in
+  200) : ;;
+  403) echo "✗ OpenBao verweigert (HTTP 403): Token in $OPENBAO_TOKEN_FILE ungültig oder Policy 'runner' fehlt" >&2
+       echo "  Hinweis: es muss ein periodischer Token (720h) sein, den renew-openbao-token.sh täglich erneuert." >&2
+       exit 1 ;;
+  404) echo "✗ Secret $SECRET_PATH nicht gefunden (HTTP 404)" >&2
+       exit 1 ;;
+  *)   echo "✗ OpenBao-Antwort HTTP ${HTTP_CODE:-?}" >&2
+       exit 1 ;;
+esac
+KEY="$(printf '%s' "$BODY" | python3 -I -c 'import sys, json
 try:
     data = (json.load(sys.stdin).get("data") or {}).get("data")
 except ValueError as exc:  # JSONDecodeError + Co.
@@ -69,7 +91,7 @@ if not isinstance(data, dict):
     data = {}
 sys.stdout.write(str(data.get(sys.argv[1]) or ""))
 ' "$ACCOUNT")" || {
-  echo "✗ Key-Lesen fehlgeschlagen (curl/OpenBao nicht erreichbar, oder Python/JSON-Fehler)" >&2
+  echo "✗ OpenBao-Antwort (HTTP 200) nicht parsebar — Python/JSON-Fehler" >&2
   exit 1
 }
 if [[ -z "$KEY" ]]; then
