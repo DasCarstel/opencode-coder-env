@@ -56,8 +56,9 @@ Handy ──POST /api/activity──▶ Traefik ──Path(/api/activity)──�
   - Trigger: Webhook `gym_session_start` (POST)
   - Conditions: `person.carsten` = `home`, Zeitfenster 06:00–22:00,
     `vacuum.roborock_qrevo_edge_series` ≠ `cleaning`
-  - Actions: `script.roborock_carsten_zimmer_saugen_dann_wischen`,
-    `script.gym_sportmodus_push`, ntfy-Info auf Topic `home`
+  - Actions: `script.roborock_carsten_zimmer_wischen` (drückt die
+    Roborock-Szene „Carsten Z. wischen"), `script.gym_sportmodus_push`,
+    ntfy-Info auf Topic `home`
 - **Skript** `GYM | Sportmodus-Push` — schickt `Routine: Sportmodus`
   (`title: openGym | Session gestartet`) an `device_id: dddeb792…`
 
@@ -106,17 +107,30 @@ docker restart homeassistant
 Die Traefik-Route verschwindet mit dem Container; `/api/activity` läuft dann
 wieder unverändert über `opengym-web` → `api`.
 
-## Offener Punkt (2026-11-23)
+## Roborock-Szenen (Stand 2026-11-23)
 
-Beim Test zeigte sich: die Roborock-Szenen-Buttons für **saugen** sind
-`unavailable`/`restored` —
-`button.wohnkuche_roborock_qrevo_edge_series_carsten_z_saugen`,
-`…_alles_saugen`, `button.roborock_qrevo_edge_series_saugen_dann_wischen2`,
-`…_intensiv`, `…_nach_mahlzeiten`.
-Die Wisch-Buttons (`…_carsten_z_wischen`, `…_badezimmer_wischen`,
-`…_kuche_bad_saugen`) sind verfügbar.
+Die Integration legt für jede Roborock-**Szene** einen Button an
+(`RoborockRoutineButtonEntity`, `key=routine.id`). Die Cloud liefert aktuell
+genau diese sechs Szenen:
 
-`script.roborock_carsten_zimmer_saugen` drückt den nicht verfügbaren Button →
-HA meldet `Referenced entities … are missing or not currently available`, der
-Roboter startet nicht. Der Rest der Kette (Heartbeat → Shim → Webhook →
-Automation → Push) ist verifiziert.
+| Szene | Entity |
+|---|---|
+| Badezimmer wischen | `button.wohnkuche_roborock_qrevo_edge_series_badezimmer_wischen` |
+| Carsten Z. wischen | `button.wohnkuche_roborock_qrevo_edge_series_carsten_z_wischen` |
+| Görkems Z. wischen | `button.wohnkuche_roborock_qrevo_edge_series_gorkems_zimmer` |
+| Küche wischen | `button.wohnkuche_roborock_qrevo_edge_series_kuche_bad_saugen` |
+| Wohnung wischen | `button.wohnkuche_roborock_qrevo_edge_series_wohnung_wischen` |
+| Wohnzimmer wischen | `button.wohnkuche_roborock_qrevo_edge_series_wohnzimmer` |
+
+Eine Szene „Carsten Z. saugen dann wischen" ist **nicht** dabei (auch nach
+Neuanmeldung der Integration, 2026-11-23). Grundlage ist deshalb
+`script.roborock_carsten_zimmer_wischen`.
+
+Verlauf: Vor der Neuanmeldung waren fünf Szenen-Buttons `unavailable`
+(`alles_saugen`, `carsten_z_saugen`, `saugen_dann_wischen2`, `intensiv`,
+`nach_mahlzeiten`) – ein Zeichen für eine hängende Cloud-Session. Nach dem
+Reauth sind sie verschwunden, die sechs oben sind live.
+
+Hinweis: `script.roborock_carsten_zimmer_saugen_dann_wischen` (saugen → wischen)
+nutzt den nicht mehr existierenden Button `…_carsten_z_saugen` und läuft
+deshalb ins Leere. Es wird von der Gym-Automation nicht mehr verwendet.
