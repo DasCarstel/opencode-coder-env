@@ -79,7 +79,8 @@ Genau **eine** Kategorie pro Entity, Scope beachten. Vorhandene verwenden,
 nur bei echtem Fehlen neu anlegen (Name + Icon wie unten).
 
 **automation:** 3D Drucker `mdi:printer-3d`, Aroma Diffuser `mdi:scent`, Bad
-`mdi:shower`, Belüftung `mdi:weather-windy`, Gesundheit `mdi:heart-pulse`,
+`mdi:shower`, Belüftung `mdi:weather-windy`, Erinnerung `mdi:bell-ring`,
+Gesundheit `mdi:heart-pulse`,
 Heizung `mdi:radiator`, Jalousie `mdi:blinds`, Kalender `mdi:calendar`, Klima
 `mdi:air-conditioner`, Licht `mdi:lightbulb-group`, Luftreiniger
 `mdi:air-purifier`, Präsenz `mdi:account-check`, Reinigung `mdi:broom`,
@@ -87,8 +88,8 @@ Roborock `mdi:robot-vacuum`, Schlaf `mdi:power-sleep`, Server `mdi:server`,
 Sicherheit `mdi:security`, Sprachassistent `mdi:account-voice`, Tisch
 `mdi:desk`, TrueNAS `mdi:nas`, Tür & Klingel `mdi:doorbell`, Wecker `mdi:alarm`
 
-**script:** Aroma Diffuser `mdi:scent`, Bad `mdi:shower`, Heizung
-`mdi:radiator`, Helper `mdi:progress-helper`, Jalousie `mdi:blinds`, Klima
+**script:** Aroma Diffuser `mdi:scent`, Bad `mdi:shower`, Erinnerung
+`mdi:bell-ring`, Heizung `mdi:radiator`, Helper `mdi:progress-helper`, Jalousie `mdi:blinds`, Klima
 `mdi:air-conditioner`, Licht `mdi:lightbulb-group`, Luftreiniger
 `mdi:air-purifier`, Play `mdi:volume-medium`, Reinigung `mdi:broom`, Roborock
 `mdi:robot-vacuum`, Sicherheit `mdi:security`, Sprachassistent

@@ -43,6 +43,23 @@ Kann ein Schritt mit den verfügbaren Tools nicht ausgeführt werden, wird das d
 Nutzer **gemeldet** und ein Weg gesucht (SSH/Registry) — nicht stillschweigend
 übersprungen.
 
+## Werkzeuge
+`tools/ha_registry.py` — liest und schreibt die HA-Entity-Registry über die
+WebSocket-API (Icons, Labels, Kategorien). Der MCP-Server kann das nicht.
+Dieselbe Datei liegt auf dem Host unter
+`/etc/docker/homeassistant/tools/ha_registry.py` (= Container
+`/config/tools/ha_registry.py`); nach Änderungen beide Stellen angleichen.
+
+```
+printf '%s\n' "$HA_LLA_TOKEN" | ssh -i /root/.ssh/id_ed25519_mcp root@10.0.10.10 \
+  'docker exec -i homeassistant python /config/tools/ha_registry.py check'
+```
+
+`check` listet fehlende Icons/Labels/Kategorien pro Domain, `apply plan.json
+[--dry-run]` setzt sie. Token **nur per stdin** — nie als Argument (sonst steht
+er in der Prozessliste und in Fehlerausgaben). Kategorie-IDs im Plan immer
+explizit angeben, `@Name`-Aliase sind scope-blind.
+
 ## Hinweise
 - HA-Version bei Bestandsaufnahme: 1.26.0
 - Integration: "Model Context Protocol Server" (`mcp_server`)
