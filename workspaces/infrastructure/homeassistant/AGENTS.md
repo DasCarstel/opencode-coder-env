@@ -17,9 +17,31 @@ und wird von `startup.sh` in die OpenCode-Service-Umgebung injiziert.
   - Requires header: `Accept: application/json`
 
 ## Richtlinien
-- Keine SSH-Befehle auf dem HA-Host
-- Keine direkten API-Calls gegen HA außerhalb des MCP
-- Token niemals in Logs, Git oder Shell-Ausgaben ausgeben
+- Der HA-MCP-Server (`/api/mcp`) liefert nur Intent-/State-Tools. Für Entity-Registry
+  (Icons, Labels, Kategorien), YAML-Deploy, Logs und Neustarts hat er **keine** Tools.
+- **SSH/ssh-mcp auf CT 100 (Profil `docker-host`) ist ausdrücklich erlaubt und der
+  Standardweg** für Docker/Compose, Dateien unter `/etc/docker` (inkl. `homeassistant/`),
+  Logs, `check_config`, Neustart und Registry-Operationen. Die frühere Regel
+  „keine SSH-Befehle auf dem HA-Host" gilt **nicht mehr**.
+- Direkte HA-REST-/WebSocket-Calls sind erlaubt, wenn der MCP-Server die Operation
+  nicht anbietet (z. B. `config/entity_registry/update`). Token nur per stdin oder
+  Umgebungsvariable übergeben — **niemals** in Kommandozeilen-Argumenten, Dateien,
+  Git oder Logs.
+
+## Pflicht bei Automationen, Skripten und Helfern
+Vor dem Anlegen oder Ändern: `skill({id:"home-assistant-naming"})` laden.
+Nach dem Anlegen oder Ändern **im selben Arbeitsgang** erledigen — nicht optional,
+nicht „später", nicht weglassen:
+1. **Icon** (`mdi:…`) setzen. Bei YAML-Automationen ist `icon:` in der YAML verboten
+   (HA deaktiviert die Automation), es geht nur über die Entity-Registry.
+2. **Labels** setzen — nur die tatsächlich benutzten Bausteine.
+3. **Kategorie** setzen (Scope `automation` / `script` / `helpers`), vorhandene
+   bevorzugen, nur bei echtem Fehlen neu anlegen.
+4. Ergebnis prüfen (Registry-Liste): keine neu erstellte Entity darf ohne
+   Icon/Label/Kategorie zurückbleiben.
+Kann ein Schritt mit den verfügbaren Tools nicht ausgeführt werden, wird das dem
+Nutzer **gemeldet** und ein Weg gesucht (SSH/Registry) — nicht stillschweigend
+übersprungen.
 
 ## Hinweise
 - HA-Version bei Bestandsaufnahme: 1.26.0

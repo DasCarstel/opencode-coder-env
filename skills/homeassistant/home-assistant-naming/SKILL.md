@@ -1,6 +1,6 @@
 ---
 name: home-assistant-naming
-description: Konventionen für Namen, Icons, Labels und Kategorien von Home-Assistant-Automationen, Skripten und Helfern. Laden, bevor eine Automation, ein Skript oder ein Helfer erstellt, umbenannt oder einsortiert wird.
+description: Konventionen für Namen, Icons, Labels und Kategorien von Home-Assistant-Automationen, Skripten und Helfern. MUSS geladen werden, sobald eine Automation, ein Skript oder ein Helfer erstellt, geändert, umbenannt, einsortiert oder deployed wird – auch bei scheinbar kleinen Änderungen und auch dann, wenn Icons/Labels/Kategorien nachträglich per Entity-Registry gesetzt werden müssen.
 license: MIT
 ---
 
@@ -159,3 +159,7 @@ Skill im selben Commit wie die HA-Änderung versionieren und pushen.
   bzw. den Config-Flow anlegen, nicht mehr in `configuration.yaml`.
 - Prüfen: `docker exec homeassistant python -m homeassistant --script check_config -c /config`.
 - Commit im `/etc/docker`-Repo: `homeassistant: <was>`.
+- **Nach jeder Änderung Pflicht:** Icon, Labels und Kategorie über die Entity-Registry
+  setzen (`config/entity_registry/update`) und danach die Registry gegenprüfen
+  (`config/entity_registry/list`). Fehlt ein Zugriffsweg, dem Nutzer melden — nicht
+  überspringen.
