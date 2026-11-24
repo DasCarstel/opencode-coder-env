@@ -48,6 +48,24 @@ Handy ──POST /api/activity──▶ Traefik ──Path(/api/activity)──�
 - `active:false` mit `reason: hidden` (App im Hintergrund) → ignoriert
 - Health: `docker exec opengym-activity-shim wget -qO- http://localhost:8080/healthz`
 
+### Workout-Filter (welches Training löst aus?)
+
+Der Heartbeat enthält den Namen des laufenden Workouts (`name`, aus
+`state.S.active.name` der Web-App). Der Shim prüft ihn **vor** der
+Entprellung gegen `SKIP_WORKOUT_REGEX` (Default
+`dehn|stretch|mobility|yoga|foam`, case-insensitive):
+
+- Treffer → Log `SESSION-START ignoriert (Workout gefiltert)`, **kein**
+  Webhook und **kein** Lock. Ein Dehn-Tag verbraucht also keinen der
+  45 Minuten, ein echtes Training danach startet normal.
+- Kein Treffer → wie bisher.
+
+Damit lösen Dehnen/Mobility-Einheiten (z. B. Dienstag/Donnerstag) keine
+Reinigung aus. Filter ändern: `SKIP_WORKOUT_REGEX` in
+`/opt/docker-compose/opengym/docker-compose.yml` anpassen und
+`docker compose -f /opt/docker-compose/opengym/docker-compose.yml up -d activity-shim`.
+Leer setzen (`""`) = alle Workouts lösen aus.
+
 ## HA-Seite
 
 `packages/gym.yaml`:
@@ -61,6 +79,9 @@ Handy ──POST /api/activity──▶ Traefik ──Path(/api/activity)──�
     ntfy-Info auf Topic `home`
 - **Skript** `GYM | Sportmodus-Push` — schickt `Routine: Sportmodus`
   (`title: openGym | Session gestartet`) an `device_id: dddeb792…`
+- Registry: Kategorie `Gym` (`mdi:dumbbell`, Scopes automation + script),
+  Automation-Labels `roborok`, `message`, `zone`, `ai_made`,
+  Skript-Labels `message`, `ai_made`, Skript-Icon `mdi:dumbbell`
 
 Zeitfenster ändern: Template-Condition „Zeitfenster 06:00-22:00" in
 `packages/gym.yaml` anpassen. Abschalten: Automation in der UI deaktivieren.
