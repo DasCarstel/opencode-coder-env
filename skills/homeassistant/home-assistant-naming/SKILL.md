@@ -56,7 +56,7 @@ Mehrere Labels erlaubt, aber kein Label „auf Vorrat".
 | `prasenz` | Präsenz | mdi:motion-sensor | Bewegungs-/Präsenzmelder |
 | `sleep_tracker` | Sleep Tracker | mdi:chat-sleep | Sleep-as-Android |
 | `server` | Server | mdi:server | Serverdienste, Container, HACS |
-| `truenas` | TrueNAS | mdi:nas | TrueNAS-Host, Jellyfin/Sonarr/Radarr/Sabnzbd |
+| `watchdog` | Watchdog | mdi:dog-side | Überwachungs-Automationen (Heartbeat, Timeout-, Verbindungs- und Ausfallüberwachung) |
 | `bluetooth` | Bluetooth | mdi:bluetooth | BLE-Verbindungen |
 | `3d_drucker` | 3D Drucker | mdi:printer-3d-nozzle | 3D-Drucker |
 | `tisch` | Tisch | mdi:desk | Schreibtisch, Stehen/Sitzen |
@@ -69,9 +69,15 @@ Mehrere Labels erlaubt, aber kein Label „auf Vorrat".
 | `gesundheit` | Gesundheit | mdi:heart-pulse | Waage, Körperdaten |
 | `sprachassistent` | Sprachassistent | mdi:account-voice | Assist/Google/Alexa/Hermes |
 | `abfall` | Abfall | mdi:trash-can | Mülltonnen |
-| `ai_made` | AI made | mdi:brain | von KI erstellt und noch nicht vom Nutzer überarbeitet |
+| `ai_made` | AI made | mdi:brain | **Pflicht**: immer setzen, wenn der Agent die Entity/den Helfer/das Label/die Kategorie anlegt oder inhaltlich erzeugt. Gilt für Automationen, Skripte, Helfer und jede sonstige neu erzeugte Entity. Wird nicht automatisch entfernt — nur auf ausdrücklichen Wunsch des Nutzers. |
 
-`ai_made` niemals bei Nutzerarbeit setzen; nach manueller Überarbeitung entfernen.
+### `ai_made` ist nicht optional
+Jede vom Agenten erzeugte Entity bekommt `ai_made` — ohne Ausnahme und ohne
+Rückfrage. Das gilt auch für Labels und Kategorien, die der Agent neu anlegt,
+sowie für jede weitere Entity-Art (Sensoren, Buttons, Timer, Gruppen …).
+Das Label bleibt dauerhaft gesetzt; es wird nur entfernt, wenn der Nutzer es
+ausdrücklich verlangt. Bei Nutzerarbeit (Entity vom Menschen angelegt) wird es
+nicht gesetzt.
 
 ## 4. Kategorien (= Gruppen)
 
@@ -99,8 +105,8 @@ Sicherheit `mdi:security`, Sprachassistent `mdi:account-voice`, Tisch
 `mdi:window-open`, Gesundheit `mdi:heart-pulse`, Jalousie `mdi:blinds`, Klima
 `mdi:air-conditioner`, Licht `mdi:lightbulb-group`, Präsenz
 `mdi:account-check`, Reinigung `mdi:broom`, Roborock `mdi:robot-vacuum`,
-Schlaf `mdi:power-sleep`, Sensor `mdi:weather-windy`, Sprachassistent
-`mdi:account-voice`, Tisch `mdi:desk`, TrueNAS `mdi:nas`, Tür & Klingel
+Schlaf `mdi:power-sleep`, Sensor `mdi:weather-windy`, Server `mdi:server`,
+Sprachassistent `mdi:account-voice`, Tisch `mdi:desk`, TrueNAS `mdi:nas`, Tür & Klingel
 `mdi:doorbell`, Wecker `mdi:alarm`
 
 ## 5. Skill aktuell halten (Pflicht)
@@ -112,6 +118,9 @@ mitgepflegt werden:
 - Neue Kategorie → im passenden Scope-Block (§4) mit Name + Icon ergänzen.
 - Umbenanntes Label/eine umbenannte Kategorie → beide Stellen (Name und ggf. `label_id`) angleichen.
 - Gelöschtes Label/eine gelöschte Kategorie → aus §3/§4 entfernen.
+- Die Pflicht zum `ai_made`-Label gilt auch für neu angelegte Labels/Kategorien
+  selbst: legt der Agent ein Label oder eine Kategorie neu an, bekommt dieses
+  ebenfalls `ai_made`.
 
 Nach jeder Änderung gegen die Live-Registries prüfen
 (`config/label_registry/list`, `config/category_registry/list?scope=…`) und den

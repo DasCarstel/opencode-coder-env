@@ -35,6 +35,10 @@ nicht „später", nicht weglassen:
 1. **Icon** (`mdi:…`) setzen. Bei YAML-Automationen ist `icon:` in der YAML verboten
    (HA deaktiviert die Automation), es geht nur über die Entity-Registry.
 2. **Labels** setzen — nur die tatsächlich benutzten Bausteine.
+2a. **`ai_made` ist Pflicht** — jede vom Agenten erstellte Entity (Automation,
+   Skript, Helfer, Sensor, Button, Label, Kategorie …) bekommt das Label
+   `ai_made`. Keine Ausnahme, keine Rückfrage, kein automatisches Entfernen.
+   Entfernt wird es nur auf ausdrücklichen Wunsch des Nutzers.
 3. **Kategorie** setzen (Scope `automation` / `script` / `helpers`), vorhandene
    bevorzugen, nur bei echtem Fehlen neu anlegen.
 4. Ergebnis prüfen (Registry-Liste): keine neu erstellte Entity darf ohne
